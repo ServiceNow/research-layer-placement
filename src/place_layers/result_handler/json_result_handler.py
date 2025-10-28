@@ -1,6 +1,5 @@
 """JSON result handler implementation."""
 
-import json
 import logging
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -12,6 +11,7 @@ from place_layers.result_handler.base_result_handler import BaseResultHandler
 from place_layers.result_handler.base_result_handler_config import (
     BaseResultHandlerConfig,
 )
+
 
 logger = logging.getLogger(__name__)
 

@@ -2,21 +2,21 @@
 
 import csv
 import logging
-from itertools import product
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
-from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
+import seaborn as sns
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.problem import ProblemConfig
 from place_layers.search_strategy import SearchStrategyConfig
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,14 @@ class HyperparameterAnalysisCommand(BaseCommand):
         logger.info("HYPERPARAMETER ANALYSIS")
         logger.info(f"{'='*60}")
         logger.info(f"Beam widths to test: {self.config.beam_widths}")
-        logger.info(f"Early stop thresholds to test: {self.config.early_stop_thresholds}")
+        logger.info(
+            f"Early stop thresholds to test: {self.config.early_stop_thresholds}"
+        )
 
         # Calculate total combinations
-        total_runs = len(self.config.beam_widths) * len(self.config.early_stop_thresholds)
+        total_runs = len(self.config.beam_widths) * len(
+            self.config.early_stop_thresholds
+        )
         logger.info(f"Total configurations: {total_runs}")
 
         # Storage for results
@@ -73,14 +77,16 @@ class HyperparameterAnalysisCommand(BaseCommand):
                 result = await search_strategy.search(problem)
 
                 # Store results
-                results.append({
-                    "beam_width": beam_width,
-                    "early_stop_threshold": early_stop_threshold,
-                    "final_score": result.best_score,
-                    "total_evaluations": result.total_evaluations,
-                })
+                results.append(
+                    {
+                        "beam_width": beam_width,
+                        "early_stop_threshold": early_stop_threshold,
+                        "final_score": result.best_score,
+                        "total_evaluations": result.total_evaluations,
+                    }
+                )
 
-                logger.info(f"\nResult:")
+                logger.info("\nResult:")
                 logger.info(f"  Final score: {result.best_score:.4f}")
                 logger.info(f"  Total evaluations: {result.total_evaluations}")
 
@@ -88,7 +94,13 @@ class HyperparameterAnalysisCommand(BaseCommand):
         csv_path = output_dir / "hyperparameter_results.csv"
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["beam_width", "early_stop_threshold", "final_score", "total_evaluations"]
+                f,
+                fieldnames=[
+                    "beam_width",
+                    "early_stop_threshold",
+                    "final_score",
+                    "total_evaluations",
+                ],
             )
             writer.writeheader()
             writer.writerows(results)
@@ -116,7 +128,7 @@ class HyperparameterAnalysisCommand(BaseCommand):
         # Color by beam width
         unique_widths = sorted(set(beam_widths))
         colors = plt.cm.viridis(np.linspace(0, 1, len(unique_widths)))
-        color_map = dict(zip(unique_widths, colors))
+        color_map = dict(zip(unique_widths, colors, strict=False))
 
         for width in unique_widths:
             mask = beam_widths == width
@@ -133,7 +145,11 @@ class HyperparameterAnalysisCommand(BaseCommand):
 
         ax.set_xlabel("Total Evaluations", fontsize=12)
         ax.set_ylabel("Final Score", fontsize=12)
-        ax.set_title("Hyperparameter Trade-off: Evaluations vs Score", fontsize=14, fontweight="bold")
+        ax.set_title(
+            "Hyperparameter Trade-off: Evaluations vs Score",
+            fontsize=14,
+            fontweight="bold",
+        )
         ax.legend(title="Beam Width", fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -149,8 +165,8 @@ class HyperparameterAnalysisCommand(BaseCommand):
         logger.info("\nGenerating heatmaps...")
 
         # Organize data into matrices
-        beam_widths = sorted(set(r["beam_width"] for r in results))
-        thresholds = sorted(set(r["early_stop_threshold"] for r in results))
+        beam_widths = sorted({r["beam_width"] for r in results})
+        thresholds = sorted({r["early_stop_threshold"] for r in results})
 
         score_matrix = np.zeros((len(thresholds), len(beam_widths)))
         eval_matrix = np.zeros((len(thresholds), len(beam_widths)))
@@ -192,7 +208,9 @@ class HyperparameterAnalysisCommand(BaseCommand):
         )
         ax2.set_xlabel("Beam Width", fontsize=12)
         ax2.set_ylabel("Early Stop Threshold", fontsize=12)
-        ax2.set_title("Evaluation Count by Hyperparameters", fontsize=14, fontweight="bold")
+        ax2.set_title(
+            "Evaluation Count by Hyperparameters", fontsize=14, fontweight="bold"
+        )
 
         plt.tight_layout()
         plot_path = output_dir / "hyperparameter_heatmaps.png"
@@ -227,9 +245,15 @@ class HyperparameterAnalysisCommand(BaseCommand):
             f.write(f"  total_evaluations: {fewest_evals['total_evaluations']}\n\n")
 
             # Score at fewest evals relative to best
-            score_gap = best_score['final_score'] - fewest_evals['final_score']
-            score_gap_pct = 100 * score_gap / abs(best_score['final_score']) if best_score['final_score'] != 0 else 0
-            eval_reduction = 100 * (1 - fewest_evals['total_evaluations'] / best_score['total_evaluations'])
+            score_gap = best_score["final_score"] - fewest_evals["final_score"]
+            score_gap_pct = (
+                100 * score_gap / abs(best_score["final_score"])
+                if best_score["final_score"] != 0
+                else 0
+            )
+            eval_reduction = 100 * (
+                1 - fewest_evals["total_evaluations"] / best_score["total_evaluations"]
+            )
 
             f.write("Trade-off Analysis:\n")
             f.write(f"  Score gap: {score_gap:.4f} ({score_gap_pct:.2f}%)\n")
@@ -237,8 +261,8 @@ class HyperparameterAnalysisCommand(BaseCommand):
 
             # Parameter effects
             f.write("Parameter Ranges:\n")
-            beam_widths = sorted(set(r["beam_width"] for r in results))
-            thresholds = sorted(set(r["early_stop_threshold"] for r in results))
+            beam_widths = sorted({r["beam_width"] for r in results})
+            thresholds = sorted({r["early_stop_threshold"] for r in results})
             f.write(f"  beam_widths tested: {beam_widths}\n")
             f.write(f"  early_stop_thresholds tested: {thresholds}\n\n")
 
@@ -247,8 +271,10 @@ class HyperparameterAnalysisCommand(BaseCommand):
             for width in beam_widths:
                 width_results = [r for r in results if r["beam_width"] == width]
                 scores = [r["final_score"] for r in width_results]
-                f.write(f"  width={width}: mean={np.mean(scores):.4f}, std={np.std(scores):.4f}, "
-                       f"min={np.min(scores):.4f}, max={np.max(scores):.4f}\n")
+                f.write(
+                    f"  width={width}: mean={np.mean(scores):.4f}, std={np.std(scores):.4f}, "
+                    f"min={np.min(scores):.4f}, max={np.max(scores):.4f}\n"
+                )
 
         logger.info(f"Summary saved to: {summary_path}")
 
@@ -264,9 +290,7 @@ class HyperparameterAnalysisCommandConfig(BaseCommandConfig):
     evaluator: EvaluatorConfig = Field(
         description="Evaluator configuration (fixed seed for reproducibility)"
     )
-    problem: ProblemConfig = Field(
-        description="Problem configuration"
-    )
+    problem: ProblemConfig = Field(description="Problem configuration")
     search_strategy: SearchStrategyConfig = Field(
         description="Base search strategy configuration (will be modified with test parameters)"
     )

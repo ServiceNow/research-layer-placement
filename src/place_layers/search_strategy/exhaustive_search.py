@@ -1,7 +1,7 @@
 """Exhaustive search strategy implementation."""
 
-import logging
 from itertools import combinations
+import logging
 from typing import ClassVar, Literal
 
 from pydantic import Field
@@ -16,6 +16,7 @@ from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
 from place_layers.search_strategy.base_search_strategy_config import (
     BaseSearchStrategyConfig,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +124,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
             total_evaluations=len(all_configs),
         )
 
-    def _estimate_search_space(
-        self, num_layers: int, budgets: list[int]
-    ) -> int:
+    def _estimate_search_space(self, num_layers: int, budgets: list[int]) -> int:
         """
         Estimate number of valid configurations.
 
@@ -169,9 +168,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
                 for layer in available_layers:
                     final_assignment[layer] = num_mixers - 1
 
-                configs.append(
-                    LayerPlacement(assignments=tuple(final_assignment))
-                )
+                configs.append(LayerPlacement(assignments=tuple(final_assignment)))
                 return
 
             # Choose budgets[phase_idx] layers for mixer[phase_idx]
@@ -186,7 +183,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
 
                 # Recurse with remaining layers
                 new_available = [
-                    l for l in available_layers if l not in selected_layers
+                    layer for layer in available_layers if layer not in selected_layers
                 ]
                 enumerate_recursive(new_assignment, new_available, phase_idx + 1)
 
@@ -198,9 +195,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
 
         return configs
 
-    def _log_landscape_statistics(
-        self, scores: list[float], best_score: float
-    ) -> None:
+    def _log_landscape_statistics(self, scores: list[float], best_score: float) -> None:
         """Log statistics about the score landscape."""
         import statistics
 

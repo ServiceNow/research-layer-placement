@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
+
 
 # Generic type variable for parameters
 ParametersT = TypeVar("ParametersT")
 
 
-class SearchResult(BaseModel, Generic[ParametersT]):
+class SearchResult[ParametersT](BaseModel):
     """Complete results from an optimization run."""
 
     best_parameters: ParametersT

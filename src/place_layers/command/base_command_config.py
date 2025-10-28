@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
+
 if TYPE_CHECKING:
     from place_layers.command.base_command import BaseCommand
 
@@ -24,9 +25,9 @@ class BaseCommandConfig(BaseModel, ABC):
     command: str = Field(description="Command to execute")
 
     # Command class binding (each subclass must define this)
-    _command_class: ClassVar[type["BaseCommand"]]
+    _command_class: ClassVar[type[BaseCommand]]
 
-    def create_command(self) -> "BaseCommand":
+    def create_command(self) -> BaseCommand:
         """Create command instance from this config.
 
         Returns:

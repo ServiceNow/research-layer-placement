@@ -18,7 +18,7 @@ def main(cfg: DictConfig) -> None:
     """Main entry point with Hydra configuration."""
     warnings.simplefilter("default")
     logging.captureWarnings(True)
-    
+
     logger = logging.getLogger(__name__)
 
     try:

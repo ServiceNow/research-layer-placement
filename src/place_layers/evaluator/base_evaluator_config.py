@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
+
 if TYPE_CHECKING:
     from place_layers.evaluator.base_evaluator import BaseEvaluator
 

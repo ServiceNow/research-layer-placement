@@ -1,16 +1,16 @@
 """Sensitivity analysis command."""
 
-import logging
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
+from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
+import seaborn as sns
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
@@ -22,6 +22,7 @@ from place_layers.evaluator.mock_supernet_evaluator import (
 )
 from place_layers.problem import ProblemConfig
 from place_layers.search_strategy import SearchStrategyConfig
+
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,9 @@ class SensitivityAnalysisCommand(BaseCommand):
         results = []
 
         # Sweep each parameter independently
-        total_trials = sum(len(values) for values in param_sweep.values()) * n_trials_per_config
+        total_trials = (
+            sum(len(values) for values in param_sweep.values()) * n_trials_per_config
+        )
         trial_count = 0
 
         for param_name, param_values in param_sweep.items():
@@ -107,25 +110,32 @@ class SensitivityAnalysisCommand(BaseCommand):
                 # Run multiple trials
                 for trial_idx in range(n_trials_per_config):
                     trial_count += 1
-                    logger.info(f"  Trial {trial_idx + 1}/{n_trials_per_config} "
-                              f"(overall: {trial_count}/{total_trials})...", end=" ")
+                    logger.info(
+                        f"  Trial {trial_idx + 1}/{n_trials_per_config} "
+                        f"(overall: {trial_count}/{total_trials})...",
+                        end=" ",
+                    )
 
                     metrics = await self._run_single_trial(overrides)
 
                     # Store result
-                    results.append({
-                        "param_name": param_name,
-                        "param_value": param_value,
-                        "trial": trial_idx,
-                        "final_score": metrics.final_score,
-                        "total_evals": metrics.total_evals,
-                        "evals_to_90pct": metrics.evals_to_90pct,
-                        "evals_to_95pct": metrics.evals_to_95pct,
-                        "evals_to_99pct": metrics.evals_to_99pct,
-                        **{f"config_{k}": v for k, v in overrides.items()},
-                    })
+                    results.append(
+                        {
+                            "param_name": param_name,
+                            "param_value": param_value,
+                            "trial": trial_idx,
+                            "final_score": metrics.final_score,
+                            "total_evals": metrics.total_evals,
+                            "evals_to_90pct": metrics.evals_to_90pct,
+                            "evals_to_95pct": metrics.evals_to_95pct,
+                            "evals_to_99pct": metrics.evals_to_99pct,
+                            **{f"config_{k}": v for k, v in overrides.items()},
+                        }
+                    )
 
-                    logger.info(f"score={metrics.final_score:.3f}, evals={metrics.total_evals}")
+                    logger.info(
+                        f"score={metrics.final_score:.3f}, evals={metrics.total_evals}"
+                    )
 
         # Convert to DataFrame
         df = pd.DataFrame(results)
@@ -135,13 +145,17 @@ class SensitivityAnalysisCommand(BaseCommand):
 
         # Create plots
         self._create_plots(df, param_sweep, output_dir)
-        self._save_results(df, param_sweep, baseline_params, n_trials_per_config, output_dir)
+        self._save_results(
+            df, param_sweep, baseline_params, n_trials_per_config, output_dir
+        )
 
         logger.info(f"\n{'='*60}")
         logger.info("ANALYSIS COMPLETE")
         logger.info(f"{'='*60}\n")
 
-    async def _run_single_trial(self, evaluator_overrides: dict[str, Any]) -> ConvergenceMetrics:
+    async def _run_single_trial(
+        self, evaluator_overrides: dict[str, Any]
+    ) -> ConvergenceMetrics:
         """Run single beam search trial with evaluator parameter overrides."""
         # Create evaluator with overrides
         config_dict = self.config.evaluator.model_dump()
@@ -203,11 +217,17 @@ class SensitivityAnalysisCommand(BaseCommand):
             for param_name in param_sweep.keys():
                 param_df = df[df["param_name"] == param_name]
                 between_group_var = param_df.groupby("param_value")[metric].mean().var()
-                variance_explained = between_group_var / total_var if total_var > 0 else 0
+                variance_explained = (
+                    between_group_var / total_var if total_var > 0 else 0
+                )
 
-                logger.info(f"  {param_name:20s} explains {variance_explained*100:5.1f}% of variance")
+                logger.info(
+                    f"  {param_name:20s} explains {variance_explained*100:5.1f}% of variance"
+                )
 
-    def _create_plots(self, df: pd.DataFrame, param_sweep: dict, output_dir: Path) -> None:
+    def _create_plots(
+        self, df: pd.DataFrame, param_sweep: dict, output_dir: Path
+    ) -> None:
         """Create sensitivity analysis plots."""
         sns.set_style("whitegrid")
         sns.set_palette("husl")
@@ -235,25 +255,34 @@ class SensitivityAnalysisCommand(BaseCommand):
                 means = grouped.mean()
                 stds = grouped.std()
 
-                ax.errorbar(means.index, means.values, yerr=stds.values,
-                           marker='o', linewidth=2, capsize=5, label=param_name)
+                ax.errorbar(
+                    means.index,
+                    means.values,
+                    yerr=stds.values,
+                    marker="o",
+                    linewidth=2,
+                    capsize=5,
+                    label=param_name,
+                )
 
-            ax.set_xlabel('Parameter Value', fontsize=11)
+            ax.set_xlabel("Parameter Value", fontsize=11)
             ax.set_ylabel(label, fontsize=11)
-            ax.set_title(f'Sensitivity: {label}', fontsize=12, fontweight='bold')
+            ax.set_title(f"Sensitivity: {label}", fontsize=12, fontweight="bold")
             ax.legend(fontsize=8)
             ax.grid(True, alpha=0.3)
 
         # Hide unused subplot
-        axes[-1].axis('off')
+        axes[-1].axis("off")
 
         plt.tight_layout()
         plot_path = output_dir / "parameter_sensitivity.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         logger.info(f"\n✓ Saved plot: {plot_path}")
 
         # Plot 2: Box plots for each parameter
-        fig, axes = plt.subplots(len(param_sweep), 3, figsize=(15, 3*len(param_sweep)))
+        fig, axes = plt.subplots(
+            len(param_sweep), 3, figsize=(15, 3 * len(param_sweep))
+        )
 
         metrics_for_boxes = [
             ("final_score", "Final Score"),
@@ -269,23 +298,28 @@ class SensitivityAnalysisCommand(BaseCommand):
 
                 # Create box plot
                 param_values = sorted(param_df["param_value"].unique())
-                data_to_plot = [param_df[param_df["param_value"] == v][metric].values
-                               for v in param_values]
+                data_to_plot = [
+                    param_df[param_df["param_value"] == v][metric].values
+                    for v in param_values
+                ]
 
-                bp = ax.boxplot(data_to_plot, labels=[str(v) for v in param_values],
-                               patch_artist=True)
+                bp = ax.boxplot(
+                    data_to_plot,
+                    labels=[str(v) for v in param_values],
+                    patch_artist=True,
+                )
 
-                for patch in bp['boxes']:
-                    patch.set_facecolor('lightblue')
+                for patch in bp["boxes"]:
+                    patch.set_facecolor("lightblue")
 
-                ax.set_xlabel(f'{param_name} Value', fontsize=10)
+                ax.set_xlabel(f"{param_name} Value", fontsize=10)
                 ax.set_ylabel(label, fontsize=10)
-                ax.set_title(f'{param_name} → {label}', fontsize=11, fontweight='bold')
+                ax.set_title(f"{param_name} → {label}", fontsize=11, fontweight="bold")
                 ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
         plot_path = output_dir / "parameter_boxplots.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         logger.info(f"✓ Saved plot: {plot_path}")
 
         # Plot 3: Variance decomposition
@@ -301,32 +335,46 @@ class SensitivityAnalysisCommand(BaseCommand):
             for param_name in param_sweep.keys():
                 param_df = df[df["param_name"] == param_name]
                 between_group_var = param_df.groupby("param_value")[metric].mean().var()
-                variance_explained[param_name] = between_group_var / total_var if total_var > 0 else 0
+                variance_explained[param_name] = (
+                    between_group_var / total_var if total_var > 0 else 0
+                )
 
             # Bar plot
             params = list(variance_explained.keys())
             variances = [variance_explained[p] * 100 for p in params]
 
-            bars = ax.bar(range(len(params)), variances, color='steelblue', alpha=0.7)
+            bars = ax.bar(range(len(params)), variances, color="steelblue", alpha=0.7)
             ax.set_xticks(range(len(params)))
-            ax.set_xticklabels(params, rotation=45, ha='right')
-            ax.set_ylabel('Variance Explained (%)', fontsize=11)
-            ax.set_title(f'Parameter Influence on {label}', fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3, axis='y')
+            ax.set_xticklabels(params, rotation=45, ha="right")
+            ax.set_ylabel("Variance Explained (%)", fontsize=11)
+            ax.set_title(
+                f"Parameter Influence on {label}", fontsize=12, fontweight="bold"
+            )
+            ax.grid(True, alpha=0.3, axis="y")
 
             # Add value labels on bars
-            for i, (bar, val) in enumerate(zip(bars, variances)):
-                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                       f'{val:.1f}%', ha='center', va='bottom', fontsize=9)
+            for _i, (bar, val) in enumerate(zip(bars, variances, strict=False)):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height(),
+                    f"{val:.1f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                )
 
         plt.tight_layout()
         plot_path = output_dir / "variance_decomposition.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         logger.info(f"✓ Saved plot: {plot_path}")
 
     def _save_results(
-        self, df: pd.DataFrame, param_sweep: dict,
-        baseline_params: dict, n_trials_per_config: int, output_dir: Path
+        self,
+        df: pd.DataFrame,
+        param_sweep: dict,
+        baseline_params: dict,
+        n_trials_per_config: int,
+        output_dir: Path,
     ) -> None:
         """Save results and statistics to files."""
         # Save results to CSV
@@ -338,13 +386,13 @@ class SensitivityAnalysisCommand(BaseCommand):
         stats_path = output_dir / "summary.txt"
         summary_metrics = ["final_score", "total_evals", "evals_to_95pct"]
 
-        with open(stats_path, 'w') as f:
-            f.write(f"PARAMETER SENSITIVITY ANALYSIS SUMMARY\n")
+        with open(stats_path, "w") as f:
+            f.write("PARAMETER SENSITIVITY ANALYSIS SUMMARY\n")
             f.write(f"{'='*60}\n\n")
             f.write(f"Trials per configuration: {n_trials_per_config}\n")
             f.write(f"Total trials: {len(df)}\n\n")
 
-            f.write(f"Baseline configuration:\n")
+            f.write("Baseline configuration:\n")
             for param, value in baseline_params.items():
                 f.write(f"  {param}: {value}\n")
             f.write("\n")
@@ -356,12 +404,16 @@ class SensitivityAnalysisCommand(BaseCommand):
                 total_var = df[metric].var()
                 for param_name in param_sweep.keys():
                     param_df = df[df["param_name"] == param_name]
-                    between_group_var = param_df.groupby("param_value")[metric].mean().var()
-                    variance_explained = between_group_var / total_var if total_var > 0 else 0
+                    between_group_var = (
+                        param_df.groupby("param_value")[metric].mean().var()
+                    )
+                    variance_explained = (
+                        between_group_var / total_var if total_var > 0 else 0
+                    )
                     f.write(f"  {param_name:20s} {variance_explained*100:5.1f}%\n")
 
             # Calibration recommendations
-            f.write(f"\n\nCALIBRATION RECOMMENDATIONS:\n")
+            f.write("\n\nCALIBRATION RECOMMENDATIONS:\n")
             f.write(f"{'='*60}\n\n")
 
             # Identify most influential parameters
@@ -370,26 +422,38 @@ class SensitivityAnalysisCommand(BaseCommand):
                 total_var = df[metric].var()
                 for param_name in param_sweep.keys():
                     param_df = df[df["param_name"] == param_name]
-                    between_group_var = param_df.groupby("param_value")[metric].mean().var()
-                    variance_explained = between_group_var / total_var if total_var > 0 else 0
+                    between_group_var = (
+                        param_df.groupby("param_value")[metric].mean().var()
+                    )
+                    variance_explained = (
+                        between_group_var / total_var if total_var > 0 else 0
+                    )
 
                     if param_name not in influential_params:
                         influential_params[param_name] = 0
                     influential_params[param_name] += variance_explained
 
             # Sort by total influence
-            sorted_params = sorted(influential_params.items(), key=lambda x: x[1], reverse=True)
+            sorted_params = sorted(
+                influential_params.items(), key=lambda x: x[1], reverse=True
+            )
 
             if sorted_params[0][1] < 0.1:  # Less than 10% variance explained
-                f.write("✓ GOOD NEWS: Convergence behavior is ROBUST to mock parameters!\n")
+                f.write(
+                    "✓ GOOD NEWS: Convergence behavior is ROBUST to mock parameters!\n"
+                )
                 f.write("  The mock evaluator appears to be a useful general model.\n")
                 f.write("  Algorithm insights should transfer to real supernetworks.\n")
             else:
                 f.write("⚠ CALIBRATION NEEDED: Convergence is sensitive to:\n")
                 for param, influence in sorted_params[:3]:
                     if influence > 0.1:
-                        f.write(f"  - {param} (explains {influence/len(summary_metrics)*100:.1f}% avg variance)\n")
-                f.write("\nRecommendation: Match these parameters to your real supernet properties.\n")
+                        f.write(
+                            f"  - {param} (explains {influence/len(summary_metrics)*100:.1f}% avg variance)\n"
+                        )
+                f.write(
+                    "\nRecommendation: Match these parameters to your real supernet properties.\n"
+                )
 
         logger.info(f"✓ Saved summary: {stats_path}")
 

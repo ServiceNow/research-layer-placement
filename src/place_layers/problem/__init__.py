@@ -6,6 +6,7 @@ from pydantic import Field
 
 from place_layers.problem.layer_placement import LayerPlacementProblemConfig
 
+
 # Discriminated union of all problems
 ProblemConfig = Annotated[
     LayerPlacementProblemConfig,

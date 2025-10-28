@@ -14,6 +14,7 @@ from place_layers.problem import ProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.search_strategy import SearchStrategyConfig
 
+
 logger = logging.getLogger(__name__)
 
 

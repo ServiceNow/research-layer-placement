@@ -16,6 +16,7 @@ from place_layers.search_strategy.base_search_strategy_config import (
     BaseSearchStrategyConfig,
 )
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,7 +123,9 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("Final configuration:")
         for mixer_idx in range(num_mixers):
             layers = [
-                l for l, m in final_assignments.items() if m == mixer_idx
+                layer
+                for layer, mixer in final_assignments.items()
+                if mixer == mixer_idx
             ]
             logger.info(
                 f"  mixer[{mixer_idx}]: {len(layers)} layers - {sorted(layers)}"
@@ -154,16 +157,12 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             f"PHASE {phase_idx + 1}: Optimizing placement for mixer[{mixer_idx}]"
         )
         logger.info(f"Budget: {budget} layers")
-        logger.info(
-            f"Baseline for non-assigned layers: mixer[{fallback_mixer_idx}]"
-        )
+        logger.info(f"Baseline for non-assigned layers: mixer[{fallback_mixer_idx}]")
         logger.info(f"{'='*60}")
 
         # Get available layers
         unassigned = [i for i in range(num_layers) if i not in fixed_assignments]
-        logger.info(
-            f"Unassigned layers: {len(unassigned)} out of {num_layers}"
-        )
+        logger.info(f"Unassigned layers: {len(unassigned)} out of {num_layers}")
 
         # Pre-score individual layers
         layer_scores = await self._prescore_layers(
@@ -189,9 +188,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         best_candidate = beam[0]
         logger.info(f"\nPhase {phase_idx + 1} complete!")
-        logger.info(
-            f"Best layers for mixer[{mixer_idx}]: {best_candidate['layers']}"
-        )
+        logger.info(f"Best layers for mixer[{mixer_idx}]: {best_candidate['layers']}")
         logger.info(f"Best score: {best_candidate['score']:.4f}")
 
         return PhaseResult(
@@ -231,9 +228,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             logger.debug(f"  Layer {layer_idx}: {score:.4f}")
 
         # Sort by score
-        layer_scores.sort(
-            key=lambda x: x[1], reverse=self.config.higher_is_better
-        )
+        layer_scores.sort(key=lambda x: x[1], reverse=self.config.higher_is_better)
 
         logger.info(f"\nLayer ranking for mixer[{mixer_idx}]:")
         for rank, (layer_idx, score) in enumerate(layer_scores[:10]):
@@ -268,9 +263,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         # Grow beam iteratively
         for growth_step in range(1, budget):
-            logger.info(
-                f"\nGrowth step {growth_step}: Adding layer #{growth_step+1}"
-            )
+            logger.info(f"\nGrowth step {growth_step}: Adding layer #{growth_step+1}")
 
             # Generate candidates
             candidates = self._generate_candidates(beam, unassigned)

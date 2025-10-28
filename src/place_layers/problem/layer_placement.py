@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
-from typing_extensions import Self
 
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.problem.base_problem import BaseProblem
@@ -31,7 +30,9 @@ class LayerPlacementProblem(BaseProblem[LayerPlacement]):
     """Layer placement optimization problem."""
 
     def __init__(
-        self, evaluator: BaseEvaluator[LayerPlacement], config: "LayerPlacementProblemConfig"
+        self,
+        evaluator: BaseEvaluator[LayerPlacement],
+        config: LayerPlacementProblemConfig,
     ) -> None:
         super().__init__(evaluator, config)
         self.config: LayerPlacementProblemConfig  # Type narrowing

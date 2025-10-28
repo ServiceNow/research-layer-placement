@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic
+from typing import TYPE_CHECKING
 
-from place_layers.core.types import ParametersT
 
 if TYPE_CHECKING:
     from place_layers.evaluator.base_evaluator import BaseEvaluator
     from place_layers.problem.base_problem_config import BaseProblemConfig
 
 
-class BaseProblem(Generic[ParametersT]):
+class BaseProblem[ParametersT]:
     """
     Abstract base class for optimization problems.
 
@@ -22,7 +21,7 @@ class BaseProblem(Generic[ParametersT]):
     """
 
     def __init__(
-        self, evaluator: "BaseEvaluator[ParametersT]", config: "BaseProblemConfig"
+        self, evaluator: BaseEvaluator[ParametersT], config: BaseProblemConfig
     ) -> None:
         """
         Initialize the problem with an evaluator and configuration.

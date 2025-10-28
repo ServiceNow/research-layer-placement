@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING
 
-from place_layers.core.types import ParametersT
 
 if TYPE_CHECKING:
     from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
 
 
-class BaseEvaluator(Generic[ParametersT]):
+class BaseEvaluator[ParametersT]:
     """Abstract base class for parameter evaluators."""
 
-    def __init__(self, config: "BaseEvaluatorConfig") -> None:
+    def __init__(self, config: BaseEvaluatorConfig) -> None:
         """
         Initialize the evaluator with configuration.
 

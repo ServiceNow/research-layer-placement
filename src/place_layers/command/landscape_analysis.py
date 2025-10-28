@@ -1,24 +1,28 @@
 """Landscape analysis command."""
 
-import logging
 from itertools import combinations
+import logging
 from math import comb
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
-from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
 from scipy import stats
+import seaborn as sns
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import LayerPlacement, LayerPlacementProblemConfig
+from place_layers.problem.layer_placement import (
+    LayerPlacement,
+    LayerPlacementProblemConfig,
+)
 from place_layers.search_strategy import SearchStrategyConfig
+
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,7 @@ class LandscapeAnalysisCommand(BaseCommand):
         is_exhaustive = False
         if sample_size is None:
             if search_space_size > 100_000:
-                logger.warning(f"Search space too large, using sample_size=10,000")
+                logger.warning("Search space too large, using sample_size=10,000")
                 sample_size = 10_000
             else:
                 logger.info(f"Generating all {search_space_size:,} configurations...")
@@ -94,11 +98,13 @@ class LandscapeAnalysisCommand(BaseCommand):
         best_score = scores.max()
         thresholds = [0.99, 0.95, 0.90]
         best_label = "optimal" if is_exhaustive else "best in sample"
-        logger.info(f"\nNear-optimal configurations:")
+        logger.info("\nNear-optimal configurations:")
         for thresh in thresholds:
             count = (scores >= thresh * best_score).sum()
             pct = 100 * count / len(scores)
-            logger.info(f"  Within {100*(1-thresh):.0f}% of {best_label}: {count:,} ({pct:.2f}%)")
+            logger.info(
+                f"  Within {100*(1-thresh):.0f}% of {best_label}: {count:,} ({pct:.2f}%)"
+            )
 
         # Run beam search for comparison
         logger.info(f"\n{'='*60}")
@@ -114,7 +120,9 @@ class LandscapeAnalysisCommand(BaseCommand):
 
         logger.info(f"Beam search found: {beam_search_score:.4f}")
         logger.info(f"{comparison_label}: {best_score:.4f}")
-        logger.info(f"Gap (BS - {comparison_label[:4]}): {gap:+.4f} ({abs(gap):.4f} {gap_interpretation})")
+        logger.info(
+            f"Gap (BS - {comparison_label[:4]}): {gap:+.4f} ({abs(gap):.4f} {gap_interpretation})"
+        )
 
         # Percentile: clamp to 100% if beam search exceeds sample
         if beam_search_score > best_score:
@@ -125,10 +133,21 @@ class LandscapeAnalysisCommand(BaseCommand):
         logger.info(f"Percentile:        {percentile_str}")
 
         # Create plots
-        self._create_plots(scores, best_score, beam_search_score, is_exhaustive, output_dir)
+        self._create_plots(
+            scores, best_score, beam_search_score, is_exhaustive, output_dir
+        )
         self._save_statistics(
-            scores, best_score, beam_search_score, num_layers, num_mixers,
-            budgets, search_space_size, len(configs), thresholds, is_exhaustive, output_dir
+            scores,
+            best_score,
+            beam_search_score,
+            num_layers,
+            num_mixers,
+            budgets,
+            search_space_size,
+            len(configs),
+            thresholds,
+            is_exhaustive,
+            output_dir,
         )
 
         logger.info(f"\n{'='*60}")
@@ -169,7 +188,9 @@ class LandscapeAnalysisCommand(BaseCommand):
                 new_assignment = current_assignment.copy()
                 for layer in selected_layers:
                     new_assignment[layer] = mixer_idx
-                new_available = [l for l in available_layers if l not in selected_layers]
+                new_available = [
+                    layer for layer in available_layers if layer not in selected_layers
+                ]
                 enumerate_recursive(new_assignment, new_available, phase_idx + 1)
 
         initial_assignment = [-1] * num_layers
@@ -179,8 +200,12 @@ class LandscapeAnalysisCommand(BaseCommand):
         return configs
 
     def _sample_configs(
-        self, num_layers: int, num_mixers: int, budgets: list[int],
-        sample_size: int, seed: int = 42
+        self,
+        num_layers: int,
+        num_mixers: int,
+        budgets: list[int],
+        sample_size: int,
+        seed: int = 42,
     ) -> list[LayerPlacement]:
         """Sample random valid configurations."""
         import random
@@ -206,8 +231,12 @@ class LandscapeAnalysisCommand(BaseCommand):
         return configs
 
     def _create_plots(
-        self, scores: np.ndarray, best_score: float,
-        beam_search_score: float, is_exhaustive: bool, output_dir: Path
+        self,
+        scores: np.ndarray,
+        best_score: float,
+        beam_search_score: float,
+        is_exhaustive: bool,
+        output_dir: Path,
     ) -> None:
         """Create landscape analysis plots."""
         sns.set_style("whitegrid")
@@ -221,27 +250,37 @@ class LandscapeAnalysisCommand(BaseCommand):
 
         # Histogram + KDE
         ax = axes[0, 0]
-        ax.hist(scores, bins=50, density=True, alpha=0.6, color='skyblue', edgecolor='black')
+        ax.hist(
+            scores, bins=50, density=True, alpha=0.6, color="skyblue", edgecolor="black"
+        )
         kde = stats.gaussian_kde(scores)
         x_range = np.linspace(scores.min(), scores.max(), 200)
-        ax.plot(x_range, kde(x_range), 'r-', linewidth=2, label='KDE')
-        ax.axvline(beam_search_score, color='green', linestyle='--', linewidth=2, label='Beam Search')
-        ax.axvline(best_score, color='orange', linestyle='--', linewidth=2, label=best_label)
-        ax.set_xlabel('Score', fontsize=12)
-        ax.set_ylabel('Density', fontsize=12)
-        ax.set_title('Score Distribution', fontsize=14, fontweight='bold')
+        ax.plot(x_range, kde(x_range), "r-", linewidth=2, label="KDE")
+        ax.axvline(
+            beam_search_score,
+            color="green",
+            linestyle="--",
+            linewidth=2,
+            label="Beam Search",
+        )
+        ax.axvline(
+            best_score, color="orange", linestyle="--", linewidth=2, label=best_label
+        )
+        ax.set_xlabel("Score", fontsize=12)
+        ax.set_ylabel("Density", fontsize=12)
+        ax.set_title("Score Distribution", fontsize=14, fontweight="bold")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         # Box plot
         ax = axes[0, 1]
-        bp = ax.boxplot([scores], orientation='vertical', patch_artist=True, widths=0.5)
-        bp['boxes'][0].set_facecolor('lightblue')
-        ax.plot([1], [beam_search_score], 'go', markersize=10, label='Beam Search')
-        ax.plot([1], [best_score], 'o', color='orange', markersize=10, label=best_label)
-        ax.set_ylabel('Score', fontsize=12)
-        ax.set_title('Box Plot', fontsize=14, fontweight='bold')
-        ax.set_xticklabels(['All Configs'])
+        bp = ax.boxplot([scores], orientation="vertical", patch_artist=True, widths=0.5)
+        bp["boxes"][0].set_facecolor("lightblue")
+        ax.plot([1], [beam_search_score], "go", markersize=10, label="Beam Search")
+        ax.plot([1], [best_score], "o", color="orange", markersize=10, label=best_label)
+        ax.set_ylabel("Score", fontsize=12)
+        ax.set_title("Box Plot", fontsize=14, fontweight="bold")
+        ax.set_xticklabels(["All Configs"])
         ax.legend()
         ax.grid(True, alpha=0.3)
 
@@ -251,32 +290,39 @@ class LandscapeAnalysisCommand(BaseCommand):
         ecdf = np.arange(1, len(sorted_scores) + 1) / len(sorted_scores)
         ax.plot(sorted_scores, ecdf, linewidth=2)
         percentile = (scores <= beam_search_score).sum() / len(scores)
-        ax.axvline(beam_search_score, color='green', linestyle='--', linewidth=2)
-        ax.axhline(percentile, color='green', linestyle=':', alpha=0.5)
-        ax.plot([beam_search_score], [percentile], 'go', markersize=10,
-                label=f'Beam Search ({percentile*100:.1f}%)')
-        ax.axvline(best_score, color='orange', linestyle='--', linewidth=2, label=best_label)
-        ax.set_xlabel('Score', fontsize=12)
-        ax.set_ylabel('Cumulative Probability', fontsize=12)
-        ax.set_title('Empirical CDF', fontsize=14, fontweight='bold')
+        ax.axvline(beam_search_score, color="green", linestyle="--", linewidth=2)
+        ax.axhline(percentile, color="green", linestyle=":", alpha=0.5)
+        ax.plot(
+            [beam_search_score],
+            [percentile],
+            "go",
+            markersize=10,
+            label=f"Beam Search ({percentile*100:.1f}%)",
+        )
+        ax.axvline(
+            best_score, color="orange", linestyle="--", linewidth=2, label=best_label
+        )
+        ax.set_xlabel("Score", fontsize=12)
+        ax.set_ylabel("Cumulative Probability", fontsize=12)
+        ax.set_title("Empirical CDF", fontsize=14, fontweight="bold")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         # Q-Q plot
         ax = axes[1, 1]
         stats.probplot(scores, dist="norm", plot=ax)
-        ax.set_xlabel('Theoretical Quantiles', fontsize=12)
-        ax.set_ylabel('Sample Quantiles', fontsize=12)
-        ax.set_title('Q-Q Plot (vs Normal)', fontsize=14, fontweight='bold')
+        ax.set_xlabel("Theoretical Quantiles", fontsize=12)
+        ax.set_ylabel("Sample Quantiles", fontsize=12)
+        ax.set_title("Q-Q Plot (vs Normal)", fontsize=14, fontweight="bold")
         ax.grid(True, alpha=0.3)
         # probplot creates a line plot - get the line and add legend
         lines = ax.get_lines()
         if len(lines) >= 2:
-            ax.legend([lines[0], lines[1]], ['Sample Data', 'Normal Fit'], fontsize=10)
+            ax.legend([lines[0], lines[1]], ["Sample Data", "Normal Fit"], fontsize=10)
 
         plt.tight_layout()
         plot_path = output_dir / "landscape_distribution.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         logger.info(f"\n✓ Saved plot: {plot_path}")
 
         # Plot 2: Percentile analysis
@@ -287,29 +333,47 @@ class LandscapeAnalysisCommand(BaseCommand):
         ax.fill_between(percentiles, percentile_values, alpha=0.3)
 
         beam_percentile = (scores <= beam_search_score).sum() / len(scores) * 100
-        ax.axhline(beam_search_score, color='green', linestyle='--', linewidth=2)
-        ax.axvline(beam_percentile, color='green', linestyle='--', linewidth=2)
-        ax.plot([beam_percentile], [beam_search_score], 'go', markersize=12,
-                label=f'Beam Search ({beam_percentile:.1f}th percentile)')
+        ax.axhline(beam_search_score, color="green", linestyle="--", linewidth=2)
+        ax.axvline(beam_percentile, color="green", linestyle="--", linewidth=2)
+        ax.plot(
+            [beam_percentile],
+            [beam_search_score],
+            "go",
+            markersize=12,
+            label=f"Beam Search ({beam_percentile:.1f}th percentile)",
+        )
 
-        ax.axhline(best_score, color='orange', linestyle='--', linewidth=2,
-                   label=f'{best_label} (100th)')
-        ax.set_xlabel('Percentile', fontsize=12)
-        ax.set_ylabel('Score', fontsize=12)
-        ax.set_title('Score by Percentile', fontsize=14, fontweight='bold')
+        ax.axhline(
+            best_score,
+            color="orange",
+            linestyle="--",
+            linewidth=2,
+            label=f"{best_label} (100th)",
+        )
+        ax.set_xlabel("Percentile", fontsize=12)
+        ax.set_ylabel("Score", fontsize=12)
+        ax.set_title("Score by Percentile", fontsize=14, fontweight="bold")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
         plot_path = output_dir / "percentile_analysis.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         logger.info(f"✓ Saved plot: {plot_path}")
 
     def _save_statistics(
-        self, scores: np.ndarray, best_score: float, beam_search_score: float,
-        num_layers: int, num_mixers: int, budgets: list[int],
-        search_space_size: int, evaluated: int, thresholds: list[float],
-        is_exhaustive: bool, output_dir: Path
+        self,
+        scores: np.ndarray,
+        best_score: float,
+        beam_search_score: float,
+        num_layers: int,
+        num_mixers: int,
+        budgets: list[int],
+        search_space_size: int,
+        evaluated: int,
+        thresholds: list[float],
+        is_exhaustive: bool,
+        output_dir: Path,
     ) -> None:
         """Save statistics to file."""
         comparison_label = "Global optimum" if is_exhaustive else "Best in sample"
@@ -324,17 +388,17 @@ class LandscapeAnalysisCommand(BaseCommand):
             percentile_str = f"{beam_percentile:.2f}%"
 
         stats_path = output_dir / "statistics.txt"
-        with open(stats_path, 'w') as f:
-            f.write(f"LANDSCAPE ANALYSIS STATISTICS\n")
+        with open(stats_path, "w") as f:
+            f.write("LANDSCAPE ANALYSIS STATISTICS\n")
             f.write(f"{'='*60}\n\n")
-            f.write(f"Configuration:\n")
+            f.write("Configuration:\n")
             f.write(f"  Layers: {num_layers}\n")
             f.write(f"  Mixers: {num_mixers}\n")
             f.write(f"  Budgets: {budgets}\n")
             f.write(f"  Total configs: {search_space_size:,}\n")
             f.write(f"  Evaluated: {evaluated:,}\n")
             f.write(f"  Exhaustive: {'Yes' if is_exhaustive else 'No (sampled)'}\n\n")
-            f.write(f"Distribution:\n")
+            f.write("Distribution:\n")
             f.write(f"  Min:     {scores.min():.6f}\n")
             f.write(f"  Q1:      {np.percentile(scores, 25):.6f}\n")
             f.write(f"  Median:  {np.median(scores):.6f}\n")
@@ -344,7 +408,7 @@ class LandscapeAnalysisCommand(BaseCommand):
             f.write(f"  Std:     {scores.std():.6f}\n")
             f.write(f"  Range:   {scores.max() - scores.min():.6f}\n\n")
 
-            f.write(f"Beam Search Comparison:\n")
+            f.write("Beam Search Comparison:\n")
             f.write(f"  Beam search score: {beam_search_score:.6f}\n")
             f.write(f"  {comparison_label}:  {best_score:.6f}\n")
             f.write(f"  Gap (BS - {comparison_label[:4]}): {gap:+.6f}\n")

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic
+from typing import TYPE_CHECKING
 
-from place_layers.core.types import ParametersT
 
 if TYPE_CHECKING:
     from place_layers.core.types import SearchResult
@@ -14,10 +13,10 @@ if TYPE_CHECKING:
     )
 
 
-class BaseSearchStrategy(Generic[ParametersT]):
+class BaseSearchStrategy[ParametersT]:
     """Abstract base class for search strategies."""
 
-    def __init__(self, config: "BaseSearchStrategyConfig") -> None:
+    def __init__(self, config: BaseSearchStrategyConfig) -> None:
         """
         Initialize the search strategy with configuration.
 
@@ -28,8 +27,8 @@ class BaseSearchStrategy(Generic[ParametersT]):
 
     async def search(
         self,
-        problem: "BaseProblem[ParametersT]",
-    ) -> "SearchResult[ParametersT]":
+        problem: BaseProblem[ParametersT],
+    ) -> SearchResult[ParametersT]:
         """
         Run the search algorithm to find optimal parameters.
 
