@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Protocol
 
 from pydantic import BaseModel
-
-
-# Generic type variable for parameters
-ParametersT = TypeVar("ParametersT")
 
 
 class SearchResult[ParametersT](BaseModel):
@@ -19,7 +15,7 @@ class SearchResult[ParametersT](BaseModel):
     total_evaluations: int
 
 
-class Evaluator(Protocol[ParametersT]):
+class Evaluator[ParametersT](Protocol):
     """Protocol for evaluating parameters."""
 
     async def evaluate(self, parameters: ParametersT) -> float:
