@@ -1,0 +1,6 @@
+# @package search_strategy
+strategy_type: hierarchical_beam
+beam_width: 12
+initial_beam_width: 12
+early_stop_threshold: 0.001
+higher_is_better: true

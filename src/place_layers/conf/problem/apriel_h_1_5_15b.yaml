@@ -1,0 +1,6 @@
+# @package problem
+# Budget constraints for Apriel-H 1.5 15B
+# FA (4), SWA (9), JetBlock (remaining 35)
+# Scaled proportionally from Jet Nemotron 4B
+problem_type: layer_placement
+budgets: [4, 9]

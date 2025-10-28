@@ -1,0 +1,3 @@
+# @package result_handler
+handler_type: json
+indent: 2

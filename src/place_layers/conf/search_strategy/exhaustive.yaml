@@ -1,0 +1,5 @@
+# @package search_strategy
+strategy_type: exhaustive
+max_configs: 100000
+higher_is_better: true
+log_statistics: true

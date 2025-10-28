@@ -1,0 +1,6 @@
+# @package _global_
+
+command: sensitivity_analysis
+
+# Number of trials per parameter configuration
+n_trials_per_config: 5

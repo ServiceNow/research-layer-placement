@@ -1,0 +1,5 @@
+# @package problem
+# Budget constraints for Jet Nemotron 2B
+# FA (2), SWA (2), JetBlock (remaining 24)
+problem_type: layer_placement
+budgets: [2, 2]

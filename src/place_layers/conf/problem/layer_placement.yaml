@@ -1,0 +1,3 @@
+# @package problem
+problem_type: layer_placement
+budgets: [4, 8]  # num_layers and num_mixers are determined by the evaluator
