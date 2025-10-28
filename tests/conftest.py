@@ -1,12 +1,5 @@
-"""Pytest configuration and fixtures for the benchmarking test suite."""
+"""Pytest configuration and fixtures.
 
-# TODO: Implement test fixtures when tests are added
-# Currently no tests exist in this directory
-
-import pytest
-
-
-@pytest.fixture
-def placeholder():
-    """Placeholder fixture."""
-    return None
+Currently no tests exist in this directory.
+Test fixtures will be added when tests are implemented.
+"""
