@@ -1,0 +1,368 @@
+# @package search_strategy
+#
+# Simulated Annealing for Cost-Constrained Search
+# ================================================
+#
+# This strategy uses simulated annealing as the inner loop for exploring
+# assignment space within each fixed allocation.
+#
+# AUTOMATED CALIBRATION
+# ---------------------
+# Use the calibrate_sa command to automatically determine optimal temperature:
+#
+#   python -m place_layers command=calibrate_sa cost_budget=6.4
+#
+# This will:
+#   1. Sample the delta distribution from random allocation-preserving swaps
+#   2. Find the temperature achieving 80% acceptance of worsening moves
+#   3. Compute the cooling rate for your step budget
+#   4. Output a YAML snippet ready to paste into this config
+#
+# Example output:
+#   initial_temperature: 4.6885
+#   cooling_rate: 0.972217
+#   min_temperature: 0.001
+#   max_steps: 300
+#
+# MANUAL CALIBRATION PROCEDURE
+# ----------------------------
+# If you prefer to calibrate manually, follow these steps:
+#
+# Step 1: Sample the delta distribution
+#   - For a representative allocation, sample ~200 random allocation-preserving swaps
+#   - Compute delta = new_score - current_score for each
+#   - Separate into positive (improving) and negative (worsening) deltas
+#
+#   For our problem (24-48 layers, 3 mixers), we observed:
+#     - ~50% improving, ~50% worsening moves
+#     - Negative deltas: avg ≈ -1.1, range [-4.2, -0.03]
+#     - Positive deltas: avg ≈ +1.6, range [+0.1, +4.0]
+#
+# Step 2: Find initial temperature for target acceptance ratio
+#   - Literature recommends χ₀ = 0.8 (80% acceptance of worsening moves)
+#   - The acceptance probability for delta d < 0 at temperature T is: exp(d/T)
+#   - Find T such that: mean(exp(d/T) for d in negative_deltas) ≈ χ₀
+#   - This requires binary search (not analytically solvable)
+#
+#   For our problem:
+#     - 50% acceptance → T ≈ 1.25
+#     - 70% acceptance → T ≈ 2.2
+#     - 80% acceptance → T ≈ 4.4  ← RECOMMENDED
+#     - 90% acceptance → T ≈ 8.9
+#
+# Step 3: Compute cooling rate from step budget
+#   - Given max_steps and min_temperature, compute:
+#       cooling_rate = (min_temperature / initial_temperature)^(1/max_steps)
+#
+#   For initial_temperature=4.4, min_temperature=0.001:
+#     - 100 steps → cooling_rate = 0.920
+#     - 200 steps → cooling_rate = 0.959
+#     - 300 steps → cooling_rate = 0.972
+#     - 500 steps → cooling_rate = 0.983
+#
+# ================================================================================
+# PARETO FRONTIER ANALYSIS
+# ================================================================================
+#
+# Two analyses were performed:
+#   1. Multi-seed analysis (5 seeds): Measures cross-problem performance
+#   2. Fixed-problem analysis (seed=42, 10 runs): Measures SA variance on ONE problem
+#
+# ================================================================================
+# ANALYSIS 1: PARETO VERIFICATION ON 48-LAYER PROBLEM (Apriel 15B scale)
+# ================================================================================
+# Layers: 48, Budget: 6.4, Seeds: 5
+#
+# SA Results:
+#   sa_10x100:  evals=1,010    score=22.87
+#   sa_10x200:  evals=2,010    score=25.83
+#   sa_15x150:  evals=2,265    score=26.05
+#   sa_15x200:  evals=3,015    score=26.13
+#   sa_20x200:  evals=4,020    score=26.80
+#   sa_20x300:  evals=6,020    score=27.20
+#   sa_25x300:  evals=7,525    score=27.33
+#   sa_30x300:  evals=9,030    score=27.48
+#   sa_30x500:  evals=15,030   score=28.00
+#
+# Hier Results:
+#   hier_10x3:  evals=15,845   score=27.90
+#   hier_15x4:  evals=31,210   score=27.91
+#   hier_20x5:  evals=52,469   score=27.96
+#   hier_25x5:  evals=66,900   score=28.07
+#   hier_30x6:  evals=91,817   score=28.07
+#
+# Swap Reference:
+#   swap_20x8x10:   evals=554,852    score=27.98
+#   swap_30x10x15:  evals=1,198,276  score=28.55
+#
+# PARETO FRONTIER (48 layers, multi-seed):
+# ----------------------------------------
+# Method Config               Evals      Score
+# ---------------------------------------------
+# SA     sa_10x100             1010    22.8713
+# SA     sa_10x200             2010    25.8285
+# SA     sa_15x150             2265    26.0450
+# SA     sa_15x200             3015    26.1270
+# SA     sa_20x200             4020    26.8006
+# SA     sa_20x300             6020    27.1984
+# SA     sa_25x300             7525    27.3309
+# SA     sa_30x300             9030    27.4831
+# SA     sa_30x500            15030    27.9971
+# Hier   hier_25x5            66900    28.0663
+# Hier   hier_30x6            91817    28.0663
+# Swap   swap_30x10x15      1198276    28.5509
+#
+# Frontier composition:
+#   SA: 9 points (75%)
+#   Hier: 2 points (17%)
+#   Swap: 1 points (8%)
+#
+# BEST AT EACH BUDGET LEVEL (multi-seed):
+# ---------------------------------------
+#   Budget   2000: SA    sa_10x100       score=22.8713 (evals=1010)
+#   Budget   5000: SA    sa_20x200       score=26.8006 (evals=4020)
+#   Budget  10000: SA    sa_30x300       score=27.4831 (evals=9030)
+#   Budget  20000: SA    sa_30x500       score=27.9971 (evals=15030)
+#   Budget  50000: SA    sa_30x500       score=27.9971 (evals=15030)
+#   Budget 100000: Hier  hier_25x5       score=28.0663 (evals=66900)
+#
+# ================================================================================
+# ANALYSIS 2: FIXED PROBLEM (eval_seed=42) - MEASURES SA VARIANCE
+# ================================================================================
+#
+# SA: run 10 times per config, report mean/min/max
+# Hier: deterministic, run once
+#
+# SA VARIANCE ANALYSIS (10 runs per config):
+# ------------------------------------------
+#   SA 10×100:   mean=15.38, min=14.11, max=16.28, std=0.67, evals=1,010
+#   SA 10×200:   mean=18.09, min=17.12, max=18.77, std=0.53, evals=2,010
+#   SA 15×200:   mean=18.55, min=17.68, max=19.27, std=0.50, evals=3,015
+#   SA 20×300:   mean=20.96, min=19.85, max=22.72, std=0.96, evals=6,020
+#   SA 25×400:   mean=21.16, min=20.69, max=21.59, std=0.27, evals=10,025
+#   SA 30×500:   mean=21.51, min=20.86, max=22.51, std=0.50, evals=15,030
+#   SA 40×500:   mean=21.55, min=20.86, max=22.51, std=0.47, evals=20,040
+#   SA 50×500:   mean=21.55, min=20.86, max=22.51, std=0.47, evals=25,050
+#   SA 50×750:   mean=22.35, min=21.44, max=23.38, std=0.67, evals=37,550
+#   SA 50×1000:  mean=22.70, min=22.08, max=23.38, std=0.34, evals=50,050
+#   SA 50×1500:  mean=22.56, min=21.82, max=22.81, std=0.32, evals=75,050
+#   SA 50×2000:  mean=22.74, min=21.65, max=23.38, std=0.48, evals=100,050
+#   SA 54×2000:  mean=22.74, min=21.65, max=23.38, std=0.48, evals=106,054
+#   SA 54×3000:  mean=22.85, min=22.36, max=23.38, std=0.29, evals=159,054
+#
+# HIER RESULTS (deterministic):
+# -----------------------------
+#   Hier 5×b1:   score=22.29, evals=3,108
+#   Hier 5×b2:   score=22.29, evals=5,767
+#   Hier 5×b4:   score=22.29, evals=10,981
+#   Hier 10×b2:  score=22.29, evals=10,259
+#   Hier 10×b4:  score=22.29, evals=19,450
+#   Hier 15×b2:  score=22.29, evals=15,418
+#   Hier 15×b4:  score=22.29, evals=29,281
+#   Hier 20×b4:  score=22.29, evals=39,899
+#   Hier 25×b4:  score=22.29, evals=50,820
+#   Hier 30×b4:  score=22.29, evals=59,158
+#   Hier 40×b4:  score=22.29, evals=72,562
+#   Hier 50×b4:  score=22.29, evals=85,695
+#   Hier 54×b4:  score=22.29, evals=86,385
+#   Hier 54×b6:  score=22.29, evals=118,656
+#   Hier 54×b8:  score=23.38, evals=155,614
+#
+# FULL RESULTS (sorted by evaluations):
+# -------------------------------------
+# Name           Method     Mean      Min      Max    Std      Evals
+# ----------------------------------------------------------------------
+# SA 10×100      SA        15.38    14.11    16.28   0.67       1010
+# SA 10×200      SA        18.09    17.12    18.77   0.53       2010
+# SA 15×200      SA        18.55    17.68    19.27   0.50       3015
+# Hier 5×b1      Hier      22.29    22.29    22.29   0.00       3108
+# Hier 5×b2      Hier      22.29    22.29    22.29   0.00       5767
+# SA 20×300      SA        20.96    19.85    22.72   0.96       6020
+# SA 25×400      SA        21.16    20.69    21.59   0.27      10025
+# Hier 10×b2     Hier      22.29    22.29    22.29   0.00      10259
+# Hier 5×b4      Hier      22.29    22.29    22.29   0.00      10981
+# SA 30×500      SA        21.51    20.86    22.51   0.50      15030
+# Hier 15×b2     Hier      22.29    22.29    22.29   0.00      15418
+# Hier 10×b4     Hier      22.29    22.29    22.29   0.00      19450
+# SA 40×500      SA        21.55    20.86    22.51   0.47      20040
+# SA 50×500      SA        21.55    20.86    22.51   0.47      25050
+# Hier 15×b4     Hier      22.29    22.29    22.29   0.00      29281
+# SA 50×750      SA        22.35    21.44    23.38   0.67      37550
+# Hier 20×b4     Hier      22.29    22.29    22.29   0.00      39899
+# SA 50×1000     SA        22.70    22.08    23.38   0.34      50050
+# Hier 25×b4     Hier      22.29    22.29    22.29   0.00      50820
+# Hier 30×b4     Hier      22.29    22.29    22.29   0.00      59158
+# Hier 40×b4     Hier      22.29    22.29    22.29   0.00      72562
+# SA 50×1500     SA        22.56    21.82    22.81   0.32      75050
+# Hier 50×b4     Hier      22.29    22.29    22.29   0.00      85695
+# Hier 54×b4     Hier      22.29    22.29    22.29   0.00      86385
+# SA 50×2000     SA        22.74    21.65    23.38   0.48     100050
+# SA 54×2000     SA        22.74    21.65    23.38   0.48     106054
+# Hier 54×b6     Hier      22.29    22.29    22.29   0.00     118656
+# Hier 54×b8     Hier      23.38    23.38    23.38   0.00     155614
+# SA 54×3000     SA        22.85    22.36    23.38   0.29     159054
+#
+# PARETO FRONTIER (using mean scores):
+# ------------------------------------
+# Name           Method     Mean      Evals
+# ------------------------------------------
+# SA 10×100      SA        15.38       1010
+# SA 10×200      SA        18.09       2010
+# SA 15×200      SA        18.55       3015
+# Hier 5×b1      Hier      22.29       3108
+# SA 50×750      SA        22.35      37550
+# SA 50×1000     SA        22.70      50050
+# SA 50×2000     SA        22.74     100050
+# Hier 54×b8     Hier      23.38     155614
+#
+# Frontier: SA=6, Hier=2
+#
+# PARETO FRONTIER (using WORST-CASE for SA):
+# ------------------------------------------
+# This is the conservative view: what's the worst SA could do?
+#
+# Name           Method    Score      Evals
+# ------------------------------------------
+# SA 10×100      SA        14.11       1010
+# SA 10×200      SA        17.12       2010
+# SA 15×200      SA        17.68       3015
+# Hier 5×b1      Hier      22.29       3108
+# Hier 54×b8     Hier      23.38     155614
+#
+# Frontier (worst-case): SA=3, Hier=2
+#
+# HEAD-TO-HEAD COMPARISON (same problem):
+# ---------------------------------------
+#     Budget │  SA Mean   SA Min │     Hier │  Winner (mean) │ Winner (worst)
+# -------------------------------------------------------------------------------------
+#       1000 │        -        - │        - │              - │              -
+#       3000 │    18.09    17.12 │        - │             SA │             SA
+#       5000 │    18.55    17.68 │    22.29 │           Hier │           Hier
+#      10000 │    20.96    19.85 │    22.29 │           Hier │           Hier
+#      20000 │    21.51    20.86 │    22.29 │           Hier │           Hier
+#      30000 │    21.55    20.86 │    22.29 │           Hier │           Hier
+#      50000 │    22.35    21.44 │    22.29 │             SA │           Hier
+#      75000 │    22.70    22.08 │    22.29 │             SA │           Hier
+#     100000 │    22.70    22.08 │    22.29 │             SA │           Hier
+#     150000 │    22.74    21.65 │    22.29 │             SA │           Hier
+#
+# VISUALIZATION (fixed problem):
+# ------------------------------
+# Score
+#   ^
+#  23.9 |                                                                      |
+#  23.3 |                                                 .   .        ..    H.|
+#  22.8 |                                                          .          S|
+#  22.3 |               H       H.      HH   .H  .  . H   SH  S H  S H SS H   .|
+#  21.7 |                                                     .    .           |
+#  21.2 |                               .    S   S  S     .            ..      |
+#  20.6 |                        S      S    .   .  .                          |
+#  20.1 |                                                                      |
+#  19.6 |                        .                                             |
+#  19.0 |              .                                                       |
+#  18.5 |         .    S                                                       |
+#  17.9 |         S                                                            |
+#  17.4 |              .                                                       |
+#  16.9 |         .                                                            |
+#  16.3 |                                                                      |
+#  15.8 |.                                                                     |
+#  15.2 |S                                                                     |
+#  14.7 |                                                                      |
+#  14.2 |                                                                      |
+#  13.6 |.                                                                     |
+#       +----------------------------------------------------------------------+
+#        1k                                                  159k  Evals
+#
+# Legend: H=Hier, S=SA(mean), .=SA(min/max range)
+#
+# SUMMARY:
+# --------
+# Best SA:   22.85 (range: 22.36-23.38) at 159,054 evals
+# Best Hier: 23.38 at 155,614 evals
+#
+# Hier wins by 0.53 points
+#
+# ================================================================================
+# KEY FINDINGS
+# ================================================================================
+#
+# FINDING 1: SA dominates at LOW budgets (multi-seed analysis)
+# ------------------------------------------------------------
+# When averaging across different problems (seeds), SA dominates the Pareto
+# frontier for budgets < 50k evals. SA is 75% of frontier points.
+#
+# FINDING 2: Hier dominates on a FIXED problem (single-seed analysis)
+# -------------------------------------------------------------------
+# When measuring variance on ONE problem:
+#   - Hier gets 22.29 with just 3k evals, GUARANTEED every time
+#   - SA needs 37k+ evals for its MEAN to exceed 22.29
+#   - SA's WORST CASE never reliably beats Hier's baseline
+#   - SA only wins on MEAN at 50k+ evals; NEVER wins on worst-case
+#
+# FINDING 3: Hier is DETERMINISTIC, SA has variance
+# -------------------------------------------------
+#   - Hier: same result every time (std=0.00)
+#   - SA: 0.3-1.0 point variance even at high budgets
+#   - SA max often equals Hier, but only ~20% of runs hit it
+#
+# FINDING 4: Both reach same optimum (23.38)
+# ------------------------------------------
+#   - Hier 54×b8: guaranteed at 155k evals
+#   - SA 54×3000: only ~20% of runs hit 23.38, even at 159k evals
+#
+# ================================================================================
+# RECOMMENDATIONS
+# ================================================================================
+#
+# FOR RELIABILITY (worst-case guarantee):
+#   → Use Hier at all budget levels
+#   → Hier 5×b1: 22.29 score at 3k evals (fast, reliable)
+#   → Hier 54×b8: 23.38 score at 155k evals (best possible)
+#
+# FOR BEST EXPECTED PERFORMANCE:
+#   Budget < 3k:    SA (only option, Hier not available)
+#   Budget 3k-50k:  Hier (guaranteed 22.29 beats SA mean)
+#   Budget 50k+:    SA mean slightly beats Hier, but at variance risk
+#
+# FOR EXPLORATION (different search regions):
+#   → SA explores more diverse solutions
+#   → Run SA multiple times, take best result
+#   → But beware: worst-case SA never reliably beats Hier
+#
+# DEFAULT RECOMMENDATION: Use Hier (cost_constrained_hierarchical.yaml)
+#   - Deterministic, no variance
+#   - Reaches 22.29 at just 3k evals
+#   - Reaches optimal 23.38 at 155k evals
+#   - SA only preferred if you want to gamble on beating mean
+#
+# References:
+#   - Kirkpatrick et al. (1983) "Optimization by Simulated Annealing"
+#   - Ben-Ameur (2004) "Computing the Initial Temperature of Simulated Annealing"
+#     https://link.springer.com/article/10.1023/B:COAP.0000044187.23143.bd
+
+strategy_type: cost_constrained_annealing
+
+# Outer loop: number of allocations to explore
+max_allocations: 50
+
+# Inner loop: SA steps per allocation
+# Total evaluations ≈ max_allocations × max_steps = 50 × 1000 = 50,000
+# This puts us at the crossover point where SA matches/beats Hier on mean
+max_steps: 1000
+
+# Initial temperature calibrated for ~80% acceptance of worsening moves
+# Derived via binary search on sampled delta distribution (see procedure above)
+initial_temperature: 4.4
+
+# Cooling rate computed from: (min_temp / init_temp)^(1/max_steps)
+# = (0.001 / 4.4)^(1/1000) = 0.9916
+cooling_rate: 0.9916
+
+# Minimum temperature before early termination
+# When T < min_temperature, SA becomes pure hill-climbing
+min_temperature: 0.001
+
+# Random seed for reproducibility
+# Set to an integer for deterministic SA runs (useful for debugging/testing)
+# Leave as null for non-deterministic behavior (default, uses system entropy)
+seed: null

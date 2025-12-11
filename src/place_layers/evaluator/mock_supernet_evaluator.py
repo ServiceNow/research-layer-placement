@@ -7,9 +7,9 @@ from typing import ClassVar, Literal
 
 from pydantic import Field
 
+from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
-from place_layers.problem.layer_placement import LayerPlacement
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
@@ -137,32 +137,27 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
     )
 
     seed: int = Field(
-        default=42,
         description="Random seed for generating the landscape structure. "
         "Represents the supernet's learned preferences from training.",
     )
 
     unary_bonus: float = Field(
-        default=1.0,
         description="Score bonus when mixer matches layer's intrinsic need",
         gt=0.0,
     )
 
     unary_penalty: float = Field(
-        default=0.5,
         description="Score penalty when mixer doesn't match layer's need",
         ge=0.0,
     )
 
     pairwise_scale: float = Field(
-        default=0.3,
         description="Scale factor for pairwise interaction terms. "
         "Controls how much adjacent layers affect each other.",
         ge=0.0,
     )
 
     noise_sigma: float = Field(
-        default=0.2,
         description="Standard deviation of configuration-specific Gaussian noise",
         ge=0.0,
     )

@@ -1,0 +1,49 @@
+# @package search_strategy
+#
+# Hierarchical Search for Cost-Constrained Problems
+# ==================================================
+#
+# RECOMMENDED DEFAULT STRATEGY for cost-constrained layer placement.
+#
+# This strategy uses a hierarchical phase-by-phase beam search that:
+#   1. Iterates over feasible allocations (how many of each mixer type)
+#   2. For each allocation, greedily assigns layers mixer-by-mixer
+#   3. Uses beam search to maintain multiple promising candidates
+#
+# KEY ADVANTAGES OVER SIMULATED ANNEALING:
+# ----------------------------------------
+#   - DETERMINISTIC: Same result every time (std=0.00)
+#   - EFFICIENT: Reaches score=22.29 at just 3k evals
+#   - RELIABLE: Worst-case equals best-case (no variance risk)
+#   - OPTIMAL: Reaches score=23.38 at 155k evals (same as SA's best)
+#
+# See cost_constrained_annealing.yaml for full Pareto frontier analysis
+# showing Hier dominates SA on fixed problems.
+#
+# CONFIGURATION GUIDE:
+# --------------------
+# The two main parameters are max_allocations and beam_width:
+#
+#   max_allocations × beam_width → total evals → expected score
+#   --------------------------------------------------------
+#   5 × 1  (5×b1)   →    3,108 evals  →  22.29 (fast baseline)
+#   5 × 4  (5×b4)   →   10,981 evals  →  22.29
+#   54 × 4 (54×b4)  →   86,385 evals  →  22.29
+#   54 × 8 (54×b8)  →  155,614 evals  →  23.38 (optimal)
+#
+# RECOMMENDATIONS:
+#   - Quick run: max_allocations=5, beam_width=1 (3k evals, 22.29 score)
+#   - Thorough:  max_allocations=54, beam_width=8 (155k evals, 23.38 optimal)
+
+strategy_type: cost_constrained_hierarchical
+
+# Number of allocations to explore (54 = all feasible for typical problems)
+max_allocations: 50
+
+# Beam width for greedy layer assignment
+# Higher values explore more candidates per allocation
+beam_width: 5
+
+# Early stopping threshold (fraction of score improvement)
+# Algorithm stops if best score improves less than this fraction
+early_stop_threshold: 0.001

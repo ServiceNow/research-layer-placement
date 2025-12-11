@@ -1,0 +1,34 @@
+# @package _global_
+#
+# SA Temperature Calibration Command
+# ==================================
+#
+# Determines optimal initial temperature for simulated annealing by sampling
+# the delta distribution and finding the temperature that achieves a target
+# acceptance ratio for worsening moves.
+#
+# Usage:
+#   python -m place_layers command=calibrate_sa cost_budget=6.4
+#
+# The command will output:
+#   - Delta distribution statistics
+#   - Calibrated initial_temperature
+#   - Computed cooling_rate
+#   - YAML snippet ready to paste into a search strategy config
+
+command: calibrate_sa
+
+# Cost model configuration (required for calibration)
+cost_model:
+  cost_model_type: linear
+  mixer_costs: [1.0, 0.15625, 0.09009]  # Default: FA, SWA, GDN relative costs
+
+# Cost budget (required - no default, must specify)
+cost_budget: ???
+
+# Calibration parameters
+target_acceptance: 0.8  # 80% acceptance of worsening moves (standard literature value)
+num_samples: 200        # Number of random swaps to sample
+max_steps: 300          # SA steps per allocation (for computing cooling rate)
+min_temperature: 0.001  # Minimum temperature before pure hill-climbing
+seed: 42                # Random seed for reproducibility

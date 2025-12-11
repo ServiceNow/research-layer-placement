@@ -1,0 +1,5 @@
+# @package search_strategy
+strategy_type: cost_constrained_beam
+beam_width: 12
+max_allocations: 50
+max_iterations_per_allocation: 20
