@@ -11,6 +11,7 @@ from place_layers.command.hyperparameter_analysis import (
 )
 from place_layers.command.landscape_analysis import LandscapeAnalysisCommandConfig
 from place_layers.command.optimize import OptimizeCommandConfig
+from place_layers.command.precompute_traces import PrecomputeTracesCommandConfig
 from place_layers.command.sensitivity_analysis import SensitivityAnalysisCommandConfig
 
 
@@ -21,7 +22,8 @@ CommandConfig = Annotated[
     | ConvergenceAnalysisCommandConfig
     | SensitivityAnalysisCommandConfig
     | HyperparameterAnalysisCommandConfig
-    | CalibrateSACommandConfig,
+    | CalibrateSACommandConfig
+    | PrecomputeTracesCommandConfig,
     Field(discriminator="command"),
 ]
 

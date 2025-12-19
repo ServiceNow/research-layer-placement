@@ -77,7 +77,7 @@ class CalibrateSACommand(BaseCommand):
         problem = CostConstrainedProblem(evaluator=evaluator, config=problem_config)
 
         # Find a representative allocation at the cost bound
-        num_layers = evaluator.config.num_layers
+        num_layers = evaluator.num_layers
         allocation = cost_model.allocation_at_cost_bound(
             num_layers, self.config.cost_budget, from_above=True
         )

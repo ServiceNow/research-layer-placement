@@ -15,8 +15,8 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
+from place_layers.core.types import LayerPlacement
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import LayerPlacement
 from place_layers.search_strategy import SearchStrategyConfig
 
 

@@ -48,6 +48,4 @@ class JSONResultHandlerConfig(BaseResultHandlerConfig):
 
     handler_type: Literal["json"] = "json"
 
-    indent: int = Field(
-        default=2, description="Indentation level for JSON output", ge=0
-    )
+    indent: int = Field(description="Indentation level for JSON output", ge=0)

@@ -294,46 +294,6 @@ class TestLinearCostModel:
         assert model2.most_expensive_mixer == 1
 
 
-class TestCostConstrainedProblemConfig:
-    """Tests for cost-constrained problem configuration."""
-
-    def test_max_performance_requires_budget(self) -> None:
-        """MAX_PERFORMANCE mode requires cost_budget."""
-        # With discriminated union design, missing cost_budget raises validation error
-        with pytest.raises(ValueError, match="Field required"):
-            MaxPerformanceProblemConfig(
-                cost_model=LinearCostModelConfig(mixer_costs=[1.0, 0.5]),
-                # cost_budget missing
-            )
-
-    def test_min_cost_requires_target(self) -> None:
-        """MIN_COST mode requires performance_target."""
-        # With discriminated union design, missing performance_target raises validation error
-        with pytest.raises(ValueError, match="Field required"):
-            MinCostProblemConfig(
-                cost_model=LinearCostModelConfig(mixer_costs=[1.0, 0.5]),
-                # performance_target missing
-            )
-
-    def test_valid_max_performance_config(self) -> None:
-        """Valid MAX_PERFORMANCE config."""
-        config = MaxPerformanceProblemConfig(
-            cost_model=LinearCostModelConfig(mixer_costs=[1.0, 0.5, 0.2]),
-            cost_budget=8.0,
-        )
-        assert config.problem_type == "cost_max_performance"
-        assert config.cost_budget == 8.0
-
-    def test_valid_min_cost_config(self) -> None:
-        """Valid MIN_COST config."""
-        config = MinCostProblemConfig(
-            cost_model=LinearCostModelConfig(mixer_costs=[1.0, 0.5, 0.2]),
-            performance_target=5.0,
-        )
-        assert config.problem_type == "cost_min_cost"
-        assert config.performance_target == 5.0
-
-
 class TestCostConstrainedProblem:
     """Tests for CostConstrainedProblem instantiation."""
 

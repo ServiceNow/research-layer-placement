@@ -6,12 +6,9 @@ from typing import ClassVar, Literal
 
 from pydantic import Field
 
-from place_layers.core.types import SearchResult
+from place_layers.core.types import LayerPlacement, SearchResult
 from place_layers.problem.base_problem import BaseProblem
-from place_layers.problem.layer_placement import (
-    LayerPlacement,
-    LayerPlacementProblemConfig,
-)
+from place_layers.problem.layer_placement import LayerPlacementProblemConfig
 from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
 from place_layers.search_strategy.base_search_strategy_config import (
     BaseSearchStrategyConfig,
@@ -65,8 +62,8 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
         # Get dimensions from evaluator
-        num_layers = problem.evaluator.config.num_layers
-        num_mixers = problem.evaluator.config.num_mixers
+        num_layers = problem.evaluator.num_layers
+        num_mixers = problem.evaluator.num_mixers
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -226,7 +223,6 @@ class ExhaustiveSearchConfig(BaseSearchStrategyConfig):
     strategy_type: Literal["exhaustive"] = "exhaustive"
 
     max_configs: int = Field(
-        default=100_000,
         description="Maximum number of configurations to evaluate. "
         "Safety limit to prevent accidentally running exhaustive search "
         "on problems that are too large.",
@@ -234,11 +230,9 @@ class ExhaustiveSearchConfig(BaseSearchStrategyConfig):
     )
 
     higher_is_better: bool = Field(
-        default=True,
         description="Whether higher scores are better",
     )
 
     log_statistics: bool = Field(
-        default=True,
         description="Whether to log landscape statistics (min, max, mean, std)",
     )

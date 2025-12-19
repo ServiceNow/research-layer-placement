@@ -5,15 +5,17 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
-from place_layers.core.types import SearchResult
+from place_layers.core.types import LayerPlacement, SearchResult
 from place_layers.problem.base_problem import BaseProblem
-from place_layers.problem.layer_placement import (
-    LayerPlacement,
-    LayerPlacementProblemConfig,
-)
+from place_layers.problem.layer_placement import LayerPlacementProblemConfig
 from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
 from place_layers.search_strategy.base_search_strategy_config import (
     BaseSearchStrategyConfig,
+)
+from place_layers.search_strategy.beam_core import (
+    create_layer_assignment,
+    generate_beam_candidates,
+    select_top_beam,
 )
 
 
@@ -74,8 +76,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
         # Get dimensions from evaluator
-        num_layers = problem.evaluator.config.num_layers
-        num_mixers = problem.evaluator.config.num_mixers
+        num_layers = problem.evaluator.num_layers
+        num_mixers = problem.evaluator.num_mixers
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -214,7 +216,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         layer_scores = []
         for layer_idx in unassigned:
-            assignment = self._create_assignment(
+            assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],
                 target_mixer_idx=mixer_idx,
@@ -222,7 +224,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 fallback_mixer_idx=fallback_mixer_idx,
                 num_layers=num_layers,
             )
-            score = await problem.evaluate(assignment)
+            placement = LayerPlacement(assignments=assignments)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
             layer_scores.append((layer_idx, score))
             logger.debug(f"  Layer {layer_idx}: {score:.4f}")
@@ -265,8 +268,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         for growth_step in range(1, budget):
             logger.info(f"\nGrowth step {growth_step}: Adding layer #{growth_step+1}")
 
-            # Generate candidates
-            candidates = self._generate_candidates(beam, unassigned)
+            # Generate candidates using shared function
+            candidates = generate_beam_candidates(beam, unassigned)
             logger.info(f"Generated {len(candidates)} unique candidates")
 
             # Evaluate candidates
@@ -280,11 +283,10 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 problem=problem,
             )
 
-            # Select top candidates for new beam
-            candidates.sort(
-                key=lambda x: x["score"], reverse=self.config.higher_is_better
+            # Select top candidates using shared function
+            beam = select_top_beam(
+                candidates, self.config.beam_width, self.config.higher_is_better
             )
-            beam = candidates[: self.config.beam_width]
 
             self._log_top_candidates(beam)
 
@@ -295,30 +297,6 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             best_score = new_best_score
 
         return beam
-
-    def _generate_candidates(
-        self, beam: list[dict], unassigned: list[int]
-    ) -> list[dict]:
-        """Generate new candidates by expanding each beam entry."""
-        candidates = []
-        seen: set[tuple[int, ...]] = set()
-
-        for beam_entry in beam:
-            existing = set(beam_entry["layers"])
-
-            for layer_idx in unassigned:
-                if layer_idx in existing:
-                    continue
-
-                new_layers = tuple(sorted(beam_entry["layers"] + [layer_idx]))
-
-                if new_layers in seen:
-                    continue
-                seen.add(new_layers)
-
-                candidates.append({"layers": list(new_layers), "score": None})
-
-        return candidates
 
     async def _evaluate_candidates(
         self,
@@ -332,7 +310,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
     ) -> None:
         """Evaluate all candidates and store scores."""
         for i, candidate in enumerate(candidates):
-            assignment = self._create_assignment(
+            assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=candidate["layers"],
                 target_mixer_idx=mixer_idx,
@@ -340,36 +318,12 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 fallback_mixer_idx=fallback_mixer_idx,
                 num_layers=num_layers,
             )
-            candidate["score"] = await problem.evaluate(assignment)
+            placement = LayerPlacement(assignments=assignments)
+            candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
 
             if (i + 1) % max(1, len(candidates) // 10) == 0:
                 logger.debug(f"  Evaluated {i+1}/{len(candidates)} candidates...")
-
-    def _create_assignment(
-        self,
-        fixed_assignments: dict[int, int],
-        target_layers: list[int],
-        target_mixer_idx: int,
-        unassigned: list[int],
-        fallback_mixer_idx: int,
-        num_layers: int,
-    ) -> LayerPlacement:
-        """Create a complete assignment for evaluation."""
-        assignment = dict(fixed_assignments)
-
-        # Assign target layers to target mixer
-        for layer_idx in target_layers:
-            assignment[layer_idx] = target_mixer_idx
-
-        # Assign unassigned layers to fallback
-        for layer_idx in unassigned:
-            if layer_idx not in assignment:
-                assignment[layer_idx] = fallback_mixer_idx
-
-        # Convert dict to tuple
-        assignments = tuple(assignment[i] for i in range(num_layers))
-        return LayerPlacement(assignments=assignments)
 
     def _log_top_candidates(self, beam: list[dict]) -> None:
         """Log the top candidates in the beam."""
@@ -403,24 +357,20 @@ class HierarchicalBeamSearchConfig(BaseSearchStrategyConfig):
     strategy_type: Literal["hierarchical_beam"] = "hierarchical_beam"
 
     beam_width: int = Field(
-        default=12,
         description="Number of top candidates to keep at each growth step",
         gt=0,
     )
 
     initial_beam_width: int = Field(
-        default=12,
         description="Number of top single-layer configs to seed each phase",
         gt=0,
     )
 
     early_stop_threshold: float = Field(
-        default=0.001,
         description="Stop if best score improvement is below this threshold",
         ge=0.0,
     )
 
     higher_is_better: bool = Field(
-        default=True,
         description="Whether higher metric values are better",
     )

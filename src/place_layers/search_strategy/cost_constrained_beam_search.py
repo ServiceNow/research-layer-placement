@@ -113,8 +113,8 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.config.num_layers
-        num_mixers = problem.evaluator.config.num_mixers
+        num_layers = problem.evaluator.num_layers
+        num_mixers = problem.evaluator.num_mixers
 
         self._log_config(config, cost_model, num_layers, num_mixers)
 

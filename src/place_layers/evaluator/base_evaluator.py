@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 
@@ -20,6 +21,24 @@ class BaseEvaluator[ParametersT]:
             config: Evaluator configuration.
         """
         self.config = config
+
+    @property
+    @abstractmethod
+    def num_layers(self) -> int:
+        """Number of layers in the model.
+
+        Implementations should derive this from the actual model or config.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def num_mixers(self) -> int:
+        """Number of mixer types per layer.
+
+        Implementations should derive this from the actual model or config.
+        """
+        ...
 
     async def evaluate(self, parameters: ParametersT) -> float:
         """

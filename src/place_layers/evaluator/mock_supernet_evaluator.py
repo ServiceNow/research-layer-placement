@@ -73,6 +73,16 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
             rng.gauss(0.0, 1.0) for _ in range(self.config.num_layers - 1)
         ]
 
+    @property
+    def num_layers(self) -> int:
+        """Number of layers (from config, since this is a mock evaluator)."""
+        return self.config.num_layers
+
+    @property
+    def num_mixers(self) -> int:
+        """Number of mixer types (from config, since this is a mock evaluator)."""
+        return self.config.num_mixers
+
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """
         Evaluate parameters using the MRF energy model.

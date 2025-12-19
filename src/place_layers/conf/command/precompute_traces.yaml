@@ -1,0 +1,40 @@
+# @package _global_
+
+command: precompute_traces
+
+# vLLM server configuration
+vllm_base_url: http://localhost:8000
+vllm_model: ${oc.env:VLLM_MODEL,default-model}
+vllm_api_key: EMPTY
+vllm_timeout_seconds: 300
+
+# Task configuration
+# Each task can be:
+#   - A string: "gsm8k" (uses defaults)
+#   - A dict with overrides:
+#       task: gsm8k
+#       num_fewshot: 3
+#       description: "Solve step by step."
+#       fewshot_sampler: random  # first_n, random, or balanced
+tasks:
+  - gsm8k
+  # Example with overrides:
+  # - task: triviaqa
+  #   num_fewshot: 0
+  #   fewshot_sampler: random
+
+split: test
+num_fewshot: 5  # Default, can be overridden per-task
+max_problems_per_task: null
+
+# Sampling configuration
+samples_per_problem: 16
+seed: 42
+
+# Generation configuration
+max_new_tokens: 512
+temperature: 0.7
+top_p: 0.95
+
+# Concurrency
+max_concurrent_requests: 32

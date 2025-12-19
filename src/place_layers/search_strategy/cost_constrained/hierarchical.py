@@ -14,6 +14,11 @@ from pydantic import Field
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.problem.layer_placement import CostConstrainedProblem
+from place_layers.search_strategy.beam_core import (
+    create_layer_assignment,
+    generate_beam_candidates,
+    select_top_beam,
+)
 from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
 from place_layers.search_strategy.cost_constrained.base_config import (
     BaseCostConstrainedConfig,
@@ -176,7 +181,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         layer_scores = []
 
         for layer_idx in unassigned:
-            assignment = self._create_assignment(
+            assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],
                 target_mixer_idx=mixer_idx,
@@ -184,7 +189,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer_idx=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignment)
+            placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
             layer_scores.append((layer_idx, score))
@@ -215,8 +220,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
         # Grow beam iteratively
         for growth_step in range(1, budget):
-            # Generate candidates
-            candidates = self._generate_candidates(beam, unassigned)
+            # Generate candidates using shared function
+            candidates = generate_beam_candidates(beam, unassigned)
 
             if not candidates:
                 break
@@ -232,9 +237,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 num_layers=num_layers,
             )
 
-            # Select top candidates for new beam
-            candidates.sort(key=lambda x: x["score"], reverse=True)
-            beam = candidates[: self.config.beam_width]
+            # Select top candidates using shared function (higher is better)
+            beam = select_top_beam(candidates, self.config.beam_width, higher_is_better=True)
 
             # Check early stopping
             new_best_score = beam[0]["score"]
@@ -243,30 +247,6 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             best_score = new_best_score
 
         return beam
-
-    def _generate_candidates(
-        self, beam: list[dict], unassigned: list[int]
-    ) -> list[dict]:
-        """Generate new candidates by expanding each beam entry."""
-        candidates = []
-        seen: set[tuple[int, ...]] = set()
-
-        for beam_entry in beam:
-            existing = set(beam_entry["layers"])
-
-            for layer_idx in unassigned:
-                if layer_idx in existing:
-                    continue
-
-                new_layers = tuple(sorted(beam_entry["layers"] + [layer_idx]))
-
-                if new_layers in seen:
-                    continue
-                seen.add(new_layers)
-
-                candidates.append({"layers": list(new_layers), "score": None})
-
-        return candidates
 
     async def _evaluate_candidates(
         self,
@@ -280,7 +260,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
     ) -> None:
         """Evaluate all candidates and store scores."""
         for candidate in candidates:
-            assignment = self._create_assignment(
+            assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=candidate["layers"],
                 target_mixer_idx=mixer_idx,
@@ -288,33 +268,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer_idx=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignment)
+            placement = LayerPlacement(assignments=assignments)
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
-
-    def _create_assignment(
-        self,
-        fixed_assignments: dict[int, int],
-        target_layers: list[int],
-        target_mixer_idx: int,
-        unassigned: list[int],
-        fallback_mixer_idx: int,
-        num_layers: int,
-    ) -> tuple[int, ...]:
-        """Create a complete assignment for evaluation."""
-        assignment = dict(fixed_assignments)
-
-        # Assign target layers to target mixer
-        for layer_idx in target_layers:
-            assignment[layer_idx] = target_mixer_idx
-
-        # Assign unassigned layers to fallback
-        for layer_idx in unassigned:
-            if layer_idx not in assignment:
-                assignment[layer_idx] = fallback_mixer_idx
-
-        # Convert dict to tuple
-        return tuple(assignment[i] for i in range(num_layers))
 
 
 class HierarchicalConfig(BaseCostConstrainedConfig):

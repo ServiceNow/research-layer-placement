@@ -28,8 +28,8 @@ class LayerPlacementProblem(BaseProblem[LayerPlacement]):
         self.config: LayerPlacementProblemConfig  # Type narrowing
 
         # Validate budgets against evaluator dimensions
-        num_layers = evaluator.config.num_layers
-        num_mixers = evaluator.config.num_mixers
+        num_layers = evaluator.num_layers
+        num_mixers = evaluator.num_mixers
 
         if len(config.budgets) >= num_mixers:
             raise ValueError(
@@ -92,7 +92,7 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         self.cost_model = config.cost_model.create_cost_model()
 
         # Validate dimensions
-        num_mixers = evaluator.config.num_mixers
+        num_mixers = evaluator.num_mixers
         if len(config.cost_model.mixer_costs) != num_mixers:
             raise ValueError(
                 f"Number of mixer costs ({len(config.cost_model.mixer_costs)}) "
@@ -100,7 +100,7 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
             )
 
         # Validate constraint based on problem type
-        num_layers = evaluator.config.num_layers
+        num_layers = evaluator.num_layers
         min_cost = self.cost_model.min_cost(num_layers)
         max_cost = self.cost_model.max_cost(num_layers)
 

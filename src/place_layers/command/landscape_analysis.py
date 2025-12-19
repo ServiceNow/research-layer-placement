@@ -15,12 +15,10 @@ import seaborn as sns
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
+from place_layers.core.types import LayerPlacement
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import (
-    LayerPlacement,
-    LayerPlacementProblemConfig,
-)
+from place_layers.problem.layer_placement import LayerPlacementProblemConfig
 from place_layers.search_strategy import SearchStrategyConfig
 
 
@@ -45,8 +43,8 @@ class LandscapeAnalysisCommand(BaseCommand):
         if not isinstance(problem.config, LayerPlacementProblemConfig):
             raise TypeError("This command only works with LayerPlacementProblem")
 
-        num_layers = evaluator.config.num_layers
-        num_mixers = evaluator.config.num_mixers
+        num_layers = evaluator.num_layers
+        num_mixers = evaluator.num_mixers
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
