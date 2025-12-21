@@ -54,22 +54,32 @@ class PrecomputeMetadata(BaseModel):
 
 
 class TraceWriter:
-    """Appends traces to per-task JSONL files.
+    """Appends traces to validation.jsonl and skipped problems to skipped.jsonl.
 
-    This is intentionally simple - it just writes traces.
-    State reconstruction is handled separately by scanning the files.
+    This structure enables direct loading via HuggingFace datasets:
+        load_dataset(output_dir, split='validation')
+
+    State reconstruction scans both files, filtering by task_name field.
     """
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def append(self, task_name: str, records: list[TraceRecord]) -> None:
-        """Append trace records to task's JSONL file."""
-        path = self.output_dir / f"{task_name}.jsonl"
-        with path.open("a") as f:
-            for record in records:
-                f.write(record.model_dump_json() + "\n")
+    def append(self, records: list[TraceRecord]) -> None:
+        """Append records to appropriate files based on record type."""
+        traces = [r for r in records if isinstance(r, Trace)]
+        skipped = [r for r in records if isinstance(r, SkippedProblem)]
+
+        if traces:
+            with (self.output_dir / "validation.jsonl").open("a") as f:
+                for record in traces:
+                    f.write(record.model_dump_json() + "\n")
+
+        if skipped:
+            with (self.output_dir / "skipped.jsonl").open("a") as f:
+                for record in skipped:
+                    f.write(record.model_dump_json() + "\n")
 
 
 def compute_config_hash(config: dict) -> str:
@@ -102,7 +112,7 @@ def _extract_problem_idx(problem_id: str) -> int:
 
 
 def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
-    """Scan JSONL to find completed problem indices.
+    """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
 
     This is the authoritative way to determine what work has been done.
     The traces on disk are the single source of truth. Both successful
@@ -115,27 +125,28 @@ def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
     Returns:
         Set of problem indices that have been processed (traced or skipped).
     """
-    jsonl_path = output_dir / f"{task_name}.jsonl"
-    if not jsonl_path.exists():
-        return set()
-
     completed: set[int] = set()
     malformed_lines = 0
 
-    with jsonl_path.open() as f:
-        for line_num, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = TraceRecordAdapter.validate_json(line)
-                match record:
-                    case Trace(problem_id=pid) | SkippedProblem(problem_id=pid):
-                        problem_idx = _extract_problem_idx(pid)
-                        completed.add(problem_idx)
-            except Exception as e:
-                malformed_lines += 1
-                logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
+    for jsonl_path in [output_dir / "validation.jsonl", output_dir / "skipped.jsonl"]:
+        if not jsonl_path.exists():
+            continue
+
+        with jsonl_path.open() as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = TraceRecordAdapter.validate_json(line)
+                    match record:
+                        case Trace(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
+                            if tn == task_name:
+                                problem_idx = _extract_problem_idx(pid)
+                                completed.add(problem_idx)
+                except Exception as e:
+                    malformed_lines += 1
+                    logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
 
     if malformed_lines > 0:
         logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
@@ -144,7 +155,7 @@ def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
 
 
 def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
-    """Scan all JSONL files to find completed problems per task.
+    """Scan validation.jsonl and skipped.jsonl to find completed problems per task.
 
     Args:
         output_dir: Directory containing trace files.
@@ -153,14 +164,33 @@ def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
         Dict mapping task_name -> set of completed problem indices.
     """
     completed: dict[str, set[int]] = {}
+    malformed_lines = 0
 
-    for jsonl_path in output_dir.glob("*.jsonl"):
-        task_name = jsonl_path.stem
-        completed[task_name] = get_completed_problems(output_dir, task_name)
-        if completed[task_name]:
-            logger.info(
-                f"Reconstructed task '{task_name}': "
-                f"{len(completed[task_name])} problems completed"
-            )
+    for jsonl_path in [output_dir / "validation.jsonl", output_dir / "skipped.jsonl"]:
+        if not jsonl_path.exists():
+            continue
+
+        with jsonl_path.open() as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = TraceRecordAdapter.validate_json(line)
+                    match record:
+                        case Trace(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
+                            if tn not in completed:
+                                completed[tn] = set()
+                            problem_idx = _extract_problem_idx(pid)
+                            completed[tn].add(problem_idx)
+                except Exception as e:
+                    malformed_lines += 1
+                    logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
+
+    if malformed_lines > 0:
+        logger.warning(f"{malformed_lines} malformed lines ignored")
+
+    for task_name, indices in completed.items():
+        logger.info(f"Reconstructed task '{task_name}': {len(indices)} problems completed")
 
     return completed

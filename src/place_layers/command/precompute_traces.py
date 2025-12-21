@@ -4,18 +4,52 @@ This command generates reasoning traces from a teacher model served by vLLM,
 records their correctness (using lm-eval task definitions) and log-probabilities,
 and saves them incrementally for use during importance-weighted accuracy estimation.
 
-Architecture:
+Usage
+-----
+1. Start vLLM server with the teacher model:
+
+    python -m vllm.entrypoints.openai.api_server \\
+        --model Qwen/Qwen2-0.5B \\
+        --port 8000 \\
+        --max-model-len 4096 \\
+        --gpu-memory-utilization 0.8
+
+2. Run the precompute_traces command:
+
+    VLLM_MODEL="Qwen/Qwen2-0.5B" python -m place_layers \\
+        command=precompute_traces \\
+        tasks='[gsm8k]' \\
+        max_problems_per_task=100 \\
+        samples_per_problem=8 \\
+        max_new_tokens=1024
+
+   Key parameters:
+   - tasks: List of lm-eval tasks (e.g., '[gsm8k,triviaqa]')
+   - max_problems_per_task: Limit problems per task (null for all)
+   - samples_per_problem: Number of traces to sample per problem
+   - max_new_tokens: Maximum tokens to generate (must be enough for full solutions)
+   - temperature: Sampling temperature (default 0.7)
+   - num_fewshot: Number of few-shot examples (default 5)
+
+Architecture
+------------
 - vLLM: Out-of-process inference server (async HTTP API)
 - lm-eval: Task definitions, prompt formatting, correctness checking
 - Streaming: Process problems as they complete, write incrementally
 - Resumption: State reconstructed from traces on disk (source of truth)
 - Lazy loading: Datasets loaded only when processing begins for each task
 
-Output structure:
+Output structure
+----------------
     output_dir/
-        state.json          # Cached state (can be reconstructed from traces)
-        gsm8k.jsonl         # Traces for gsm8k task
-        triviaqa.jsonl      # Traces for triviaqa task
+        metadata.json       # Config hash, teacher model, samples_per_problem
+        validation.jsonl    # All valid traces (HF-loadable via load_dataset)
+        skipped.jsonl       # Skipped problems (for debugging)
+
+The validation.jsonl file can be loaded directly with HuggingFace datasets:
+
+    from datasets import load_dataset
+    ds = load_dataset(output_dir, split='validation')
 """
 
 from __future__ import annotations
@@ -391,7 +425,7 @@ class PrecomputeTracesCommand(BaseCommand):
                         task_name=task_name,
                         reason=str(e),
                     )
-                    writer.append(task_name, [skipped])
+                    writer.append([skipped])
                     continue
 
                 # Convert to traces
@@ -405,14 +439,14 @@ class PrecomputeTracesCommand(BaseCommand):
 
                 # Append to JSONL - either traces or a skip record if all truncated
                 if traces:
-                    writer.append(task_name, traces)
+                    writer.append(traces)
                 else:
                     skipped = SkippedProblem(
                         problem_id=f"{task_name}:{idx}",
                         task_name=task_name,
                         reason=f"all {len(result.samples)} samples truncated",
                     )
-                    writer.append(task_name, [skipped])
+                    writer.append([skipped])
 
         async def log_progress() -> None:
             """Periodically log queue size."""

@@ -168,23 +168,29 @@ class TraceDataset(BaseModel):
 
     @classmethod
     def load_from_directory(cls, output_dir: Path) -> "TraceDataset":
-        """Load dataset from output directory with JSONL trace files.
+        """Load dataset from output directory with validation.jsonl.
 
-        This loads traces from the incremental JSONL files created by
-        the streaming trace writer. The metadata.json file is used for
-        provenance but traces are the source of truth.
+        This loads traces from validation.jsonl created by the streaming
+        trace writer. The metadata.json file is used for provenance.
+
+        The output directory structure:
+            output_dir/
+                metadata.json       # Provenance info
+                validation.jsonl    # All valid traces (HF-loadable)
+                skipped.jsonl       # Skipped problems (not loaded here)
 
         Args:
-            output_dir: Directory containing metadata.json and *.jsonl files.
+            output_dir: Directory containing metadata.json and validation.jsonl.
 
         Returns:
-            TraceDataset with all traces from JSONL files.
+            TraceDataset with all traces from validation.jsonl.
         """
         import json
         import logging
 
         logger = logging.getLogger(__name__)
         metadata_path = output_dir / "metadata.json"
+        validation_path = output_dir / "validation.jsonl"
 
         # Load metadata for provenance (teacher_model, samples_per_problem)
         if metadata_path.exists():
@@ -195,33 +201,26 @@ class TraceDataset(BaseModel):
             teacher_model = "unknown"
             samples_per_problem = 0
 
-        # Load all records from JSONL files (source of truth)
+        # Load all traces from validation.jsonl
         all_traces: list[Trace] = []
-        num_skipped = 0
         task_names: set[str] = set()
+        malformed = 0
 
-        for jsonl_file in output_dir.glob("*.jsonl"):
-            task_name = jsonl_file.stem
-            task_names.add(task_name)
-            malformed = 0
-
-            with jsonl_file.open() as f:
+        if validation_path.exists():
+            with validation_path.open() as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        record = TraceRecordAdapter.validate_json(line)
-                        match record:
-                            case Trace() as trace:
-                                all_traces.append(trace)
-                            case SkippedProblem():
-                                num_skipped += 1
+                        trace = Trace.model_validate_json(line)
+                        all_traces.append(trace)
+                        task_names.add(trace.task_name)
                     except Exception:
                         malformed += 1
 
-            if malformed > 0:
-                logger.warning(f"Task '{task_name}': {malformed} malformed lines ignored")
+        if malformed > 0:
+            logger.warning(f"{malformed} malformed lines ignored in validation.jsonl")
 
         return cls(
             traces=tuple(all_traces),
