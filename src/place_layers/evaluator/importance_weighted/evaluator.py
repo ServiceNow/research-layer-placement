@@ -35,9 +35,8 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import ClassVar, Literal
 
-import torch
 from pydantic import BaseModel, Field, model_validator
 
 from place_layers.core.types import LayerPlacement
@@ -47,14 +46,11 @@ from place_layers.evaluator.importance_weighted.apriel_validation import (
     Apriel2Structure,
     validate_apriel2_model,
 )
-from place_layers.evaluator.importance_weighted.log_prob import (
-    compute_batch_log_probs,
-    compute_completion_log_prob,
-)
 from place_layers.evaluator.importance_weighted.traces import Trace, TraceDataset
-
-if TYPE_CHECKING:
-    from transformers import PreTrainedModel
+from place_layers.evaluator.importance_weighted.transformers_client import (
+    TransformersClient,
+    TransformersClientConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,16 +129,16 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
         self.datasets = self._load_datasets()
         self._log_dataset_summary()
 
-        # Load model
-        import time
-
-        logger.info(f"Loading model from {self.config.model_path}")
-        model_start = time.perf_counter()
-        self.model = self._load_model()
-        # self.model.config.use_cache = False  # Disable KV caching entirely
-        self.model.eval()
-        model_elapsed = time.perf_counter() - model_start
-        logger.info(f"Model loaded in {model_elapsed:.1f}s")
+        # Load model via TransformersClient
+        client_config = TransformersClientConfig(
+            model_path=self.config.model_path,
+            torch_dtype=self.config.torch_dtype,
+            device_map=self.config.device_map,
+            trust_remote_code=self.config.trust_remote_code,
+        )
+        self._client = TransformersClient(client_config)
+        self._client.__enter__()  # Load model (cleanup in __del__ if needed)
+        self.model = self._client.model
 
         # Validate model and extract structure
         self._structure = validate_apriel2_model(self.model)
@@ -210,37 +206,6 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
                 f"weight={d.weight:.1%}, "
                 f"teacher_acc={d.dataset.accuracy:.1%}"
             )
-
-    def _load_model(self) -> "PreTrainedModel":
-        """Load the supernet model."""
-        from transformers import (
-            AutoConfig,
-            AutoModelForCausalLM,
-            AutoModelForImageTextToText,
-        )
-
-        # Load config to determine model class from auto_map
-        config = AutoConfig.from_pretrained(
-            self.config.model_path,
-            trust_remote_code=True,
-        )
-        auto_map = getattr(config, "auto_map", {})
-
-        if "AutoModelForImageTextToText" in auto_map:
-            model_class = AutoModelForImageTextToText
-        elif "AutoModelForCausalLM" in auto_map:
-            model_class = AutoModelForCausalLM
-        else:
-            raise ValueError(f"Model must declare AutoModelForCausalLM or AutoModelForImageTextToText in auto_map, got: {list(auto_map.keys())}")
-
-        logger.info(f"Loading model with {model_class.__name__}")
-        model = model_class.from_pretrained(
-            self.config.model_path,
-            torch_dtype=getattr(torch, self.config.torch_dtype),
-            device_map=self.config.device_map,
-            trust_remote_code=True,
-        )
-        return model
 
     def _set_mixer_assignment(self, placement: LayerPlacement) -> None:
         """Set the mixer assignment on the model."""
@@ -344,9 +309,8 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
             for trace in loaded.dataset.traces
         ]
 
-        # Compute all log-probs in batch
-        student_log_probs = compute_batch_log_probs(
-            model=self.model,
+        # Compute all log-probs in batch using the client
+        student_log_probs = self._client.compute_batch_log_probs(
             traces=traces_data,
             batch_size=self.config.trace_batch_size,
             length_tolerance=self.config.trace_length_tolerance,
@@ -442,6 +406,10 @@ class ImportanceWeightedEvaluatorConfig(BaseEvaluatorConfig):
     )
     device_map: str = Field(
         description="Device map for model loading (e.g., 'auto', 'cuda:0')",
+    )
+    trust_remote_code: bool = Field(
+        description="Trust remote code when loading model (required for custom architectures)",
+        default=True,
     )
 
     # Importance sampling parameters

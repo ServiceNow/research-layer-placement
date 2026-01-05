@@ -111,57 +111,13 @@ def _extract_problem_idx(problem_id: str) -> int:
     return int(match.group(1))
 
 
-def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
+def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int]:
+    """Scan trace files and return completed problems grouped by task.
 
-    This is the authoritative way to determine what work has been done.
-    The traces on disk are the single source of truth. Both successful
-    traces and skipped problems count as "completed" (no retry needed).
-
-    Args:
-        output_dir: Directory containing trace files.
-        task_name: Name of the task to check.
+    Internal helper that does the actual file scanning once.
 
     Returns:
-        Set of problem indices that have been processed (traced or skipped).
-    """
-    completed: set[int] = set()
-    malformed_lines = 0
-
-    for jsonl_path in [output_dir / "validation.jsonl", output_dir / "skipped.jsonl"]:
-        if not jsonl_path.exists():
-            continue
-
-        with jsonl_path.open() as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = TraceRecordAdapter.validate_json(line)
-                    match record:
-                        case Trace(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
-                            if tn == task_name:
-                                problem_idx = _extract_problem_idx(pid)
-                                completed.add(problem_idx)
-                except Exception as e:
-                    malformed_lines += 1
-                    logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
-
-    if malformed_lines > 0:
-        logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
-
-    return completed
-
-
-def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problems per task.
-
-    Args:
-        output_dir: Directory containing trace files.
-
-    Returns:
-        Dict mapping task_name -> set of completed problem indices.
+        Tuple of (dict mapping task_name -> set of problem indices, malformed line count).
     """
     completed: dict[str, set[int]] = {}
     malformed_lines = 0
@@ -186,6 +142,42 @@ def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
                 except Exception as e:
                     malformed_lines += 1
                     logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
+
+    return completed, malformed_lines
+
+
+def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
+    """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
+
+    This is the authoritative way to determine what work has been done.
+    The traces on disk are the single source of truth. Both successful
+    traces and skipped problems count as "completed" (no retry needed).
+
+    Args:
+        output_dir: Directory containing trace files.
+        task_name: Name of the task to check.
+
+    Returns:
+        Set of problem indices that have been processed (traced or skipped).
+    """
+    completed, malformed_lines = _scan_completed_problems(output_dir)
+
+    if malformed_lines > 0:
+        logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
+
+    return completed.get(task_name, set())
+
+
+def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
+    """Scan validation.jsonl and skipped.jsonl to find completed problems per task.
+
+    Args:
+        output_dir: Directory containing trace files.
+
+    Returns:
+        Dict mapping task_name -> set of completed problem indices.
+    """
+    completed, malformed_lines = _scan_completed_problems(output_dir)
 
     if malformed_lines > 0:
         logger.warning(f"{malformed_lines} malformed lines ignored")

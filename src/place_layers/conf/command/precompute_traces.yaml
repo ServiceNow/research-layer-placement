@@ -2,11 +2,15 @@
 
 command: precompute_traces
 
-# vLLM server configuration
-vllm_base_url: http://localhost:8000
-vllm_model: ${oc.env:VLLM_MODEL,default-model}
-vllm_api_key: EMPTY
-vllm_timeout_seconds: 300
+# Generation backend configuration
+# Use backend_type: vllm for remote vLLM server
+# Use backend_type: transformers for local HuggingFace model
+backend:
+  backend_type: vllm
+  base_url: http://localhost:8000
+  model: ${oc.env:VLLM_MODEL,default-model}
+  api_key: EMPTY
+  timeout_seconds: 300
 
 # Task configuration
 # Each task can be:
@@ -28,13 +32,10 @@ num_fewshot: 5  # Default, can be overridden per-task
 max_problems_per_task: null
 
 # Sampling configuration
-samples_per_problem: 16
+samples_per_problem: 8
 seed: 42
 
 # Generation configuration
-max_new_tokens: 512
+max_new_tokens: 1024
 temperature: 0.7
 top_p: 0.95
-
-# Concurrency
-max_concurrent_requests: 32

@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Self
 
 import aiohttp
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 logger = logging.getLogger(__name__)
 
@@ -32,28 +31,41 @@ class VLLMClientConfig(BaseModel):
     max_concurrent_requests: int = Field(description="Max concurrent requests to vLLM", default=32)
 
 
-@dataclass
-class GeneratedSample:
+class GeneratedSample(BaseModel):
     """A single generated completion with logprobs."""
 
-    text: str
-    token_ids: list[int]
-    token_logprobs: list[float]
-    truncated: bool
+    model_config = {"frozen": True}
 
+    text: str = Field(description="Generated text")
+    token_ids: list[int] = Field(description="Token IDs of generated text")
+    token_logprobs: list[float] = Field(description="Log-probability per token")
+    truncated: bool = Field(description="Whether generation was truncated by max_tokens")
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def total_logprob(self) -> float:
         """Sum of token log-probabilities."""
         return sum(self.token_logprobs)
 
 
-@dataclass
-class GenerationResult:
+class GenerationResult(BaseModel):
     """Result of a generation request."""
 
-    request_id: str
-    samples: list[GeneratedSample]
-    prompt_token_ids: list[int]
+    model_config = {"frozen": True}
+
+    request_id: str = Field(description="Request identifier")
+    samples: list[GeneratedSample] = Field(description="Generated samples")
+    prompt_token_ids: list[int] = Field(description="Token IDs of the prompt")
+
+
+class ScoringResult(BaseModel):
+    """Result of scoring a completion (computing log probability)."""
+
+    model_config = {"frozen": True}
+
+    total_logprob: float = Field(description="Sum of log-probabilities for completion tokens")
+    num_completion_tokens: int = Field(description="Number of completion tokens scored")
+    request_id: str = Field(description="Request identifier", default="")
 
 
 class VLLMClient:
@@ -101,7 +113,7 @@ class VLLMClient:
 
     async def chat_generate(
         self,
-        prompt: str,
+        messages: list[dict[str, str]],
         *,
         n: int,
         max_tokens: int,
@@ -111,11 +123,10 @@ class VLLMClient:
     ) -> GenerationResult:
         """Generate n completions using chat completions API.
 
-        This wraps the prompt as a user message and uses /v1/chat/completions,
-        which automatically applies the model's chat template.
+        Uses /v1/chat/completions which applies the model's chat template.
 
         Args:
-            prompt: The prompt text (will be wrapped as user message).
+            messages: Chat messages (list of role/content dicts).
             n: Number of completions to generate.
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
@@ -129,7 +140,7 @@ class VLLMClient:
         url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
         payload = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "n": n,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -202,3 +213,75 @@ class VLLMClient:
             data = await resp.json()
 
         return data.get("tokens", [])
+
+    async def score_completion(
+        self,
+        prompt_tokens: Sequence[int],
+        completion_tokens: Sequence[int],
+        request_id: str = "",
+    ) -> ScoringResult:
+        """Compute log probability of completion given prompt.
+
+        Uses vLLM's echo mode: sends the full sequence (prompt + completion)
+        and requests logprobs for all tokens, then extracts just the
+        completion token logprobs.
+
+        Args:
+            prompt_tokens: Token IDs for the prompt/context.
+            completion_tokens: Token IDs for the completion to score.
+            request_id: Optional identifier for tracking.
+
+        Returns:
+            ScoringResult with total log probability and token count.
+        """
+        session = self._ensure_session()
+        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
+
+        # Concatenate prompt and completion tokens
+        full_tokens = list(prompt_tokens) + list(completion_tokens)
+
+        payload = {
+            "model": self.config.model,
+            "prompt": full_tokens,  # vLLM accepts token IDs directly
+            "max_tokens": 0,  # Don't generate new tokens
+            "echo": True,  # Return logprobs for prompt tokens
+            "logprobs": 1,  # Request logprobs
+        }
+
+        async with self._semaphore:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 400:
+                    error_text = await resp.text()
+                    raise VLLMBadRequestError(error_text)
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise RuntimeError(
+                        f"vLLM score request failed with status {resp.status}: {error_text}"
+                    )
+                data = await resp.json()
+
+        # Extract logprobs from response
+        # With echo=True, we get logprobs for all tokens including prompt
+        choice = data["choices"][0]
+        logprobs_data = choice.get("logprobs", {})
+        token_logprobs = logprobs_data.get("token_logprobs", [])
+
+        # The first token has no logprob (it's the starting token)
+        # Completion logprobs start at position len(prompt_tokens)
+        prompt_len = len(prompt_tokens)
+        completion_len = len(completion_tokens)
+
+        # Extract logprobs for completion tokens only
+        # token_logprobs[i] is logprob of token[i] given tokens[:i]
+        completion_logprobs = token_logprobs[prompt_len : prompt_len + completion_len]
+
+        # Filter out None values (first token might be None)
+        valid_logprobs = [lp for lp in completion_logprobs if lp is not None]
+        total_logprob = sum(valid_logprobs)
+
+        return ScoringResult(
+            total_logprob=total_logprob,
+            num_completion_tokens=len(valid_logprobs),
+            request_id=request_id,
+        )
+

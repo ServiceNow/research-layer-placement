@@ -911,3 +911,180 @@ This template provides a battle-tested architecture for building configurable, t
 3. **Smart Constructors** - Config-driven instantiation
 
 Use this template as a starting point for your own projects. Customize the placeholders, adapt to your domain, and enjoy the benefits of a well-structured configuration system!
+
+---
+
+## Fast-LLM ForwardKL Evaluator Configuration
+
+This section documents how to configure the ForwardKL evaluator in Fast-LLM for importance-weighted evaluation during training.
+
+### Overview
+
+The ForwardKL evaluator computes the forward KL divergence between a teacher model's log-probabilities (pre-computed traces) and the student model being trained. This is used for importance-weighted accuracy estimation.
+
+### Prerequisites
+
+1. **Pre-computed traces**: Generate traces using the `precompute_traces` command:
+   ```bash
+   # Start vLLM server with teacher model
+   python -m vllm.entrypoints.openai.api_server \
+       --model Qwen/Qwen2-0.5B \
+       --port 8000 \
+       --max-model-len 4096 \
+       --gpu-memory-utilization 0.8
+
+   # Generate traces
+   VLLM_MODEL="Qwen/Qwen2-0.5B" python -m place_layers \
+       command=precompute_traces \
+       "tasks=[gsm8k]" \
+       max_problems_per_task=null \
+       samples_per_problem=8 \
+       max_new_tokens=1024
+   ```
+
+2. **Output structure**: The traces are saved in HuggingFace-compatible format:
+   ```
+   output_dir/
+       validation.jsonl    # All valid traces (load with datasets)
+       skipped.jsonl       # Skipped problems
+       metadata.json       # Provenance info
+   ```
+
+3. **Rename output folder**: Remove special characters (brackets) from the Hydra output folder name to ensure HuggingFace compatibility:
+   ```bash
+   mv "outputs/command=precompute_traces,..." "outputs/gsm8k_traces"
+   ```
+
+### YAML Configuration
+
+Add a `forward_kl` evaluator to your Fast-LLM training config:
+
+```yaml
+training:
+  train_iters: 1000
+  logs:
+    interval: 10
+  evaluators:
+    # Standard loss evaluation (optional)
+    validation:
+      evaluator:
+        type: loss
+        iterations: 100
+
+    # Forward KL evaluation against teacher traces
+    forward_kl_gsm8k:
+      evaluator:
+        type: forward_kl
+        dataset_path: "/path/to/gsm8k_traces"  # Directory with validation.jsonl
+        task: null                              # Optional: dataset config name
+        num_samples: null                       # null = use all traces
+        batch_size: 8                           # Batch size for forward passes
+        trust_remote_code: false                # For custom datasets
+
+batch:
+  sequence_length: 4096        # Must be >= max trace length
+  micro_batch_size: 2
+  batch_size: 64
+
+# ... rest of config (model, optimizer, etc.)
+```
+
+### Config Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | str | - | Must be `"forward_kl"` |
+| `dataset_path` | str | null | Path to directory containing `validation.jsonl` |
+| `task` | str | null | HuggingFace dataset config/task name (optional) |
+| `num_samples` | int | null | Limit number of traces (null = all) |
+| `batch_size` | int | 8 | Batch size for forward passes |
+| `trust_remote_code` | bool | false | Trust remote code when loading dataset |
+
+### Distributed Training Support
+
+The ForwardKL evaluator supports all Fast-LLM parallelism modes:
+
+- **Data Parallel (DP)**: Traces are sharded across DP ranks using HuggingFace's `.shard()`. Results are reduced across the data group.
+- **Tensor Parallel (TP)**: Works transparently - all TP ranks process the same traces.
+- **Sequence Parallel (SP)**: Traces are padded to training `sequence_length` and processed with proper SP splitting.
+- **Pipeline Parallel (PP)**: Only the last PP stage computes logits. Results are reduced across the pipeline group.
+
+### Output Metrics
+
+The evaluator logs:
+```
+Forward KL (forward_kl_gsm8k): 2.3456 (3708 traces) [57 skipped]
+```
+
+Metrics are also logged to wandb/tensorboard under:
+- `validation.forward_kl_gsm8k.forward_kl`
+- `validation.forward_kl_gsm8k.num_traces`
+- `validation.forward_kl_gsm8k.iteration`
+
+### Trace Format
+
+Each trace in `validation.jsonl` must have:
+```json
+{
+  "record_type": "trace",
+  "prompt_tokens": [1, 2, 3, ...],
+  "completion_tokens": [4, 5, 6, ...],
+  "correct": true,
+  "teacher_log_prob": -12.345,
+  "problem_id": "gsm8k:42",
+  "task_name": "gsm8k",
+  "sample_idx": 0,
+  "completion_text": "The answer is 42."
+}
+```
+
+### Example: Full Training Config
+
+```yaml
+training:
+  train_iters: 10000
+  num_workers: 8
+  logs:
+    interval: 100
+  evaluators:
+    forward_kl:
+      evaluator:
+        type: forward_kl
+        dataset_path: "/workspace/outputs/gsm8k_traces"
+        batch_size: 16
+
+batch:
+  sequence_length: 4096
+  micro_batch_size: 4
+  batch_size: 128
+
+data:
+  datasets:
+    training:
+      type: file
+      path: /path/to/training/data
+
+optimizer:
+  learning_rate:
+    base: 1.0e-05
+    decay_style: cosine
+    warmup_iterations: 100
+  weight_decay: 0.1
+  beta_1: 0.9
+  beta_2: 0.95
+
+model:
+  base_model:
+    # ... model architecture config
+  multi_stage:
+    zero_stage: 2
+  distributed:
+    compute_dtype: bf16
+    tensor_parallel: 1
+    pipeline_parallel: 1
+    data_parallel: 8
+    sequence_parallel: false
+
+run:
+  experiment_dir: training_with_forward_kl
+```

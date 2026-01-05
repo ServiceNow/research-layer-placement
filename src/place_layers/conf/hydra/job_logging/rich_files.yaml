@@ -1,5 +1,5 @@
 version: 1
-disable_existing_loggers: true
+disable_existing_loggers: false  # Must be false to allow module-level loggers created at import time
 
 formatters:
   file_fmt:

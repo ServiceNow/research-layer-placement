@@ -14,6 +14,9 @@ Usage
         --max-model-len 4096 \\
         --gpu-memory-utilization 0.8
 
+   WARNING: In vLLM v0.11.0+, you MUST use --model flag explicitly.
+   Positional arguments are silently ignored and may load a wrong model!
+
 2. Run the precompute_traces command:
 
     VLLM_MODEL="Qwen/Qwen2-0.5B" python -m place_layers \\
@@ -73,11 +76,24 @@ from place_layers.evaluator.importance_weighted.trace_writer import (
     save_metadata,
 )
 from place_layers.evaluator.importance_weighted.traces import SkippedProblem, Trace
+from place_layers.evaluator.importance_weighted.generation_backend import (
+    AsyncBackend,
+    BackendConfig,
+    ChatMessage,
+    SyncBackend,
+)
 from place_layers.evaluator.importance_weighted.vllm_client import (
     GenerationResult,
     VLLMBadRequestError,
-    VLLMClient,
-    VLLMClientConfig,
+)
+from place_layers.evaluator.importance_weighted.memory_logging import (
+    log_memory,
+    log_memory_delta,
+    get_memory_stats,
+    MemoryMonitor,
+    force_garbage_collection,
+    log_gpu_memory_summary,
+    reset_peak_memory_stats,
 )
 
 if TYPE_CHECKING:
@@ -182,6 +198,34 @@ def _get_docs(task: "Task", split: str) -> Docs:
     return cast(Docs, docs)
 
 
+def _build_chat_messages(task: "Task", doc: dict, num_fewshot: int) -> list[ChatMessage]:
+    """Build chat messages for a problem using proper multi-turn few-shot format.
+
+    Uses lm-eval's get_chat_context with fewshot_as_multiturn=True to ensure
+    few-shot examples appear as alternating user/assistant turns. This helps
+    the model learn the expected answer format from the assistant turns.
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+        num_fewshot: Number of few-shot examples.
+
+    Returns:
+        List of ChatMessage dicts with role/content keys.
+    """
+    # Get few-shot context as proper multi-turn messages
+    # This returns list[dict] with alternating user/assistant messages
+    messages: list[ChatMessage] = task.sampler.get_chat_context(
+        doc, num_fewshot=num_fewshot, fewshot_as_multiturn=True
+    )
+
+    # Append the actual question as the final user message
+    question = task.doc_to_text(doc)
+    messages.append({"role": "user", "content": question})
+
+    return messages
+
+
 def _check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
     """Check if completion is correct using task's process_results.
 
@@ -239,6 +283,10 @@ class PrecomputeTracesCommand(BaseCommand):
         output_dir = Path(hydra_cfg.runtime.output_dir)
         logger.info(f"Output directory: {output_dir}")
 
+        # Log initial memory state and reset peak tracking
+        log_memory("INIT")
+        reset_peak_memory_stats()
+
         # Compute config hash for resumption validation
         config_dict = self.config.model_dump(mode="json")
         config_hash = compute_config_hash(config_dict)
@@ -256,7 +304,7 @@ class PrecomputeTracesCommand(BaseCommand):
             # Save metadata for new run
             metadata = PrecomputeMetadata(
                 config_hash=config_hash,
-                teacher_model=self.config.vllm_model,
+                teacher_model=self.config.model_name,
                 samples_per_problem=self.config.samples_per_problem,
             )
             save_metadata(output_dir, metadata)
@@ -265,50 +313,117 @@ class PrecomputeTracesCommand(BaseCommand):
         # Initialize simple trace writer (just appends to JSONL)
         writer = TraceWriter(output_dir)
 
-        # Initialize vLLM client config
-        vllm_config = VLLMClientConfig(
-            base_url=self.config.vllm_base_url,
-            model=self.config.vllm_model,
-            api_key=self.config.vllm_api_key,
-            timeout_seconds=self.config.vllm_timeout_seconds,
-            max_concurrent_requests=self.config.max_concurrent_requests,
-        )
-        logger.info(f"vLLM: {self.config.vllm_base_url} model={self.config.vllm_model}")
+        # Create generation backend from config
+        backend = self.config.backend.create_backend()
+        logger.info(f"Backend: {self.config.backend.backend_type}")
+
+        if self.config.placement is not None:
+            logger.info(f"Placement: {self.config.placement[:4]}... ({len(self.config.placement)} layers)")
 
         # Process each task lazily (load dataset only when processing begins)
         task_names = [_get_task_name(ts) for ts in self.config.tasks]
         logger.info(f"Tasks to process: {task_names}")
 
-        # Track totals for final summary
+        # Dispatch based on backend category
+        if isinstance(backend, AsyncBackend):
+            await self._run_async_pool(backend, writer, output_dir)
+        elif isinstance(backend, SyncBackend):
+            self._run_sync_loop(backend, writer, output_dir)
+        else:
+            raise TypeError(f"Unknown backend type: {type(backend)}")
+
+    async def _run_async_pool(
+        self,
+        backend: AsyncBackend,
+        writer: TraceWriter,
+        output_dir: Path,
+    ) -> None:
+        """Run with async backend using worker pool for concurrent requests."""
         total_problems = 0
         total_completed = 0
 
-        async with VLLMClient(vllm_config) as client:
+        async with backend:
+            # Set placement if specified (after model is loaded)
+            if self.config.placement is not None:
+                await backend.set_placement(self.config.placement)
             for task_spec in self.config.tasks:
-                problems, completed = await self._process_task_spec(
-                    task_spec=task_spec,
-                    client=client,
+                prepared = self._prepare_task(task_spec, output_dir)
+                if prepared is None:
+                    continue
+
+                task, task_name, docs, remaining_indices, total, num_already_done = prepared
+                total_problems += total
+
+                num_completed = await self._process_problems_async(
+                    task=task,
+                    task_name=task_name,
+                    docs=docs,
+                    remaining_indices=remaining_indices,
+                    backend=backend,
                     writer=writer,
-                    output_dir=output_dir,
                 )
-                total_problems += problems
-                total_completed += completed
+
+                logger.info(
+                    f"Task '{task_name}': complete, "
+                    f"{num_already_done + num_completed}/{total} problems"
+                )
+                total_completed += num_completed
 
         logger.info(
             f"All tasks complete! {total_completed}/{total_problems} problems processed"
         )
 
-    async def _process_task_spec(
+    def _run_sync_loop(
         self,
-        task_spec: str | TaskSpec,
-        client: VLLMClient,
+        backend: SyncBackend,
         writer: TraceWriter,
         output_dir: Path,
-    ) -> tuple[int, int]:
-        """Process a single task spec with lazy loading.
+    ) -> None:
+        """Run with sync backend using sequential processing."""
+        total_problems = 0
+        total_completed = 0
+
+        with backend:
+            # Set placement if specified (after model is loaded)
+            if self.config.placement is not None:
+                backend.set_placement(self.config.placement)
+            for task_spec in self.config.tasks:
+                prepared = self._prepare_task(task_spec, output_dir)
+                if prepared is None:
+                    continue
+
+                task, task_name, docs, remaining_indices, total, num_already_done = prepared
+                total_problems += total
+
+                num_completed = self._process_problems_sync(
+                    task=task,
+                    task_name=task_name,
+                    docs=docs,
+                    remaining_indices=remaining_indices,
+                    backend=backend,
+                    writer=writer,
+                )
+
+                logger.info(
+                    f"Task '{task_name}': complete, "
+                    f"{num_already_done + num_completed}/{total} problems"
+                )
+                total_completed += num_completed
+
+        logger.info(
+            f"All tasks complete! {total_completed}/{total_problems} problems processed"
+        )
+
+    def _prepare_task(
+        self,
+        task_spec: str | TaskSpec,
+        output_dir: Path,
+    ) -> tuple["Task", str, Docs, set[int], int, int] | None:
+        """Load and prepare a task, returning None if already complete.
 
         Returns:
-            Tuple of (total_problems, num_completed_this_run).
+            Tuple of (task, task_name, docs, remaining_indices, total_problems, num_already_done)
+            or None if the task is already complete.
         """
         from lm_eval.api.task import Task
         from lm_eval.tasks import TaskManager, get_task_dict
@@ -348,7 +463,7 @@ class PrecomputeTracesCommand(BaseCommand):
 
         if not remaining_indices:
             logger.info(f"Task '{task_name}': already complete, skipping")
-            return total_problems, 0
+            return None
 
         num_already_done = len(completed_indices)
         logger.info(
@@ -356,34 +471,18 @@ class PrecomputeTracesCommand(BaseCommand):
             f"({total_problems} total, {num_already_done} done)"
         )
 
-        # Process remaining problems
-        num_completed = await self._process_problems(
-            task=task,
-            task_name=task_name,
-            docs=docs,
-            remaining_indices=remaining_indices,
-            total_problems=total_problems,
-            client=client,
-            writer=writer,
-        )
+        return task, task_name, docs, remaining_indices, total_problems, num_already_done
 
-        logger.info(
-            f"Task '{task_name}': complete, "
-            f"{num_already_done + num_completed}/{total_problems} problems"
-        )
-        return total_problems, num_completed
-
-    async def _process_problems(
+    async def _process_problems_async(
         self,
         task: "Task",
         task_name: str,
         docs: Docs,
         remaining_indices: set[int],
-        total_problems: int,
-        client: VLLMClient,
+        backend: AsyncBackend,
         writer: TraceWriter,
     ) -> int:
-        """Process remaining problems with worker pool pattern.
+        """Process remaining problems with async worker pool pattern.
 
         Uses a queue-based worker pool to limit memory usage. Only
         max_concurrent_requests docs are held in memory at once,
@@ -407,11 +506,11 @@ class PrecomputeTracesCommand(BaseCommand):
                 # Fetch doc only when we're ready to process it
                 doc = docs[idx]
 
-                # Generate completions
-                prompt = task.fewshot_context(doc, num_fewshot=task.config.num_fewshot)
+                # Build chat messages with proper multi-turn few-shot format
+                messages = _build_chat_messages(task, doc, task.config.num_fewshot)
                 try:
-                    result = await client.chat_generate(
-                        prompt=prompt,
+                    result = await backend.agenerate(
+                        messages=messages,
                         n=self.config.samples_per_problem,
                         max_tokens=self.config.max_new_tokens,
                         temperature=self.config.temperature,
@@ -466,7 +565,7 @@ class PrecomputeTracesCommand(BaseCommand):
         # Start worker pool and progress logger
         workers = [
             asyncio.create_task(worker())
-            for _ in range(min(self.config.max_concurrent_requests, total_remaining))
+            for _ in range(min(backend.max_concurrent_requests, total_remaining))
         ]
         progress_task = asyncio.create_task(log_progress())
 
@@ -478,6 +577,122 @@ class PrecomputeTracesCommand(BaseCommand):
             await progress_task
         except asyncio.CancelledError:
             pass
+
+        return total_remaining
+
+    def _process_problems_sync(
+        self,
+        task: "Task",
+        task_name: str,
+        docs: Docs,
+        remaining_indices: set[int],
+        backend: SyncBackend,
+        writer: TraceWriter,
+    ) -> int:
+        """Process remaining problems synchronously with batching.
+
+        Used for local transformers models. Batches multiple prompts together
+        for efficient GPU utilization.
+
+        Returns:
+            Number of problems completed in this run.
+        """
+        import time
+
+        total_remaining = len(remaining_indices)
+        remaining_list = sorted(remaining_indices)
+        batch_size = backend.batch_size
+        last_log_time = time.time()
+        last_memory_log_time = time.time()
+        log_interval = 10  # seconds
+        memory_log_interval = 30  # seconds
+
+        logger.info(f"Processing {total_remaining} problems with batch_size={batch_size}")
+        log_memory(f"TASK {task_name} START")
+
+        # Process in batches
+        for batch_start in range(0, total_remaining, batch_size):
+            batch_end = min(batch_start + batch_size, total_remaining)
+            batch_indices = remaining_list[batch_start:batch_end]
+
+            # Log progress periodically
+            current_time = time.time()
+            if current_time - last_log_time >= log_interval:
+                logger.info(
+                    f"Task '{task_name}': {batch_start}/{total_remaining} "
+                    f"({total_remaining - batch_start} remaining)"
+                )
+                last_log_time = current_time
+
+            # Log memory periodically
+            if current_time - last_memory_log_time >= memory_log_interval:
+                log_memory(f"BATCH {batch_start}/{total_remaining}")
+                last_memory_log_time = current_time
+
+            # Collect docs and build chat messages for this batch
+            batch_docs = [docs[idx] for idx in batch_indices]
+            batch_messages = [
+                _build_chat_messages(task, doc, task.config.num_fewshot)
+                for doc in batch_docs
+            ]
+
+            # Generate completions for the entire batch
+            mem_before = get_memory_stats()
+            try:
+                results = backend.batch_generate(
+                    messages_batch=batch_messages,
+                    n=self.config.samples_per_problem,
+                    max_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+            except Exception as e:
+                # Log memory state on exception
+                logger.error(f"Batch {batch_start}-{batch_end} failed: {type(e).__name__}: {e}")
+                log_memory(f"BATCH {batch_start} EXCEPTION", level=logging.ERROR)
+
+                # Check if OOM and log detailed info
+                if "CUDA out of memory" in str(e) or "OutOfMemory" in type(e).__name__:
+                    logger.error("OUT OF MEMORY DETECTED!")
+                    log_gpu_memory_summary()
+
+                # Skip all problems in the batch
+                logger.warning(f"Skipping {len(batch_indices)} problems due to error")
+                for idx in batch_indices:
+                    skipped = SkippedProblem(
+                        problem_id=f"{task_name}:{idx}",
+                        task_name=task_name,
+                        reason=str(e),
+                    )
+                    writer.append([skipped])
+
+                # Try to recover memory
+                force_garbage_collection()
+                continue
+
+            # Process results for each problem in the batch
+            for idx, doc, result in zip(batch_indices, batch_docs, results):
+                traces = self._result_to_traces(
+                    task=task,
+                    task_name=task_name,
+                    doc=doc,
+                    problem_idx=idx,
+                    result=result,
+                )
+
+                # Append to JSONL - either traces or a skip record if all truncated
+                if traces:
+                    writer.append(traces)
+                else:
+                    skipped = SkippedProblem(
+                        problem_id=f"{task_name}:{idx}",
+                        task_name=task_name,
+                        reason=f"all {len(result.samples)} samples truncated",
+                    )
+                    writer.append([skipped])
+
+        # Log final memory state for this task
+        log_memory(f"TASK {task_name} END")
 
         return total_remaining
 
@@ -522,13 +737,10 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
 
     command: Literal["precompute_traces"] = "precompute_traces"
 
-    # vLLM server configuration
-    vllm_base_url: str = Field(
-        description="vLLM server base URL (e.g., 'http://localhost:8000')"
+    # Generation backend (vLLM or Transformers)
+    backend: BackendConfig = Field(
+        description="Generation backend configuration (vllm or transformers)"
     )
-    vllm_model: str = Field(description="Model name as registered in vLLM server")
-    vllm_api_key: str = Field(description="API key for vLLM (use 'EMPTY' if not required)")
-    vllm_timeout_seconds: int = Field(description="Request timeout in seconds")
 
     # Task configuration
     tasks: list[TaskSpecInput] = Field(
@@ -547,8 +759,12 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
     temperature: float = Field(description="Sampling temperature", gt=0.0)
     top_p: float = Field(description="Top-p (nucleus) sampling", gt=0.0, le=1.0)
 
-    # Concurrency
-    max_concurrent_requests: int = Field(description="Max concurrent vLLM requests", gt=0)
+    # Mixer placement (optional, for supernet models)
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer names per layer (e.g., ['attention', 'gdn', ...]). "
+        "If None, uses model's default placement.",
+    )
 
     @model_validator(mode="after")
     def validate_tasks(self) -> "PrecomputeTracesCommandConfig":
@@ -556,3 +772,16 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
         if not self.tasks:
             raise ValueError("At least one task must be specified")
         return self
+
+    @property
+    def model_name(self) -> str:
+        """Get model name/path from backend config."""
+        from place_layers.evaluator.importance_weighted.generation_backend import (
+            VLLMBackendConfig,
+            TransformersBackendConfig,
+        )
+        if isinstance(self.backend, VLLMBackendConfig):
+            return self.backend.model
+        elif isinstance(self.backend, TransformersBackendConfig):
+            return self.backend.model_path
+        return "unknown"
