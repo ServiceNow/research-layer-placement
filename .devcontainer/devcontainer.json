@@ -1,0 +1,49 @@
+{
+	"name": "Fast-LLM Dev Container",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".",
+		"options": [
+			"--progress=plain"
+		]
+	},
+	"runArgs": [
+		"--device=nvidia.com/gpu=all",
+		"--shm-size=16g"
+	],
+	"mounts": [
+		"type=bind,source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,readonly"
+	],
+	"remoteEnv": {
+		"SSH_AUTH_SOCK": "/ssh-agent",
+		"PATH": "/home/ubuntu/.local/bin:${containerEnv:PATH}"
+	},
+	"containerEnv": {
+		"PIP_CONSTRAINT": ""
+	},
+	"workspaceFolder": "/workspace",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+	"postCreateCommand": "pip install --no-cache-dir --no-build-isolation 'fast-llm[CORE,OPTIONAL,HUGGINGFACE,SSM,GENERATION,DEV] @ git+ssh://git@github.com/ServiceNow/Fast-LLM.git@68d1516'",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/bin/python3",
+				"python.linting.enabled": true,
+				"python.linting.pylintEnabled": false,
+				"python.formatting.provider": "black",
+				"editor.formatOnSave": true,
+				"files.watcherExclude": {
+					"**/.git/objects/**": true,
+					"**/.git/subtree-cache/**": true,
+					"**/node_modules/**": true
+				}
+			}
+		}
+	},
+	"remoteUser": "ubuntu"
+}
