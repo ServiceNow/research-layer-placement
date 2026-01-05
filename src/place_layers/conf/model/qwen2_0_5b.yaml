@@ -1,0 +1,11 @@
+# @package model
+# Qwen2-0.5B model configuration
+#
+# Standard Qwen2 model (not a supernet - single mixer type)
+
+model_path: Qwen/Qwen2-0.5B
+num_layers: 24
+mixer_names:
+  - attention
+trust_remote_code: false
+torch_dtype: bfloat16

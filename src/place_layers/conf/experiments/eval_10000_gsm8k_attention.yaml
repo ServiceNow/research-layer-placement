@@ -1,0 +1,18 @@
+# @package _global_
+# Evaluate /workspace/10000 on GSM8K with all-attention placement
+#
+# Usage:
+#   python -m place_layers +experiments=eval_10000_gsm8k_attention
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "10000"
+  - /task: gsm8k
+  - /generation: greedy
+  - _self_
+
+placements:
+  - name: all_attention
+    layers: [attention]  # Extended to 24 layers via periodic BC

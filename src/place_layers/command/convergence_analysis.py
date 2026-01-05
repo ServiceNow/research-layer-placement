@@ -109,29 +109,29 @@ class ConvergenceAnalysisCommand(BaseCommand):
             evaluator_config = base_evaluator_config.model_copy(
                 update={"seed": run_seed}
             )
-            evaluator = evaluator_config.create_evaluator()
 
-            # Create tracking wrapper
-            tracking_evaluator = TrackingEvaluatorWrapper(evaluator)
+            async with evaluator_config.create_evaluator() as evaluator:
+                # Create tracking wrapper
+                tracking_evaluator = TrackingEvaluatorWrapper(evaluator)
 
-            # Create problem with tracking evaluator
-            problem = problem_config.create_problem(tracking_evaluator)
+                # Create problem with tracking evaluator
+                problem = problem_config.create_problem(tracking_evaluator)
 
-            # Create search strategy
-            search_strategy = self.config.search_strategy.create_search_strategy()
+                # Create search strategy
+                search_strategy = self.config.search_strategy.create_search_strategy()
 
-            # Run search
-            result = await search_strategy.search(problem)
+                # Run search
+                result = await search_strategy.search(problem)
 
-            # Extract convergence curve
-            eval_counts, best_scores = tracking_evaluator.get_convergence_curve()
+                # Extract convergence curve
+                eval_counts, best_scores = tracking_evaluator.get_convergence_curve()
 
-            all_curves.append((eval_counts, best_scores))
-            all_final_scores.append(result.best_score)
-            all_total_evals.append(result.total_evaluations)
+                all_curves.append((eval_counts, best_scores))
+                all_final_scores.append(result.best_score)
+                all_total_evals.append(result.total_evaluations)
 
-            logger.info(f"  Final score: {result.best_score:.4f}")
-            logger.info(f"  Total evaluations: {result.total_evaluations:,}")
+                logger.info(f"  Final score: {result.best_score:.4f}")
+                logger.info(f"  Total evaluations: {result.total_evaluations:,}")
 
         # Statistics
         final_scores = np.array(all_final_scores)

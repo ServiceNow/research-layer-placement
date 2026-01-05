@@ -14,43 +14,38 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 
-class Trace(BaseModel):
-    """A single reasoning trace with pre-computed teacher statistics.
+class BaseGeneration(BaseModel):
+    """Base class for generation records (shared fields).
 
     Contains the tokenized prompt and completion, correctness label,
-    and teacher log-probability needed for importance weighting.
+    and metadata. Subclasses add specific fields (e.g., teacher_log_prob).
     """
 
     model_config = {"frozen": True}
 
-    record_type: Literal["trace"] = "trace"
-
     # Tokenized sequences
     prompt_tokens: tuple[int, ...] = Field(
-        description="Tokenized prompt (shared prefix for teacher and student)"
+        description="Tokenized prompt"
     )
     completion_tokens: tuple[int, ...] = Field(
-        description="Tokenized completion (the reasoning trace + answer)"
+        description="Tokenized completion"
     )
 
-    # Pre-computed teacher statistics
+    # Evaluation result
     correct: bool | None = Field(
         description="Whether the answer extracted from completion is correct. "
-        "None if correctness could not be determined from task metrics."
-    )
-    teacher_log_prob: float = Field(
-        description="Sum of log p(token | prefix) over completion tokens under teacher"
+        "None if correctness could not be determined."
     )
 
-    # Metadata for analysis/debugging
+    # Metadata
     problem_id: str = Field(
         description="Unique identifier for the source problem"
     )
     task_name: str = Field(
-        description="lm-eval task name (e.g., 'gsm8k', 'minerva_math_algebra')"
+        description="lm-eval task name (e.g., 'gsm8k')"
     )
     sample_idx: int = Field(
-        description="Sample index (when multiple traces per problem)"
+        description="Sample index (when multiple samples per problem)"
     )
     completion_text: str = Field(
         description="Decoded completion text (for debugging)",
@@ -68,6 +63,28 @@ class Trace(BaseModel):
         return len(self.completion_tokens)
 
 
+class Trace(BaseGeneration):
+    """A reasoning trace with pre-computed teacher log-probability.
+
+    Used for importance-weighted accuracy estimation during search.
+    """
+
+    record_type: Literal["trace"] = "trace"
+
+    teacher_log_prob: float = Field(
+        description="Sum of log p(token | prefix) over completion tokens under teacher"
+    )
+
+
+class Generation(BaseGeneration):
+    """A generation from evaluation (without teacher log-probs).
+
+    Used by the generative evaluator to save completions for debugging.
+    """
+
+    record_type: Literal["generation"] = "generation"
+
+
 class SkippedProblem(BaseModel):
     """A problem that was skipped during trace generation."""
 
@@ -81,7 +98,7 @@ class SkippedProblem(BaseModel):
 
 
 TraceRecord = Annotated[
-    Trace | SkippedProblem,
+    Trace | Generation | SkippedProblem,
     Field(discriminator="record_type"),
 ]
 

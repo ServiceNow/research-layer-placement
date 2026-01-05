@@ -1,0 +1,24 @@
+# @package _global_
+# Evaluate /workspace/6000 checkpoint on GSM8K
+#
+# Usage:
+#   python -m place_layers +experiments=eval_6000_gsm8k
+#
+# Evaluates all-attention placement on full GSM8K test set.
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "6000"
+  - /task: gsm8k
+  - /generation: greedy_short
+  - _self_
+
+# Override: use full test set
+task:
+  max_problems_per_task: null
+
+placements:
+  - name: all_attention
+    layers: [attention]  # Extended via periodic BC

@@ -1,0 +1,13 @@
+# @package backend
+# vLLM server backend configuration
+#
+# Requires a running vLLM server. Start with:
+#   python -m vllm.entrypoints.openai.api_server --model <model> --port 8000
+
+backend_type: vllm
+
+base_url: ${oc.env:VLLM_BASE_URL,http://localhost:8000}
+model: ${oc.env:VLLM_MODEL,default-model}
+api_key: EMPTY
+timeout_seconds: 300
+max_concurrent_requests: 32

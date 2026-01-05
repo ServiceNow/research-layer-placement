@@ -1,0 +1,18 @@
+# @package _global_
+# Evaluate Qwen2-0.5B (teacher) on GSM8K with greedy decoding
+#
+# Usage:
+#   python -m place_layers +experiments=eval_qwen2_gsm8k
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: qwen2_0_5b
+  - /task: gsm8k
+  - /generation: greedy
+  - _self_
+
+placements:
+  - name: all_attention
+    layers: [attention]

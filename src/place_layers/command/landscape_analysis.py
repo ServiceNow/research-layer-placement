@@ -36,10 +36,13 @@ class LandscapeAnalysisCommand(BaseCommand):
         hydra_cfg = HydraConfig.get()
         output_dir = Path(hydra_cfg.runtime.output_dir)
 
-        # Create problem
-        evaluator = self.config.evaluator.create_evaluator()
-        problem = self.config.problem.create_problem(evaluator)
+        # Create problem with proper evaluator context management
+        async with self.config.evaluator.create_evaluator() as evaluator:
+            problem = self.config.problem.create_problem(evaluator)
+            await self._run_analysis(evaluator, problem, output_dir)
 
+    async def _run_analysis(self, evaluator, problem, output_dir: Path) -> None:
+        """Run the analysis with evaluator."""
         if not isinstance(problem.config, LayerPlacementProblemConfig):
             raise TypeError("This command only works with LayerPlacementProblem")
 

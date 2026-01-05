@@ -1,0 +1,12 @@
+# @package task
+# MATH task configuration
+#
+# Challenging competition mathematics problems
+# https://arxiv.org/abs/2103.03874
+
+tasks:
+  - math
+
+num_fewshot: 4
+max_problems_per_task: null
+split: test

@@ -1,0 +1,33 @@
+# @package evaluator
+# Generative evaluator - measures accuracy through direct generation
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (vllm or transformers)
+#   - model: Model checkpoint settings (num_layers, mixer_names)
+#   - task: Benchmark configuration (tasks, num_fewshot)
+#   - generation: Decoding parameters (temperature, samples)
+#
+# Example usage:
+#   python -m place_layers command=evaluate evaluator=generative \
+#       backend=transformers model=6000 task=gsm8k generation=greedy
+
+evaluator_type: generative
+
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
+
+# Model structure (composed from model/ config group)
+num_layers: ${model.num_layers}
+mixer_names: ${model.mixer_names}
+
+# Task configuration (composed from task/ config group)
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
+
+# Generation parameters (composed from generation/ config group)
+samples_per_problem: ${generation.samples_per_problem}
+max_new_tokens: ${generation.max_new_tokens}
+temperature: ${generation.temperature}
+top_p: ${generation.top_p}

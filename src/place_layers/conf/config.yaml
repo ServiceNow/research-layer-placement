@@ -1,27 +1,11 @@
-defaults:
-  - command: ???  # Must specify: optimize, landscape_analysis, convergence_analysis, or sensitivity_analysis
-  - problem: layer_placement
-  - evaluator: mock_supernet
-  - search_strategy: hierarchical_beam
-  - result_handler: json
-  - override hydra/job_logging: rich_files
-  - override hydra/hydra_logging: rich
-  - _self_
+# Minimal root config
+#
+# Usage patterns:
+#   1. Explicit: python -m place_layers command=evaluate evaluator=generative ...
+#   2. Experiment: python -m place_layers +experiments=eval_6000_gsm8k
+#
+# When using experiments, the command is provided by the experiment config.
 
-hydra:
-  run:
-    dir: outputs/${hydra.job.override_dirname}
-  sweep:
-    dir: multirun/${hydra.job.override_dirname}
-    subdir: ${hydra.job.num}
-  job:
-    chdir: true  # Change to output directory so all files are saved there
-    config:
-      override_dirname:
-        # Exclude ephemeral/operational parameters from directory names
-        exclude_keys:
-          - hydra.run.dir
-          - hydra.sweep.dir
-          - hydra.output_subdir
-          - hydra.job.chdir
-          - output_path
+defaults:
+  - hydra: base
+  - _self_

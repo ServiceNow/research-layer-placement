@@ -1,0 +1,9 @@
+# @package task
+# GSM8K quick evaluation (subset for fast iteration)
+
+tasks:
+  - gsm8k
+
+num_fewshot: 5
+max_problems_per_task: 100
+split: test

@@ -60,8 +60,12 @@ class CalibrateSACommand(BaseCommand):
         logger.info(f"Number of samples: {self.config.num_samples}")
         logger.info(f"Max steps (for cooling rate): {self.config.max_steps}")
 
-        # Create evaluator and cost model
-        evaluator = self.config.evaluator.create_evaluator()
+        # Create evaluator with proper context management
+        async with self.config.evaluator.create_evaluator() as evaluator:
+            await self._run_calibration(evaluator, output_dir)
+
+    async def _run_calibration(self, evaluator, output_dir: Path) -> None:
+        """Run calibration with evaluator."""
         cost_model_config = self.config.cost_model
 
         if not isinstance(cost_model_config, LinearCostModelConfig):

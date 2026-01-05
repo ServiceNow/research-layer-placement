@@ -1,0 +1,20 @@
+# @package _global_
+# Quick evaluation of /workspace/6000 on GSM8K (100 problems)
+#
+# Usage:
+#   python -m place_layers +experiments=eval_6000_gsm8k_quick
+#
+# Fast iteration with subset of problems.
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "6000"
+  - /task: gsm8k_quick
+  - /generation: greedy_short
+  - _self_
+
+placements:
+  - name: all_attention
+    layers: [attention]  # Extended via periodic BC

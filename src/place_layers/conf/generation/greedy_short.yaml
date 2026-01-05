@@ -1,0 +1,10 @@
+# @package generation
+# Greedy decoding with shorter context
+#
+# For models with limited context (e.g., 2048 tokens).
+
+samples_per_problem: 1
+max_new_tokens: 512
+do_sample: false
+temperature: 1.0  # Ignored when do_sample=false
+top_p: 1.0

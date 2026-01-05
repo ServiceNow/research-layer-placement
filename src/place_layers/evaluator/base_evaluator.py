@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 
 if TYPE_CHECKING:
@@ -11,7 +11,14 @@ if TYPE_CHECKING:
 
 
 class BaseEvaluator[ParametersT]:
-    """Abstract base class for parameter evaluators."""
+    """Abstract base class for parameter evaluators.
+
+    Evaluators should be used as async context managers to ensure proper
+    resource cleanup:
+
+        async with config.create_evaluator() as evaluator:
+            score = await evaluator.evaluate(placement)
+    """
 
     def __init__(self, config: BaseEvaluatorConfig) -> None:
         """
@@ -21,6 +28,14 @@ class BaseEvaluator[ParametersT]:
             config: Evaluator configuration.
         """
         self.config = config
+
+    async def __aenter__(self) -> Self:
+        """Enter async context (default: no-op)."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit async context and cleanup resources (default: no-op)."""
+        pass
 
     @property
     @abstractmethod

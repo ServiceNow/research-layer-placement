@@ -1,41 +1,31 @@
 # @package _global_
+# Precompute traces command - generate completions for importance weighting
+#
+# Required config groups (must be specified by user or experiment):
+#   - backend: vllm, transformers
+#   - task: gsm8k, etc.
+#   - generation: sampling (typically)
+#
+# Usage:
+#   python -m place_layers command=precompute_traces \
+#       backend=vllm task=gsm8k generation=sampling
 
 command: precompute_traces
 
-# Generation backend configuration
-# Use backend_type: vllm for remote vLLM server
-# Use backend_type: transformers for local HuggingFace model
-backend:
-  backend_type: vllm
-  base_url: http://localhost:8000
-  model: ${oc.env:VLLM_MODEL,default-model}
-  api_key: EMPTY
-  timeout_seconds: 300
+# Backend configuration (from backend config group)
+backend: ${backend}
 
-# Task configuration
-# Each task can be:
-#   - A string: "gsm8k" (uses defaults)
-#   - A dict with overrides:
-#       task: gsm8k
-#       num_fewshot: 3
-#       description: "Solve step by step."
-#       fewshot_sampler: random  # first_n, random, or balanced
-tasks:
-  - gsm8k
-  # Example with overrides:
-  # - task: triviaqa
-  #   num_fewshot: 0
-  #   fewshot_sampler: random
+# Task configuration (from task config group)
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
 
-split: test
-num_fewshot: 5  # Default, can be overridden per-task
-max_problems_per_task: null
+# Generation parameters (from generation config group)
+samples_per_problem: ${generation.samples_per_problem}
+max_new_tokens: ${generation.max_new_tokens}
+temperature: ${generation.temperature}
+top_p: ${generation.top_p}
 
-# Sampling configuration
-samples_per_problem: 8
+# Trace-specific configuration
 seed: 42
-
-# Generation configuration
-max_new_tokens: 1024
-temperature: 0.7
-top_p: 0.95

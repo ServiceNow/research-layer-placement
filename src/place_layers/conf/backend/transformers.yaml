@@ -1,0 +1,14 @@
+# @package backend
+# HuggingFace Transformers backend configuration
+#
+# Loads model locally using transformers library.
+# Supports dynamic mixer placement for Apriel2 supernet models.
+
+backend_type: transformers
+
+model_path: ${model.model_path}  # From model config group
+tokenizer_path: null  # Defaults to model_path if null
+torch_dtype: ${model.torch_dtype}
+device_map: cuda
+trust_remote_code: ${model.trust_remote_code}
+batch_size: 4

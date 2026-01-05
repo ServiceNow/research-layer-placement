@@ -1,0 +1,9 @@
+# @package generation
+# Sampling with temperature (stochastic)
+#
+# Best for trace generation or pass@k evaluation.
+
+samples_per_problem: 8
+max_new_tokens: 1024
+temperature: 0.7
+top_p: 0.95

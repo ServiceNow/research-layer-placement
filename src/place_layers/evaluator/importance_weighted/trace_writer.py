@@ -24,8 +24,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from place_layers.evaluator.importance_weighted.traces import (
+    BaseGeneration,
     SkippedProblem,
-    Trace,
     TraceRecord,
     TraceRecordAdapter,
 )
@@ -68,12 +68,13 @@ class TraceWriter:
 
     def append(self, records: list[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
-        traces = [r for r in records if isinstance(r, Trace)]
+        # Traces and Generations (BaseGeneration subclasses) go to validation.jsonl
+        valid = [r for r in records if isinstance(r, BaseGeneration)]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
-        if traces:
+        if valid:
             with (self.output_dir / "validation.jsonl").open("a") as f:
-                for record in traces:
+                for record in valid:
                     f.write(record.model_dump_json() + "\n")
 
         if skipped:
@@ -134,7 +135,8 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                 try:
                     record = TraceRecordAdapter.validate_json(line)
                     match record:
-                        case Trace(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
+                        # BaseGeneration covers both Trace and Generation
+                        case BaseGeneration(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
                             if tn not in completed:
                                 completed[tn] = set()
                             problem_idx = _extract_problem_idx(pid)
@@ -186,3 +188,157 @@ def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
         logger.info(f"Reconstructed task '{task_name}': {len(indices)} problems completed")
 
     return completed
+
+
+# =============================================================================
+# Generation Summary
+# =============================================================================
+
+
+class TaskStats(BaseModel):
+    """Per-task statistics for generation evaluation."""
+
+    model_config = {"frozen": True}
+
+    num_problems: int = Field(description="Number of unique problems")
+    num_samples: int = Field(description="Total number of samples")
+    problems_correct: int = Field(description="Problems with at least one correct sample")
+    samples_correct: int = Field(description="Number of correct samples")
+
+    @property
+    def problem_accuracy(self) -> float:
+        """Pass@k accuracy for this task."""
+        return self.problems_correct / self.num_problems if self.num_problems > 0 else 0.0
+
+    @property
+    def sample_accuracy(self) -> float:
+        """Per-sample accuracy for this task."""
+        return self.samples_correct / self.num_samples if self.num_samples > 0 else 0.0
+
+
+class GenerationSummary(BaseModel):
+    """Summary statistics for generation evaluation.
+
+    Computed from Generation records on disk - the single source of truth.
+    """
+
+    model_config = {"frozen": True}
+
+    # Per-task statistics
+    task_stats: dict[str, TaskStats] = Field(description="Statistics per task")
+
+    # Aggregate statistics
+    total_problems: int = Field(description="Total problems across all tasks")
+    total_samples: int = Field(description="Total samples across all tasks")
+    problems_correct: int = Field(description="Problems with at least one correct sample")
+    samples_correct: int = Field(description="Total correct samples")
+
+    @property
+    def problem_accuracy(self) -> float:
+        """Pass@k accuracy: fraction of problems with any correct sample."""
+        return self.problems_correct / self.total_problems if self.total_problems > 0 else 0.0
+
+    @property
+    def sample_accuracy(self) -> float:
+        """Per-sample accuracy: fraction of samples that are correct."""
+        return self.samples_correct / self.total_samples if self.total_samples > 0 else 0.0
+
+    def __str__(self) -> str:
+        lines = ["Generation Summary:"]
+        for task_name, stats in sorted(self.task_stats.items()):
+            lines.append(
+                f"  {task_name}: {stats.problems_correct}/{stats.num_problems} problems "
+                f"({stats.problem_accuracy:.1%}), "
+                f"{stats.samples_correct}/{stats.num_samples} samples "
+                f"({stats.sample_accuracy:.1%})"
+            )
+        lines.append(
+            f"  TOTAL: {self.problems_correct}/{self.total_problems} problems "
+            f"({self.problem_accuracy:.1%}), "
+            f"{self.samples_correct}/{self.total_samples} samples "
+            f"({self.sample_accuracy:.1%})"
+        )
+        return "\n".join(lines)
+
+
+def summarize_generations(output_dir: Path) -> GenerationSummary:
+    """Compute summary statistics from Generation records on disk.
+
+    This is the authoritative way to compute evaluation metrics.
+    The validation.jsonl file is the single source of truth.
+
+    Args:
+        output_dir: Directory containing validation.jsonl.
+
+    Returns:
+        GenerationSummary with per-task and aggregate statistics.
+    """
+    from collections import defaultdict
+
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    # Group records by task and problem
+    # task_name -> problem_id -> list of correctness values
+    task_problems: dict[str, dict[str, list[bool | None]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if isinstance(record, BaseGeneration):
+                    task_problems[record.task_name][record.problem_id].append(
+                        record.correct
+                    )
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in summary")
+
+    # Compute per-task statistics
+    task_stats: dict[str, TaskStats] = {}
+    total_problems = 0
+    total_samples = 0
+    total_problems_correct = 0
+    total_samples_correct = 0
+
+    for task_name, problems in task_problems.items():
+        num_problems = len(problems)
+        num_samples = sum(len(samples) for samples in problems.values())
+        problems_correct = sum(
+            1 for samples in problems.values()
+            if any(s is True for s in samples)
+        )
+        samples_correct = sum(
+            sum(1 for s in samples if s is True)
+            for samples in problems.values()
+        )
+
+        task_stats[task_name] = TaskStats(
+            num_problems=num_problems,
+            num_samples=num_samples,
+            problems_correct=problems_correct,
+            samples_correct=samples_correct,
+        )
+
+        total_problems += num_problems
+        total_samples += num_samples
+        total_problems_correct += problems_correct
+        total_samples_correct += samples_correct
+
+    return GenerationSummary(
+        task_stats=task_stats,
+        total_problems=total_problems,
+        total_samples=total_samples,
+        problems_correct=total_problems_correct,
+        samples_correct=total_samples_correct,
+    )

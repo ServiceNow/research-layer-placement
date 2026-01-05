@@ -48,36 +48,36 @@ class HyperparameterAnalysisCommand(BaseCommand):
         # Storage for results
         results = []
 
-        # Run grid search
-        run_idx = 0
-        for beam_width in self.config.beam_widths:
-            for early_stop_threshold in self.config.early_stop_thresholds:
-                run_idx += 1
-                logger.info(f"\n{'='*60}")
-                logger.info(f"Configuration {run_idx}/{total_runs}")
-                logger.info(f"  beam_width: {beam_width}")
-                logger.info(f"  early_stop_threshold: {early_stop_threshold}")
-                logger.info(f"{'='*60}")
+        # Run grid search with shared evaluator
+        async with self.config.evaluator.create_evaluator() as evaluator:
+            problem = self.config.problem.create_problem(evaluator)
 
-                # Create modified search strategy config
-                search_config = self.config.search_strategy.model_copy(
-                    update={
-                        "beam_width": beam_width,
-                        "initial_beam_width": beam_width,
-                        "early_stop_threshold": early_stop_threshold,
-                    }
-                )
+            run_idx = 0
+            for beam_width in self.config.beam_widths:
+                for early_stop_threshold in self.config.early_stop_thresholds:
+                    run_idx += 1
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"Configuration {run_idx}/{total_runs}")
+                    logger.info(f"  beam_width: {beam_width}")
+                    logger.info(f"  early_stop_threshold: {early_stop_threshold}")
+                    logger.info(f"{'='*60}")
 
-                # Create evaluator and problem
-                evaluator = self.config.evaluator.create_evaluator()
-                problem = self.config.problem.create_problem(evaluator)
-                search_strategy = search_config.create_search_strategy()
+                    # Create modified search strategy config
+                    search_config = self.config.search_strategy.model_copy(
+                        update={
+                            "beam_width": beam_width,
+                            "initial_beam_width": beam_width,
+                            "early_stop_threshold": early_stop_threshold,
+                        }
+                    )
 
-                # Run search
-                result = await search_strategy.search(problem)
+                    search_strategy = search_config.create_search_strategy()
 
-                # Store results
-                results.append(
+                    # Run search
+                    result = await search_strategy.search(problem)
+
+                    # Store results
+                    results.append(
                     {
                         "beam_width": beam_width,
                         "early_stop_threshold": early_stop_threshold,

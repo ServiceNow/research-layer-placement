@@ -1,0 +1,18 @@
+# @package _global_
+# Evaluate command - run evaluation on specific placements
+#
+# Required config groups:
+#   - evaluator: generative, importance_weighted, etc.
+#   - backend: transformers, vllm (for generative)
+#   - model: 6000, 10000, etc.
+#   - task: gsm8k, etc. (for generative)
+#   - generation: greedy, sampling (for generative)
+
+command: evaluate
+
+# Mixer names (from model config)
+mixer_names: ${model.mixer_names}
+
+# Placements to evaluate (set in experiment config)
+# If layers list is shorter than num_layers, it repeats cyclically
+placements: null
