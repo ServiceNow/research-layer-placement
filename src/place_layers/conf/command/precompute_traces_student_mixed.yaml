@@ -1,0 +1,58 @@
+# @package _global_
+
+command: precompute_traces
+
+# Transformers backend for student supernet
+backend:
+  backend_type: transformers
+  model_path: ${oc.env:MODEL_PATH,/workspace/6000}
+  tokenizer_path: ${oc.env:TOKENIZER_PATH,null}
+  torch_dtype: bfloat16
+  device_map: cuda
+  trust_remote_code: true
+  batch_size: 4
+
+# Task configuration
+tasks:
+  - gsm8k
+
+split: test
+num_fewshot: 5
+max_problems_per_task: null
+
+# Sampling configuration
+samples_per_problem: 8
+seed: 42
+
+# Generation configuration
+max_new_tokens: 1024
+temperature: 0.7
+top_p: 0.95
+
+# Non-trivial placement: alternating mixers across 24 layers
+# Pattern: attention, gdn, kda, sliding_window (repeated 6 times)
+placement:
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+  - attention
+  - gdn
+  - kda
+  - sliding_window
