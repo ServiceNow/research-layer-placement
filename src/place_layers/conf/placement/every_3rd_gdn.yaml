@@ -1,0 +1,3 @@
+# @package _global_
+# GDN at every 3rd layer (8 GDN layers for 24-layer model)
+placement: [attention, attention, gdn]

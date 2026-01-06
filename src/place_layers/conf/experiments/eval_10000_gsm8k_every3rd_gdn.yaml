@@ -1,0 +1,15 @@
+# @package _global_
+# Evaluate /workspace/10000 on GSM8K with every 3rd layer as GDN
+#
+# Usage:
+#   python -m place_layers +experiments=eval_10000_gsm8k_every3rd_gdn
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "10000"
+  - /task: gsm8k
+  - /generation: greedy
+  - /placement: every_3rd_gdn
+  - _self_

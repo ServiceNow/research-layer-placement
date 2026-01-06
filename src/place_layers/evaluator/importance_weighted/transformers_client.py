@@ -270,14 +270,16 @@ class TransformersClient:
         attention_mask = batch_encoding.attention_mask.to(self._device)
 
         # Generate with scores for log probability extraction
+        # temperature=0 means greedy (matches vLLM behavior)
+        do_sample = temperature > 0
         with torch.no_grad():
             outputs = self._model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_tokens,
-                temperature=temperature,
+                temperature=temperature if do_sample else 1.0,  # Avoid temperature=0 warning
                 top_p=top_p,
-                do_sample=True,
+                do_sample=do_sample,
                 num_return_sequences=n,
                 pad_token_id=self._tokenizer.pad_token_id,
                 eos_token_id=self._tokenizer.eos_token_id,

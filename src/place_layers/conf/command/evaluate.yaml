@@ -1,5 +1,5 @@
 # @package _global_
-# Evaluate command - run evaluation on specific placements
+# Evaluate command - run evaluation on a single placement
 #
 # Required config groups:
 #   - evaluator: generative, importance_weighted, etc.
@@ -7,12 +7,18 @@
 #   - model: 6000, 10000, etc.
 #   - task: gsm8k, etc. (for generative)
 #   - generation: greedy, sampling (for generative)
+#
+# Optional:
+#   - placement: all_attention, every_4th_gdn, etc. (null for non-supernets)
+#
+# Use Hydra --multirun for sweeps:
+#   python -m place_layers ... placement=all_attention,every_4th_gdn --multirun
 
 command: evaluate
 
 # Mixer names (from model config)
 mixer_names: ${model.mixer_names}
 
-# Placements to evaluate (set in experiment config)
-# If layers list is shorter than num_layers, it repeats cyclically
-placements: null
+# Single placement (null for non-supernet models)
+# Use placement config group or set directly
+placement: null

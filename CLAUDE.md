@@ -13,6 +13,7 @@ This template describes reusable architectural patterns for building type-safe, 
 5. [Boilerplate Templates](#boilerplate-templates)
 6. [Common Variations](#common-variations)
 7. [Example: This Codebase](#example-this-codebase)
+8. [Hydra Config Directory Organization](#hydra-config-directory-organization)
 
 ---
 
@@ -666,6 +667,281 @@ This template is derived from the inference benchmarking codebase. Here's how th
 | **Config Directory** | `src/inference_benchmarks/conf/` |
 
 See the concrete `CLAUDE.md` file for the full detailed example.
+
+---
+
+## Hydra Config Directory Organization
+
+This section describes the organizational pattern for Hydra configuration files. The key principle is **minimal root config with compositional groups**.
+
+### Directory Structure
+
+```
+conf/
+├── config.yaml              # Minimal root - only mandatory settings
+├── hydra/                   # Hydra-specific settings
+│   ├── base.yaml           # Standard hydra config (logging, output dirs)
+│   ├── job_logging/        # Job logging variants
+│   └── hydra_logging/      # Hydra logging variants
+│
+├── command/                 # Command configs (@package _global_)
+│   ├── evaluate.yaml       # command: evaluate + command-specific options
+│   ├── optimize.yaml       # command: optimize + command-specific options
+│   └── precompute_traces.yaml
+│
+├── evaluator/              # Evaluator configs (@package evaluator)
+│   ├── generative.yaml     # Uses interpolation: ${backend}, ${model.num_layers}
+│   ├── importance_weighted.yaml
+│   └── mock_supernet.yaml
+│
+├── backend/                # Backend configs (@package backend)
+│   ├── transformers.yaml   # Local HuggingFace model
+│   └── vllm.yaml          # Remote vLLM server
+│
+├── model/                  # Model configs (@package model)
+│   ├── 6000.yaml          # /workspace/6000 checkpoint
+│   └── qwen2_0_5b.yaml    # Qwen2-0.5B
+│
+├── task/                   # Task configs (@package task)
+│   ├── gsm8k.yaml         # Full GSM8K evaluation
+│   └── gsm8k_quick.yaml   # Quick 100-problem subset
+│
+├── generation/             # Generation configs (@package generation)
+│   ├── greedy.yaml        # Deterministic decoding (temperature=0)
+│   ├── greedy_short.yaml  # Short context (512 tokens)
+│   └── sampling.yaml      # Stochastic sampling
+│
+├── placement/              # Placement configs (@package _global_)
+│   ├── all_attention.yaml # Baseline: all attention layers
+│   ├── every_2nd_gdn.yaml # GDN at every 2nd layer
+│   ├── every_3rd_gdn.yaml # GDN at every 3rd layer
+│   └── every_4th_gdn.yaml # GDN at every 4th layer
+│
+├── experiments/            # NOT a config group - standalone root configs
+│   ├── eval_6000_gsm8k.yaml
+│   └── precompute_gsm8k_vllm.yaml
+│
+└── [problem/, search_strategy/, result_handler/]  # Other config groups
+```
+
+### Key Principles
+
+#### 1. Minimal Root Config
+
+The root `config.yaml` should only specify mandatory settings:
+
+```yaml
+# config.yaml
+defaults:
+  - command: ???  # Must specify - forces user to choose a command
+  - hydra: base   # Pull in standard hydra settings
+  - _self_
+```
+
+**Why**: Most config groups will be overridden anyway. Don't set defaults that nobody uses.
+
+#### 2. Command Configs are Global Scope
+
+Command configs use `@package _global_` because different commands have different schemas:
+
+```yaml
+# command/evaluate.yaml
+# @package _global_
+
+command: evaluate
+
+# Command-specific options with interpolation
+mixer_names: ${model.mixer_names}
+
+# Single placement (use Hydra --multirun for sweeps)
+# Use placement config group or set to null for non-supernets
+placement: null
+```
+
+Commands define their structure and can use interpolation to reference other config groups.
+
+#### 3. Component Configs are Scoped
+
+Regular config groups use their package scope:
+
+```yaml
+# backend/transformers.yaml
+# @package backend
+
+backend_type: transformers
+model_path: ${oc.env:MODEL_PATH,/workspace/6000}
+torch_dtype: bfloat16
+# ...
+```
+
+```yaml
+# model/6000.yaml
+# @package model
+
+model_path: /workspace/6000
+num_layers: 24
+mixer_names: [attention, gdn, kda, sliding_window]
+```
+
+#### 4. Evaluators Use Interpolation for Composition
+
+Evaluator configs wire together other config groups via interpolation:
+
+```yaml
+# evaluator/generative.yaml
+# @package evaluator
+
+evaluator_type: generative
+
+# Composed from other config groups
+backend: ${backend}
+num_layers: ${model.num_layers}
+mixer_names: ${model.mixer_names}
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
+samples_per_problem: ${generation.samples_per_problem}
+max_new_tokens: ${generation.max_new_tokens}
+temperature: ${generation.temperature}
+top_p: ${generation.top_p}
+
+# Evaluator-specific (not composed)
+scoring_method: any_correct
+```
+
+#### 5. Experiments ARE a Config Group (with Global Scope)
+
+The `experiments/` folder is a config group, but experiment configs use `# @package _global_` to inject their contents at root scope.
+
+```yaml
+# experiments/eval_6000_gsm8k.yaml
+# @package _global_
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "6000"      # Quoted because it looks like a number
+  - /task: gsm8k
+  - /generation: greedy_short
+  - /placement: all_attention  # Use placement config group
+  - _self_
+
+# Experiment-specific overrides
+task:
+  max_problems_per_task: null  # Use full test set
+```
+
+**Key points**:
+- Uses `# @package _global_` to put contents at root scope
+- Uses absolute paths with `/` prefix: `/command: evaluate` not `command: evaluate`
+- Does NOT include `/hydra: base` - inherited from config.yaml
+- Pulls in ALL required config groups for the command
+- Can override specific values after composition
+- Run with: `python -m place_layers +experiments=eval_6000_gsm8k`
+
+### Usage Patterns
+
+#### Pattern A: Run an Experiment
+
+```bash
+# Run a pre-configured experiment (recommended)
+python -m place_layers +experiments=eval_6000_gsm8k
+```
+
+#### Pattern B: Compose on CLI
+
+```bash
+# Compose config groups on the command line
+python -m place_layers \
+    command=evaluate \
+    evaluator=generative \
+    backend=transformers \
+    model=6000 \
+    task=gsm8k \
+    generation=greedy
+```
+
+#### Pattern C: Override Specific Values
+
+```bash
+# Use experiment but override specific values
+python -m place_layers \
+    +experiments=eval_6000_gsm8k \
+    task.max_problems_per_task=50
+```
+
+#### Pattern D: Sweep Over Placements
+
+```bash
+# Evaluate multiple placements using Hydra multirun
+python -m place_layers \
+    command=evaluate \
+    evaluator=generative \
+    backend=transformers \
+    model=10000 \
+    task=gsm8k \
+    generation=greedy \
+    placement=all_attention,every_2nd_gdn,every_4th_gdn \
+    --multirun
+```
+
+### Hydra Base Config
+
+Centralize all Hydra settings in `hydra/base.yaml`:
+
+```yaml
+# hydra/base.yaml
+# @package hydra
+
+defaults:
+  - override job_logging: rich_files
+  - override hydra_logging: rich
+
+run:
+  dir: outputs/${hydra.job.override_dirname}
+
+sweep:
+  dir: multirun/${hydra.job.override_dirname}
+  subdir: ${hydra.job.num}
+
+job:
+  chdir: true
+  config:
+    override_dirname:
+      exclude_keys:
+        - hydra.run.dir
+        - hydra.sweep.dir
+        - hydra.output_subdir
+        - hydra.job.chdir
+        - output_path
+```
+
+### Common Gotchas
+
+**Numeric config names must be quoted**:
+```yaml
+defaults:
+  - /model: "6000"  # ✓ Quoted - treated as string
+  - /model: 6000    # ✗ Unquoted - parsed as integer, fails
+```
+
+**Use `override` for hydra sub-defaults**:
+```yaml
+# In hydra/base.yaml
+defaults:
+  - override job_logging: rich_files   # ✓ Override existing
+  - job_logging: rich_files            # ✗ Conflicts with built-in
+```
+
+**Absolute paths in experiments**:
+```yaml
+# In experiments/*.yaml
+defaults:
+  - /command: evaluate    # ✓ Absolute path from conf root
+  - command: evaluate     # ✗ Relative - looks in experiments/command/
+```
 
 ---
 

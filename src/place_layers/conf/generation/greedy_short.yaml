@@ -2,9 +2,9 @@
 # Greedy decoding with shorter context
 #
 # For models with limited context (e.g., 2048 tokens).
+# temperature=0 triggers greedy decoding in both vLLM and Transformers backends.
 
 samples_per_problem: 1
 max_new_tokens: 512
-do_sample: false
-temperature: 1.0  # Ignored when do_sample=false
+temperature: 0.0  # 0 = greedy (both backends)
 top_p: 1.0

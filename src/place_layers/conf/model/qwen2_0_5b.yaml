@@ -3,7 +3,7 @@
 #
 # Standard Qwen2 model (not a supernet - single mixer type)
 
-model_path: Qwen/Qwen2-0.5B
+model_path: Qwen/Qwen2-0.5B-Instruct
 num_layers: 24
 mixer_names:
   - attention

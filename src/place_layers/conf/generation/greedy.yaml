@@ -2,9 +2,9 @@
 # Greedy decoding (deterministic)
 #
 # Best for evaluation where reproducibility matters.
+# temperature=0 triggers greedy decoding in both vLLM and Transformers backends.
 
 samples_per_problem: 1
 max_new_tokens: 1024
-do_sample: false
-temperature: 1.0  # Ignored when do_sample=false
+temperature: 0.0  # 0 = greedy (both backends)
 top_p: 1.0

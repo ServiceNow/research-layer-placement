@@ -11,8 +11,5 @@ defaults:
   - /model: "10000"
   - /task: gsm8k
   - /generation: greedy
+  - /placement: all_attention
   - _self_
-
-placements:
-  - name: all_attention
-    layers: [attention]  # Extended to 24 layers via periodic BC

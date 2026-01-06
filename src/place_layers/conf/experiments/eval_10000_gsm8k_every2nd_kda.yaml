@@ -1,0 +1,15 @@
+# @package _global_
+# Evaluate /workspace/10000 on GSM8K with every 2nd layer as KDA
+#
+# Usage:
+#   python -m place_layers +experiments=eval_10000_gsm8k_every2nd_kda
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: transformers
+  - /model: "10000"
+  - /task: gsm8k
+  - /generation: greedy
+  - /placement: every_2nd_kda
+  - _self_

@@ -1,8 +1,11 @@
 # @package _global_
-# Evaluate Qwen2-0.5B (teacher) on GSM8K with greedy decoding
+# Evaluate Qwen2-0.5B-Instruct on GSM8K with greedy decoding
 #
 # Usage:
 #   python -m place_layers +experiments=eval_qwen2_gsm8k
+#
+# Note: Qwen2 is a non-supernet model (single mixer type),
+# so placement must be null.
 
 defaults:
   - /command: evaluate
@@ -13,6 +16,5 @@ defaults:
   - /generation: greedy
   - _self_
 
-placements:
-  - name: all_attention
-    layers: [attention]
+# Non-supernet model - no placement switching
+placement: null

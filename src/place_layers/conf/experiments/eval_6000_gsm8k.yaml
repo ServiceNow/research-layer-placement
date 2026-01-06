@@ -13,12 +13,9 @@ defaults:
   - /model: "6000"
   - /task: gsm8k
   - /generation: greedy_short
+  - /placement: all_attention
   - _self_
 
 # Override: use full test set
 task:
   max_problems_per_task: null
-
-placements:
-  - name: all_attention
-    layers: [attention]  # Extended via periodic BC
