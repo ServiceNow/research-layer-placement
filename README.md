@@ -386,14 +386,45 @@ Allocation: (2, 2, 2) ✅
 |-----------|---------|--------|
 | `search_strategy.beam_width` | 5 | Wider beam explores more candidates per phase |
 | `search_strategy.max_allocations` | 50 | More allocations = better cost-performance coverage |
+| `search_strategy.early_stop_threshold` | 0.001 | Stop allocation early if best score improves by less than this; ~70% eval reduction |
 
-Typical evaluation counts:
+**Evaluation count:**
 
-| Setting | Evals | Use Case |
-|---------|-------|----------|
-| beam=1, alloc=5 | ~3k | Quick validation |
-| beam=5, alloc=50 | ~70k | Production |
-| beam=8, alloc=54 | ~155k | Final optimization |
+For N layers, M mixers, beam_width k, A allocations, with n = N/M layers per mixer:
+
+```
+Raw candidates (before deduplication):
+
+  Evals_raw = A × { Σᵢ [Rᵢ × (1 + k(n-1)) - k×n(n-1)/2] + 1 }
+
+  where Rᵢ = N - i×n (remaining layers at phase i), summed over i = 0 to M-2
+
+Deduplication savings:
+
+  Fixed (step 1, always):    D_fixed = A × (M-1) × k(k-1)/2
+  Variable (steps 2+):       D_var ∈ [0, A × (M-1) × (n-2) × k(k-1)/2]
+
+Actual evals:
+
+  Evals ∈ [Evals_raw - D_fixed - D_var_max, Evals_raw - D_fixed]
+```
+
+**Why bounds, not exact?** Deduplication occurs when beam entries share s-1 layers. At step 1, beam entries are singletons, so `{Li}+Lj` always collides with `{Lj}+Li` → **step-1 dedup is deterministic**. At steps 2+, whether entries share layers depends on which candidates scored highest → **varies with evaluator scores**.
+
+The bounds are tight (~6% apart). Early stopping typically reduces evals by ~70%, but this is empirical (depends on score landscape, not computable a priori).
+
+Example (N=48, M=4, n=12):
+
+| Setting | Per Alloc | Total | With Early Stop | Use Case |
+|---------|-----------|-------|-----------------|----------|
+| A=5, k=1 | 1,099 | 5,495 | ~1,600 | Quick test |
+| A=5, k=5 | [4,729 – 5,029] | [23k – 25k] | ~7,500 | Quick, wide beam |
+| A=5, k=8 | [7,105 – 7,945] | [35k – 39k] | ~12k | Quick, widest beam |
+| A=50, k=5 | [4,729 – 5,029] | [236k – 251k] | ~75k | Production |
+| A=50, k=8 | [7,105 – 7,945] | [355k – 397k] | ~120k | Production, wide beam |
+| A=100, k=8 | [7,105 – 7,945] | [710k – 795k] | ~240k | Thorough |
+
+Note: k=1 has no deduplication (single beam path). For k>1, range reflects [max dedup, min dedup].
 
 #### Step 4: Validate
 
