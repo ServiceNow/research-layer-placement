@@ -102,6 +102,17 @@ TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is \
     placement=all_attention,every_4th_gdn --multirun
 ```
 
+**Multi-GPU IS evaluation:**
+```bash
+# Start servers (one per GPU)
+CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+
+# Run IS evaluation over REST
+TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is \
+    backend=rest 'backend.servers=["http://localhost:8080","http://localhost:8081"]'
+```
+
 IS evaluation reports ESS (effective sample size) alongside the score estimate.
 
 ### 2. Precompute Traces (`command=precompute_traces`)
@@ -207,20 +218,174 @@ python -m place_layers \
     result_handler=json
 ```
 
-The optimizer:
-1. Enumerates **allocations** (mixer counts) at or below `cost_budget`
-2. For each allocation, searches for the best **layer assignment**
-3. Uses fast IS scoring (no generation needed)
-4. Returns the best placement within the budget
+The optimizer uses a two-level hierarchical search:
 
-Key insight: cost depends only on allocation (counts), but performance depends on which specific layers use which mixers.
+1. **Outer loop**: Iterates over **allocations** (mixer counts) in cost order
+2. **Inner loop**: For each allocation, finds the best **layer assignment** using beam search
+3. Returns the best placement found within the cost budget
 
-**Tuning:** The optimizer uses hierarchical beam search (deterministic, reproducible). Key parameters:
+**Key insight**: Cost depends only on allocation (how many layers use each mixer), but performance depends on assignment (which specific layers use which mixer). This decomposition makes the search tractable.
+
+<details>
+<summary><strong>How the algorithm works (click to expand)</strong></summary>
+
+#### Algorithm Overview
+
+```
+OUTER LOOP: for each allocation (expensive → cheap)              Budget ≤ 4.0
+│
+├─► Allocation (2,2,2) cost=3.6
+│   │
+│   │   INNER LOOP: hierarchical beam search
+│   ├──► Phase 0: select 2 layers for mixer 0  →  {3,1}
+│   │         ↓ lock in
+│   ├──► Phase 1: select 2 layers for mixer 1  →  {0,4}
+│   │         ↓ lock in
+│   └──► Phase 2: assign remaining to mixer 2  →  {2,5}
+│             ↓
+│         [1,0,2,0,1,2]  score=0.85                             ← best
+│
+├─► Allocation (1,3,2) cost=3.4  →  beam search  →  score=0.81
+├─► Allocation (1,2,3) cost=3.1  →  beam search  →  score=0.78
+│
+└─► ... stop after max_allocations
+
+Return: best scoring assignment found
+```
+
+The **outer loop** enumerates allocations from expensive to cheap, skipping any above the cost budget. The **inner loop** (hierarchical beam search) finds the best layer assignment for each allocation — one phase per mixer, with decisions cascading down.
+
+---
+
+#### Worked Example
+
+Tracing the inner loop for allocation `(2,2,2)` with `beam_width=2`.
+
+**Notation:**
+- **Selection** `{3,1}` — layers chosen for the current mixer
+- **Assignment** `[1,0,2,0,1,2]` — complete layer→mixer mapping (position=layer, value=mixer)
+
+To evaluate a selection, undecided layers get a **fallback mixer**, creating a complete assignment we can score.
+
+---
+
+#### Phase 0: Find Best 2 Layers for Mixer 0
+
+Fallback mixer = 1 (undecided layers temporarily assigned here).
+
+**Step 1: Score each layer individually**
+
+| Selection | Assignment | Allocation | Matches? | Score |
+|-----------|------------|------------|----------|-------|
+| {0} | `[0,1,1,1,1,1]` | (1, 5, 0) | ❌ | 0.68 |
+| {1} | `[1,0,1,1,1,1]` | (1, 5, 0) | ❌ | 0.71 |
+| {2} | `[1,1,0,1,1,1]` | (1, 5, 0) | ❌ | 0.65 |
+| {3} | `[1,1,1,0,1,1]` | (1, 5, 0) | ❌ | **0.73** ← best |
+| {4} | `[1,1,1,1,0,1]` | (1, 5, 0) | ❌ | 0.70 |
+| {5} | `[1,1,1,1,1,0]` | (1, 5, 0) | ❌ | 0.66 |
+
+Top 2 selections initialize the beam: `{3}` and `{1}`.
+
+**Step 2: Grow beam to size 2**
+
+Expand each beam entry by adding one more layer:
+
+| Selection | Assignment | Allocation | Matches? | Score |
+|-----------|------------|------------|----------|-------|
+| {3, 1} | `[1,0,1,0,1,1]` | (2, 4, 0) | ❌ | **0.79** ← best |
+| {3, 4} | `[1,1,1,0,0,1]` | (2, 4, 0) | ❌ | 0.77 |
+| {3, 0} | `[0,1,1,0,1,1]` | (2, 4, 0) | ❌ | 0.75 |
+| {1, 4} | `[1,0,1,1,0,1]` | (2, 4, 0) | ❌ | 0.76 |
+| ... | | | | |
+
+Still no match to `(2, 2, 2)` — allocation is `(2, 4, 0)`. But we've found the best pair.
+
+**Phase 0 result:** layers **{3, 1}** → mixer 0 (locked in)
+
+---
+
+#### Phase 1: Find Best 2 Layers for Mixer 1
+
+**Fixed from Phase 0:** layers 1 and 3 → mixer 0
+
+Remaining layers: {0, 2, 4, 5}. Fallback shifts to mixer 2.
+
+**Step 1: Score each remaining layer**
+
+| Selection | Assignment | Allocation | Matches? | Score |
+|-----------|------------|------------|----------|-------|
+| {0} | `[1,0,2,0,2,2]` | (2, 1, 3) | ❌ | 0.81 |
+| {2} | `[2,0,1,0,2,2]` | (2, 1, 3) | ❌ | 0.78 |
+| {4} | `[2,0,2,0,1,2]` | (2, 1, 3) | ❌ | **0.83** ← best |
+| {5} | `[2,0,2,0,2,1]` | (2, 1, 3) | ❌ | 0.80 |
+
+Allocation `(2, 1, 3)` — still doesn't match target `(2, 2, 2)`.
+
+**Step 2: Grow beam to size 2**
+
+| Selection | Assignment | Allocation | Matches? | Score |
+|-----------|------------|------------|----------|-------|
+| {0, 4} | `[1,0,2,0,1,2]` | **(2, 2, 2)** | ✅ | **0.86** |
+| {4, 5} | `[2,0,2,0,1,1]` | (2, 2, 2) | ✅ | 0.85 |
+| {2, 4} | `[2,0,1,0,1,2]` | (2, 2, 2) | ✅ | 0.84 |
+| ... | | | | |
+
+**Now** the allocations match! When the selection reaches target size, we get valid assignments.
+
+**Phase 1 result:** layers **{0, 4}** → mixer 1 (locked in)
+
+---
+
+#### Phase 2: Remainder
+
+**Fixed from Phase 0:** layers 1 and 3 → mixer 0
+**Fixed from Phase 1:** layers 0 and 4 → mixer 1
+
+Remaining layers {2, 5} are assigned to the last mixer (no search needed).
+
+| Selection | Assignment | Allocation | Matches? | Score |
+|-----------|------------|------------|----------|-------|
+| {2, 5} | `[1,0,2,0,1,2]` | **(2, 2, 2)** | ✅ | **0.86** |
+
+**Phase 2 result:** layers **{2, 5}** → mixer 2
+
+---
+
+#### Final Result
+
+```
+Layer:      0    1    2    3    4    5
+Mixer:      1    0    2    0    1    2
+            ─────────────────────────────
+Assignment: [1,   0,   2,   0,   1,   2]
+Allocation: (2, 2, 2) ✅
+```
+
+---
+
+#### Why This Design?
+
+| Property | Benefit |
+|----------|---------|
+| **Outer loop by cost** | Efficiently navigate cost-performance frontier |
+| **Phase-by-phase** | Reduces search space exponentially |
+| **Proxy scores** | Enable evaluation before full assignment is known |
+| **Beam search** | Explores multiple promising paths, not purely greedy |
+| **Deterministic** | Reproducible results, no random seed sensitivity |
+
+| Tradeoff | |
+|----------|---------|
+| **Proxy scores** | Intermediate evaluations don't match target allocation — may mislead in some cases |
+| **Greedy phases** | Cannot reconsider earlier phase decisions |
+
+</details>
+
+**Tuning parameters:**
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `search_strategy.beam_width` | 5 | Wider beam = better quality, more evals |
-| `search_strategy.max_allocations` | 50 | More allocations = better coverage |
+| `search_strategy.beam_width` | 5 | Wider beam explores more candidates per phase |
+| `search_strategy.max_allocations` | 50 | More allocations = better cost-performance coverage |
 
 Typical evaluation counts:
 
@@ -241,15 +406,137 @@ python -m place_layers \
     placement='[attention, gdn, attention, ...]'  # winning placement
 ```
 
+## Multi-GPU Parallelization
+
+For large-scale evaluation or trace generation, you can distribute work across multiple GPUs using the REST server/client architecture.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Client (evaluate, precompute_traces)           │
+│              Uses: backend=rest                             │
+│              Round-robins requests across servers           │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│  GPU 0:8080  │      │  GPU 1:8081  │      │  GPU 2:8082  │
+│  serve cmd   │      │  serve cmd   │      │  serve cmd   │
+│  Transformers│      │  Transformers│      │  Transformers│
+└──────────────┘      └──────────────┘      └──────────────┘
+```
+
+### Step 1: Start Servers
+
+Start one server per GPU, each on a different port:
+
+```bash
+# Terminal 1 (GPU 0)
+CUDA_VISIBLE_DEVICES=0 python -m place_layers \
+    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+
+# Terminal 2 (GPU 1)
+CUDA_VISIBLE_DEVICES=1 python -m place_layers \
+    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+
+# Terminal 3 (GPU 2)
+CUDA_VISIBLE_DEVICES=2 python -m place_layers \
+    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8082
+```
+
+Each server loads the model and exposes it via REST API. Servers are stateless for placement - the client includes the desired placement in each request.
+
+### Step 2: Run Commands with REST Backend
+
+Use `backend=rest` with any command that supports backends:
+
+**Generative Evaluation (distributed):**
+```bash
+python -m place_layers \
+    +command=evaluate \
+    +evaluator=generative \
+    +backend=rest \
+    'backend.servers=["http://localhost:8080","http://localhost:8081","http://localhost:8082"]' \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=greedy \
+    +placement=all_attention
+```
+
+**Trace Precomputation (distributed):**
+```bash
+python -m place_layers \
+    +command=precompute_traces \
+    +backend=rest \
+    'backend.servers=["http://localhost:8080","http://localhost:8081","http://localhost:8082"]' \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=sampling
+```
+
+### Configuration
+
+**REST Backend (`backend=rest`):**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `servers` | `["http://localhost:8080"]` | List of server URLs |
+| `max_concurrent_per_server` | 8 | Max parallel requests per server |
+| `timeout_seconds` | 300 | Request timeout |
+
+**Serve Command (`command=serve`):**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `host` | `0.0.0.0` | Bind address |
+| `port` | `8080` | Listen port |
+| `backend` | (required) | Must be `transformers` |
+
+### Performance
+
+| GPUs | Approximate Speedup |
+|------|---------------------|
+| 1 | 1× (baseline) |
+| 4 | ~4× |
+| 8 | ~8× |
+
+The REST backend distributes requests using round-robin. Each server processes requests independently, so speedup scales linearly with GPU count.
+
+### Applicable Commands
+
+The REST backend works with commands that use the `backend` config group:
+
+| Command | Evaluator | Use Case |
+|---------|-----------|----------|
+| `evaluate` | `generative` | Distribute generation across GPUs |
+| `evaluate` | `importance_weighted` | Distribute IS log-prob computation across GPUs |
+| `precompute_traces` | - | Distribute trace generation across GPUs |
+
+> **Note:** The `serve` command only supports `backend=transformers`. You cannot serve a vLLM backend (vLLM is already a server).
+
+### Tips
+
+1. **Same model everywhere:** All servers must load the same model checkpoint.
+
+2. **Placement handling:** The client stores placement locally and includes it in every request. Servers set placement before processing (no-op if unchanged). This enables load balancing without coordination.
+
+3. **Environment variables:** Use `REST_SERVER_0`, `REST_SERVER_1`, etc. for server URLs:
+   ```bash
+   REST_SERVER_0=http://node1:8080 REST_SERVER_1=http://node2:8080 \
+       python -m place_layers +command=evaluate +backend=rest ...
+   ```
+
+4. **Health checks:** The REST backend verifies server connectivity on startup.
+
 ## Configuration
 
 This project uses [Hydra](https://hydra.cc/) for configuration. Key config groups:
 
 | Group | Options | Description |
 |-------|---------|-------------|
-| `command` | evaluate, optimize, precompute_traces | What to run |
+| `command` | evaluate, optimize, precompute_traces, serve | What to run |
 | `evaluator` | generative, importance_weighted, mock_supernet | How to score placements |
-| `backend` | transformers, vllm | Model inference backend |
+| `backend` | transformers, vllm, rest | Model inference backend |
 | `model` | apriel2_0_5b_dev, qwen2_0_5b | Model checkpoint |
 | `task` | gsm8k, gsm8k_quick | Evaluation task |
 | `generation` | greedy, greedy_short, sampling | Generation parameters |
