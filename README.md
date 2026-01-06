@@ -4,9 +4,28 @@ A toolkit for evaluating and optimizing layer placements in supernet models (mod
 
 ## Installation
 
+> ⚠️ **Environment setup is a work in progress.** Team setup for Superpod is in progress.
+
+**For developers with Docker access:** Use the devcontainer (`.devcontainer/`) - this is the reference setup.
+
+**Required dependencies** (CUDA kernel builds for mixer types):
+```bash
+# causal-conv1d and mamba-ssm (for Mamba)
+pip install --no-build-isolation \
+    "causal-conv1d @ git+https://github.com/Dao-AILab/causal-conv1d@v1.5.4" \
+    mamba-ssm==2.2.6.post3
+
+# flash-linear-attention (for GDN and KDA)
+pip install --no-build-isolation \
+    "flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention@67eee20"
+```
+
+**This package:**
 ```bash
 pip install -e .
 ```
+
+See `.devcontainer/Dockerfile` for exact versions, base images, and CUDA architecture settings.
 
 ## Quick Start
 
@@ -20,7 +39,9 @@ python -m place_layers +experiments=eval_10000_gsm8k_attention
 
 ### 1. Evaluate (`command=evaluate`)
 
-Evaluate specific layer placements using generative evaluation (generates completions, checks correctness).
+#### Generative Evaluation
+
+Generate completions and check correctness. Accurate but slow.
 
 **Single placement:**
 ```bash
@@ -66,13 +87,26 @@ python -m place_layers +experiments=eval_qwen2_gsm8k
 - `every_4th_gdn` - GDN at layers 3,7,11,... (6 GDN layers)
 - `every_2nd_kda`, `every_3rd_kda`, `every_4th_kda` - KDA variants
 
-### 2. Placement Optimization Workflow
+#### IS Evaluation
 
-For finding optimal placements within a latency budget, use importance-weighted (IS) evaluation:
+Fast evaluation using importance sampling. Requires precomputed traces (see [Precompute Traces](#2-precompute-traces-commandprecompute_traces) below).
 
-#### Step 1: Precompute Traces
+**Step 1:** Precompute traces (once) — see [Section 2](#2-precompute-traces-commandprecompute_traces)
 
-Generate completions with teacher model log-probabilities.
+**Step 2:** Run IS evaluation (fast, forward passes only):
+```bash
+TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_10000_gsm8k_is
+
+# Compare placements quickly
+TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_10000_gsm8k_is \
+    placement=all_attention,every_4th_gdn --multirun
+```
+
+IS evaluation reports ESS (effective sample size) alongside the score estimate.
+
+### 2. Precompute Traces (`command=precompute_traces`)
+
+Generate teacher completions with log-probabilities. Required for IS evaluation and placement optimization.
 
 **With vLLM (faster):**
 ```bash
@@ -103,7 +137,15 @@ python -m place_layers \
 
 > **Note:** Using Transformers for trace generation ensures numerical consistency between teacher and student log-probabilities, which may improve IS sample efficiency. vLLM is significantly faster but may introduce minor log-prob discrepancies.
 
-This produces `validation.jsonl` with traces containing `teacher_log_prob` for each completion.
+**Output:** `validation.jsonl` with traces containing `teacher_log_prob` for each completion.
+
+### 3. Placement Optimization
+
+Find optimal placements within a latency budget using cost-constrained search with IS evaluation.
+
+#### Step 1: Precompute Traces
+
+See [Section 2](#2-precompute-traces-commandprecompute_traces) above.
 
 #### Step 2: Define Cost Model
 
@@ -172,6 +214,21 @@ The optimizer:
 4. Returns the best placement within the budget
 
 Key insight: cost depends only on allocation (counts), but performance depends on which specific layers use which mixers.
+
+**Tuning:** The optimizer uses hierarchical beam search (deterministic, reproducible). Key parameters:
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `search_strategy.beam_width` | 5 | Wider beam = better quality, more evals |
+| `search_strategy.max_allocations` | 50 | More allocations = better coverage |
+
+Typical evaluation counts:
+
+| Setting | Evals | Use Case |
+|---------|-------|----------|
+| beam=1, alloc=5 | ~3k | Quick validation |
+| beam=5, alloc=50 | ~70k | Production |
+| beam=8, alloc=54 | ~155k | Final optimization |
 
 #### Step 4: Validate
 
