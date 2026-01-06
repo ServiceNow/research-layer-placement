@@ -1,14 +1,14 @@
 # @package _global_
-# Evaluate /workspace/10000 on GSM8K with all-attention placement
+# Evaluate Apriel2-0.5B-dev on GSM8K with all-attention placement
 #
 # Usage:
-#   python -m place_layers +experiments=eval_10000_gsm8k_attention
+#   python -m place_layers +experiments=eval_gsm8k_attention
 
 defaults:
   - /command: evaluate
   - /evaluator: generative
   - /backend: transformers
-  - /model: "10000"
+  - /model: apriel2_0_5b_dev
   - /task: gsm8k
   - /generation: greedy
   - /placement: all_attention

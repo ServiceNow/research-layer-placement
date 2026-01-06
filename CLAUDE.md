@@ -699,7 +699,7 @@ conf/
 │   └── vllm.yaml          # Remote vLLM server
 │
 ├── model/                  # Model configs (@package model)
-│   ├── 6000.yaml          # /workspace/6000 checkpoint
+│   ├── apriel2_0_5b_dev.yaml  # Apriel2-0.5B-dev supernet
 │   └── qwen2_0_5b.yaml    # Qwen2-0.5B
 │
 ├── task/                   # Task configs (@package task)
@@ -718,7 +718,7 @@ conf/
 │   └── every_4th_gdn.yaml # GDN at every 4th layer
 │
 ├── experiments/            # NOT a config group - standalone root configs
-│   ├── eval_6000_gsm8k.yaml
+│   ├── eval_gsm8k_attention.yaml
 │   └── precompute_gsm8k_vllm.yaml
 │
 └── [problem/, search_strategy/, result_handler/]  # Other config groups
@@ -769,16 +769,16 @@ Regular config groups use their package scope:
 # @package backend
 
 backend_type: transformers
-model_path: ${oc.env:MODEL_PATH,/workspace/6000}
+model_path: ${model.model_path}
 torch_dtype: bfloat16
 # ...
 ```
 
 ```yaml
-# model/6000.yaml
+# model/apriel2_0_5b_dev.yaml
 # @package model
 
-model_path: /workspace/6000
+model_path: ServiceNow-AI/apriel2-0.5b-dev
 num_layers: 24
 mixer_names: [attention, gdn, kda, sliding_window]
 ```
@@ -815,22 +815,18 @@ scoring_method: any_correct
 The `experiments/` folder is a config group, but experiment configs use `# @package _global_` to inject their contents at root scope.
 
 ```yaml
-# experiments/eval_6000_gsm8k.yaml
+# experiments/eval_gsm8k_attention.yaml
 # @package _global_
 
 defaults:
   - /command: evaluate
   - /evaluator: generative
   - /backend: transformers
-  - /model: "6000"      # Quoted because it looks like a number
+  - /model: apriel2_0_5b_dev
   - /task: gsm8k
-  - /generation: greedy_short
-  - /placement: all_attention  # Use placement config group
+  - /generation: greedy
+  - /placement: all_attention
   - _self_
-
-# Experiment-specific overrides
-task:
-  max_problems_per_task: null  # Use full test set
 ```
 
 **Key points**:
@@ -839,7 +835,7 @@ task:
 - Does NOT include `/hydra: base` - inherited from config.yaml
 - Pulls in ALL required config groups for the command
 - Can override specific values after composition
-- Run with: `python -m place_layers +experiments=eval_6000_gsm8k`
+- Run with: `python -m place_layers +experiments=eval_gsm8k_attention`
 
 ### Usage Patterns
 
@@ -847,7 +843,7 @@ task:
 
 ```bash
 # Run a pre-configured experiment (recommended)
-python -m place_layers +experiments=eval_6000_gsm8k
+python -m place_layers +experiments=eval_gsm8k_attention
 ```
 
 #### Pattern B: Compose on CLI
@@ -855,12 +851,12 @@ python -m place_layers +experiments=eval_6000_gsm8k
 ```bash
 # Compose config groups on the command line
 python -m place_layers \
-    command=evaluate \
-    evaluator=generative \
-    backend=transformers \
-    model=6000 \
-    task=gsm8k \
-    generation=greedy
+    +command=evaluate \
+    +evaluator=generative \
+    +backend=transformers \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=greedy
 ```
 
 #### Pattern C: Override Specific Values
@@ -868,7 +864,7 @@ python -m place_layers \
 ```bash
 # Use experiment but override specific values
 python -m place_layers \
-    +experiments=eval_6000_gsm8k \
+    +experiments=eval_gsm8k_attention \
     task.max_problems_per_task=50
 ```
 
@@ -877,13 +873,13 @@ python -m place_layers \
 ```bash
 # Evaluate multiple placements using Hydra multirun
 python -m place_layers \
-    command=evaluate \
-    evaluator=generative \
-    backend=transformers \
-    model=10000 \
-    task=gsm8k \
-    generation=greedy \
-    placement=all_attention,every_2nd_gdn,every_4th_gdn \
+    +command=evaluate \
+    +evaluator=generative \
+    +backend=transformers \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=greedy \
+    +placement=all_attention,every_2nd_gdn,every_4th_gdn \
     --multirun
 ```
 
@@ -920,11 +916,11 @@ job:
 
 ### Common Gotchas
 
-**Numeric config names must be quoted**:
-```yaml
-defaults:
-  - /model: "6000"  # ✓ Quoted - treated as string
-  - /model: 6000    # ✗ Unquoted - parsed as integer, fails
+**Use `+` prefix for config groups not in root defaults**:
+```bash
+# Root config.yaml has no defaults for most groups
+python -m place_layers +command=evaluate +model=apriel2_0_5b_dev  # ✓ + prefix
+python -m place_layers command=evaluate model=apriel2_0_5b_dev    # ✗ Missing + prefix
 ```
 
 **Use `override` for hydra sub-defaults**:

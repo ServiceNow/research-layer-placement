@@ -8,8 +8,8 @@
 #   - generation: Decoding parameters (temperature, samples)
 #
 # Example usage:
-#   python -m place_layers command=evaluate evaluator=generative \
-#       backend=transformers model=6000 task=gsm8k generation=greedy
+#   python -m place_layers +command=evaluate +evaluator=generative \
+#       +backend=transformers +model=apriel2_0_5b_dev +task=gsm8k +generation=greedy
 
 evaluator_type: generative
 

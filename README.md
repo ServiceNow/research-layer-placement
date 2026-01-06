@@ -32,7 +32,7 @@ See `.devcontainer/Dockerfile` for exact versions, base images, and CUDA archite
 Evaluate a checkpoint on GSM8K with all-attention placement:
 
 ```bash
-python -m place_layers +experiments=eval_10000_gsm8k_attention
+python -m place_layers +experiments=eval_gsm8k_attention
 ```
 
 ## Commands
@@ -46,35 +46,35 @@ Generate completions and check correctness. Accurate but slow.
 **Single placement:**
 ```bash
 python -m place_layers \
-    command=evaluate \
-    evaluator=generative \
-    backend=transformers \
-    model=10000 \
-    task=gsm8k \
-    generation=greedy \
-    placement=all_attention
+    +command=evaluate \
+    +evaluator=generative \
+    +backend=transformers \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=greedy \
+    +placement=all_attention
 ```
 
 **Sweep over placements:**
 ```bash
 python -m place_layers \
-    command=evaluate \
-    evaluator=generative \
-    backend=transformers \
-    model=10000 \
-    task=gsm8k \
-    generation=greedy \
-    placement=all_attention,every_2nd_gdn,every_4th_gdn \
+    +command=evaluate \
+    +evaluator=generative \
+    +backend=transformers \
+    +model=apriel2_0_5b_dev \
+    +task=gsm8k \
+    +generation=greedy \
+    +placement=all_attention,every_2nd_gdn,every_4th_gdn \
     --multirun
 ```
 
 **Pre-configured experiments:**
 ```bash
-# 10000 checkpoint with all-attention
-python -m place_layers +experiments=eval_10000_gsm8k_attention
+# Apriel2-0.5B-dev with all-attention
+python -m place_layers +experiments=eval_gsm8k_attention
 
-# 10000 checkpoint with GDN at every 4th layer
-python -m place_layers +experiments=eval_10000_gsm8k_every4th_gdn
+# Apriel2-0.5B-dev with GDN at every 4th layer
+python -m place_layers +experiments=eval_gsm8k_every4th_gdn
 
 # Qwen2-0.5B-Instruct baseline (non-supernet)
 python -m place_layers +experiments=eval_qwen2_gsm8k
@@ -95,10 +95,10 @@ Fast evaluation using importance sampling. Requires precomputed traces (see [Pre
 
 **Step 2:** Run IS evaluation (fast, forward passes only):
 ```bash
-TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_10000_gsm8k_is
+TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is
 
 # Compare placements quickly
-TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_10000_gsm8k_is \
+TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is \
     placement=all_attention,every_4th_gdn --multirun
 ```
 
@@ -250,7 +250,7 @@ This project uses [Hydra](https://hydra.cc/) for configuration. Key config group
 | `command` | evaluate, optimize, precompute_traces | What to run |
 | `evaluator` | generative, importance_weighted, mock_supernet | How to score placements |
 | `backend` | transformers, vllm | Model inference backend |
-| `model` | 6000, 10000, qwen2_0_5b | Model checkpoint |
+| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model checkpoint |
 | `task` | gsm8k, gsm8k_quick | Evaluation task |
 | `generation` | greedy, greedy_short, sampling | Generation parameters |
 | `placement` | all_attention, every_Nth_gdn/kda | Layer placement |

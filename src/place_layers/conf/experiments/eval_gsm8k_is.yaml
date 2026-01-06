@@ -1,19 +1,19 @@
 # @package _global_
-# Evaluate /workspace/10000 on GSM8K using importance-weighted (IS) evaluation
+# Evaluate Apriel2-0.5B-dev on GSM8K using importance-weighted (IS) evaluation
 #
 # Requires precomputed traces in trace_sources path.
 # Much faster than generative eval (forward passes only, no generation).
 #
 # Usage:
-#   python -m place_layers +experiments=eval_10000_gsm8k_is
+#   python -m place_layers +experiments=eval_gsm8k_is
 #
 # To evaluate different placements:
-#   python -m place_layers +experiments=eval_10000_gsm8k_is placement=every_4th_gdn
+#   python -m place_layers +experiments=eval_gsm8k_is placement=every_4th_gdn
 
 defaults:
   - /command: evaluate
   - /evaluator: importance_weighted
-  - /model: "10000"
+  - /model: apriel2_0_5b_dev
   - /placement: all_attention
   - _self_
 

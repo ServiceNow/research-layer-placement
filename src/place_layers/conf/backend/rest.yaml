@@ -1,0 +1,26 @@
+# @package backend
+# REST backend configuration for distributed TransformersBackend
+#
+# Distributes requests across multiple REST servers using round-robin.
+# Each server should be started with the serve command:
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+#
+# Usage:
+#   python -m place_layers +command=evaluate +backend=rest \
+#       backend.servers='["http://localhost:8080","http://localhost:8081"]' \
+#       +evaluator=generative +model=apriel2_0_5b_dev +task=gsm8k
+
+backend_type: rest
+
+# List of server URLs to distribute requests across
+# Override via command line or environment variables
+servers:
+  - ${oc.env:REST_SERVER_0,http://localhost:8080}
+
+# Maximum concurrent requests per server
+# Total concurrent = max_concurrent_per_server * len(servers)
+max_concurrent_per_server: 8
+
+# Request timeout in seconds
+timeout_seconds: 300

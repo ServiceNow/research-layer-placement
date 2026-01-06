@@ -4,7 +4,7 @@
 # Required config groups:
 #   - evaluator: generative, importance_weighted, etc.
 #   - backend: transformers, vllm (for generative)
-#   - model: 6000, 10000, etc.
+#   - model: apriel2_0_5b_dev, qwen2_0_5b, etc.
 #   - task: gsm8k, etc. (for generative)
 #   - generation: greedy, sampling (for generative)
 #

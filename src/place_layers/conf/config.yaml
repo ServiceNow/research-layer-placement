@@ -1,8 +1,8 @@
 # Minimal root config
 #
 # Usage patterns:
-#   1. Explicit: python -m place_layers command=evaluate evaluator=generative ...
-#   2. Experiment: python -m place_layers +experiments=eval_6000_gsm8k
+#   1. Explicit: python -m place_layers +command=evaluate +evaluator=generative ...
+#   2. Experiment: python -m place_layers +experiments=eval_gsm8k_attention
 #
 # When using experiments, the command is provided by the experiment config.
 

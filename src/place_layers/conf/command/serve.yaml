@@ -1,0 +1,34 @@
+# @package _global_
+# Serve command - starts a REST server exposing TransformersBackend
+#
+# Required config groups:
+#   - backend: transformers (only transformers supported for serving)
+#   - model: model configuration (for model_path, etc.)
+#
+# Usage:
+#   # Start server on default port 8080
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev
+#
+#   # Start server on custom port
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+#
+# Multi-GPU setup (run in separate terminals):
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+#   CUDA_VISIBLE_DEVICES=2 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8082
+
+command: serve
+
+# Backend configuration (from backend config group)
+# Note: Only transformers backend is supported for serving
+backend: ${backend}
+
+# Server bind address
+# Use 0.0.0.0 to accept connections from other machines
+# Use localhost/127.0.0.1 for local-only access
+host: ${oc.env:SERVE_HOST,0.0.0.0}
+
+# Server port
+# Override via command line: port=8081
+# Or via environment: SERVE_PORT=8081
+port: ${oc.env:SERVE_PORT,8080}

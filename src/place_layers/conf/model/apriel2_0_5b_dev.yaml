@@ -1,0 +1,16 @@
+# @package model
+# Apriel2-0.5B-dev supernet checkpoint
+# https://huggingface.co/ServiceNow-AI/apriel2-0.5b-dev
+#
+# 24-layer Apriel2 supernet with stochastic mixers.
+# Mixers: attention, gdn, kda, sliding_window
+
+model_path: ServiceNow-AI/apriel2-0.5b-dev
+num_layers: 24
+mixer_names:
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+trust_remote_code: true
+torch_dtype: bfloat16
