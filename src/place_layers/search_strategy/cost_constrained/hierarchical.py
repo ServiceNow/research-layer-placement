@@ -65,13 +65,20 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         Search for the best assignment within a fixed allocation using hierarchical beam search.
 
         Runs phases sequentially, each phase finding the best layers for one mixer type.
+
+        When cross_phase_beam_width > 1, maintains multiple candidate paths across phases,
+        allowing exploration of phase interactions at higher computational cost.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
         num_mixers = len(allocation)
+        cross_phase_k = self.config.cross_phase_beam_width
 
-        # Track which layers are assigned and to what mixer
-        fixed_assignments: dict[int, int] = {}
-        unassigned = list(range(num_layers))
+        # Start with a single path
+        paths: list[dict] = [{
+            "fixed": {},
+            "unassigned": list(range(num_layers)),
+            "score": 0.0,
+        }]
 
         # Extract budgets (counts per mixer, excluding the last one which gets remainder)
         budgets = list(allocation[:-1])  # e.g., [1, 17] from (1, 17, 30)
@@ -85,33 +92,55 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 # Skip phases with no layers to assign
                 continue
 
-            if not unassigned:
-                # No more layers to assign
-                break
+            new_paths: list[dict] = []
 
-            # Find best layers for this mixer
-            best_layers = await self._run_phase(
-                problem=problem,
-                budget=budget,
-                mixer_idx=mixer_idx,
-                fallback_mixer=fallback_mixer,
-                unassigned=unassigned,
-                fixed_assignments=fixed_assignments,
-                num_layers=num_layers,
-            )
+            for path in paths:
+                if not path["unassigned"]:
+                    # No more layers to assign for this path
+                    continue
 
-            # Lock in the assignments
-            for layer_idx in best_layers:
-                fixed_assignments[layer_idx] = mixer_idx
-                unassigned.remove(layer_idx)
+                # Find best layers for this mixer, given this path's state
+                beam = await self._run_phase(
+                    problem=problem,
+                    budget=budget,
+                    mixer_idx=mixer_idx,
+                    fallback_mixer=fallback_mixer,
+                    unassigned=path["unassigned"],
+                    fixed_assignments=path["fixed"],
+                    num_layers=num_layers,
+                )
+
+                # Create new paths for each beam entry
+                for entry in beam:
+                    new_fixed = dict(path["fixed"])
+                    new_unassigned = list(path["unassigned"])
+                    for layer_idx in entry["layers"]:
+                        new_fixed[layer_idx] = mixer_idx
+                        new_unassigned.remove(layer_idx)
+                    new_paths.append({
+                        "fixed": new_fixed,
+                        "unassigned": new_unassigned,
+                        "score": entry["score"],
+                    })
+
+            # Prune to top cross_phase_k paths
+            new_paths.sort(key=lambda p: p["score"], reverse=True)
+            paths = new_paths[:cross_phase_k]
+
+            if not paths:
+                # No valid paths remain
+                return None
+
+        # Take best path for final assignment
+        best_path = paths[0]
 
         # Assign remaining layers to the last mixer
         last_mixer = num_mixers - 1
-        for layer_idx in unassigned:
-            fixed_assignments[layer_idx] = last_mixer
+        for layer_idx in best_path["unassigned"]:
+            best_path["fixed"][layer_idx] = last_mixer
 
         # Build final assignment tuple
-        assignments = tuple(fixed_assignments[i] for i in range(num_layers))
+        assignments = tuple(best_path["fixed"][i] for i in range(num_layers))
 
         # Final evaluation
         placement = LayerPlacement(assignments=assignments)
@@ -134,11 +163,11 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         unassigned: list[int],
         fixed_assignments: dict[int, int],
         num_layers: int,
-    ) -> list[int]:
+    ) -> list[dict]:
         """
         Run one phase: find best 'budget' layers for mixer_idx.
 
-        Returns the list of layer indices to assign to this mixer.
+        Returns beam of candidates, each with "layers" and "score" keys.
         """
         # Pre-score individual layers
         layer_scores = await self._prescore_layers(
@@ -152,7 +181,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
         if budget == 1:
             # Simple case: just take the best single layer
-            return [layer_scores[0][0]]
+            best_layer, best_score = layer_scores[0]
+            return [{"layers": [best_layer], "score": best_score}]
 
         # Grow beam from best single layers to budget size
         beam = await self._grow_beam(
@@ -166,7 +196,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
         )
 
-        return beam[0]["layers"]
+        return beam
 
     async def _prescore_layers(
         self,
@@ -288,4 +318,13 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
     early_stop_threshold: float = Field(
         description="Stop growing beam if best score improvement is below this threshold",
         ge=0.0,
+    )
+
+    cross_phase_beam_width: int = Field(
+        description=(
+            "Number of candidate paths to maintain across phases. "
+            "Default 1 = greedy (lock in best after each phase). "
+            "Set to beam_width to explore phase interactions at k× cost."
+        ),
+        gt=0,
     )

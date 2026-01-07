@@ -387,6 +387,7 @@ Allocation: (2, 2, 2) ✅
 | `search_strategy.beam_width` | 5 | Wider beam explores more candidates per phase |
 | `search_strategy.max_allocations` | 50 | More allocations = better cost-performance coverage |
 | `search_strategy.early_stop_threshold` | 0.001 | Stop allocation early if best score improves by less than this; ~70% eval reduction |
+| `search_strategy.cross_phase_beam_width` | 1 | Candidate paths across phases; 1=greedy (default), k=explore phase interactions at ~c× cost |
 
 **Evaluation count:**
 
@@ -425,6 +426,8 @@ Example (N=48, M=4, n=12):
 | A=100, k=8 | [7,105 – 7,945] | [710k – 795k] | ~240k | Thorough |
 
 Note: k=1 has no deduplication (single beam path). For k>1, range reflects [max dedup, min dedup].
+
+**Cross-phase beam (c = `cross_phase_beam_width`):** Above formulas assume c=1 (default). With c>1, phases 1 through M-2 run c× (once per candidate path), so multiply those phases by c. Phase 0 is unchanged (always starts with 1 path).
 
 #### Step 4: Validate
 

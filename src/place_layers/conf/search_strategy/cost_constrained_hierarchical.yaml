@@ -47,3 +47,10 @@ beam_width: 5
 # Early stopping threshold (fraction of score improvement)
 # Algorithm stops if best score improves less than this fraction
 early_stop_threshold: 0.001
+
+# Cross-phase beam width: number of candidate paths to maintain across phases
+# Default 1 = greedy (lock in best after each phase) - fast, current behavior
+# Set to beam_width to explore phase interactions at k× computational cost
+# This can find better solutions when phase choices interact (e.g., layer X is
+# good for mixer 0 but leaves better options for mixer 1 if we pick layer Y instead)
+cross_phase_beam_width: 1
