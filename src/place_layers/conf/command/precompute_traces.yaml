@@ -29,3 +29,9 @@ top_p: ${generation.top_p}
 
 # Trace-specific configuration
 seed: 42
+
+# Answer extraction pattern (optional)
+# Regex with capture group to extract answer region from completion.
+# Example for Apriel: '\[BEGIN FINAL RESPONSE\](.*?)(?:<\|end\|>|$)'
+# Uses model config if available, otherwise null
+answer_extraction_pattern: ${oc.select:model.answer_extraction_pattern,null}

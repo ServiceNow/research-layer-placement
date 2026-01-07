@@ -169,8 +169,9 @@ class TransformersClient:
             trust_remote_code=self.config.trust_remote_code,
         )
         auto_map = getattr(config, "auto_map", {})
+        architectures = getattr(config, "architectures", [])
 
-        if "AutoModelForImageTextToText" in auto_map:
+        if "AutoModelForImageTextToText" in auto_map or "LlavaForConditionalGeneration" in architectures:
             model_class = AutoModelForImageTextToText
         elif "AutoModelForCausalLM" in auto_map:
             model_class = AutoModelForCausalLM

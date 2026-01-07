@@ -106,38 +106,55 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def _make_trace_records(
-    task: "Task", doc: dict, idx: int, result: GenerationResult
-) -> list[Trace]:
-    """Create Trace records from a generation result.
+def make_trace_record_factory(
+    answer_extraction_pattern: str | None = None,
+):
+    """Create a record factory with the given answer extraction pattern.
 
-    Skips truncated samples (they don't have valid log-probs).
-    Returns empty list if all samples are truncated.
+    Args:
+        answer_extraction_pattern: Regex pattern to extract answer region.
+            If None, full completion is used.
+
+    Returns:
+        A record factory function suitable for run_generation_async/sync.
     """
-    task_name = task.config.task
-    traces = []
-    prompt_tokens = tuple(result.prompt_token_ids)
-    problem_id = f"{task_name}:{idx}"
 
-    for sample_idx, sample in enumerate(result.samples):
-        if sample.truncated:
-            logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
-            continue
+    def _make_trace_records(
+        task: "Task", doc: dict, idx: int, result: GenerationResult
+    ) -> list[Trace]:
+        """Create Trace records from a generation result.
 
-        correct = check_correctness(task, doc, sample.text)
-        trace = Trace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=tuple(sample.token_ids),
-            correct=correct,
-            teacher_log_prob=sample.total_logprob,
-            problem_id=problem_id,
-            task_name=task_name,
-            sample_idx=sample_idx,
-            completion_text=sample.text,
-        )
-        traces.append(trace)
+        Skips truncated samples (they don't have valid log-probs).
+        Returns empty list if all samples are truncated.
+        """
+        task_name = task.config.task
+        traces = []
+        prompt_tokens = tuple(result.prompt_token_ids)
+        problem_id = f"{task_name}:{idx}"
 
-    return traces
+        for sample_idx, sample in enumerate(result.samples):
+            if sample.truncated:
+                logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
+                continue
+
+            correct = check_correctness(
+                task, doc, sample.text, answer_extraction_pattern
+            )
+            trace = Trace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=tuple(sample.token_ids),
+                correct=correct,
+                teacher_log_prob=sample.total_logprob,
+                problem_id=problem_id,
+                task_name=task_name,
+                sample_idx=sample_idx,
+                completion_text=sample.text,
+            )
+            traces.append(trace)
+
+        return traces
+
+    return _make_trace_records
 
 
 # =============================================================================
@@ -217,6 +234,11 @@ class PrecomputeTracesCommand(BaseCommand):
         """Run all tasks with async backend."""
         total_processed = 0
 
+        # Create record factory with answer extraction pattern
+        record_factory = make_trace_record_factory(
+            self.config.answer_extraction_pattern
+        )
+
         async with backend:
             # Set placement if specified (after model is loaded)
             if self.config.placement is not None:
@@ -244,7 +266,7 @@ class PrecomputeTracesCommand(BaseCommand):
                     remaining_indices=remaining,
                     backend=backend,
                     writer=writer,
-                    record_factory=_make_trace_records,
+                    record_factory=record_factory,
                     samples_per_problem=self.config.samples_per_problem,
                     max_new_tokens=self.config.max_new_tokens,
                     temperature=self.config.temperature,
@@ -263,6 +285,11 @@ class PrecomputeTracesCommand(BaseCommand):
     ) -> None:
         """Run all tasks with sync backend."""
         total_processed = 0
+
+        # Create record factory with answer extraction pattern
+        record_factory = make_trace_record_factory(
+            self.config.answer_extraction_pattern
+        )
 
         with backend:
             # Set placement if specified (after model is loaded)
@@ -291,7 +318,7 @@ class PrecomputeTracesCommand(BaseCommand):
                     remaining_indices=remaining,
                     backend=backend,
                     writer=writer,
-                    record_factory=_make_trace_records,
+                    record_factory=record_factory,
                     samples_per_problem=self.config.samples_per_problem,
                     max_new_tokens=self.config.max_new_tokens,
                     temperature=self.config.temperature,
@@ -352,6 +379,15 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
         default=None,
         description="Mixer names per layer (e.g., ['attention', 'gdn', ...]). "
         "If None, uses model's default placement.",
+    )
+
+    # Answer extraction (optional, for models with structured output)
+    answer_extraction_pattern: str | None = Field(
+        default=None,
+        description="Regex pattern to extract answer region from completion. "
+        "Must contain a capture group. Example for Apriel: "
+        r"'\\[BEGIN FINAL RESPONSE\\](.*?)(?:<\\|end\\|>|$)'. "
+        "If None, full completion is used for correctness checking.",
     )
 
     @model_validator(mode="after")

@@ -206,11 +206,71 @@ def build_chat_messages(
 
 
 # =============================================================================
+# Answer Extraction
+# =============================================================================
+
+
+def extract_answer_region(
+    completion: str,
+    pattern: str | None = None,
+) -> str:
+    """Extract the answer region from a completion using a regex pattern.
+
+    This allows models with structured output formats (e.g., Apriel's
+    [BEGIN FINAL RESPONSE]...<|end|>) to have their answers correctly
+    parsed by lm-eval.
+
+    Note: For models with special end tokens (like Apriel's <|end|>), this
+    extraction IS necessary. lm-eval's regex `(?s).*#### ` leaves content
+    after the answer (e.g., "18\\n<|end|>"), causing exact_match to fail.
+    The extraction pattern excludes the end token, leaving just the answer.
+
+    Args:
+        completion: The full completion text.
+        pattern: Regex pattern with a capture group for the answer region.
+                 If None, returns completion unchanged.
+                 Example: r"\\[BEGIN FINAL RESPONSE\\](.*?)(?:<\\|end\\|>|$)"
+
+    Returns:
+        The extracted answer region (stripped of leading/trailing whitespace),
+        or full completion if no pattern/no match.
+    """
+    if pattern is None:
+        # Still strip whitespace for consistency with exact_match comparison
+        return completion.strip()
+
+    import re
+
+    try:
+        match = re.search(pattern, completion, re.DOTALL)
+        if match:
+            # Return first capture group if present, else full match
+            extracted = match.group(1) if match.lastindex else match.group(0)
+            # IMPORTANT: strip() is critical for exact_match comparison.
+            # Without it, trailing newlines (e.g., "18\n" vs "18") cause
+            # false negatives because lm-eval's regexes don't strip whitespace.
+            extracted = extracted.strip()
+            logger.debug(f"Extracted answer region: {extracted[:100]}...")
+            return extracted
+        else:
+            logger.debug(f"Pattern '{pattern}' did not match, using full completion")
+            return completion.strip()
+    except re.error as e:
+        logger.warning(f"Invalid regex pattern '{pattern}': {e}. Using full completion.")
+        return completion.strip()
+
+
+# =============================================================================
 # Correctness Checking
 # =============================================================================
 
 
-def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
+def check_correctness(
+    task: "Task",
+    doc: dict,
+    completion: str,
+    answer_extraction_pattern: str | None = None,
+) -> bool | None:
     """Check if completion is correct using task's process_results.
 
     For generate_until tasks, lm-eval returns metrics like:
@@ -225,11 +285,17 @@ def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
         task: The lm-eval task.
         doc: The problem document.
         completion: The generated completion text.
+        answer_extraction_pattern: Optional regex pattern to extract the answer
+            region before passing to lm-eval. Use for models with structured
+            output formats (e.g., Apriel's [BEGIN FINAL RESPONSE]...<|end|>).
 
     Returns:
         True if correct, False if incorrect, None if correctness cannot
         be determined from the task's metrics.
     """
+    # Extract answer region if pattern provided
+    completion = extract_answer_region(completion, answer_extraction_pattern)
+
     metrics: dict[str, Any] | None = task.process_results(doc, [completion])
 
     if metrics is None:
