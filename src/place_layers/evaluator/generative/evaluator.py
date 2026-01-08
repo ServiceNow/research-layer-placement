@@ -131,6 +131,10 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
         # Create backend (but don't enter context yet)
         self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()
 
+        # Model structure (populated in __aenter__ from backend)
+        self._num_layers: int | None = None
+        self._mixer_names: tuple[str, ...] | None = None
+
         # Track current placement to avoid redundant set_placement calls
         self._current_placement: tuple[str, ...] | None = None
 
@@ -139,18 +143,24 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
         self._output_dir = Path(hydra_cfg.runtime.output_dir)
         self._writer = TraceWriter(self._output_dir)
 
-        logger.info(
-            f"GenerativeEvaluator initialized: {config.num_layers} layers, "
-            f"{len(config.mixer_names)} mixers, backend={config.backend.backend_type}"
-        )
         logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
 
     async def __aenter__(self) -> Self:
-        """Enter context: initialize backend resources."""
+        """Enter context: initialize backend and get model structure."""
         if isinstance(self._backend, AsyncBackend):
             await self._backend.__aenter__()
         else:
             self._backend.__enter__()
+
+        # Get model structure from backend
+        structure = self._backend.model_structure
+        self._num_layers = structure.num_layers
+        self._mixer_names = structure.mixer_names
+
+        logger.info(
+            f"GenerativeEvaluator initialized: {self._num_layers} layers, "
+            f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -162,11 +172,22 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
 
     @property
     def num_layers(self) -> int:
-        return self.config.num_layers
+        if self._num_layers is None:
+            raise RuntimeError("num_layers not available - evaluator must be entered first")
+        return self._num_layers
 
     @property
     def num_mixers(self) -> int:
-        return len(self.config.mixer_names)
+        if self._mixer_names is None:
+            raise RuntimeError("num_mixers not available - evaluator must be entered first")
+        return len(self._mixer_names)
+
+    @property
+    def mixer_names(self) -> tuple[str, ...]:
+        """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
+        if self._mixer_names is None:
+            raise RuntimeError("mixer_names not available - evaluator must be entered first")
+        return self._mixer_names
 
     # =========================================================================
     # Main Evaluation Entry Point
@@ -186,13 +207,13 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
 
         # Convert assignment indices to mixer names
         mixer_names = tuple(
-            self.config.mixer_names[idx] for idx in parameters.assignments
+            self.mixer_names[idx] for idx in parameters.assignments
         )
 
         # Set placement via backend (skip if unchanged or single-mixer model)
         if mixer_names != self._current_placement:
             # Skip placement for single-mixer models (no dynamic switching needed)
-            if len(set(self.config.mixer_names)) > 1:
+            if len(set(self.mixer_names)) > 1:
                 if isinstance(self._backend, AsyncBackend):
                     await self._backend.set_placement(mixer_names)
                 else:
@@ -293,15 +314,10 @@ class GenerativeEvaluatorConfig(BaseEvaluatorConfig):
 
     evaluator_type: Literal["generative"] = "generative"
 
-    # Backend (polymorphic - vLLM or Transformers)
+    # Backend (polymorphic - vLLM, Transformers, or REST)
+    # The backend provides model structure (num_layers, mixer_names) after initialization
     backend: BackendConfig = Field(
-        description="Generation backend configuration (vllm or transformers)"
-    )
-
-    # Model structure (required for BaseEvaluator interface)
-    num_layers: int = Field(description="Number of layers in the model", gt=0)
-    mixer_names: list[str] = Field(
-        description="Available mixer types (e.g., ['attention', 'mamba', 'gdn'])"
+        description="Generation backend configuration (vllm, transformers, or rest)"
     )
 
     # Tasks
@@ -336,8 +352,4 @@ class GenerativeEvaluatorConfig(BaseEvaluatorConfig):
         """Validate configuration consistency."""
         if not self.tasks:
             raise ValueError("At least one task must be specified")
-
-        if not self.mixer_names:
-            raise ValueError("At least one mixer name must be specified")
-
         return self
