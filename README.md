@@ -35,6 +35,32 @@ Evaluate a checkpoint on GSM8K with all-attention placement:
 python -m place_layers +experiments=eval_gsm8k_attention
 ```
 
+## Backend Support
+
+Different backends have different capabilities. This matrix shows what works:
+
+| Command | vLLM | Transformers | REST |
+|---------|------|--------------|------|
+| **precompute_traces** | ⚠️ Default placement only | ✅ Any placement | ✅ Any placement |
+| **evaluate** | ⚠️ Non-supernet only | ✅ Any placement | ✅ Any placement |
+| **optimize** | ❌ Not supported | ✅ Works | ✅ Works |
+
+**Why the limitations?**
+
+vLLM is a standard inference server - it doesn't know about supernet architecture or dynamic placement switching. `VLLMBackend.set_placement()` raises `NotImplementedError`.
+
+- **precompute_traces + vLLM**: Works only with `placement=null` (model's default). Specifying a placement crashes.
+- **evaluate + vLLM**: Works only for non-supernet models (single mixer type). Supernet models crash on first eval.
+- **optimize + vLLM**: Always crashes - optimization requires exploring different placements.
+
+**When to use each backend:**
+
+| Backend | Best for |
+|---------|----------|
+| **vLLM** | Precomputing traces from standard teacher models (e.g., `Qwen/Qwen2-0.5B-Instruct`) |
+| **Transformers** | Single-GPU evaluation/optimization of supernet models (e.g., `ServiceNow-AI/apriel2-0.5b-dev`) |
+| **REST** | Multi-GPU distributed evaluation/optimization of supernet models (e.g., `ServiceNow-AI/apriel2-0.5b-dev`) |
+
 ## Commands
 
 ### 1. Evaluate (`command=evaluate`)
@@ -150,7 +176,7 @@ python -m place_layers \
 
 **Output:** `validation.jsonl` with traces containing `teacher_log_prob` for each completion.
 
-### 3. Placement Optimization
+### 3. Placement Optimization (`command=optimize`)
 
 Find optimal placements within a latency budget using cost-constrained search with IS evaluation.
 
