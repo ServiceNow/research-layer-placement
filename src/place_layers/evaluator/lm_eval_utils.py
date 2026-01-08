@@ -279,11 +279,17 @@ def load_task(
     Returns:
         Configured lm-eval Task object.
     """
+    from pathlib import Path
+
     from lm_eval.tasks import TaskManager, get_task_dict
+
+    # Include custom tasks directory (e.g., gsm8k_strip_end)
+    custom_tasks_dir = Path(__file__).parent.parent / "tasks"
+    include_path = str(custom_tasks_dir) if custom_tasks_dir.exists() else None
 
     task_name = get_task_name(task_spec)
     task_config = normalize_task_spec(task_spec, default_num_fewshot)
-    task_manager = TaskManager()
+    task_manager = TaskManager(include_path=include_path)
     task_dict = get_task_dict([task_config], task_manager=task_manager)
     task = task_dict[task_name]
 
