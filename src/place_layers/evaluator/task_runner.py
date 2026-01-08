@@ -51,6 +51,7 @@ from place_layers.evaluator.lm_eval_utils import (
     get_task_name,
     load_task,
 )
+from place_layers.evaluator.progress import create_progress
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
@@ -162,7 +163,6 @@ def run_generation_sync(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-    log_interval: float = 10.0,
     memory_log_interval: float = 30.0,
 ) -> int:
     """Run generation synchronously with batching.
@@ -172,7 +172,7 @@ def run_generation_sync(
     - Error handling with SkippedProblem records
     - Truncation handling (empty records -> SkippedProblem)
     - Memory logging
-    - Progress logging
+    - Rich progress bar
 
     Args:
         task: The lm-eval task.
@@ -186,7 +186,6 @@ def run_generation_sync(
         max_new_tokens: Maximum tokens to generate.
         temperature: Sampling temperature.
         top_p: Nucleus sampling parameter.
-        log_interval: Seconds between progress logs.
         memory_log_interval: Seconds between memory logs.
 
     Returns:
@@ -195,89 +194,81 @@ def run_generation_sync(
     total = len(remaining_indices)
     batch_size = backend.batch_size
 
-    start_time = time.perf_counter()
-    last_log_time = start_time
-    last_memory_log_time = start_time
+    last_memory_log_time = time.perf_counter()
     processed = 0
 
     logger.info(f"Processing {total} problems with batch_size={batch_size}")
     log_memory(f"TASK {task_name} START")
 
-    for batch_indices in _batched(remaining_indices, batch_size):
-        # Build messages for this batch
-        batch_docs = [docs[idx] for idx in batch_indices]
-        messages_batch = [
-            build_chat_messages(task, doc, task.config.num_fewshot)
-            for doc in batch_docs
-        ]
+    with create_progress() as progress:
+        progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
-        # Log progress periodically
-        current_time = time.perf_counter()
-        if current_time - last_log_time >= log_interval:
-            elapsed = current_time - start_time
-            rate = processed / elapsed if elapsed > 0 else 0
-            eta = (total - processed) / rate if rate > 0 else 0
-            logger.info(
-                f"Task '{task_name}': {processed}/{total} "
-                f"({100*processed/total:.1f}%), ETA {eta:.0f}s"
-            )
-            last_log_time = current_time
+        for batch_indices in _batched(remaining_indices, batch_size):
+            # Build messages for this batch
+            batch_docs = [docs[idx] for idx in batch_indices]
+            messages_batch = [
+                build_chat_messages(task, doc, task.config.num_fewshot)
+                for doc in batch_docs
+            ]
 
-        # Log memory periodically
-        if current_time - last_memory_log_time >= memory_log_interval:
-            log_memory(f"BATCH {processed}/{total}")
-            last_memory_log_time = current_time
+            # Log memory periodically
+            current_time = time.perf_counter()
+            if current_time - last_memory_log_time >= memory_log_interval:
+                log_memory(f"BATCH {processed}/{total}")
+                last_memory_log_time = current_time
 
-        # Generate completions
-        try:
-            results = backend.batch_generate(
-                messages_batch,
-                n=samples_per_problem,
-                max_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-            )
-        except Exception as e:
-            # Log memory state on exception
-            logger.error(f"Batch failed: {type(e).__name__}: {e}")
-            log_memory(f"BATCH {processed} EXCEPTION", level=logging.ERROR)
-
-            # Check if OOM and log detailed info
-            if "CUDA out of memory" in str(e) or "OutOfMemory" in type(e).__name__:
-                logger.error("OUT OF MEMORY DETECTED!")
-                log_gpu_memory_summary()
-
-            # Skip all problems in the batch
-            logger.warning(f"Skipping {len(batch_indices)} problems due to error")
-            for idx in batch_indices:
-                skipped = SkippedProblem(
-                    problem_id=f"{task_name}:{idx}",
-                    task_name=task_name,
-                    reason=str(e),
+            # Generate completions
+            try:
+                results = backend.batch_generate(
+                    messages_batch,
+                    n=samples_per_problem,
+                    max_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
                 )
-                writer.append([skipped])
+            except Exception as e:
+                # Log memory state on exception
+                logger.error(f"Batch failed: {type(e).__name__}: {e}")
+                log_memory(f"BATCH {processed} EXCEPTION", level=logging.ERROR)
 
-            # Try to recover memory
-            force_garbage_collection()
+                # Check if OOM and log detailed info
+                if "CUDA out of memory" in str(e) or "OutOfMemory" in type(e).__name__:
+                    logger.error("OUT OF MEMORY DETECTED!")
+                    log_gpu_memory_summary()
+
+                # Skip all problems in the batch
+                logger.warning(f"Skipping {len(batch_indices)} problems due to error")
+                for idx in batch_indices:
+                    skipped = SkippedProblem(
+                        problem_id=f"{task_name}:{idx}",
+                        task_name=task_name,
+                        reason=str(e),
+                    )
+                    writer.append([skipped])
+
+                # Try to recover memory
+                force_garbage_collection()
+                processed += len(batch_indices)
+                progress.advance(progress_task, len(batch_indices))
+                continue
+
+            # Create and save records for each problem
+            for idx, doc, result in zip(batch_indices, batch_docs, results):
+                records = record_factory(task, doc, idx, result)
+
+                if records:
+                    writer.append(records)
+                else:
+                    # All samples were truncated/invalid
+                    skipped = SkippedProblem(
+                        problem_id=f"{task_name}:{idx}",
+                        task_name=task_name,
+                        reason=f"all {len(result.samples)} samples truncated",
+                    )
+                    writer.append([skipped])
+
             processed += len(batch_indices)
-            continue
-
-        # Create and save records for each problem
-        for idx, doc, result in zip(batch_indices, batch_docs, results):
-            records = record_factory(task, doc, idx, result)
-
-            if records:
-                writer.append(records)
-            else:
-                # All samples were truncated/invalid
-                skipped = SkippedProblem(
-                    problem_id=f"{task_name}:{idx}",
-                    task_name=task_name,
-                    reason=f"all {len(result.samples)} samples truncated",
-                )
-                writer.append([skipped])
-
-        processed += len(batch_indices)
+            progress.advance(progress_task, len(batch_indices))
 
     # Log final memory state
     log_memory(f"TASK {task_name} END")
@@ -303,7 +294,6 @@ async def run_generation_async(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-    log_interval: float = 10.0,
 ) -> int:
     """Run generation asynchronously with worker pool.
 
@@ -311,7 +301,7 @@ async def run_generation_async(
     - Concurrent worker pool for throughput
     - Error handling with SkippedProblem records
     - Truncation handling (empty records -> SkippedProblem)
-    - Progress logging
+    - Rich progress bar
 
     Args:
         task: The lm-eval task.
@@ -325,7 +315,6 @@ async def run_generation_async(
         max_new_tokens: Maximum tokens to generate.
         temperature: Sampling temperature.
         top_p: Nucleus sampling parameter.
-        log_interval: Seconds between progress logs.
 
     Returns:
         Number of problems processed.
@@ -337,96 +326,76 @@ async def run_generation_async(
         await queue.put(idx)
 
     processed_count = 0
-    start_time = time.perf_counter()
     write_lock = asyncio.Lock()
-    done = False
 
-    async def worker():
-        nonlocal processed_count
-        while True:
-            try:
-                idx = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+    with create_progress() as progress:
+        progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
-            doc = docs[idx]
-            messages = build_chat_messages(task, doc, task.config.num_fewshot)
+        async def worker():
+            nonlocal processed_count
+            while True:
+                try:
+                    idx = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
-            try:
-                result = await backend.agenerate(
-                    messages,
-                    n=samples_per_problem,
-                    max_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    request_id=f"{task_name}:{idx}",
-                )
+                doc = docs[idx]
+                messages = build_chat_messages(task, doc, task.config.num_fewshot)
 
-                # Create records
-                records = record_factory(task, doc, idx, result)
+                try:
+                    result = await backend.agenerate(
+                        messages,
+                        n=samples_per_problem,
+                        max_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        request_id=f"{task_name}:{idx}",
+                    )
 
-                async with write_lock:
-                    if records:
-                        writer.append(records)
-                    else:
-                        # All samples were truncated/invalid
+                    # Create records
+                    records = record_factory(task, doc, idx, result)
+
+                    async with write_lock:
+                        if records:
+                            writer.append(records)
+                        else:
+                            # All samples were truncated/invalid
+                            skipped = SkippedProblem(
+                                problem_id=f"{task_name}:{idx}",
+                                task_name=task_name,
+                                reason=f"all {len(result.samples)} samples truncated",
+                            )
+                            writer.append([skipped])
+
+                except VLLMBadRequestError as e:
+                    logger.warning(f"Skipping {task_name}:{idx} - {e}")
+                    async with write_lock:
                         skipped = SkippedProblem(
                             problem_id=f"{task_name}:{idx}",
                             task_name=task_name,
-                            reason=f"all {len(result.samples)} samples truncated",
+                            reason=str(e),
                         )
                         writer.append([skipped])
 
-            except VLLMBadRequestError as e:
-                logger.warning(f"Skipping {task_name}:{idx} - {e}")
-                async with write_lock:
-                    skipped = SkippedProblem(
-                        problem_id=f"{task_name}:{idx}",
-                        task_name=task_name,
-                        reason=str(e),
-                    )
-                    writer.append([skipped])
+                except Exception as e:
+                    logger.warning(f"Problem {task_name}:{idx} failed: {e}")
+                    async with write_lock:
+                        skipped = SkippedProblem(
+                            problem_id=f"{task_name}:{idx}",
+                            task_name=task_name,
+                            reason=str(e),
+                        )
+                        writer.append([skipped])
 
-            except Exception as e:
-                logger.warning(f"Problem {task_name}:{idx} failed: {e}")
-                async with write_lock:
-                    skipped = SkippedProblem(
-                        problem_id=f"{task_name}:{idx}",
-                        task_name=task_name,
-                        reason=str(e),
-                    )
-                    writer.append([skipped])
+                processed_count += 1
+                progress.advance(progress_task)
 
-            processed_count += 1
+        # Start workers
+        num_workers = min(backend.max_concurrent_requests, total)
+        workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
 
-    # Progress logging task
-    async def log_progress():
-        last_count = 0
-        while not done:
-            await asyncio.sleep(log_interval)
-            if processed_count > last_count:
-                elapsed = time.perf_counter() - start_time
-                rate = processed_count / elapsed if elapsed > 0 else 0
-                eta = (total - processed_count) / rate if rate > 0 else 0
-                logger.info(
-                    f"Task '{task_name}': {processed_count}/{total} "
-                    f"({100*processed_count/total:.1f}%), ETA {eta:.0f}s"
-                )
-                last_count = processed_count
-
-    # Start workers and progress logger
-    num_workers = min(backend.max_concurrent_requests, total)
-    workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
-    progress_task = asyncio.create_task(log_progress())
-
-    # Wait for completion
-    await asyncio.gather(*workers)
-    done = True
-    progress_task.cancel()
-    try:
-        await progress_task
-    except asyncio.CancelledError:
-        pass
+        # Wait for completion
+        await asyncio.gather(*workers)
 
     logger.info(f"Task '{task_name}': generation complete ({processed_count} problems)")
     return processed_count
