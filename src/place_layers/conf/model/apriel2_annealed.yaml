@@ -1,0 +1,14 @@
+# @package model
+# Apriel-2 model after lr-annealing.
+#
+# Mixers: attention, gdn, kda, sliding_window
+
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_dist_mix1_run6_anl7_lr1e-05_lfmse0.5_lskl1_sl16384_iters5000_tp8/export/apriel2_update/4500/
+num_layers: 48
+mixer_names:
+  - attention
+  - gdn
+  - kda
+  - sliding_window
+trust_remote_code: true
+torch_dtype: bfloat16
