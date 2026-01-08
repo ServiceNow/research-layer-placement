@@ -539,7 +539,10 @@ class TransformersBackendConfig(BaseBackendConfig):
 # Discriminated Union
 # =============================================================================
 
+# Import REST backend here to avoid circular imports (it imports from this module)
+from place_layers.evaluator.importance_weighted.rest_backend import RESTBackendConfig
+
 BackendConfig = Annotated[
-    VLLMBackendConfig | TransformersBackendConfig,
+    VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig,
     Field(discriminator="backend_type"),
 ]
