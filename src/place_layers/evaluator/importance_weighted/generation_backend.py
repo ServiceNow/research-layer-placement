@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence, TypedDict
 
 from pydantic import BaseModel, Field
@@ -29,6 +30,26 @@ class ChatMessage(TypedDict):
 
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+# =============================================================================
+# Model Structure
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ModelStructure:
+    """Model structure for placement optimization.
+
+    Generic representation of model structure that backends expose.
+    Decoupled from Apriel2-specific details.
+    """
+
+    num_layers: int
+    """Number of layers with switchable mixers."""
+
+    mixer_names: tuple[str, ...]
+    """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
 
 
 # =============================================================================
@@ -111,6 +132,18 @@ class AsyncBackend(ABC):
         Raises:
             NotImplementedError: If backend doesn't support dynamic placement.
             ValueError: If model is not a supported supernet architecture.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
+
+        Available after entering async context (__aenter__).
+
+        Raises:
+            NotImplementedError: If backend doesn't support model structure discovery.
         """
         pass
 
@@ -216,6 +249,18 @@ class SyncBackend(ABC):
         Raises:
             NotImplementedError: If backend doesn't support dynamic placement.
             ValueError: If model is not a supported supernet architecture.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
+
+        Available after entering context (__enter__).
+
+        Raises:
+            NotImplementedError: If backend doesn't support model structure discovery.
         """
         pass
 
@@ -326,6 +371,18 @@ class VLLMBackend(AsyncBackend):
             "vLLM model integration with /v1/set_placement endpoint."
         )
 
+    @property
+    def model_structure(self) -> ModelStructure:
+        """Model structure - NOT SUPPORTED for vLLM.
+
+        vLLM doesn't expose supernet model structure. Use TransformersBackend
+        or RESTBackend for operations requiring model structure.
+        """
+        raise NotImplementedError(
+            "Model structure discovery is not supported for vLLM backend. "
+            "Use TransformersBackend or RESTBackend for evaluate/optimize commands."
+        )
+
 
 class VLLMBackendConfig(BaseBackendConfig):
     """Configuration for vLLM generation backend."""
@@ -381,11 +438,45 @@ class TransformersBackend(SyncBackend):
         return self._config.batch_size
 
     def __enter__(self) -> Self:
+        from place_layers.evaluator.importance_weighted.apriel_validation import (
+            Apriel2ValidationError,
+            validate_apriel2_model,
+        )
+
         self._client.__enter__()
+
+        # Eagerly validate model structure on entry
+        try:
+            self._apriel_structure = validate_apriel2_model(self._client.model)
+        except Apriel2ValidationError:
+            # Not an Apriel2 supernet - leave structure as None
+            # This allows using TransformersBackend for non-supernet models
+            # (e.g., precompute_traces with Qwen2)
+            pass
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._client.__exit__(exc_type, exc_val, exc_tb)
+
+    @property
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
+
+        Available after entering context (__enter__).
+
+        Raises:
+            NotImplementedError: If model is not an Apriel2 supernet.
+        """
+        if self._apriel_structure is None:
+            raise NotImplementedError(
+                "Model structure discovery requires an Apriel2 supernet model. "
+                "The loaded model does not support dynamic mixer placement."
+            )
+        return ModelStructure(
+            num_layers=self._apriel_structure.num_layers,
+            mixer_names=self._apriel_structure.mixer_names,
+        )
 
     def generate(
         self,
@@ -451,34 +542,24 @@ class TransformersBackend(SyncBackend):
     def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model.
 
-        On first call, validates the model is an Apriel2 supernet with
-        stochastic mixers. Then sets the main_mixer_name for each layer.
-
         Args:
             mixer_names: Mixer name for each layer (e.g., ["attention", "mamba", ...]).
 
         Raises:
             ValueError: If model is not Apriel2 or mixer_names length doesn't match.
         """
-        from place_layers.evaluator.importance_weighted.apriel_validation import (
-            Apriel2ValidationError,
-            validate_apriel2_model,
-        )
-
         placement_tuple = tuple(mixer_names)
 
         # Skip if already set to this placement
         if self._current_placement == placement_tuple:
             return
 
-        # Lazy validation on first call
+        # Require Apriel2 supernet (validated in __enter__)
         if self._apriel_structure is None:
-            try:
-                self._apriel_structure = validate_apriel2_model(self._client.model)
-            except Apriel2ValidationError as e:
-                raise ValueError(
-                    f"Model does not support dynamic placement: {e}"
-                ) from e
+            raise ValueError(
+                "Model does not support dynamic placement. "
+                "Only Apriel2 supernet models support set_placement()."
+            )
 
         # Validate length matches
         if len(mixer_names) != self._apriel_structure.num_layers:

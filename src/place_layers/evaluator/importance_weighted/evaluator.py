@@ -163,6 +163,11 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
         """Number of mixer types per layer (derived from loaded model)."""
         return len(self._mixer_names)
 
+    @property
+    def mixer_names(self) -> tuple[str, ...]:
+        """Available mixer types (derived from loaded model)."""
+        return tuple(self._mixer_names)
+
     def _load_datasets(self) -> list[LoadedDataset]:
         """Load all trace datasets and normalize weights."""
         import time

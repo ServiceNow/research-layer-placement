@@ -105,11 +105,20 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
         if backend._current_placement is not None:
             current_placement = list(backend._current_placement)
 
+        # Get model structure if available (Apriel2 supernet)
+        num_layers = None
+        mixer_names = None
+        if backend._apriel_structure is not None:
+            num_layers = backend._apriel_structure.num_layers
+            mixer_names = list(backend._apriel_structure.mixer_names)
+
         return InfoResponse(
             model_path=backend_config.model_path,
             batch_size=backend_config.batch_size,
-            supports_placement=True,
+            supports_placement=backend._apriel_structure is not None,
             current_placement=current_placement,
+            num_layers=num_layers,
+            mixer_names=mixer_names,
         )
 
     @app.post("/generate")

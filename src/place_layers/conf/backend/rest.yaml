@@ -3,13 +3,13 @@
 #
 # Distributes requests across multiple REST servers using round-robin.
 # Each server should be started with the serve command:
-#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
-#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8081
 #
-# Usage:
+# Usage (no model config needed - structure discovered from servers):
 #   python -m place_layers +command=evaluate +backend=rest \
 #       backend.servers='["http://localhost:8080","http://localhost:8081"]' \
-#       +evaluator=generative +model=apriel2_0_5b_dev +task=gsm8k
+#       +evaluator=generative +task=gsm8k +generation=greedy
 
 backend_type: rest
 
