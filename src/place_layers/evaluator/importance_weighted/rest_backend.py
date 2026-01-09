@@ -24,6 +24,7 @@ from place_layers.evaluator.importance_weighted.generation_backend import (
     AsyncBackend,
     BaseBackendConfig,
     ChatMessage,
+    ModelStructure,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ class RESTBackend(AsyncBackend):
         self._semaphore: asyncio.Semaphore | None = None
         self._idx = 0  # Round-robin index
         self._current_placement: list[str] | None = None
+        self._model_structure: ModelStructure | None = None
 
         if not self._servers:
             raise ValueError("At least one server URL must be provided")
@@ -68,7 +70,11 @@ class RESTBackend(AsyncBackend):
         return self._config.max_concurrent_per_server * len(self._servers)
 
     async def __aenter__(self) -> Self:
-        """Initialize HTTP session and verify server connectivity."""
+        """Initialize HTTP session and validate all servers.
+
+        Validates that all servers are reachable and have consistent
+        configuration (same model, same structure).
+        """
         timeout = aiohttp.ClientTimeout(total=self._config.timeout_seconds)
         self._session = aiohttp.ClientSession(
             timeout=timeout,
@@ -76,18 +82,22 @@ class RESTBackend(AsyncBackend):
         )
         self._semaphore = asyncio.Semaphore(self.max_concurrent_requests)
 
-        # Verify at least one server is reachable
-        healthy = await self._check_health()
-        if not healthy:
+        # Validate all servers and get consistent configuration
+        try:
+            await self._validate_servers()
+        except Exception:
             await self._session.close()
-            raise RESTBackendError(
-                f"No healthy servers found. Tried: {self._servers}"
-            )
+            raise
 
         logger.info(
             f"REST backend initialized with {len(self._servers)} servers, "
             f"max {self.max_concurrent_requests} concurrent requests"
         )
+        if self._model_structure:
+            logger.info(
+                f"Model structure: {self._model_structure.num_layers} layers, "
+                f"mixers: {self._model_structure.mixer_names}"
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -111,17 +121,121 @@ class RESTBackend(AsyncBackend):
         self._idx += 1
         return server
 
-    async def _check_health(self) -> bool:
-        """Check if at least one server is healthy."""
+    async def _validate_servers(self) -> None:
+        """Validate all servers are reachable and have consistent configuration.
+
+        Fetches /info from all servers in parallel, verifies they're all healthy,
+        and checks that they all have the same configuration.
+
+        Raises:
+            RESTBackendError: If any server is unreachable or configurations differ.
+        """
         session = self._ensure_session()
-        for server in self._servers:
+
+        async def fetch_info(server: str) -> tuple[str, dict | None, str | None]:
+            """Fetch info from a server, returning (server, data, error)."""
             try:
-                async with session.get(f"{server}/health") as resp:
+                async with session.get(f"{server}/info") as resp:
                     if resp.status == 200:
-                        return True
+                        return (server, await resp.json(), None)
+                    else:
+                        return (server, None, f"HTTP {resp.status}")
             except Exception as e:
-                logger.warning(f"Health check failed for {server}: {e}")
-        return False
+                return (server, None, str(e))
+
+        results = await asyncio.gather(*[fetch_info(s) for s in self._servers])
+
+        # Check for failures and collect successful results
+        failed: list[tuple[str, str]] = []
+        infos: list[tuple[str, dict]] = []
+        for server, data, error in results:
+            if error is not None:
+                failed.append((server, error))
+            else:
+                assert data is not None  # If no error, data must exist
+                infos.append((server, data))
+
+        if failed:
+            failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
+            raise RESTBackendError(
+                f"Failed to connect to {len(failed)}/{len(self._servers)} servers: {failed_msg}"
+            )
+
+        # All succeeded - validate consistency
+        reference_server, reference_info = infos[0]
+
+        # Check model_path consistency
+        ref_model = reference_info.get("model_path")
+        for server, info in infos[1:]:
+            if info.get("model_path") != ref_model:
+                raise RESTBackendError(
+                    f"Configuration mismatch: {server} has model_path={info.get('model_path')}, "
+                    f"but {reference_server} has model_path={ref_model}"
+                )
+
+        # Check supports_placement consistency
+        ref_supports = reference_info.get("supports_placement")
+        for server, info in infos[1:]:
+            if info.get("supports_placement") != ref_supports:
+                raise RESTBackendError(
+                    f"Configuration mismatch: {server} has supports_placement="
+                    f"{info.get('supports_placement')}, but {reference_server} "
+                    f"has supports_placement={ref_supports}"
+                )
+
+        # If supernet, check num_layers and mixer_names consistency
+        if ref_supports:
+            ref_layers = reference_info.get("num_layers")
+            ref_mixers = reference_info.get("mixer_names")
+
+            # Validate reference server has required fields
+            if ref_layers is None or ref_mixers is None:
+                raise RESTBackendError(
+                    f"Server {reference_server} reports supports_placement=True "
+                    f"but missing num_layers or mixer_names"
+                )
+
+            for server, info in infos[1:]:
+                if info.get("num_layers") != ref_layers:
+                    raise RESTBackendError(
+                        f"Configuration mismatch: {server} has num_layers="
+                        f"{info.get('num_layers')}, but {reference_server} "
+                        f"has num_layers={ref_layers}"
+                    )
+                if info.get("mixer_names") != ref_mixers:
+                    raise RESTBackendError(
+                        f"Configuration mismatch: {server} has mixer_names="
+                        f"{info.get('mixer_names')}, but {reference_server} "
+                        f"has mixer_names={ref_mixers}"
+                    )
+
+            # Store model structure
+            self._model_structure = ModelStructure(
+                num_layers=ref_layers,
+                mixer_names=tuple(ref_mixers),
+            )
+
+        logger.info(
+            f"All {len(self._servers)} servers validated: "
+            f"model_path={ref_model}, supports_placement={ref_supports}"
+        )
+
+    @property
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
+
+        Available after entering async context (__aenter__).
+
+        Raises:
+            NotImplementedError: If server doesn't expose model structure.
+        """
+        if self._model_structure is None:
+            raise NotImplementedError(
+                "Model structure not available from REST server. "
+                "The server may be running a non-supernet model, or "
+                "the server version doesn't support model structure discovery."
+            )
+        return self._model_structure
 
     async def agenerate(
         self,

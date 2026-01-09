@@ -12,14 +12,13 @@
 #   python -m place_layers +experiments=eval_gsm8k_rest \
 #       'backend.servers=["http://localhost:8080","http://localhost:8081"]'
 #
-# Note: model config is needed for num_layers/mixer_names even with REST backend.
-# TODO: Have REST /info endpoint expose model structure for auto-discovery.
+# Note: Model structure (num_layers, mixer_names) is discovered automatically
+# from the REST servers via /info endpoint. No model config needed.
 
 defaults:
   - /command: evaluate
   - /evaluator: generative
   - /backend: rest
-  - /model: apriel2_0_5b_dev
   - /task: gsm8k
   - /generation: greedy
   - _self_

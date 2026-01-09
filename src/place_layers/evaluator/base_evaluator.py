@@ -55,6 +55,15 @@ class BaseEvaluator[ParametersT]:
         """
         ...
 
+    @property
+    @abstractmethod
+    def mixer_names(self) -> tuple[str, ...]:
+        """Available mixer types (e.g., ('attention', 'gdn', 'kda')).
+
+        Implementations should derive this from the actual model or backend.
+        """
+        ...
+
     async def evaluate(self, parameters: ParametersT) -> float:
         """
         Evaluate parameters and return a score.

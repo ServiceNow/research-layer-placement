@@ -83,6 +83,11 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         """Number of mixer types (from config, since this is a mock evaluator)."""
         return self.config.num_mixers
 
+    @property
+    def mixer_names(self) -> tuple[str, ...]:
+        """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
+        return tuple(f"mixer_{i}" for i in range(self.config.num_mixers))
+
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """
         Evaluate parameters using the MRF energy model.

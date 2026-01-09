@@ -133,6 +133,14 @@ class InfoResponse(BaseModel):
     current_placement: list[str] | None = Field(
         description="Current mixer placement, or None if not set"
     )
+    num_layers: int | None = Field(
+        default=None,
+        description="Number of layers with switchable mixers (None if not a supernet)",
+    )
+    mixer_names: list[str] | None = Field(
+        default=None,
+        description="Available mixer types (None if not a supernet)",
+    )
 
 
 class HealthResponse(BaseModel):
