@@ -87,6 +87,26 @@ class TraceWriter:
                 for record in skipped:
                     f.write(record.model_dump_json() + "\n")
 
+    def get_completed_problems(self, task_name: str) -> set[int]:
+        """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
+
+        This is the authoritative way to determine what work has been done.
+        The traces on disk are the single source of truth. Both successful
+        traces and skipped problems count as "completed" (no retry needed).
+
+        Args:
+            task_name: Name of the task to check.
+
+        Returns:
+            Set of problem indices that have been processed (traced or skipped).
+        """
+        completed, malformed_lines = _scan_completed_problems(self.output_dir)
+
+        if malformed_lines > 0:
+            logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
+
+        return completed.get(task_name, set())
+
 
 def compute_config_hash(config: dict) -> str:
     """Compute a hash of configuration for resumption validation."""

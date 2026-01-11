@@ -1,0 +1,108 @@
+"""Generative evaluator for direct accuracy measurement.
+
+This evaluator measures task accuracy by actually generating completions
+from the model (as opposed to importance-weighted estimation from traces).
+
+Key design principles:
+- validation.jsonl is the single source of truth
+- Resumable: scans completed problems from disk, skips them
+- Lean: only stores Generation records, computes metrics on demand
+- Summary computed via summarize_generations() at end
+
+Usage
+-----
+    config = GenerativeEvaluatorConfig(
+        backend=TransformersBackendConfig(model_path="/path/to/model", ...),
+        tasks=["gsm8k"],
+        ...
+    )
+    evaluator = config.create_evaluator()
+    score = await evaluator.evaluate(placement)
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+from place_layers.backend.vllm import GenerationResult
+from place_layers.evaluator.base_evaluator import BaseEvaluator
+from place_layers.evaluator.base_generative_evaluator import (
+    BaseGenerativeEvaluator,
+    BaseGenerativeEvaluatorConfig,
+)
+from place_layers.evaluator.lm_eval_utils import check_correctness
+from place_layers.evaluator.traces.types import Generation
+
+if TYPE_CHECKING:
+    from lm_eval.api.task import Task
+
+logger = logging.getLogger(__name__)
+
+
+class GenerativeEvaluator(BaseGenerativeEvaluator):
+    """Evaluator that measures accuracy through direct generation.
+
+    Supports both async (vLLM) and sync (Transformers) backends, dispatching
+    to the appropriate execution path based on backend type.
+
+    Key features:
+    - Resumable: uses _prepare_task() which checks completed problems
+    - Lean: only stores Generation records, metrics computed at end
+    - Progress logging without in-memory accuracy tracking
+
+    Must be used as an async context manager:
+
+        async with config.create_evaluator() as evaluator:
+            score = await evaluator.evaluate(placement)
+    """
+
+    def __init__(self, config: "GenerativeEvaluatorConfig") -> None:
+        super().__init__(config)
+        self.config: GenerativeEvaluatorConfig
+
+        logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
+
+    def _make_records(
+        self, task: "Task", doc: dict, idx: int, result: GenerationResult
+    ) -> list[Generation]:
+        """Create Generation records from a generation result.
+
+        Skips truncated samples (incomplete text makes correctness checking unreliable).
+        Returns empty list if all samples are truncated.
+        """
+        task_name = task.config.task
+        generations = []
+        problem_id = f"{task_name}:{idx}"
+
+        for sample_idx, sample in enumerate(result.samples):
+            if sample.truncated:
+                logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
+                continue
+
+            correct = check_correctness(task, doc, sample.text)
+            gen = Generation(
+                prompt_tokens=tuple(result.prompt_token_ids),
+                completion_tokens=tuple(sample.token_ids),
+                correct=correct,
+                problem_id=problem_id,
+                task_name=task_name,
+                sample_idx=sample_idx,
+                completion_text=sample.text,
+            )
+            generations.append(gen)
+
+        return generations
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+
+class GenerativeEvaluatorConfig(BaseGenerativeEvaluatorConfig):
+    """Configuration for generative evaluator."""
+
+    _impl_class: ClassVar[type[BaseEvaluator]] = GenerativeEvaluator
+
+    evaluator_type: Literal["generative"] = "generative"

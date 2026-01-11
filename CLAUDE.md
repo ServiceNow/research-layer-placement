@@ -212,16 +212,14 @@ Polymorphic Components:
 │       │
 │       ├── {component1}/           # Component 1 implementations
 │       │   ├── __init__.py        # Exports discriminated union
-│       │   ├── base_{component1}.py
-│       │   ├── base_{component1}_config.py
-│       │   ├── {impl1a}.py
+│       │   ├── base_{component1}.py  # Base class + config (colocated)
+│       │   ├── {impl1a}.py        # Implementation + config (colocated)
 │       │   ├── {impl1b}.py
 │       │   └── {impl1c}.py
 │       │
 │       └── {component2}/           # Component 2 implementations
 │           ├── __init__.py
-│           ├── base_{component2}.py
-│           ├── base_{component2}_config.py
+│           ├── base_{component2}.py  # Base class + config (colocated)
 │           ├── {impl2a}.py
 │           └── {impl2b}.py
 └── tests/
@@ -491,34 +489,24 @@ if __name__ == "__main__":
 For each new polymorphic component:
 
 ```
-✓ {component}/base_{component}.py            - Abstract implementation
-✓ {component}/base_{component}_config.py     - Abstract config
-✓ {component}/{impl}.py                      - Concrete implementation
+✓ {component}/base_{component}.py            - Abstract implementation + config (colocated)
+✓ {component}/{impl}.py                      - Concrete implementation + config (colocated)
 ✓ {component}/__init__.py                    - Discriminated union
 ✓ conf/{component}/{impl}.yaml               - Hydra defaults
 ```
 
-### Template: Minimal Implementation
+### Template: Minimal Implementation (Colocated)
 
-**Config** (~20 lines):
 ```python
+# {impl}.py - Implementation and config in same file
 from typing import Literal, ClassVar
 from pydantic import Field
-from .base_{component}_config import Base{Component}Config
+from .base_{component} import Base{Component}, Base{Component}Config
 
-class {Impl}Config(Base{Component}Config):
-    _impl_class: ClassVar = {Impl}
-
-    {discriminator}: Literal["{tag}"] = "{tag}"
-    param1: {Type} = Field(description="...")
-    param2: {Type} = Field(description="...")
-```
-
-**Implementation** (~20 lines):
-```python
-from .base_{component} import Base{Component}
 
 class {Impl}(Base{Component}):
+    """Concrete implementation."""
+
     def __init__(self, config: "{Impl}Config"):
         super().__init__(config)
         self.{resource} = initialize(config.param1, config.param2)
@@ -530,6 +518,17 @@ class {Impl}(Base{Component}):
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         # Cleanup
         pass
+
+
+# Config defined AFTER implementation class
+class {Impl}Config(Base{Component}Config):
+    """Configuration for {Impl}."""
+
+    _impl_class: ClassVar = {Impl}
+
+    {discriminator}: Literal["{tag}"] = "{tag}"
+    param1: {Type} = Field(description="...")
+    param2: {Type} = Field(description="...")
 ```
 
 **YAML** (~5 lines):
@@ -667,6 +666,57 @@ This template is derived from the inference benchmarking codebase. Here's how th
 | **Config Directory** | `src/inference_benchmarks/conf/` |
 
 See the concrete `CLAUDE.md` file for the full detailed example.
+
+---
+
+## Evaluator Class Hierarchy
+
+The evaluator subsystem uses a class hierarchy where each level adds specific functionality. Not all evaluators need all capabilities, so concrete evaluators branch off at different levels.
+
+### Inheritance Tree
+
+```
+BaseEvaluator                         # Abstract interface only
+├── MockSupernetEvaluator             # Mock evaluator (no backend needed)
+└── BackendEvaluator                  # + Backend lifecycle, placement switching
+    ├── ImportanceWeightedEvaluator   # Uses pre-computed traces, not lm-eval tasks
+    └── TaskBasedEvaluator            # + lm-eval task loading, _prepare_task()
+        ├── LikelihoodEvaluator       # Multiple-choice tasks (MMLU, etc.)
+        └── BaseGenerativeEvaluator   # + Generation loop, sampling
+            ├── GenerativeEvaluator   # Direct accuracy measurement
+            └── TracePrecomputeEvaluator  # Generate traces for IS
+```
+
+### What Each Level Adds
+
+| Class | Module | Adds |
+|-------|--------|------|
+| `BaseEvaluator` | `base_evaluator.py` | Abstract interface: `evaluate()`, `num_layers`, `num_mixers`, `mixer_names` |
+| `BackendEvaluator` | `backend_evaluator.py` | Backend lifecycle (`__aenter__`/`__aexit__`), `_set_placement()`, `TraceWriter` |
+| `TaskBasedEvaluator` | `task_based_evaluator.py` | `_prepare_task()` for lm-eval task loading, resumability via `get_completed_problems()` |
+| `BaseGenerativeEvaluator` | `base_generative_evaluator.py` | Generation loop (`_run_tasks_sync/async`), progress bars, memory logging, abstract `_make_records()` |
+
+### Config Colocation
+
+Each evaluator class is colocated with its config in the same module:
+
+```python
+# base_evaluator.py
+class BaseEvaluator[ParametersT]:
+    ...
+
+class BaseEvaluatorConfig(BaseModel):
+    ...
+```
+
+This pattern continues through the hierarchy - configs are defined below their corresponding classes.
+
+### When to Use Each Base Class
+
+- **Inherit from `BaseEvaluator`**: Mock/synthetic evaluators that don't need a real model
+- **Inherit from `BackendEvaluator`**: Evaluators that use a model but not lm-eval tasks (e.g., importance-weighted uses pre-computed traces)
+- **Inherit from `TaskBasedEvaluator`**: Evaluators that iterate over lm-eval tasks but have custom evaluation logic (e.g., likelihood-based scoring)
+- **Inherit from `BaseGenerativeEvaluator`**: Evaluators that generate completions and need the full generation loop
 
 ---
 
@@ -1122,21 +1172,20 @@ backend_type: Literal["mock"] = "mock"  # ✓ Type safe!
 
 ---
 
-❌ **Don't mix config and implementation in one file**
+✅ **Do colocate config with implementation**
 ```python
-# same_file.py
-class Config(BaseModel): ...
-class Implementation: ...  # ❌ Hard to test, circular imports
+# component.py
+class Component:
+    """Implementation class."""
+    def __init__(self, config: "ComponentConfig"):
+        self.config = config
+
+class ComponentConfig(BaseModel):
+    """Config defined AFTER the class it configures."""
+    _impl_class: ClassVar[type[Component]] = Component
 ```
 
-✅ **Do separate config and implementation**
-```python
-# config.py
-class Config(BaseModel): ...
-
-# implementation.py
-class Implementation: ...  # ✓ Clean separation
-```
+**Why**: Colocation reduces import complexity and keeps related code together. Define the config *after* the implementation class to avoid forward reference issues.
 
 ---
 

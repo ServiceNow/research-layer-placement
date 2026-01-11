@@ -14,22 +14,21 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, Sequence
+from typing import Self, Sequence
 
 from hydra.core.hydra_config import HydraConfig
+from pydantic import Field
 
-from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.backend.base import (
     AsyncBackend,
+    BackendConfig,
     ChatLogProbResult,
     ChatMessage,
     SyncBackend,
 )
+from place_layers.core.types import LayerPlacement
+from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
 from place_layers.evaluator.traces.writer import TraceWriter
-
-if TYPE_CHECKING:
-    from place_layers.evaluator.backend_evaluator_config import BackendEvaluatorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             config: Evaluator configuration with backend settings.
         """
         super().__init__(config)
-        self.config: BackendEvaluatorConfig
+        self.config: "BackendEvaluatorConfig"
 
         # Create backend (but don't enter context yet)
         self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()
@@ -212,3 +211,23 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             return await self._backend.compute_batch_log_probs(sequences)
         else:
             return self._backend.compute_batch_log_probs(sequences)
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+
+class BackendEvaluatorConfig(BaseEvaluatorConfig):
+    """Base configuration for evaluators using generation backends.
+
+    This is an intermediate base class - concrete evaluator configs
+    should inherit from this and define evaluator_type and _impl_class.
+
+    Provides:
+    - backend: Polymorphic backend configuration (vLLM, Transformers, REST)
+    """
+
+    backend: BackendConfig = Field(
+        description="Generation backend configuration (vllm, transformers, or rest)"
+    )

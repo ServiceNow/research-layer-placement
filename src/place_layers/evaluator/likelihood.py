@@ -37,16 +37,17 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import numpy as np
 from pydantic import Field
 
-from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.backend_evaluator import BackendEvaluator
-from place_layers.evaluator.backend_evaluator_config import TaskBasedEvaluatorConfig
-from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.backend.base import ChatMessage
-from place_layers.evaluator.traces.writer import summarize_likelihood
-from place_layers.evaluator.traces.types import LikelihoodRecord
+from place_layers.core.types import LayerPlacement
+from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.lm_eval_utils import build_chat_messages
 from place_layers.evaluator.progress import create_progress
-from place_layers.evaluator.task_runner import prepare_multiple_choice_task
+from place_layers.evaluator.task_based_evaluator import (
+    TaskBasedEvaluator,
+    TaskBasedEvaluatorConfig,
+)
+from place_layers.evaluator.traces.types import LikelihoodRecord
+from place_layers.evaluator.traces.writer import summarize_likelihood
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
@@ -61,7 +62,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-class LikelihoodEvaluator(BackendEvaluator):
+class LikelihoodEvaluator(TaskBasedEvaluator):
     """Evaluator for multiple-choice tasks using log-likelihood scoring.
 
     For each problem:
@@ -125,20 +126,14 @@ class LikelihoodEvaluator(BackendEvaluator):
     async def _run_evaluation(self) -> None:
         """Run likelihood evaluation across all tasks, streaming records to disk."""
         for task_spec in self.config.tasks:
-            # Use prepare_multiple_choice_task for loading and resumption
-            result = prepare_multiple_choice_task(
-                task_spec=task_spec,
-                output_dir=self._output_dir,
-                num_fewshot=self.config.num_fewshot,
-                max_problems=self.config.max_problems_per_task,
-                split=self.config.split,
-            )
+            # Use _prepare_task for loading and resumption
+            prepared = self._prepare_task(task_spec, "multiple_choice")
 
-            if result is None:
+            if prepared is None:
                 # Task already complete
                 continue
 
-            task, task_name, docs, remaining_indices = result
+            task, task_name, docs, remaining_indices = prepared
 
             logger.info(
                 f"Task '{task_name}': evaluating {len(remaining_indices)} problems"

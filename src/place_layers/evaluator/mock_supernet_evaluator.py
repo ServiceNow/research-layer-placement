@@ -8,8 +8,7 @@ from typing import ClassVar, Literal
 from pydantic import Field
 
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
+from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):

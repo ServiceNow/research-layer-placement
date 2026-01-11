@@ -46,8 +46,7 @@ from typing import ClassVar, Literal, Self, Sequence
 from pydantic import BaseModel, Field, model_validator
 
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.backend_evaluator import BackendEvaluator
-from place_layers.evaluator.backend_evaluator_config import BackendEvaluatorConfig
+from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.traces.writer import (
     get_completed_problems,
