@@ -20,6 +20,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from pydantic import BaseModel, Field
 
@@ -68,7 +69,7 @@ class TraceWriter:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def append(self, records: list[TraceRecord]) -> None:
+    def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [

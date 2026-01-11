@@ -52,6 +52,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             score = await evaluator.evaluate(placement)
     """
 
+    config: "BackendEvaluatorConfig"
+
     def __init__(self, config: "BackendEvaluatorConfig") -> None:
         """Initialize evaluator with backend and trace writer.
 
@@ -59,7 +61,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             config: Evaluator configuration with backend settings.
         """
         super().__init__(config)
-        self.config: "BackendEvaluatorConfig"
 
         # Create backend (but don't enter context yet)
         self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()

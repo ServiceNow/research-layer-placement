@@ -159,6 +159,8 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
     - Batched computation of log-probabilities
     """
 
+    config: "ImportanceWeightedEvaluatorConfig"
+
     def __init__(self, config: "ImportanceWeightedEvaluatorConfig") -> None:
         # Load datasets first (before calling super().__init__ which needs Hydra)
         self._datasets_to_load = config.trace_sources
@@ -167,7 +169,6 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
 
         # Call parent init (sets up backend, trace writer, etc.)
         super().__init__(config)
-        self.config: ImportanceWeightedEvaluatorConfig
 
         # Load all trace datasets with normalized weights
         self.datasets = self._load_datasets()

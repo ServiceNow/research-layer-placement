@@ -82,10 +82,10 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             score = await evaluator.evaluate(placement)
     """
 
+    config: "LikelihoodEvaluatorConfig"
+
     def __init__(self, config: "LikelihoodEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: LikelihoodEvaluatorConfig
-
         logger.info(
             f"Saving likelihood results to: {self._output_dir}/validation.jsonl"
         )

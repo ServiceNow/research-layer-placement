@@ -57,10 +57,10 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
             score = await evaluator.evaluate(placement)
     """
 
+    config: "GenerativeEvaluatorConfig"
+
     def __init__(self, config: "GenerativeEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: GenerativeEvaluatorConfig
-
         logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
 
     def _make_records(
@@ -71,7 +71,7 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
         Skips truncated samples (incomplete text makes correctness checking unreliable).
         Returns empty list if all samples are truncated.
         """
-        task_name = task.config.task
+        task_name = task.config.task or ""
         generations = []
         problem_id = f"{task_name}:{idx}"
 

@@ -15,7 +15,7 @@ inherit from this and implement their specific evaluation logic.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, cast
 
 from pydantic import Field, model_validator
 
@@ -53,6 +53,8 @@ class TaskBasedEvaluator(BackendEvaluator):
             score = await evaluator.evaluate(placement)
     """
 
+    config: "TaskBasedEvaluatorConfig"
+
     def __init__(self, config: "TaskBasedEvaluatorConfig") -> None:
         """Initialize task-based evaluator.
 
@@ -60,7 +62,6 @@ class TaskBasedEvaluator(BackendEvaluator):
             config: Evaluator configuration with task settings.
         """
         super().__init__(config)
-        self.config: "TaskBasedEvaluatorConfig"
 
     def _prepare_task(
         self,
@@ -111,7 +112,7 @@ class TaskBasedEvaluator(BackendEvaluator):
         if self.config.max_problems_per_task is not None:
             total_problems = min(total_problems, self.config.max_problems_per_task)
             # Convert to list for slicing (docs might be HF Dataset)
-            docs = [docs[i] for i in range(total_problems)]
+            docs = cast(Docs, [docs[i] for i in range(total_problems)])
 
         # Check completed problems for resumability
         completed = self._trace_writer.get_completed_problems(task_name)

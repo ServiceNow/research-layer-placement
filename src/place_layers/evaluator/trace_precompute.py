@@ -57,10 +57,10 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
             accuracy = await evaluator.evaluate(placement)
     """
 
+    config: "TracePrecomputeEvaluatorConfig"
+
     def __init__(self, config: "TracePrecomputeEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: TracePrecomputeEvaluatorConfig
-
         logger.info(f"Saving traces to: {self._output_dir}/validation.jsonl")
 
     def _get_fewshot_seed(self) -> int | None:
@@ -78,7 +78,7 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
         Skips truncated samples (they don't have valid log-probs).
         Returns empty list if all samples are truncated.
         """
-        task_name = task.config.task
+        task_name = task.config.task or ""
         traces = []
         prompt_tokens = tuple(result.prompt_token_ids)
         problem_id = f"{task_name}:{idx}"

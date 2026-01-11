@@ -78,9 +78,10 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             score = await evaluator.evaluate(placement)
     """
 
+    config: "BaseGenerativeEvaluatorConfig"
+
     def __init__(self, config: "BaseGenerativeEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: BaseGenerativeEvaluatorConfig
 
     # =========================================================================
     # Abstract Methods (subclasses must implement)
@@ -89,7 +90,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     @abstractmethod
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult
-    ) -> list[TraceRecord]:
+    ) -> Sequence[TraceRecord]:
         """Create records from a generation result.
 
         Args:
@@ -99,7 +100,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             result: Generation result with samples.
 
         Returns:
-            List of records (Trace or Generation). Empty list means all
+            Sequence of records (Trace or Generation). Empty sequence means all
             samples were truncated/invalid.
         """
         pass
@@ -201,7 +202,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 # Build messages for this batch
                 batch_docs = [docs[idx] for idx in batch_indices]
                 messages_batch = [
-                    build_chat_messages(task, doc, task.config.num_fewshot)
+                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
                     for doc in batch_docs
                 ]
 
@@ -308,6 +309,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             Number of problems processed.
         """
         assert isinstance(self._backend, AsyncBackend)
+        backend = self._backend  # Local var for type narrowing in nested function
 
         total = len(remaining_indices)
 
@@ -330,10 +332,10 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                         break
 
                     doc = docs[idx]
-                    messages = build_chat_messages(task, doc, task.config.num_fewshot)
+                    messages = build_chat_messages(task, doc, task.config.num_fewshot or 0)
 
                     try:
-                        result = await self._backend.agenerate(
+                        result = await backend.agenerate(
                             messages,
                             n=self.config.samples_per_problem,
                             max_tokens=self.config.max_new_tokens,

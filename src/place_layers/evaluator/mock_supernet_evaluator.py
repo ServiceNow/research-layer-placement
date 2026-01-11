@@ -51,9 +51,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     window layers, etc.).
     """
 
+    config: "MockSupernetEvaluatorConfig"
+
     def __init__(self, config: "MockSupernetEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: MockSupernetEvaluatorConfig  # Type narrowing
 
         # Generate landscape structure from seed
         # This represents the supernet's learned preferences
