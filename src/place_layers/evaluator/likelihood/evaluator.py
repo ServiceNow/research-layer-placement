@@ -41,10 +41,7 @@ from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator
 from place_layers.evaluator.backend_evaluator_config import TaskBasedEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.backend.base import (
-    AsyncBackend,
-    ChatMessage,
-)
+from place_layers.evaluator.backend.base import ChatMessage
 from place_layers.evaluator.traces.writer import summarize_likelihood
 from place_layers.evaluator.traces.types import LikelihoodRecord
 from place_layers.evaluator.lm_eval_utils import build_chat_messages
@@ -204,10 +201,7 @@ class LikelihoodEvaluator(BackendEvaluator):
 
                 # Compute log-probs using chat-based API (diff-based scoring)
                 # Returns ChatLogProbResult with full token-level detail
-                if isinstance(self._backend, AsyncBackend):
-                    results = await self._backend.compute_chat_log_probs(all_chats)
-                else:
-                    results = self._backend.compute_chat_log_probs(all_chats)
+                results = await self._compute_chat_log_probs(all_chats)
 
                 # Unpack results per document and create records
                 offset = 0

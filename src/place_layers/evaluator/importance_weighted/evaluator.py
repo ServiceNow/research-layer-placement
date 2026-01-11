@@ -49,9 +49,6 @@ from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator
 from place_layers.evaluator.backend_evaluator_config import BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.backend.base import (
-    AsyncBackend,
-)
 from place_layers.evaluator.traces.writer import (
     get_completed_problems,
     summarize_is,
@@ -363,12 +360,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             (trace.prompt_tokens, trace.completion_tokens) for trace in all_traces
         ]
 
-        if isinstance(self._backend, AsyncBackend):
-            all_student_log_probs = await self._backend.compute_batch_log_probs(
-                traces_data
-            )
-        else:
-            all_student_log_probs = self._backend.compute_batch_log_probs(traces_data)
+        all_student_log_probs = await self._compute_batch_log_probs(traces_data)
 
         # Process each problem, create records, and stream to disk
         records: list[ISProblemRecord] = []

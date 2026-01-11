@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, Sequence
 
 from hydra.core.hydra_config import HydraConfig
 
@@ -22,6 +22,8 @@ from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.backend.base import (
     AsyncBackend,
+    ChatLogProbResult,
+    ChatMessage,
     SyncBackend,
 )
 from place_layers.evaluator.traces.writer import TraceWriter
@@ -168,3 +170,45 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             logger.debug(f"Set placement: {mixer_names[:4]}...")
 
         self._current_placement = mixer_names
+
+    # =========================================================================
+    # Backend Method Wrappers (sync/async dispatch)
+    # =========================================================================
+
+    async def _compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions.
+
+        Handles sync/async dispatch based on backend type.
+
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+
+        Returns:
+            List of ChatLogProbResult with token-level detail.
+        """
+        if isinstance(self._backend, AsyncBackend):
+            return await self._backend.compute_chat_log_probs(chats)
+        else:
+            return self._backend.compute_chat_log_probs(chats)
+
+    async def _compute_batch_log_probs(
+        self,
+        sequences: Sequence[tuple[tuple[int, ...], tuple[int, ...]]],
+    ) -> list[float]:
+        """Compute log probabilities for token sequences.
+
+        Handles sync/async dispatch based on backend type.
+
+        Args:
+            sequences: List of (prompt_tokens, completion_tokens) tuples.
+
+        Returns:
+            List of total log probabilities for each sequence.
+        """
+        if isinstance(self._backend, AsyncBackend):
+            return await self._backend.compute_batch_log_probs(sequences)
+        else:
+            return self._backend.compute_batch_log_probs(sequences)
