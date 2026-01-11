@@ -1,9 +1,7 @@
 """Tests for importance-weighted accuracy evaluator edge cases."""
 
-from place_layers.evaluator.importance_weighted import (
-    TraceDataset,
-    TraceSource,
-)
+from place_layers.evaluator.importance_weighted import TraceSource
+from place_layers.evaluator.traces import TraceDataset
 
 
 class TestTraceDataset:
