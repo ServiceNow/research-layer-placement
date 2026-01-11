@@ -10,6 +10,7 @@ from place_layers.evaluator.importance_weighted.evaluator import (
 )
 from place_layers.evaluator.likelihood import LikelihoodEvaluatorConfig
 from place_layers.evaluator.mock_supernet_evaluator import MockSupernetEvaluatorConfig
+from place_layers.evaluator.trace_precompute import TracePrecomputeEvaluatorConfig
 
 
 # Discriminated union of all evaluators
@@ -17,6 +18,7 @@ EvaluatorConfig = Annotated[
     MockSupernetEvaluatorConfig
     | ImportanceWeightedEvaluatorConfig
     | GenerativeEvaluatorConfig
-    | LikelihoodEvaluatorConfig,
+    | LikelihoodEvaluatorConfig
+    | TracePrecomputeEvaluatorConfig,
     Field(discriminator="evaluator_type"),
 ]
