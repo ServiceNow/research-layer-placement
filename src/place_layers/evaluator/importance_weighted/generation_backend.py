@@ -52,6 +52,30 @@ class ModelStructure:
     """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
 
 
+@dataclass(frozen=True)
+class ChatLogProbResult:
+    """Detailed result from chat log-prob computation.
+
+    Contains all token-level information needed for observability:
+    - Full token sequence (after chat template applied)
+    - Per-token logprobs
+    - Answer range (which tokens were identified as "the answer")
+    - Total score (sum of answer logprobs)
+    """
+
+    token_ids: tuple[int, ...]
+    """Full token sequence for this chat (context + completion)."""
+
+    logprobs: tuple[float | None, ...]
+    """Per-token logprobs (None for first token which has no prior context)."""
+
+    answer_range: tuple[int, int]
+    """(start, end) indices identifying answer tokens in token_ids."""
+
+    total_log_prob: float
+    """Sum of logprobs for answer tokens (used for prediction)."""
+
+
 # =============================================================================
 # Base Classes
 # =============================================================================
@@ -111,13 +135,57 @@ class AsyncBackend(ABC):
         self,
         traces: Sequence[tuple[Sequence[int], Sequence[int]]],
     ) -> list[float]:
-        """Compute log probabilities for a batch of traces.
+        """Compute log probabilities for a batch of traces (token-based).
 
         Args:
             traces: List of (prompt_tokens, completion_tokens) tuples.
 
         Returns:
             List of log probabilities (sum over completion tokens) in input order.
+        """
+        pass
+
+    @abstractmethod
+    async def compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[float]:
+        """Compute log probabilities for text continuations (text-based).
+
+        This is the text-based counterpart to compute_batch_log_probs.
+        Tokenization is handled internally by the backend.
+
+        Args:
+            contexts: List of context strings (prompts).
+            continuations: List of continuation strings to score.
+
+        Returns:
+            List of log P(continuation | context) values in input order.
+
+        Raises:
+            NotImplementedError: If backend doesn't support text-based scoring.
+        """
+        pass
+
+    @abstractmethod
+    async def compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions with full observability.
+
+        This is the chat-level counterpart to compute_batch_log_probs.
+        Each chat is a (context_messages, completion_messages) tuple.
+
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+                context_messages: Messages forming the context (e.g., few-shot + question).
+                completion_messages: Messages to score (e.g., assistant answer).
+
+        Returns:
+            List of ChatLogProbResult with token IDs, per-token logprobs,
+            answer ranges, and total scores for each chat.
         """
         pass
 
@@ -226,7 +294,7 @@ class SyncBackend(ABC):
         self,
         traces: Sequence[tuple[Sequence[int], Sequence[int]]],
     ) -> list[float]:
-        """Compute log probabilities for a batch of traces.
+        """Compute log probabilities for a batch of traces (token-based).
 
         Uses config.batch_size for internal batching.
 
@@ -235,6 +303,50 @@ class SyncBackend(ABC):
 
         Returns:
             List of log probabilities (sum over completion tokens) in input order.
+        """
+        pass
+
+    @abstractmethod
+    def compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[float]:
+        """Compute log probabilities for text continuations (text-based).
+
+        This is the text-based counterpart to compute_batch_log_probs.
+        Tokenization is handled internally by the backend.
+
+        Args:
+            contexts: List of context strings (prompts).
+            continuations: List of continuation strings to score.
+
+        Returns:
+            List of log P(continuation | context) values in input order.
+
+        Raises:
+            NotImplementedError: If backend doesn't support text-based scoring.
+        """
+        pass
+
+    @abstractmethod
+    def compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions with full observability.
+
+        This is the chat-level counterpart to compute_batch_log_probs.
+        Each chat is a (context_messages, completion_messages) tuple.
+
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+                context_messages: Messages forming the context (e.g., few-shot + question).
+                completion_messages: Messages to score (e.g., assistant answer).
+
+        Returns:
+            List of ChatLogProbResult with token IDs, per-token logprobs,
+            answer ranges, and total scores for each chat.
         """
         pass
 
@@ -357,6 +469,188 @@ class VLLMBackend(AsyncBackend):
 
         results = await asyncio.gather(*tasks)
         return [r.total_logprob for r in results]
+
+    async def compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[float]:
+        """Compute log probabilities for text continuations.
+
+        Uses vLLM's text_offset in the response to determine where the
+        continuation starts, avoiding the need for local tokenization.
+
+        Args:
+            contexts: List of context strings (prompts).
+            continuations: List of continuation strings to score.
+
+        Returns:
+            List of log P(continuation | context) values in input order.
+        """
+        if len(contexts) != len(continuations):
+            raise ValueError(
+                f"contexts and continuations must have same length, "
+                f"got {len(contexts)} and {len(continuations)}"
+            )
+
+        if not contexts:
+            return []
+
+        # Send all scoring requests concurrently, bounded by semaphore
+        tasks = [
+            self._client.score_text_completion(ctx, cont, request_id=str(i))
+            for i, (ctx, cont) in enumerate(zip(contexts, continuations))
+        ]
+
+        results = await asyncio.gather(*tasks)
+        return [r.total_logprob for r in results]
+
+    async def compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions with full observability.
+
+        Uses vLLM's prompt_logprobs feature with a diff-based approach:
+        1. Group chats by context (same context = same multiple-choice question)
+        2. Send requests with prompt_logprobs=1 for each chat
+        3. Compare token IDs across chats in each group
+        4. Find differing positions (these are the answer tokens)
+        5. Sum logprobs at differing positions
+
+        This approach is template-agnostic - we don't need to know the chat
+        template structure, just find where tokens differ.
+
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+
+        Returns:
+            List of ChatLogProbResult with full token-level detail.
+        """
+        if not chats:
+            return []
+
+        from collections import defaultdict
+
+        # Group chats by context for diff-based scoring
+        # context_key -> [(original_idx, completion_msgs)]
+        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
+            defaultdict(list)
+        )
+        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
+
+        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
+            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
+            context_groups[ctx_key].append((i, comp_msgs))
+            context_msgs_by_key[ctx_key] = ctx_msgs
+
+        # Process each context group
+        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
+
+        for ctx_key, group in context_groups.items():
+            ctx_msgs = context_msgs_by_key[ctx_key]
+            results = await self._score_chat_group(ctx_msgs, group)
+            for (orig_idx, _), result in zip(group, results):
+                all_results[orig_idx] = result
+
+        # Fill any None results with empty results (shouldn't happen)
+        return [
+            r if r is not None else ChatLogProbResult(
+                token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
+            )
+            for r in all_results
+        ]
+
+    async def _score_chat_group(
+        self,
+        context_msgs: Sequence[ChatMessage],
+        group: list[tuple[int, Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Score a group of chats that share the same context.
+
+        Uses diff-based approach: find positions where token IDs differ,
+        then sum logprobs at those positions.
+
+        Returns ChatLogProbResult with full token-level information.
+        """
+        session = self._client._ensure_session()
+        url = f"{self._client.config.base_url.rstrip('/')}/v1/chat/completions"
+
+        # Send all requests in parallel
+        async def send_request(
+            comp_msgs: Sequence[ChatMessage],
+        ) -> dict:
+            messages = list(context_msgs) + list(comp_msgs)
+            payload = {
+                "model": self._client.config.model,
+                "messages": messages,
+                "max_tokens": 1,
+                "prompt_logprobs": 1,
+                "temperature": 0,
+            }
+            async with self._client._semaphore:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise RuntimeError(
+                            f"vLLM chat request failed: {resp.status}: {error_text}"
+                        )
+                    return await resp.json()
+
+        responses = await asyncio.gather(*[send_request(comp) for _, comp in group])
+
+        # Extract token IDs and logprobs from each response
+        token_sequences: list[list[int | None]] = []
+        logprob_sequences: list[list[float | None]] = []
+
+        for data in responses:
+            prompt_logprobs = data.get("prompt_logprobs", [])
+            tokens: list[int | None] = []
+            logprobs: list[float | None] = []
+
+            for lp in prompt_logprobs:
+                if lp is None:
+                    tokens.append(None)
+                    logprobs.append(None)
+                else:
+                    # The key is the actual token ID (as string)
+                    token_id = int(list(lp.keys())[0])
+                    token_logprob = lp[list(lp.keys())[0]]["logprob"]
+                    tokens.append(token_id)
+                    logprobs.append(token_logprob)
+
+            token_sequences.append(tokens)
+            logprob_sequences.append(logprobs)
+
+        # Find answer token ranges for each sequence (excluding common prefix/suffix)
+        from place_layers.evaluator.lm_eval_utils import find_differing_ranges
+
+        answer_ranges = find_differing_ranges(token_sequences)
+
+        # Build ChatLogProbResult for each chat
+        results: list[ChatLogProbResult] = []
+        for tokens, logprobs, (start, end) in zip(
+            token_sequences, logprob_sequences, answer_ranges
+        ):
+            # Extract answer logprobs and compute sum
+            answer_logprobs: list[float] = [
+                logprobs[pos]  # type: ignore[misc]
+                for pos in range(start, end)
+                if pos < len(logprobs) and logprobs[pos] is not None
+            ]
+            total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
+
+            # Convert token_ids: replace None with 0 (shouldn't happen in practice)
+            clean_token_ids = tuple(t if t is not None else 0 for t in tokens)
+
+            results.append(ChatLogProbResult(
+                token_ids=clean_token_ids,
+                logprobs=tuple(logprobs),
+                answer_range=(start, end),
+                total_log_prob=total_log_prob,
+            ))
+
+        return results
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement - NOT YET IMPLEMENTED for vLLM.
@@ -538,6 +832,190 @@ class TransformersBackend(SyncBackend):
         return self._client.compute_batch_log_probs(
             trace_tuples, batch_size=self._config.batch_size
         )
+
+    def compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[float]:
+        """Compute log probabilities for text continuations.
+
+        Tokenizes contexts and continuations internally, then delegates to
+        compute_batch_log_probs for efficient batched computation.
+
+        Args:
+            contexts: List of context strings (prompts).
+            continuations: List of continuation strings to score.
+
+        Returns:
+            List of log P(continuation | context) values in input order.
+        """
+        if len(contexts) != len(continuations):
+            raise ValueError(
+                f"contexts and continuations must have same length, "
+                f"got {len(contexts)} and {len(continuations)}"
+            )
+
+        if not contexts:
+            return []
+
+        tokenizer = self._client.tokenizer
+
+        # Tokenize all contexts and continuations
+        traces: list[tuple[Sequence[int], Sequence[int]]] = []
+        for ctx, cont in zip(contexts, continuations):
+            # Context gets special tokens (BOS), continuation does not
+            ctx_tokens = tokenizer.encode(ctx, add_special_tokens=True)
+            cont_tokens = tokenizer.encode(cont, add_special_tokens=False)
+            traces.append((ctx_tokens, cont_tokens))
+
+        # Delegate to token-based method
+        return self.compute_batch_log_probs(traces)
+
+    def compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions with full observability.
+
+        Uses prefix/suffix matching approach (same as vLLM backend):
+        1. Group chats by context (same context = same multiple-choice question)
+        2. Tokenize all full messages for each group
+        3. Find answer token ranges using prefix/suffix matching
+        4. Compute logprobs via forward pass
+        5. SUM logprobs for answer tokens (matches lm-eval semantics)
+
+        This approach is template-agnostic - we find common prefix (context +
+        template overhead) and common suffix (end tokens) to isolate the
+        actual answer tokens.
+
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+
+        Returns:
+            List of ChatLogProbResult with full token-level detail.
+        """
+        if not chats:
+            return []
+
+        from collections import defaultdict
+
+        tokenizer = self._client.tokenizer
+
+        # Group chats by context for diff-based scoring
+        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
+            defaultdict(list)
+        )
+        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
+
+        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
+            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
+            context_groups[ctx_key].append((i, comp_msgs))
+            context_msgs_by_key[ctx_key] = ctx_msgs
+
+        # Process each context group
+        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
+
+        for ctx_key, group in context_groups.items():
+            ctx_msgs = context_msgs_by_key[ctx_key]
+
+            # Tokenize all full messages in this group
+            token_sequences: list[list[int]] = []
+            for _, comp_msgs in group:
+                full_msgs = list(ctx_msgs) + list(comp_msgs)
+                full_text = tokenizer.apply_chat_template(
+                    full_msgs,  # type: ignore[arg-type]
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                tokens = tokenizer.encode(full_text, add_special_tokens=False)  # type: ignore[arg-type]
+                token_sequences.append(tokens)
+
+            # Find answer token ranges using prefix/suffix matching
+            from place_layers.evaluator.lm_eval_utils import find_differing_ranges
+
+            answer_ranges = find_differing_ranges(token_sequences)  # type: ignore[arg-type]
+
+            # Compute logprobs and build results
+            results = self._score_sequences_in_ranges(token_sequences, answer_ranges)
+
+            for (orig_idx, _), result in zip(group, results):
+                all_results[orig_idx] = result
+
+        # Fill any None results with empty results (shouldn't happen)
+        return [
+            r if r is not None else ChatLogProbResult(
+                token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
+            )
+            for r in all_results
+        ]
+
+    def _score_sequences_in_ranges(
+        self,
+        token_sequences: list[list[int]],
+        ranges: list[tuple[int, int]],
+    ) -> list[ChatLogProbResult]:
+        """Compute logprobs for each sequence and return full results.
+
+        Args:
+            token_sequences: List of token ID sequences.
+            ranges: List of (start, end) tuples, one per sequence.
+
+        Returns:
+            List of ChatLogProbResult with token IDs, per-token logprobs,
+            answer ranges, and total scores.
+        """
+        import torch
+
+        model = self._client.model
+        device = next(model.parameters()).device
+
+        results: list[ChatLogProbResult] = []
+
+        for tokens, (start, end) in zip(token_sequences, ranges):
+            if not tokens:
+                results.append(ChatLogProbResult(
+                    token_ids=(),
+                    logprobs=(),
+                    answer_range=(start, end),
+                    total_log_prob=0.0,
+                ))
+                continue
+
+            # Run forward pass
+            input_ids = torch.tensor([tokens], device=device)
+            with torch.no_grad():
+                outputs = model(input_ids)
+                logits = outputs.logits[0]  # [seq_len, vocab_size]
+
+            # Compute log probs for each token position
+            log_probs_tensor = torch.log_softmax(logits, dim=-1)
+
+            # Build per-token logprobs list
+            # logprobs[i] is the logprob of token[i] given tokens[:i]
+            # First token has no prior context, so it's None
+            all_logprobs: list[float | None] = [None]
+            for pos in range(1, len(tokens)):
+                token_id = tokens[pos]
+                lp = log_probs_tensor[pos - 1, token_id].item()
+                all_logprobs.append(lp)
+
+            # Extract answer logprobs and compute sum
+            answer_logprobs: list[float] = [
+                all_logprobs[pos]  # type: ignore[misc]
+                for pos in range(start, end)
+                if pos < len(all_logprobs) and all_logprobs[pos] is not None
+            ]
+            total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
+
+            results.append(ChatLogProbResult(
+                token_ids=tuple(tokens),
+                logprobs=tuple(all_logprobs),
+                answer_range=(start, end),
+                total_log_prob=total_log_prob,
+            ))
+
+        return results
 
     def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model.

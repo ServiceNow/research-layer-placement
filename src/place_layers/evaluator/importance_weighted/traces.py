@@ -13,6 +13,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from place_layers.evaluator.importance_weighted.generation_backend import ChatMessage
+
 
 class BaseGeneration(BaseModel):
     """Base class for generation records (shared fields).
@@ -97,8 +99,125 @@ class SkippedProblem(BaseModel):
     reason: str = Field(description="Why the problem was skipped")
 
 
+class LikelihoodRecord(BaseModel):
+    """Multiple-choice evaluation record with full token-level observability.
+
+    Used by the LikelihoodEvaluator to stream evaluation results to disk.
+    Records everything needed to debug and analyze likelihood scoring:
+    - Full chat messages (few-shot + question + each choice as assistant message)
+    - Per-choice token sequences and logprobs
+    - Answer range detection results
+    - Predictions and correctness
+    """
+
+    model_config = {"frozen": True}
+
+    record_type: Literal["likelihood"] = "likelihood"
+
+    # === Problem Identification ===
+    problem_id: str = Field(description="Unique identifier (e.g., 'mmlu_astronomy:42')")
+    task_name: str = Field(description="lm-eval task name")
+
+    # === Input: Full Chat Messages ===
+    context_messages: tuple[ChatMessage, ...] = Field(
+        description="Chat messages forming the shared context (few-shot + question)"
+    )
+    raw_choices: tuple[str, ...] = Field(
+        description="Raw choice strings (e.g., ('A', 'B', 'C', 'D'))"
+    )
+    choices: tuple[ChatMessage, ...] = Field(
+        description="Full assistant message for each choice"
+    )
+
+    # === Token-Level Data Per Choice (parallel arrays indexed by choice) ===
+    choice_token_ids: tuple[tuple[int, ...], ...] = Field(
+        description="Full tokenized sequence for each choice (after chat template)"
+    )
+    choice_logprobs: tuple[tuple[float | None, ...], ...] = Field(
+        description="Per-token logprobs for each choice (None for first token)"
+    )
+    choice_answer_ranges: tuple[tuple[int, int], ...] = Field(
+        description="(start, end) range identifying answer tokens for each choice"
+    )
+
+    # === Scores (derived but stored for convenience) ===
+    choice_log_probs: tuple[float, ...] = Field(
+        description="Sum of answer logprobs for each choice (used for prediction)"
+    )
+    choice_lengths: tuple[int, ...] = Field(
+        description="Character length of each choice (for length normalization)"
+    )
+
+    # === Ground Truth and Predictions ===
+    gold_idx: int = Field(description="Index of correct answer")
+    pred_idx: int = Field(description="Index of predicted answer (argmax log-prob)")
+    pred_idx_norm: int = Field(description="Index predicted with length normalization")
+    correct: bool = Field(description="Whether pred_idx == gold_idx")
+    correct_norm: bool = Field(description="Whether pred_idx_norm == gold_idx")
+
+
+class ISProblemRecord(BaseModel):
+    """Importance-weighted evaluation record for a single problem.
+
+    Used by the ImportanceWeightedEvaluator to stream per-problem results.
+    For each problem, we have N teacher samples (traces). We compute the
+    student log-prob for each, then use importance sampling to estimate
+    P(correct) for this problem.
+
+    Records everything needed to debug and analyze IS scoring:
+    - Per-sample student/teacher log-probs and importance weights
+    - Problem-level IS estimate and effective sample size
+    - Weight diagnostics (range, sum)
+    """
+
+    model_config = {"frozen": True}
+
+    record_type: Literal["is_problem"] = "is_problem"
+
+    # === Problem Identification ===
+    problem_id: str = Field(description="Unique identifier (e.g., 'gsm8k:42')")
+    task_name: str = Field(description="lm-eval task name")
+    dataset_name: str = Field(description="Source dataset name (for weighted combination)")
+
+    # === Per-Sample Data (parallel arrays, one element per trace/sample) ===
+    sample_indices: tuple[int, ...] = Field(
+        description="Original sample_idx values from traces"
+    )
+    student_log_probs: tuple[float, ...] = Field(
+        description="Student model log-prob for each sample"
+    )
+    teacher_log_probs: tuple[float, ...] = Field(
+        description="Teacher model log-prob for each sample (from input traces)"
+    )
+    correct_flags: tuple[bool | None, ...] = Field(
+        description="Correctness flag for each sample (from input traces)"
+    )
+    log_importance_weights: tuple[float, ...] = Field(
+        description="Clipped log importance weights: log(student) - log(teacher)"
+    )
+
+    # === Problem-Level IS Estimate ===
+    is_correct_estimate: float = Field(
+        description="IS estimate of P(correct): sum(w*correct) / sum(w)"
+    )
+
+    # === Problem-Level Diagnostics ===
+    ess: float = Field(
+        description="Effective sample size: (sum(w))^2 / sum(w^2)"
+    )
+    weight_sum: float = Field(
+        description="Sum of importance weights for this problem"
+    )
+    weight_range: tuple[float, float] = Field(
+        description="(min, max) importance weights across samples"
+    )
+    num_samples: int = Field(
+        description="Number of samples (traces) for this problem"
+    )
+
+
 TraceRecord = Annotated[
-    Trace | Generation | SkippedProblem,
+    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord,
     Field(discriminator="record_type"),
 ]
 

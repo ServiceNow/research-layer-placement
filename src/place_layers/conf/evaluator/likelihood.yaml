@@ -1,0 +1,32 @@
+# @package evaluator
+# Likelihood evaluator - measures accuracy on multiple-choice tasks
+#
+# This evaluator computes log P(choice | context) for each answer choice
+# and selects the one with highest probability. Used for tasks like MMLU,
+# ARC, HellaSwag, and other multiple-choice benchmarks.
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (must be transformers - vllm not yet supported)
+#   - task: Benchmark configuration (tasks, num_fewshot)
+#
+# Note: Model structure (num_layers, mixer_names) is discovered automatically
+# from the backend at runtime.
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=likelihood \
+#       +backend=transformers +model=qwen2_0_5b +task=mmlu
+
+evaluator_type: likelihood
+
+# Backend configuration (composed from backend/ config group)
+# Note: Only TransformersBackend currently supports likelihood evaluation
+backend: ${backend}
+
+# Task configuration (composed from task/ config group)
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
+
+# Batching parameters
+batch_size: 32

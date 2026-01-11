@@ -83,10 +83,11 @@ def prepare_task(
     split: str,
     seed: int | None = None,
 ) -> tuple["Task", str, Docs, list[int]] | None:
-    """Load task and get remaining problem indices.
+    """Load task and get remaining problem indices for generative evaluation.
 
     This handles:
     - Loading the lm-eval task
+    - Validating it's a generate_until task
     - Getting documents for the split
     - Applying max_problems limit
     - Checking completed problems for resumability
@@ -115,6 +116,78 @@ def prepare_task(
         raise ValueError(
             f"Task '{task_name}' has output_type='{task.config.output_type}', "
             f"expected 'generate_until'"
+        )
+
+    # Download dataset if needed
+    task.download()
+
+    # Get documents
+    docs = get_docs(task, split)
+
+    # Apply max_problems limit
+    total_problems = len(docs)
+    if max_problems is not None:
+        total_problems = min(total_problems, max_problems)
+        # Convert to list for slicing (docs might be HF Dataset)
+        docs = [docs[i] for i in range(total_problems)]
+
+    # Check completed problems for resumability
+    completed = get_completed_problems(output_dir, task_name)
+    remaining = [i for i in range(total_problems) if i not in completed]
+
+    if not remaining:
+        logger.info(f"Task '{task_name}': already complete, skipping")
+        return None
+
+    logger.info(
+        f"Task '{task_name}': {len(remaining)} remaining "
+        f"({len(completed)} already done, {total_problems} total)"
+    )
+
+    return task, task_name, docs, remaining
+
+
+def prepare_multiple_choice_task(
+    task_spec: TaskSpecInput,
+    output_dir: Path,
+    num_fewshot: int,
+    max_problems: int | None,
+    split: str,
+    seed: int | None = None,
+) -> tuple["Task", str, Docs, list[int]] | None:
+    """Load task and get remaining problem indices for multiple-choice evaluation.
+
+    This handles:
+    - Loading the lm-eval task
+    - Validating it's a multiple_choice task
+    - Getting documents for the split
+    - Applying max_problems limit
+    - Checking completed problems for resumability
+    - Computing remaining indices
+
+    Args:
+        task_spec: Task name or TaskSpec with overrides.
+        output_dir: Directory containing validation.jsonl for resumability.
+        num_fewshot: Number of few-shot examples.
+        max_problems: Maximum problems to process (None = all).
+        split: Dataset split ('test' or 'validation').
+        seed: Random seed for few-shot sampling.
+
+    Returns:
+        None if task is already complete.
+        (task, task_name, docs, remaining_indices) otherwise.
+    """
+    task_name = get_task_name(task_spec)
+    logger.info(f"Task '{task_name}': loading...")
+
+    # Load task
+    task = load_task(task_spec, num_fewshot, seed)
+
+    # Validate task type
+    if task.config.output_type != "multiple_choice":
+        raise ValueError(
+            f"Task '{task_name}' has output_type='{task.config.output_type}', "
+            f"expected 'multiple_choice'"
         )
 
     # Download dataset if needed

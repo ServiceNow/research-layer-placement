@@ -379,6 +379,41 @@ class RESTBackend(AsyncBackend):
         # Pair log probs with original indices
         return [(idx, lp) for (idx, _), lp in zip(indexed_traces, log_probs)]
 
+    async def compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[float]:
+        """Compute text log-probs - NOT YET IMPLEMENTED for REST backend.
+
+        The REST servers run TransformersBackend which supports text log-probs,
+        but we need to add a /compute_text_log_probs endpoint to expose this.
+
+        For now, use TransformersBackend directly for likelihood evaluation.
+        """
+        raise NotImplementedError(
+            "Text-based log-prob scoring is not yet implemented for REST backend. "
+            "The server needs a /compute_text_log_probs endpoint. "
+            "For now, use TransformersBackend directly for likelihood evaluation."
+        )
+
+    async def compute_chat_log_probs(
+        self,
+        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[float]:
+        """Compute chat log-probs - NOT YET IMPLEMENTED for REST backend.
+
+        The REST servers run TransformersBackend which supports this,
+        but we need to add a /compute_chat_log_probs endpoint to expose it.
+
+        For now, use TransformersBackend directly for likelihood evaluation.
+        """
+        raise NotImplementedError(
+            "Chat-based log-prob scoring is not yet implemented for REST backend. "
+            "The server needs a /compute_chat_log_probs endpoint. "
+            "For now, use TransformersBackend directly for likelihood evaluation."
+        )
+
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.
 

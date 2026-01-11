@@ -25,6 +25,8 @@ from pydantic import BaseModel, Field
 
 from place_layers.evaluator.importance_weighted.traces import (
     BaseGeneration,
+    ISProblemRecord,
+    LikelihoodRecord,
     SkippedProblem,
     TraceRecord,
     TraceRecordAdapter,
@@ -68,8 +70,11 @@ class TraceWriter:
 
     def append(self, records: list[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
-        # Traces and Generations (BaseGeneration subclasses) go to validation.jsonl
-        valid = [r for r in records if isinstance(r, BaseGeneration)]
+        # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
+        valid = [
+            r for r in records
+            if isinstance(r, (BaseGeneration, LikelihoodRecord, ISProblemRecord))
+        ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
         if valid:
@@ -136,7 +141,14 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                     record = TraceRecordAdapter.validate_json(line)
                     match record:
                         # BaseGeneration covers both Trace and Generation
-                        case BaseGeneration(task_name=tn, problem_id=pid) | SkippedProblem(task_name=tn, problem_id=pid):
+                        # LikelihoodRecord for multiple-choice evaluation
+                        # ISProblemRecord for importance-weighted evaluation
+                        case (
+                            BaseGeneration(task_name=tn, problem_id=pid)
+                            | SkippedProblem(task_name=tn, problem_id=pid)
+                            | LikelihoodRecord(task_name=tn, problem_id=pid)
+                            | ISProblemRecord(task_name=tn, problem_id=pid)
+                        ):
                             if tn not in completed:
                                 completed[tn] = set()
                             problem_idx = _extract_problem_idx(pid)
@@ -341,4 +353,267 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
         total_samples=total_samples,
         problems_correct=total_problems_correct,
         samples_correct=total_samples_correct,
+    )
+
+
+# =============================================================================
+# Likelihood Summary
+# =============================================================================
+
+
+class LikelihoodTaskStats(BaseModel):
+    """Per-task statistics for likelihood (multiple-choice) evaluation."""
+
+    model_config = {"frozen": True}
+
+    num_problems: int = Field(description="Number of problems")
+    num_correct: int = Field(description="Number correct (raw)")
+    num_correct_norm: int = Field(description="Number correct (length-normalized)")
+
+    @property
+    def accuracy(self) -> float:
+        """Raw accuracy."""
+        return self.num_correct / self.num_problems if self.num_problems > 0 else 0.0
+
+    @property
+    def accuracy_norm(self) -> float:
+        """Length-normalized accuracy."""
+        return self.num_correct_norm / self.num_problems if self.num_problems > 0 else 0.0
+
+
+class LikelihoodSummary(BaseModel):
+    """Summary statistics for likelihood evaluation.
+
+    Computed from LikelihoodRecord entries on disk - the single source of truth.
+    """
+
+    model_config = {"frozen": True}
+
+    task_stats: dict[str, LikelihoodTaskStats] = Field(description="Statistics per task")
+    total_problems: int = Field(description="Total problems across all tasks")
+    total_correct: int = Field(description="Total correct (raw)")
+    total_correct_norm: int = Field(description="Total correct (length-normalized)")
+
+    @property
+    def accuracy(self) -> float:
+        """Raw accuracy across all tasks."""
+        return self.total_correct / self.total_problems if self.total_problems > 0 else 0.0
+
+    @property
+    def accuracy_norm(self) -> float:
+        """Length-normalized accuracy across all tasks."""
+        return self.total_correct_norm / self.total_problems if self.total_problems > 0 else 0.0
+
+    def __str__(self) -> str:
+        lines = ["Likelihood Evaluation Summary:"]
+        for task_name, stats in sorted(self.task_stats.items()):
+            lines.append(
+                f"  {task_name}: {stats.num_correct}/{stats.num_problems} "
+                f"({stats.accuracy:.1%}), "
+                f"norm={stats.num_correct_norm}/{stats.num_problems} "
+                f"({stats.accuracy_norm:.1%})"
+            )
+        lines.append(
+            f"  TOTAL: {self.total_correct}/{self.total_problems} "
+            f"({self.accuracy:.1%}), "
+            f"norm={self.total_correct_norm}/{self.total_problems} "
+            f"({self.accuracy_norm:.1%})"
+        )
+        return "\n".join(lines)
+
+
+def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
+    """Compute summary statistics from LikelihoodRecord entries on disk.
+
+    This is the authoritative way to compute likelihood evaluation metrics.
+    The validation.jsonl file is the single source of truth.
+
+    Args:
+        output_dir: Directory containing validation.jsonl.
+
+    Returns:
+        LikelihoodSummary with per-task and aggregate statistics.
+    """
+    from collections import defaultdict
+
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    # Group records by task
+    # task_name -> list of (correct, correct_norm) tuples
+    task_results: dict[str, list[tuple[bool, bool]]] = defaultdict(list)
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if isinstance(record, LikelihoodRecord):
+                    task_results[record.task_name].append(
+                        (record.correct, record.correct_norm)
+                    )
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in likelihood summary")
+
+    # Compute per-task statistics
+    task_stats: dict[str, LikelihoodTaskStats] = {}
+    total_problems = 0
+    total_correct = 0
+    total_correct_norm = 0
+
+    for task_name, results in task_results.items():
+        num_problems = len(results)
+        num_correct = sum(1 for c, _ in results if c)
+        num_correct_norm = sum(1 for _, cn in results if cn)
+
+        task_stats[task_name] = LikelihoodTaskStats(
+            num_problems=num_problems,
+            num_correct=num_correct,
+            num_correct_norm=num_correct_norm,
+        )
+
+        total_problems += num_problems
+        total_correct += num_correct
+        total_correct_norm += num_correct_norm
+
+    return LikelihoodSummary(
+        task_stats=task_stats,
+        total_problems=total_problems,
+        total_correct=total_correct,
+        total_correct_norm=total_correct_norm,
+    )
+
+
+# =============================================================================
+# Importance-Weighted (IS) Summary
+# =============================================================================
+
+
+class ISDatasetStats(BaseModel):
+    """Per-dataset statistics for importance-weighted evaluation."""
+
+    model_config = {"frozen": True}
+
+    num_problems: int = Field(description="Number of problems")
+    num_samples: int = Field(description="Total samples across all problems")
+    is_accuracy: float = Field(description="Mean IS estimate of P(correct)")
+    avg_ess: float = Field(description="Mean effective sample size")
+
+
+class ISSummary(BaseModel):
+    """Summary statistics for importance-weighted evaluation.
+
+    Computed from ISProblemRecord entries on disk - the single source of truth.
+    Grouped by dataset_name for proper weighted combination.
+    """
+
+    model_config = {"frozen": True}
+
+    dataset_stats: dict[str, ISDatasetStats] = Field(description="Statistics per dataset")
+    total_problems: int = Field(description="Total problems across all datasets")
+    total_samples: int = Field(description="Total samples across all datasets")
+
+    def weighted_accuracy(self, weights: dict[str, float]) -> float:
+        """Compute weighted accuracy using provided dataset weights.
+
+        Args:
+            weights: Dict mapping dataset_name -> weight (should sum to 1).
+
+        Returns:
+            Weighted accuracy across datasets.
+        """
+        return sum(
+            self.dataset_stats[name].is_accuracy * weight
+            for name, weight in weights.items()
+            if name in self.dataset_stats
+        )
+
+    def __str__(self) -> str:
+        lines = ["Importance-Weighted Evaluation Summary:"]
+        for dataset_name, stats in sorted(self.dataset_stats.items()):
+            lines.append(
+                f"  {dataset_name}: IS_acc={stats.is_accuracy:.4f}, "
+                f"ESS={stats.avg_ess:.1f}, "
+                f"problems={stats.num_problems}, samples={stats.num_samples}"
+            )
+        lines.append(
+            f"  TOTAL: {self.total_problems} problems, {self.total_samples} samples"
+        )
+        return "\n".join(lines)
+
+
+def summarize_is(output_dir: Path) -> ISSummary:
+    """Compute summary statistics from ISProblemRecord entries on disk.
+
+    This is the authoritative way to compute IS evaluation metrics.
+    The validation.jsonl file is the single source of truth.
+
+    Args:
+        output_dir: Directory containing validation.jsonl.
+
+    Returns:
+        ISSummary with per-dataset and aggregate statistics.
+    """
+    from collections import defaultdict
+
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    # Group records by dataset
+    # dataset_name -> list of (is_correct_estimate, ess, num_samples)
+    dataset_results: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if isinstance(record, ISProblemRecord):
+                    dataset_results[record.dataset_name].append(
+                        (record.is_correct_estimate, record.ess, record.num_samples)
+                    )
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in IS summary")
+
+    # Compute per-dataset statistics
+    dataset_stats: dict[str, ISDatasetStats] = {}
+    total_problems = 0
+    total_samples = 0
+
+    for dataset_name, results in dataset_results.items():
+        num_problems = len(results)
+        num_samples = sum(ns for _, _, ns in results)
+        is_accuracy = sum(ice for ice, _, _ in results) / num_problems if num_problems > 0 else 0.0
+        avg_ess = sum(ess for _, ess, _ in results) / num_problems if num_problems > 0 else 0.0
+
+        dataset_stats[dataset_name] = ISDatasetStats(
+            num_problems=num_problems,
+            num_samples=num_samples,
+            is_accuracy=is_accuracy,
+            avg_ess=avg_ess,
+        )
+
+        total_problems += num_problems
+        total_samples += num_samples
+
+    return ISSummary(
+        dataset_stats=dataset_stats,
+        total_problems=total_problems,
+        total_samples=total_samples,
     )

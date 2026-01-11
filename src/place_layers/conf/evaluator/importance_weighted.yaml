@@ -1,8 +1,20 @@
 # @package evaluator
+# Importance-weighted accuracy evaluator
+#
+# Uses importance sampling to estimate subnet accuracy from pre-computed
+# teacher traces. Much faster than generative evaluation (~10-100x).
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (transformers, vllm, or rest)
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=importance_weighted \
+#       +backend=transformers +model=apriel2_0_5b_dev
+
 evaluator_type: importance_weighted
 
-# Model configuration
-model_path: /tmp/qwen2/trained-supernet
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
 
 # Trace sources - directories containing JSONL trace files
 # Weights will be normalized to sum to 1
@@ -21,15 +33,6 @@ trace_sources:
   #   weight: 1.0
   #   name: GPQA
 
-# Model loading options
-torch_dtype: bfloat16
-device_map: auto
-
 # Importance sampling parameters
 weight_clip_min: 0.01
 weight_clip_max: 100.0
-
-# Batching parameters (for performance tuning)
-# Note: batch_size > 2 may OOM on smaller GPUs with long sequences
-trace_batch_size: 2  # Max traces per forward pass (higher = faster but more memory)
-trace_length_tolerance: 64  # Max token length difference within a batch

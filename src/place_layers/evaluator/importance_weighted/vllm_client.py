@@ -285,3 +285,91 @@ class VLLMClient:
             request_id=request_id,
         )
 
+    async def score_text_completion(
+        self,
+        context: str,
+        continuation: str,
+        request_id: str = "",
+    ) -> ScoringResult:
+        """Compute log probability of text continuation given text context.
+
+        Unlike score_completion() which requires pre-tokenized inputs, this method
+        accepts raw text and uses vLLM's text_offset in the response to determine
+        where the continuation starts.
+
+        Args:
+            context: The context/prompt text.
+            continuation: The continuation text to score.
+            request_id: Optional identifier for tracking.
+
+        Returns:
+            ScoringResult with total log probability and token count.
+        """
+        session = self._ensure_session()
+        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
+
+        # Send full text - vLLM will tokenize internally
+        full_text = context + continuation
+        continuation_start_char = len(context)
+
+        payload = {
+            "model": self.config.model,
+            "prompt": full_text,
+            "max_tokens": 0,  # Don't generate new tokens
+            "echo": True,  # Return logprobs for prompt tokens
+            "logprobs": 1,  # Request logprobs (includes text_offset)
+        }
+
+        async with self._semaphore:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 400:
+                    error_text = await resp.text()
+                    raise VLLMBadRequestError(error_text)
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise RuntimeError(
+                        f"vLLM score request failed with status {resp.status}: {error_text}"
+                    )
+                data = await resp.json()
+
+        # Extract logprobs data
+        choice = data["choices"][0]
+        logprobs_data = choice.get("logprobs", {})
+        token_logprobs = logprobs_data.get("token_logprobs", [])
+        text_offset = logprobs_data.get("text_offset", [])
+
+        if not text_offset:
+            raise RuntimeError(
+                "vLLM response missing text_offset. "
+                "This may be due to an older vLLM version or server configuration. "
+                "text_offset is required for text-based log-prob scoring."
+            )
+
+        # Find the first token that starts at or after the continuation
+        # This handles cases where context ends mid-token
+        cont_start_idx = None
+        for i, offset in enumerate(text_offset):
+            if offset >= continuation_start_char:
+                cont_start_idx = i
+                break
+
+        if cont_start_idx is None:
+            # All tokens are context, no continuation tokens
+            return ScoringResult(
+                total_logprob=0.0,
+                num_completion_tokens=0,
+                request_id=request_id,
+            )
+
+        # Sum logprobs for continuation tokens
+        # Note: token_logprobs[0] is typically None (no prior context for first token)
+        continuation_logprobs = token_logprobs[cont_start_idx:]
+        valid_logprobs = [lp for lp in continuation_logprobs if lp is not None]
+        total_logprob = sum(valid_logprobs)
+
+        return ScoringResult(
+            total_logprob=total_logprob,
+            num_completion_tokens=len(valid_logprobs),
+            request_id=request_id,
+        )
+

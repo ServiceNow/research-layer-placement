@@ -9,9 +9,11 @@ Theory:
     Instead, sample from teacher p and reweight:
         E_q[correct(x)] = E_p[correct(x) × q(x)/p(x)]
 
-    Using self-normalized importance sampling:
-        score_q ≈ Σᵢ [correct(xᵢ) × wᵢ] / Σᵢ wᵢ
+    Using self-normalized importance sampling per problem:
+        score_problem ≈ Σᵢ [correct(xᵢ) × wᵢ] / Σᵢ wᵢ
     where wᵢ = exp(log q(xᵢ) - log p(xᵢ))
+
+    Final accuracy is the mean of per-problem IS estimates.
 
 Multi-Dataset Support:
     When evaluating across multiple benchmarks (MATH, AIME, GPQA, etc.),
@@ -27,30 +29,42 @@ Numerical Stability:
     For long sequences, log-probabilities can be very negative (e.g., -5000).
     The log importance weight (log q - log p) is computed and clipped in
     log-space before exponentiating to avoid underflow/overflow.
+
+Streaming & Resumption:
+    Per-problem ISProblemRecord is streamed to validation.jsonl as problems
+    are evaluated. This enables resumption from interruptions.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Sequence
 
+from hydra.core.hydra_config import HydraConfig
 from pydantic import BaseModel, Field, model_validator
 
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
-from place_layers.evaluator.importance_weighted.apriel_validation import (
-    Apriel2Structure,
-    validate_apriel2_model,
+from place_layers.evaluator.importance_weighted.generation_backend import (
+    AsyncBackend,
+    BackendConfig,
+    SyncBackend,
 )
-from place_layers.evaluator.importance_weighted.traces import Trace, TraceDataset
-from place_layers.evaluator.importance_weighted.transformers_client import (
-    TransformersClient,
-    TransformersClientConfig,
+from place_layers.evaluator.importance_weighted.trace_writer import (
+    TraceWriter,
+    get_completed_problems,
+    summarize_is,
 )
+from place_layers.evaluator.importance_weighted.traces import (
+    ISProblemRecord,
+    Trace,
+    TraceDataset,
+)
+from place_layers.evaluator.progress import create_progress
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +97,44 @@ class TraceSource(BaseModel):
 
 
 @dataclass
+class ProblemTraces:
+    """Traces for a single problem, grouped for IS computation."""
+
+    problem_id: str
+    task_name: str
+    traces: list[Trace] = field(default_factory=list)
+
+    @property
+    def num_samples(self) -> int:
+        return len(self.traces)
+
+
+@dataclass
 class LoadedDataset:
     """A loaded trace dataset with its normalized weight."""
 
     dataset: TraceDataset
     weight: float  # Normalized weight (sums to 1 across all datasets)
     name: str
+
+    # Traces grouped by problem_id (computed lazily)
+    _problems_by_id: dict[str, ProblemTraces] | None = field(
+        default=None, repr=False
+    )
+
+    @property
+    def problems(self) -> dict[str, ProblemTraces]:
+        """Get traces grouped by problem_id."""
+        if self._problems_by_id is None:
+            self._problems_by_id = {}
+            for trace in self.dataset.traces:
+                if trace.problem_id not in self._problems_by_id:
+                    self._problems_by_id[trace.problem_id] = ProblemTraces(
+                        problem_id=trace.problem_id,
+                        task_name=trace.task_name,
+                    )
+                self._problems_by_id[trace.problem_id].traces.append(trace)
+        return self._problems_by_id
 
 
 @dataclass
@@ -98,9 +144,9 @@ class DatasetScore:
     name: str
     score: float
     weight: float
-    ess: float  # Effective sample size
+    num_problems: int
     num_traces: int
-    weight_range: tuple[float, float]
+    avg_ess: float  # Average ESS across problems
 
 
 class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
@@ -110,10 +156,9 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
     one or more datasets. For each placement configuration, estimates
     accuracy by:
     1. Setting mixer assignments on the model
-    2. Computing student log-probabilities for each trace
-    3. Computing importance weights w = exp(log q - log p)
-    4. For each dataset: compute self-normalized weighted accuracy
-    5. Return weighted combination across datasets
+    2. For each problem: compute student log-probs, IS estimate, ESS
+    3. Stream ISProblemRecord to disk for each problem
+    4. Aggregate per-problem estimates into final score
 
     This is much faster than generation (~10-100x) because:
     - No autoregressive decoding (just forward passes)
@@ -129,44 +174,89 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
         self.datasets = self._load_datasets()
         self._log_dataset_summary()
 
-        # Load model via TransformersClient
-        client_config = TransformersClientConfig(
-            model_path=self.config.model_path,
-            torch_dtype=self.config.torch_dtype,
-            device_map=self.config.device_map,
-            trust_remote_code=self.config.trust_remote_code,
-        )
-        self._client = TransformersClient(client_config)
-        self._client.__enter__()  # Load model (cleanup in __del__ if needed)
-        self.model = self._client.model
+        # Create backend (but don't enter context yet)
+        self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()
 
-        # Validate model and extract structure
-        self._structure = validate_apriel2_model(self.model)
-        self._mixer_names = list(self._structure.mixer_names)
-        logger.info(f"Model has {self._structure.num_layers} layers")
-        logger.info(f"Available mixers: {self._mixer_names}")
+        # Model structure (populated in __aenter__ from backend)
+        self._num_layers: int | None = None
+        self._mixer_names: tuple[str, ...] | None = None
 
-        # Cache for current assignment to avoid redundant switching
-        self._current_assignment: tuple[int, ...] | None = None
+        # Cache for current placement to avoid redundant switching
+        self._current_placement: tuple[str, ...] | None = None
 
         # Pre-compute log weight clip bounds for numerical stability
         self._log_weight_clip_min = math.log(self.config.weight_clip_min)
         self._log_weight_clip_max = math.log(self.config.weight_clip_max)
 
+        # Set up trace writer for streaming results (enables resumption)
+        hydra_cfg = HydraConfig.get()
+        self._output_dir = Path(hydra_cfg.runtime.output_dir)
+        self._trace_writer = TraceWriter(self._output_dir)
+
+        logger.info(f"Saving IS results to: {self._output_dir}/validation.jsonl")
+
+    async def __aenter__(self) -> "ImportanceWeightedEvaluator":
+        """Enter context: initialize backend and optionally get model structure."""
+        if isinstance(self._backend, AsyncBackend):
+            await self._backend.__aenter__()
+        else:
+            self._backend.__enter__()
+
+        # Try to get model structure from backend (optional - not all backends support it)
+        try:
+            structure = self._backend.model_structure
+            self._num_layers = structure.num_layers
+            self._mixer_names = structure.mixer_names
+            logger.info(
+                f"ImportanceWeightedEvaluator initialized: {self._num_layers} layers, "
+                f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
+            )
+        except NotImplementedError:
+            # Model structure not available (e.g., vLLM backend)
+            # This is fine if we're not doing placement switching
+            logger.info(
+                f"ImportanceWeightedEvaluator initialized: model structure not available "
+                f"(backend={self.config.backend.backend_type}). "
+                f"Placement switching will not be supported."
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context: cleanup backend resources."""
+        if isinstance(self._backend, AsyncBackend):
+            await self._backend.__aexit__(exc_type, exc_val, exc_tb)
+        else:
+            self._backend.__exit__(exc_type, exc_val, exc_tb)
+
     @property
     def num_layers(self) -> int:
-        """Number of layers in the model (derived from loaded model)."""
-        return self._structure.num_layers
+        """Number of layers in the model (derived from backend)."""
+        if self._num_layers is None:
+            raise RuntimeError(
+                "num_layers not available - evaluator must be entered first, "
+                "or backend doesn't support model structure discovery"
+            )
+        return self._num_layers
 
     @property
     def num_mixers(self) -> int:
-        """Number of mixer types per layer (derived from loaded model)."""
+        """Number of mixer types per layer (derived from backend)."""
+        if self._mixer_names is None:
+            raise RuntimeError(
+                "num_mixers not available - evaluator must be entered first, "
+                "or backend doesn't support model structure discovery"
+            )
         return len(self._mixer_names)
 
     @property
     def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (derived from loaded model)."""
-        return tuple(self._mixer_names)
+        """Available mixer types (derived from backend)."""
+        if self._mixer_names is None:
+            raise RuntimeError(
+                "mixer_names not available - evaluator must be entered first, "
+                "or backend doesn't support model structure discovery"
+            )
+        return self._mixer_names
 
     def _load_datasets(self) -> list[LoadedDataset]:
         """Load all trace datasets and normalize weights."""
@@ -212,153 +302,266 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
                 f"teacher_acc={d.dataset.accuracy:.1%}"
             )
 
-    def _set_mixer_assignment(self, placement: LayerPlacement) -> None:
-        """Set the mixer assignment on the model."""
-        if self._current_assignment == placement.assignments:
+    async def _set_placement(self, parameters: LayerPlacement) -> None:
+        """Set the mixer placement on the model via backend."""
+        # Convert assignment indices to mixer names
+        mixer_names = tuple(self.mixer_names[idx] for idx in parameters.assignments)
+
+        if mixer_names == self._current_placement:
             return  # Already set
 
-        for layer_idx, mixer_idx in enumerate(placement.assignments):
-            mixer_name = self._mixer_names[mixer_idx]
-            self.model.model.decoder.blocks[layer_idx].mixer.main_mixer_name = mixer_name
+        # Skip placement for single-mixer models (no dynamic switching needed)
+        if len(set(self.mixer_names)) > 1:
+            if isinstance(self._backend, AsyncBackend):
+                await self._backend.set_placement(mixer_names)
+            else:
+                self._backend.set_placement(mixer_names)
+            logger.debug(f"Set placement: {mixer_names[:4]}...")
 
-        self._current_assignment = placement.assignments
+        self._current_placement = mixer_names
 
-    def _compute_dataset_score_batched(
-        self, loaded: LoadedDataset, student_log_probs: list[float]
-    ) -> DatasetScore:
-        """Compute importance-weighted score using pre-computed log probs.
-
-        Uses numerically stable log-space computation for weights.
+    def _compute_problem_record(
+        self,
+        problem: ProblemTraces,
+        student_log_probs: Sequence[float],
+        dataset_name: str,
+    ) -> ISProblemRecord:
+        """Compute IS estimate for a single problem and create record.
 
         Args:
-            loaded: The loaded dataset with traces.
-            student_log_probs: Pre-computed student log-probabilities for each trace.
+            problem: The problem's traces.
+            student_log_probs: Student log-probs for each trace (same order as problem.traces).
+            dataset_name: Name of the dataset this problem belongs to.
 
         Returns:
-            DatasetScore with score and diagnostics.
+            ISProblemRecord with per-sample data and problem-level aggregates.
         """
-        traces = loaded.dataset.traces
-        log_weights = []
-        correct_flags = []
+        sample_indices: list[int] = []
+        teacher_log_probs: list[float] = []
+        correct_flags: list[bool | None] = []
+        log_importance_weights: list[float] = []
 
-        for trace, student_log_prob in zip(traces, student_log_probs):
+        for trace, student_lp in zip(problem.traces, student_log_probs):
+            sample_indices.append(trace.sample_idx)
+            teacher_log_probs.append(trace.teacher_log_prob)
+            correct_flags.append(trace.correct)
+
             # Log importance weight: log w = log q - log p
-            log_weight = student_log_prob - trace.teacher_log_prob
+            log_weight = student_lp - trace.teacher_log_prob
 
             # Clip in log-space for numerical stability
             log_weight = max(
                 self._log_weight_clip_min,
                 min(self._log_weight_clip_max, log_weight),
             )
-            log_weights.append(log_weight)
-            correct_flags.append(trace.correct)
+            log_importance_weights.append(log_weight)
 
-        # Compute score using log-sum-exp for numerical stability
-        # score = sum(w_i * correct_i) / sum(w_i)
-        #       = sum(exp(log_w_i) * correct_i) / sum(exp(log_w_i))
-        #
-        # Let max_log_w = max(log_weights)
-        # score = sum(exp(log_w_i - max_log_w) * correct_i) / sum(exp(log_w_i - max_log_w))
-        #
-        # This avoids overflow when log_weights are large
+        # Compute importance weights
+        weights = [math.exp(lw) for lw in log_importance_weights]
 
-        if not log_weights:
+        # Compute IS estimate: sum(w * correct) / sum(w)
+        weight_sum = sum(weights)
+        if weight_sum == 0:
+            is_correct_estimate = 0.0
+        else:
+            weighted_correct = sum(
+                w * (1.0 if c else 0.0)
+                for w, c in zip(weights, correct_flags)
+            )
+            is_correct_estimate = weighted_correct / weight_sum
+
+        # Compute ESS: (sum(w))^2 / sum(w^2)
+        weight_sq_sum = sum(w * w for w in weights)
+        if weight_sq_sum == 0:
+            ess = 0.0
+        else:
+            ess = (weight_sum * weight_sum) / weight_sq_sum
+
+        return ISProblemRecord(
+            problem_id=problem.problem_id,
+            task_name=problem.task_name,
+            dataset_name=dataset_name,
+            sample_indices=tuple(sample_indices),
+            student_log_probs=tuple(student_log_probs),
+            teacher_log_probs=tuple(teacher_log_probs),
+            correct_flags=tuple(correct_flags),
+            log_importance_weights=tuple(log_importance_weights),
+            is_correct_estimate=is_correct_estimate,
+            ess=ess,
+            weight_sum=weight_sum,
+            weight_range=(min(weights), max(weights)) if weights else (0.0, 0.0),
+            num_samples=len(weights),
+        )
+
+    async def _compute_dataset_score(
+        self,
+        loaded: LoadedDataset,
+        completed_problems: set[int],
+    ) -> DatasetScore:
+        """Compute importance-weighted score for a dataset, streaming per-problem records.
+
+        Args:
+            loaded: The loaded dataset.
+            completed_problems: Set of problem indices already completed (for resumption).
+
+        Returns:
+            DatasetScore with aggregated metrics.
+        """
+        problems = loaded.problems
+        problem_ids = list(problems.keys())
+
+        # Filter to remaining problems
+        remaining_problems: list[ProblemTraces] = []
+        for pid in problem_ids:
+            # Extract problem index from problem_id (format: "task_name:idx")
+            try:
+                idx = int(pid.split(":")[-1])
+                if idx not in completed_problems:
+                    remaining_problems.append(problems[pid])
+            except ValueError:
+                # If we can't parse the index, include it (conservative)
+                remaining_problems.append(problems[pid])
+
+        if not remaining_problems:
+            # All problems already completed - load from existing records
+            # For now, return zeros (we'd need to reload records for accurate stats)
+            logger.info(f"  All {len(problem_ids)} problems already completed")
             return DatasetScore(
                 name=loaded.name,
                 score=0.0,
                 weight=loaded.weight,
-                ess=0.0,
-                num_traces=0,
-                weight_range=(0.0, 0.0),
+                num_problems=len(problem_ids),
+                num_traces=loaded.dataset.num_traces,
+                avg_ess=0.0,
             )
 
-        max_log_weight = max(log_weights)
-
-        # Compute normalized weights (for stability)
-        weights = [math.exp(lw - max_log_weight) for lw in log_weights]
-
-        # Compute weighted sum of correct flags
-        total_weighted_correct = sum(
-            w * (1.0 if c else 0.0) for w, c in zip(weights, correct_flags)
+        logger.info(
+            f"  Processing {len(remaining_problems)} problems "
+            f"({len(problem_ids) - len(remaining_problems)} already completed)"
         )
-        total_weight = sum(weights)
 
-        # Self-normalized estimate
-        if total_weight == 0:
-            score = 0.0
+        # Collect all traces for batch log-prob computation
+        all_traces: list[Trace] = []
+        problem_trace_ranges: list[tuple[int, int]] = []  # (start, end) for each problem
+
+        for problem in remaining_problems:
+            start = len(all_traces)
+            all_traces.extend(problem.traces)
+            end = len(all_traces)
+            problem_trace_ranges.append((start, end))
+
+        # Compute all log-probs in batch
+        traces_data: list[tuple[tuple[int, ...], tuple[int, ...]]] = [
+            (trace.prompt_tokens, trace.completion_tokens)
+            for trace in all_traces
+        ]
+
+        if isinstance(self._backend, AsyncBackend):
+            all_student_log_probs = await self._backend.compute_batch_log_probs(traces_data)
         else:
-            score = total_weighted_correct / total_weight
+            all_student_log_probs = self._backend.compute_batch_log_probs(traces_data)
 
-        # Compute ESS using actual weights (not normalized)
-        actual_weights = [math.exp(lw) for lw in log_weights]
-        ess = (sum(actual_weights) ** 2) / sum(w**2 for w in actual_weights)
-        weight_range = (min(actual_weights), max(actual_weights))
+        # Process each problem, create records, and stream to disk
+        records: list[ISProblemRecord] = []
+        total_is_estimate = 0.0
+        total_ess = 0.0
+
+        with create_progress() as progress:
+            task = progress.add_task(
+                f"[cyan]{loaded.name}",
+                total=len(remaining_problems),
+            )
+
+            for problem, (start, end) in zip(remaining_problems, problem_trace_ranges):
+                problem_log_probs = all_student_log_probs[start:end]
+                record = self._compute_problem_record(
+                    problem, problem_log_probs, dataset_name=loaded.name
+                )
+                records.append(record)
+
+                total_is_estimate += record.is_correct_estimate
+                total_ess += record.ess
+
+                progress.advance(task)
+
+        # Stream all records to disk
+        self._trace_writer.append(records)  # type: ignore[arg-type]
+
+        # Compute aggregates
+        num_problems = len(remaining_problems)
+        avg_score = total_is_estimate / num_problems if num_problems > 0 else 0.0
+        avg_ess = total_ess / num_problems if num_problems > 0 else 0.0
 
         return DatasetScore(
             name=loaded.name,
-            score=score,
+            score=avg_score,
             weight=loaded.weight,
-            ess=ess,
-            num_traces=len(log_weights),
-            weight_range=weight_range,
+            num_problems=num_problems,
+            num_traces=len(all_traces),
+            avg_ess=avg_ess,
         )
 
-    def _compute_dataset_score(self, loaded: LoadedDataset) -> DatasetScore:
-        """Compute importance-weighted score for a single dataset.
-
-        Uses batched log-prob computation for efficiency.
-        """
-        # Prepare traces for batch computation
-        traces_data = [
-            (trace.prompt_tokens, trace.completion_tokens)
-            for trace in loaded.dataset.traces
-        ]
-
-        # Compute all log-probs in batch using the client
-        student_log_probs = self._client.compute_batch_log_probs(
-            traces=traces_data,
-            batch_size=self.config.trace_batch_size,
-            length_tolerance=self.config.trace_length_tolerance,
-        )
-
-        return self._compute_dataset_score_batched(loaded, student_log_probs)
-
-    async def evaluate(self, parameters: LayerPlacement) -> float:
+    async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement using stratified importance-weighted accuracy.
 
-        Computes per-dataset IS estimates and combines with normalized weights.
+        Computes per-problem IS estimates, streams records to disk, and
+        combines with normalized weights.
 
         Args:
-            parameters: Layer placement to evaluate.
+            parameters: Layer placement to evaluate, or None for default config.
+                       When None, no placement switching is performed (useful for
+                       non-supernet models or backends that don't support placement).
 
         Returns:
             Estimated accuracy (higher is better, in [0, 1]).
         """
         import time
 
-        logger.info(f"Evaluating placement: {parameters.assignments[:4]}... ({len(parameters.assignments)} layers)")
-
-        # Set mixer assignment
-        self._set_mixer_assignment(parameters)
+        if parameters is not None:
+            logger.info(
+                f"Evaluating placement: {parameters.assignments[:4]}... "
+                f"({len(parameters.assignments)} layers)"
+            )
+            # Set placement via backend
+            await self._set_placement(parameters)
+        else:
+            logger.info("No placement specified, using default configuration")
 
         # Compute per-dataset scores
         start = time.perf_counter()
         dataset_scores = []
+
         for d in self.datasets:
-            logger.info(f"Computing score for dataset '{d.name}' ({d.dataset.num_traces} traces)")
-            score = self._compute_dataset_score(d)
+            logger.info(
+                f"Computing score for dataset '{d.name}' "
+                f"({d.dataset.num_problems} problems, {d.dataset.num_traces} traces)"
+            )
+
+            # Get completed problems for resumption
+            # Note: We check per task_name within the dataset
+            completed: set[int] = set()
+            for task_name in d.dataset.task_names:
+                completed.update(get_completed_problems(self._output_dir, task_name))
+
+            score = await self._compute_dataset_score(d, completed)
             dataset_scores.append(score)
             logger.info(
                 f"  {d.name}: score={score.score:.4f}, "
-                f"ESS={score.ess:.1f}/{score.num_traces}, "
-                f"weights=[{score.weight_range[0]:.2e}, {score.weight_range[1]:.2e}]"
+                f"avg_ESS={score.avg_ess:.1f}, "
+                f"problems={score.num_problems}"
             )
 
-        # Weighted combination
-        final_score = sum(ds.score * ds.weight for ds in dataset_scores)
         elapsed = time.perf_counter() - start
 
-        logger.info(f"Evaluation complete: score={final_score:.4f} in {elapsed:.1f}s")
+        # Compute summary from disk (single source of truth)
+        summary = summarize_is(self._output_dir)
+
+        # Build weights dict for weighted combination
+        weights = {d.name: d.weight for d in self.datasets}
+        final_score = summary.weighted_accuracy(weights)
+
+        logger.info(f"\n{summary}")
+        logger.info(f"Weighted accuracy: {final_score:.4f} (in {elapsed:.1f}s)")
 
         return final_score
 
@@ -395,26 +598,14 @@ class ImportanceWeightedEvaluatorConfig(BaseEvaluatorConfig):
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
 
-    # Model configuration
-    model_path: str = Field(
-        description="Path to supernet model checkpoint (HuggingFace format)"
+    # Backend (polymorphic - vLLM, Transformers, or REST)
+    backend: BackendConfig = Field(
+        description="Backend configuration (vllm, transformers, or rest)"
     )
 
     # Trace sources - list of datasets with weights
     trace_sources: list[TraceSource] = Field(
         description="List of trace datasets with importance weights"
-    )
-
-    # Model loading options
-    torch_dtype: str = Field(
-        description="Torch dtype for model (e.g., 'bfloat16', 'float16')",
-    )
-    device_map: str = Field(
-        description="Device map for model loading (e.g., 'auto', 'cuda:0')",
-    )
-    trust_remote_code: bool = Field(
-        description="Trust remote code when loading model (required for custom architectures)",
-        default=True,
     )
 
     # Importance sampling parameters
@@ -425,16 +616,6 @@ class ImportanceWeightedEvaluatorConfig(BaseEvaluatorConfig):
     weight_clip_max: float = Field(
         description="Maximum importance weight (prevents extreme weights)",
         gt=0.0,
-    )
-
-    # Batching parameters (for performance tuning)
-    trace_batch_size: int = Field(
-        description="Max traces per forward pass (higher = faster but more memory)",
-        gt=0,
-    )
-    trace_length_tolerance: int = Field(
-        description="Max token length difference within a batch (for padding efficiency)",
-        gt=0,
     )
 
     @model_validator(mode="after")

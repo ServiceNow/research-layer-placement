@@ -141,26 +141,34 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
         # Set up trace writer for saving generations
         hydra_cfg = HydraConfig.get()
         self._output_dir = Path(hydra_cfg.runtime.output_dir)
-        self._writer = TraceWriter(self._output_dir)
+        self._trace_writer = TraceWriter(self._output_dir)
 
         logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
 
     async def __aenter__(self) -> Self:
-        """Enter context: initialize backend and get model structure."""
+        """Enter context: initialize backend and optionally get model structure."""
         if isinstance(self._backend, AsyncBackend):
             await self._backend.__aenter__()
         else:
             self._backend.__enter__()
 
-        # Get model structure from backend
-        structure = self._backend.model_structure
-        self._num_layers = structure.num_layers
-        self._mixer_names = structure.mixer_names
-
-        logger.info(
-            f"GenerativeEvaluator initialized: {self._num_layers} layers, "
-            f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
-        )
+        # Try to get model structure from backend (optional - not all backends support it)
+        try:
+            structure = self._backend.model_structure
+            self._num_layers = structure.num_layers
+            self._mixer_names = structure.mixer_names
+            logger.info(
+                f"GenerativeEvaluator initialized: {self._num_layers} layers, "
+                f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
+            )
+        except NotImplementedError:
+            # Model structure not available (e.g., vLLM backend)
+            # This is fine if we're not doing placement switching
+            logger.info(
+                f"GenerativeEvaluator initialized: model structure not available "
+                f"(backend={self.config.backend.backend_type}). "
+                f"Placement switching will not be supported."
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -193,33 +201,43 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
     # Main Evaluation Entry Point
     # =========================================================================
 
-    async def evaluate(self, parameters: LayerPlacement) -> float:
+    async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement configuration by generating and checking accuracy.
 
-        Returns pass@k accuracy (fraction of problems with any correct sample).
+        Args:
+            parameters: Layer placement to evaluate, or None for default config.
+                       When None, no placement switching is performed (useful for
+                       non-supernet models or backends that don't support placement).
+
+        Returns:
+            Pass@k accuracy (fraction of problems with any correct sample).
         """
-        # Validate placement
-        if len(parameters.assignments) != self.num_layers:
-            raise ValueError(
-                f"Placement has {len(parameters.assignments)} assignments, "
-                f"expected {self.num_layers}"
+        if parameters is not None:
+            # Validate placement
+            if len(parameters.assignments) != self.num_layers:
+                raise ValueError(
+                    f"Placement has {len(parameters.assignments)} assignments, "
+                    f"expected {self.num_layers}"
+                )
+
+            # Convert assignment indices to mixer names
+            mixer_names = tuple(
+                self.mixer_names[idx] for idx in parameters.assignments
             )
 
-        # Convert assignment indices to mixer names
-        mixer_names = tuple(
-            self.mixer_names[idx] for idx in parameters.assignments
-        )
-
-        # Set placement via backend (skip if unchanged or single-mixer model)
-        if mixer_names != self._current_placement:
-            # Skip placement for single-mixer models (no dynamic switching needed)
-            if len(set(self.mixer_names)) > 1:
-                if isinstance(self._backend, AsyncBackend):
-                    await self._backend.set_placement(mixer_names)
-                else:
-                    self._backend.set_placement(mixer_names)
-                logger.debug(f"Set placement: {mixer_names[:4]}...")
-            self._current_placement = mixer_names
+            # Set placement via backend (skip if unchanged or single-mixer model)
+            if mixer_names != self._current_placement:
+                # Skip placement for single-mixer models (no dynamic switching needed)
+                if len(set(self.mixer_names)) > 1:
+                    if isinstance(self._backend, AsyncBackend):
+                        await self._backend.set_placement(mixer_names)
+                    else:
+                        self._backend.set_placement(mixer_names)
+                    logger.debug(f"Set placement: {mixer_names[:4]}...")
+                self._current_placement = mixer_names
+        else:
+            # No placement specified - run with default model configuration
+            logger.debug("No placement specified, using default configuration")
 
         # Dispatch to async or sync evaluation
         if isinstance(self._backend, AsyncBackend):
@@ -261,7 +279,7 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
                 docs=docs,
                 remaining_indices=remaining,
                 backend=self._backend,
-                writer=self._writer,
+                writer=self._trace_writer,
                 record_factory=_make_generation_records,
                 samples_per_problem=self.config.samples_per_problem,
                 max_new_tokens=self.config.max_new_tokens,
@@ -293,7 +311,7 @@ class GenerativeEvaluator(BaseEvaluator[LayerPlacement]):
                 docs=docs,
                 remaining_indices=remaining,
                 backend=self._backend,
-                writer=self._writer,
+                writer=self._trace_writer,
                 record_factory=_make_generation_records,
                 samples_per_problem=self.config.samples_per_problem,
                 max_new_tokens=self.config.max_new_tokens,
