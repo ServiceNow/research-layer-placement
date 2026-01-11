@@ -6,7 +6,7 @@ up on shutdown.
 
 Usage:
     from place_layers.server.app import create_app
-    from place_layers.evaluator.importance_weighted.generation_backend import (
+    from place_layers.evaluator.backend.base import (
         TransformersBackendConfig,
     )
 
@@ -38,7 +38,7 @@ from place_layers.server.schemas import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.importance_weighted.generation_backend import (
+    from place_layers.evaluator.backend.base import (
         TransformersBackend,
         TransformersBackendConfig,
     )

@@ -32,31 +32,22 @@ Usage
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
-from hydra.core.hydra_config import HydraConfig
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from place_layers.core.types import LayerPlacement
+from place_layers.evaluator.backend_evaluator import BackendEvaluator
+from place_layers.evaluator.backend_evaluator_config import TaskBasedEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
-from place_layers.evaluator.importance_weighted.generation_backend import (
+from place_layers.evaluator.backend.base import (
     AsyncBackend,
-    BackendConfig,
     ChatMessage,
-    SyncBackend,
 )
-from place_layers.evaluator.importance_weighted.trace_writer import (
-    TraceWriter,
-    summarize_likelihood,
-)
-from place_layers.evaluator.importance_weighted.traces import LikelihoodRecord
-from place_layers.evaluator.lm_eval_utils import (
-    TaskSpecInput,
-    build_chat_messages,
-)
+from place_layers.evaluator.traces.writer import summarize_likelihood
+from place_layers.evaluator.traces.types import LikelihoodRecord
+from place_layers.evaluator.lm_eval_utils import build_chat_messages
 from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.task_runner import prepare_multiple_choice_task
 
@@ -73,7 +64,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
+class LikelihoodEvaluator(BackendEvaluator):
     """Evaluator for multiple-choice tasks using log-likelihood scoring.
 
     For each problem:
@@ -97,80 +88,9 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
         super().__init__(config)
         self.config: LikelihoodEvaluatorConfig
 
-        # Create backend (but don't enter context yet)
-        self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()
-
-        # Model structure (populated in __aenter__ from backend)
-        self._num_layers: int | None = None
-        self._mixer_names: tuple[str, ...] | None = None
-
-        # Track current placement to avoid redundant set_placement calls
-        self._current_placement: tuple[str, ...] | None = None
-
-        # Set up trace writer for saving results (enables resumption)
-        hydra_cfg = HydraConfig.get()
-        self._output_dir = Path(hydra_cfg.runtime.output_dir)
-        self._trace_writer = TraceWriter(self._output_dir)
-
-        logger.info(f"Saving likelihood results to: {self._output_dir}/validation.jsonl")
-
-    async def __aenter__(self) -> Self:
-        """Enter context: initialize backend and optionally get model structure."""
-        if isinstance(self._backend, AsyncBackend):
-            await self._backend.__aenter__()
-        else:
-            self._backend.__enter__()
-
-        # Try to get model structure from backend (optional - not all backends support it)
-        try:
-            structure = self._backend.model_structure
-            self._num_layers = structure.num_layers
-            self._mixer_names = structure.mixer_names
-            logger.info(
-                f"LikelihoodEvaluator initialized: {self._num_layers} layers, "
-                f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
-            )
-        except NotImplementedError:
-            # Model structure not available (e.g., vLLM backend)
-            # This is fine if we're not doing placement switching
-            logger.info(
-                f"LikelihoodEvaluator initialized: model structure not available "
-                f"(backend={self.config.backend.backend_type}). "
-                f"Placement switching will not be supported."
-            )
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit context: cleanup backend resources."""
-        if isinstance(self._backend, AsyncBackend):
-            await self._backend.__aexit__(exc_type, exc_val, exc_tb)
-        else:
-            self._backend.__exit__(exc_type, exc_val, exc_tb)
-
-    @property
-    def num_layers(self) -> int:
-        if self._num_layers is None:
-            raise RuntimeError(
-                "num_layers not available - evaluator must be entered first"
-            )
-        return self._num_layers
-
-    @property
-    def num_mixers(self) -> int:
-        if self._mixer_names is None:
-            raise RuntimeError(
-                "num_mixers not available - evaluator must be entered first"
-            )
-        return len(self._mixer_names)
-
-    @property
-    def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
-        if self._mixer_names is None:
-            raise RuntimeError(
-                "mixer_names not available - evaluator must be entered first"
-            )
-        return self._mixer_names
+        logger.info(
+            f"Saving likelihood results to: {self._output_dir}/validation.jsonl"
+        )
 
     # =========================================================================
     # Main Evaluation Entry Point
@@ -188,28 +108,8 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
             Accuracy (fraction of problems where argmax prediction is correct).
         """
         if parameters is not None:
-            # Validate placement
-            if len(parameters.assignments) != self.num_layers:
-                raise ValueError(
-                    f"Placement has {len(parameters.assignments)} assignments, "
-                    f"expected {self.num_layers}"
-                )
-
-            # Convert assignment indices to mixer names
-            mixer_names = tuple(self.mixer_names[idx] for idx in parameters.assignments)
-
-            # Set placement via backend (skip if unchanged or single-mixer model)
-            if mixer_names != self._current_placement:
-                # Skip placement for single-mixer models (no dynamic switching needed)
-                if len(set(self.mixer_names)) > 1:
-                    if isinstance(self._backend, AsyncBackend):
-                        await self._backend.set_placement(mixer_names)
-                    else:
-                        self._backend.set_placement(mixer_names)
-                    logger.debug(f"Set placement: {mixer_names[:4]}...")
-                self._current_placement = mixer_names
+            await self._set_placement(parameters)
         else:
-            # No placement specified - run with default model configuration
             logger.debug("No placement specified, using default configuration")
 
         # Run evaluation (streams records to disk)
@@ -243,7 +143,9 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
 
             task, task_name, docs, remaining_indices = result
 
-            logger.info(f"Task '{task_name}': evaluating {len(remaining_indices)} problems")
+            logger.info(
+                f"Task '{task_name}': evaluating {len(remaining_indices)} problems"
+            )
 
             # Evaluate task (streams records to disk)
             await self._evaluate_task(task, task_name, docs, remaining_indices)
@@ -279,8 +181,12 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
                 choice_counts: list[int] = []
                 choice_lengths: list[list[int]] = []  # For length normalization
                 choice_texts: list[tuple[str, ...]] = []  # Raw choice strings
-                context_messages_list: list[tuple[ChatMessage, ...]] = []  # Context per problem
-                choice_messages_list: list[tuple[ChatMessage, ...]] = []  # Choices as ChatMessages
+                context_messages_list: list[
+                    tuple[ChatMessage, ...]
+                ] = []  # Context per problem
+                choice_messages_list: list[
+                    tuple[ChatMessage, ...]
+                ] = []  # Choices as ChatMessages
 
                 for doc in batch_docs:
                     chats, gold_idx, lengths, raw_choices = self._build_choice_chats(
@@ -394,9 +300,7 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
             - Tuple of choice texts (for recording)
         """
         # Get context messages using the shared builder
-        context_msgs = build_chat_messages(
-            task, doc, task.config.num_fewshot or 0
-        )
+        context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
 
         # Get choices and gold answer
         # doc_to_choice is on ConfigurableTask, but all YAML-defined tasks use it
@@ -434,7 +338,7 @@ class LikelihoodEvaluator(BaseEvaluator[LayerPlacement]):
 # =============================================================================
 
 
-class LikelihoodEvaluatorConfig(BaseEvaluatorConfig):
+class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
     """Configuration for likelihood-based evaluator.
 
     Used for multiple-choice tasks like MMLU, ARC, HellaSwag, etc.
@@ -444,35 +348,9 @@ class LikelihoodEvaluatorConfig(BaseEvaluatorConfig):
 
     evaluator_type: Literal["likelihood"] = "likelihood"
 
-    # Backend (polymorphic - vLLM, Transformers, or REST)
-    backend: BackendConfig = Field(
-        description="Backend configuration (vllm, transformers, or rest)"
-    )
-
-    # Tasks
-    tasks: list[TaskSpecInput] = Field(
-        description="List of multiple-choice lm-eval tasks (e.g., ['mmlu_*', 'arc_*'])"
-    )
-    num_fewshot: int = Field(description="Number of few-shot examples", ge=0)
-    max_problems_per_task: int | None = Field(
-        default=None,
-        description="Max problems per task (None = all). Use for faster evaluation.",
-    )
-    split: str = Field(
-        default="test",
-        description="Dataset split to use ('test' or 'validation')",
-    )
-
     # Batching
     batch_size: int = Field(
         default=32,
         description="Batch size for log-prob computation",
         gt=0,
     )
-
-    @model_validator(mode="after")
-    def validate_config(self) -> "LikelihoodEvaluatorConfig":
-        """Validate configuration consistency."""
-        if not self.tasks:
-            raise ValueError("At least one task must be specified")
-        return self

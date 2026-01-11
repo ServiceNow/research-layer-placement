@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence, 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.importance_weighted.apriel_validation import (
+    from place_layers.evaluator.backend.apriel_validation import (
         Apriel2Structure,
     )
-    from place_layers.evaluator.importance_weighted.vllm_client import GenerationResult
+    from place_layers.evaluator.backend.vllm import GenerationResult
 
 
 class ChatMessage(TypedDict):
@@ -405,7 +405,7 @@ class VLLMBackend(AsyncBackend):
     """Async generation backend using vLLM server."""
 
     def __init__(self, config: "VLLMBackendConfig") -> None:
-        from place_layers.evaluator.importance_weighted.vllm_client import (
+        from place_layers.evaluator.backend.vllm import (
             VLLMClient,
             VLLMClientConfig,
         )
@@ -707,7 +707,7 @@ class TransformersBackend(SyncBackend):
     """
 
     def __init__(self, config: "TransformersBackendConfig") -> None:
-        from place_layers.evaluator.importance_weighted.transformers_client import (
+        from place_layers.evaluator.backend.transformers import (
             TransformersClient,
             TransformersClientConfig,
         )
@@ -732,7 +732,7 @@ class TransformersBackend(SyncBackend):
         return self._config.batch_size
 
     def __enter__(self) -> Self:
-        from place_layers.evaluator.importance_weighted.apriel_validation import (
+        from place_layers.evaluator.backend.apriel_validation import (
             Apriel2ValidationError,
             validate_apriel2_model,
         )
@@ -1099,7 +1099,7 @@ class TransformersBackendConfig(BaseBackendConfig):
 # =============================================================================
 
 # Import REST backend here to avoid circular imports (it imports from this module)
-from place_layers.evaluator.importance_weighted.rest_backend import RESTBackendConfig
+from place_layers.evaluator.backend.rest import RESTBackendConfig
 
 BackendConfig = Annotated[
     VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig,

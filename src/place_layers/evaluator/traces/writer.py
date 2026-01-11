@@ -23,7 +23,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from place_layers.evaluator.importance_weighted.traces import (
+from place_layers.evaluator.traces.types import (
     BaseGeneration,
     ISProblemRecord,
     LikelihoodRecord,

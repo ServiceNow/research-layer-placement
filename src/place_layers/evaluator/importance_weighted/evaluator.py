@@ -41,25 +41,22 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal, Sequence
+from typing import ClassVar, Literal, Self, Sequence
 
-from hydra.core.hydra_config import HydraConfig
 from pydantic import BaseModel, Field, model_validator
 
 from place_layers.core.types import LayerPlacement
+from place_layers.evaluator.backend_evaluator import BackendEvaluator
+from place_layers.evaluator.backend_evaluator_config import BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
-from place_layers.evaluator.importance_weighted.generation_backend import (
+from place_layers.evaluator.backend.base import (
     AsyncBackend,
-    BackendConfig,
-    SyncBackend,
 )
-from place_layers.evaluator.importance_weighted.trace_writer import (
-    TraceWriter,
+from place_layers.evaluator.traces.writer import (
     get_completed_problems,
     summarize_is,
 )
-from place_layers.evaluator.importance_weighted.traces import (
+from place_layers.evaluator.traces.types import (
     ISProblemRecord,
     Trace,
     TraceDataset,
@@ -149,7 +146,7 @@ class DatasetScore:
     avg_ess: float  # Average ESS across problems
 
 
-class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
+class ImportanceWeightedEvaluator(BackendEvaluator):
     """Evaluator using importance-weighted accuracy estimation.
 
     Loads a supernet student model and pre-computed teacher traces from
@@ -167,6 +164,12 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
     """
 
     def __init__(self, config: "ImportanceWeightedEvaluatorConfig") -> None:
+        # Load datasets first (before calling super().__init__ which needs Hydra)
+        self._datasets_to_load = config.trace_sources
+        self._weight_clip_min = config.weight_clip_min
+        self._weight_clip_max = config.weight_clip_max
+
+        # Call parent init (sets up backend, trace writer, etc.)
         super().__init__(config)
         self.config: ImportanceWeightedEvaluatorConfig
 
@@ -174,95 +177,17 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
         self.datasets = self._load_datasets()
         self._log_dataset_summary()
 
-        # Create backend (but don't enter context yet)
-        self._backend: AsyncBackend | SyncBackend = config.backend.create_backend()
-
-        # Model structure (populated in __aenter__ from backend)
-        self._num_layers: int | None = None
-        self._mixer_names: tuple[str, ...] | None = None
-
-        # Cache for current placement to avoid redundant switching
-        self._current_placement: tuple[str, ...] | None = None
-
         # Pre-compute log weight clip bounds for numerical stability
-        self._log_weight_clip_min = math.log(self.config.weight_clip_min)
-        self._log_weight_clip_max = math.log(self.config.weight_clip_max)
-
-        # Set up trace writer for streaming results (enables resumption)
-        hydra_cfg = HydraConfig.get()
-        self._output_dir = Path(hydra_cfg.runtime.output_dir)
-        self._trace_writer = TraceWriter(self._output_dir)
+        self._log_weight_clip_min = math.log(self._weight_clip_min)
+        self._log_weight_clip_max = math.log(self._weight_clip_max)
 
         logger.info(f"Saving IS results to: {self._output_dir}/validation.jsonl")
-
-    async def __aenter__(self) -> "ImportanceWeightedEvaluator":
-        """Enter context: initialize backend and optionally get model structure."""
-        if isinstance(self._backend, AsyncBackend):
-            await self._backend.__aenter__()
-        else:
-            self._backend.__enter__()
-
-        # Try to get model structure from backend (optional - not all backends support it)
-        try:
-            structure = self._backend.model_structure
-            self._num_layers = structure.num_layers
-            self._mixer_names = structure.mixer_names
-            logger.info(
-                f"ImportanceWeightedEvaluator initialized: {self._num_layers} layers, "
-                f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
-            )
-        except NotImplementedError:
-            # Model structure not available (e.g., vLLM backend)
-            # This is fine if we're not doing placement switching
-            logger.info(
-                f"ImportanceWeightedEvaluator initialized: model structure not available "
-                f"(backend={self.config.backend.backend_type}). "
-                f"Placement switching will not be supported."
-            )
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit context: cleanup backend resources."""
-        if isinstance(self._backend, AsyncBackend):
-            await self._backend.__aexit__(exc_type, exc_val, exc_tb)
-        else:
-            self._backend.__exit__(exc_type, exc_val, exc_tb)
-
-    @property
-    def num_layers(self) -> int:
-        """Number of layers in the model (derived from backend)."""
-        if self._num_layers is None:
-            raise RuntimeError(
-                "num_layers not available - evaluator must be entered first, "
-                "or backend doesn't support model structure discovery"
-            )
-        return self._num_layers
-
-    @property
-    def num_mixers(self) -> int:
-        """Number of mixer types per layer (derived from backend)."""
-        if self._mixer_names is None:
-            raise RuntimeError(
-                "num_mixers not available - evaluator must be entered first, "
-                "or backend doesn't support model structure discovery"
-            )
-        return len(self._mixer_names)
-
-    @property
-    def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (derived from backend)."""
-        if self._mixer_names is None:
-            raise RuntimeError(
-                "mixer_names not available - evaluator must be entered first, "
-                "or backend doesn't support model structure discovery"
-            )
-        return self._mixer_names
 
     def _load_datasets(self) -> list[LoadedDataset]:
         """Load all trace datasets and normalize weights."""
         import time
 
-        sources = self.config.trace_sources
+        sources = self._datasets_to_load
         logger.info(f"Loading {len(sources)} trace source(s)...")
 
         # Load datasets
@@ -294,31 +219,15 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
     def _log_dataset_summary(self) -> None:
         """Log summary of loaded datasets."""
         total_traces = sum(d.dataset.num_traces for d in self.datasets)
-        logger.info(f"Loaded {len(self.datasets)} datasets with {total_traces} total traces:")
+        logger.info(
+            f"Loaded {len(self.datasets)} datasets with {total_traces} total traces:"
+        )
         for d in self.datasets:
             logger.info(
                 f"  {d.name}: {d.dataset.num_traces} traces, "
                 f"weight={d.weight:.1%}, "
                 f"teacher_acc={d.dataset.accuracy:.1%}"
             )
-
-    async def _set_placement(self, parameters: LayerPlacement) -> None:
-        """Set the mixer placement on the model via backend."""
-        # Convert assignment indices to mixer names
-        mixer_names = tuple(self.mixer_names[idx] for idx in parameters.assignments)
-
-        if mixer_names == self._current_placement:
-            return  # Already set
-
-        # Skip placement for single-mixer models (no dynamic switching needed)
-        if len(set(self.mixer_names)) > 1:
-            if isinstance(self._backend, AsyncBackend):
-                await self._backend.set_placement(mixer_names)
-            else:
-                self._backend.set_placement(mixer_names)
-            logger.debug(f"Set placement: {mixer_names[:4]}...")
-
-        self._current_placement = mixer_names
 
     def _compute_problem_record(
         self,
@@ -365,8 +274,7 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
             is_correct_estimate = 0.0
         else:
             weighted_correct = sum(
-                w * (1.0 if c else 0.0)
-                for w, c in zip(weights, correct_flags)
+                w * (1.0 if c else 0.0) for w, c in zip(weights, correct_flags)
             )
             is_correct_estimate = weighted_correct / weight_sum
 
@@ -452,12 +360,13 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
 
         # Compute all log-probs in batch
         traces_data: list[tuple[tuple[int, ...], tuple[int, ...]]] = [
-            (trace.prompt_tokens, trace.completion_tokens)
-            for trace in all_traces
+            (trace.prompt_tokens, trace.completion_tokens) for trace in all_traces
         ]
 
         if isinstance(self._backend, AsyncBackend):
-            all_student_log_probs = await self._backend.compute_batch_log_probs(traces_data)
+            all_student_log_probs = await self._backend.compute_batch_log_probs(
+                traces_data
+            )
         else:
             all_student_log_probs = self._backend.compute_batch_log_probs(traces_data)
 
@@ -522,7 +431,6 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
                 f"Evaluating placement: {parameters.assignments[:4]}... "
                 f"({len(parameters.assignments)} layers)"
             )
-            # Set placement via backend
             await self._set_placement(parameters)
         else:
             logger.info("No placement specified, using default configuration")
@@ -591,17 +499,12 @@ class ImportanceWeightedEvaluator(BaseEvaluator[LayerPlacement]):
         return scores
 
 
-class ImportanceWeightedEvaluatorConfig(BaseEvaluatorConfig):
+class ImportanceWeightedEvaluatorConfig(BackendEvaluatorConfig):
     """Configuration for importance-weighted accuracy evaluator."""
 
     _impl_class: ClassVar[type[BaseEvaluator]] = ImportanceWeightedEvaluator
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
-
-    # Backend (polymorphic - vLLM, Transformers, or REST)
-    backend: BackendConfig = Field(
-        description="Backend configuration (vllm, transformers, or rest)"
-    )
 
     # Trace sources - list of datasets with weights
     trace_sources: list[TraceSource] = Field(
@@ -619,7 +522,7 @@ class ImportanceWeightedEvaluatorConfig(BaseEvaluatorConfig):
     )
 
     @model_validator(mode="after")
-    def validate_trace_sources(self) -> "ImportanceWeightedEvaluatorConfig":
+    def validate_trace_sources(self) -> Self:
         """Ensure at least one trace source is provided."""
         if not self.trace_sources:
             raise ValueError("At least one trace source is required")

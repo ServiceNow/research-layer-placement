@@ -24,22 +24,22 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from place_layers.evaluator.importance_weighted.generation_backend import (
+from place_layers.evaluator.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.evaluator.importance_weighted.memory_logging import (
+from place_layers.evaluator.memory_logging import (
     force_garbage_collection,
     get_memory_stats,
     log_gpu_memory_summary,
     log_memory,
 )
-from place_layers.evaluator.importance_weighted.trace_writer import (
+from place_layers.evaluator.traces.writer import (
     TraceWriter,
     get_completed_problems,
 )
-from place_layers.evaluator.importance_weighted.traces import SkippedProblem, TraceRecord
-from place_layers.evaluator.importance_weighted.vllm_client import (
+from place_layers.evaluator.traces.types import SkippedProblem, TraceRecord
+from place_layers.evaluator.backend.vllm import (
     GenerationResult,
     VLLMBadRequestError,
 )

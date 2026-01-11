@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
 
-from place_layers.evaluator.importance_weighted.generation_backend import ChatMessage
+from place_layers.evaluator.backend.base import ChatMessage
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task

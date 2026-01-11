@@ -66,24 +66,24 @@ from pydantic import Field, model_validator
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.evaluator.importance_weighted.generation_backend import (
+from place_layers.evaluator.backend.base import (
     AsyncBackend,
     BackendConfig,
     SyncBackend,
 )
-from place_layers.evaluator.importance_weighted.memory_logging import (
+from place_layers.evaluator.memory_logging import (
     log_memory,
     reset_peak_memory_stats,
 )
-from place_layers.evaluator.importance_weighted.trace_writer import (
+from place_layers.evaluator.traces.writer import (
     PrecomputeMetadata,
     TraceWriter,
     compute_config_hash,
     load_metadata,
     save_metadata,
 )
-from place_layers.evaluator.importance_weighted.traces import Trace
-from place_layers.evaluator.importance_weighted.vllm_client import GenerationResult
+from place_layers.evaluator.traces.types import Trace
+from place_layers.evaluator.backend.vllm import GenerationResult
 from place_layers.evaluator.lm_eval_utils import (
     TaskSpecInput,
     check_correctness,
@@ -364,7 +364,7 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
     @property
     def model_name(self) -> str:
         """Get model name/path from backend config."""
-        from place_layers.evaluator.importance_weighted.generation_backend import (
+        from place_layers.evaluator.backend.base import (
             TransformersBackendConfig,
             VLLMBackendConfig,
         )

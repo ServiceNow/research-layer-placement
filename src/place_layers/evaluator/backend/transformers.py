@@ -22,11 +22,11 @@ import torch
 import torch.nn.functional as F
 from pydantic import BaseModel, Field
 
-from place_layers.evaluator.importance_weighted.vllm_client import (
+from place_layers.evaluator.backend.vllm import (
     GeneratedSample,
     GenerationResult,
 )
-from place_layers.evaluator.importance_weighted.memory_logging import (
+from place_layers.evaluator.memory_logging import (
     log_memory,
     log_memory_delta,
     get_memory_stats,
