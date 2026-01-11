@@ -37,29 +37,21 @@ python -m place_layers +experiments=eval_gsm8k_attention
 
 ## Backend Support
 
-Different backends have different capabilities. This matrix shows what works:
+The key differentiator between backends is **placement switching** - the ability to dynamically change which mixer each layer uses. This is required for supernet evaluation and optimization.
 
-| Command | vLLM | Transformers | REST |
-|---------|------|--------------|------|
-| **precompute_traces** | ⚠️ Default placement only | ✅ Any placement | ✅ Any placement |
-| **evaluate** | ⚠️ Non-supernet only | ✅ Any placement | ✅ Any placement |
-| **optimize** | ❌ Not supported | ✅ Works | ✅ Works |
+| Backend | Placement Switching | Best For |
+|---------|---------------------|----------|
+| **Transformers** | ✅ Yes | Single-GPU supernet evaluation/optimization |
+| **REST** | ✅ Yes | Multi-GPU distributed supernet evaluation/optimization |
+| **vLLM** | ❌ No | Fast trace generation from standard (non-supernet) teachers |
 
-**Why the limitations?**
+**Why vLLM doesn't support placement switching:**
 
-vLLM is a standard inference server - it doesn't know about supernet architecture or dynamic placement switching. `VLLMBackend.set_placement()` raises `NotImplementedError`.
+vLLM is a standard inference server - it doesn't know about supernet architecture. The model runs with its default/compiled placement. This is fine for:
+- Generating traces from standard teachers (e.g., `Qwen/Qwen2-0.5B-Instruct`)
+- Evaluating non-supernet models
 
-- **precompute_traces + vLLM**: Works only with `placement=null` (model's default). Specifying a placement crashes.
-- **evaluate + vLLM**: Works only for non-supernet models (single mixer type). Supernet models crash on first eval.
-- **optimize + vLLM**: Always crashes - optimization requires exploring different placements.
-
-**When to use each backend:**
-
-| Backend | Best for |
-|---------|----------|
-| **vLLM** | Precomputing traces from standard teacher models (e.g., `Qwen/Qwen2-0.5B-Instruct`) |
-| **Transformers** | Single-GPU evaluation/optimization of supernet models (e.g., `ServiceNow-AI/apriel2-0.5b-dev`) |
-| **REST** | Multi-GPU distributed evaluation/optimization of supernet models (e.g., `ServiceNow-AI/apriel2-0.5b-dev`) |
+But it cannot be used for supernet optimization or comparing different placements.
 
 ## Commands
 
@@ -595,7 +587,7 @@ This project uses [Hydra](https://hydra.cc/) for configuration. Key config group
 | Group | Options | Description |
 |-------|---------|-------------|
 | `command` | evaluate, optimize, precompute_traces, serve | What to run |
-| `evaluator` | generative, importance_weighted, mock_supernet | How to score placements |
+| `evaluator` | generative, likelihood, importance_weighted, trace_precompute, mock_supernet | How to score placements |
 | `backend` | transformers, vllm, rest | Model inference backend |
 | `model` | apriel2_0_5b_dev, qwen2_0_5b | Model checkpoint |
 | `task` | gsm8k, gsm8k_quick | Evaluation task |
