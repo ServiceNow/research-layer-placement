@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from place_layers.evaluator.backend.base import ChatMessage
+from place_layers.backend.base import ChatMessage
 
 
 class BaseGeneration(BaseModel):

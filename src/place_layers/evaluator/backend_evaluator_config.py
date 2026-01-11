@@ -15,7 +15,7 @@ from typing import Self
 from pydantic import Field, model_validator
 
 from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
-from place_layers.evaluator.backend.base import BackendConfig
+from place_layers.backend.base import BackendConfig
 from place_layers.evaluator.lm_eval_utils import TaskSpecInput
 
 

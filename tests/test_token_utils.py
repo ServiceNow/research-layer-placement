@@ -1,8 +1,8 @@
-"""Tests for lm_eval_utils, particularly find_differing_ranges."""
+"""Tests for token_utils, particularly find_differing_ranges."""
 
 import pytest
 
-from place_layers.evaluator.lm_eval_utils import find_differing_ranges
+from place_layers.core.token_utils import find_differing_ranges
 
 
 class TestFindAnswerRanges:

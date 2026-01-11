@@ -20,7 +20,7 @@ from hydra.core.hydra_config import HydraConfig
 
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.backend.base import (
+from place_layers.backend.base import (
     AsyncBackend,
     ChatLogProbResult,
     ChatMessage,

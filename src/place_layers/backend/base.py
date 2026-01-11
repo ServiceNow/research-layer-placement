@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence, 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.backend.apriel_validation import (
+    from place_layers.backend.apriel_validation import (
         Apriel2Structure,
     )
-    from place_layers.evaluator.backend.vllm import GenerationResult
+    from place_layers.backend.vllm import GenerationResult
 
 
 class ChatMessage(TypedDict):
@@ -405,7 +405,7 @@ class VLLMBackend(AsyncBackend):
     """Async generation backend using vLLM server."""
 
     def __init__(self, config: "VLLMBackendConfig") -> None:
-        from place_layers.evaluator.backend.vllm import (
+        from place_layers.backend.vllm import (
             VLLMClient,
             VLLMClientConfig,
         )
@@ -623,7 +623,7 @@ class VLLMBackend(AsyncBackend):
             logprob_sequences.append(logprobs)
 
         # Find answer token ranges for each sequence (excluding common prefix/suffix)
-        from place_layers.evaluator.lm_eval_utils import find_differing_ranges
+        from place_layers.core.token_utils import find_differing_ranges
 
         answer_ranges = find_differing_ranges(token_sequences)
 
@@ -707,7 +707,7 @@ class TransformersBackend(SyncBackend):
     """
 
     def __init__(self, config: "TransformersBackendConfig") -> None:
-        from place_layers.evaluator.backend.transformers import (
+        from place_layers.backend.transformers import (
             TransformersClient,
             TransformersClientConfig,
         )
@@ -732,7 +732,7 @@ class TransformersBackend(SyncBackend):
         return self._config.batch_size
 
     def __enter__(self) -> Self:
-        from place_layers.evaluator.backend.apriel_validation import (
+        from place_layers.backend.apriel_validation import (
             Apriel2ValidationError,
             validate_apriel2_model,
         )
@@ -932,7 +932,7 @@ class TransformersBackend(SyncBackend):
                 token_sequences.append(tokens)
 
             # Find answer token ranges using prefix/suffix matching
-            from place_layers.evaluator.lm_eval_utils import find_differing_ranges
+            from place_layers.core.token_utils import find_differing_ranges
 
             answer_ranges = find_differing_ranges(token_sequences)  # type: ignore[arg-type]
 
@@ -1099,7 +1099,7 @@ class TransformersBackendConfig(BaseBackendConfig):
 # =============================================================================
 
 # Import REST backend here to avoid circular imports (it imports from this module)
-from place_layers.evaluator.backend.rest import RESTBackendConfig
+from place_layers.backend.rest import RESTBackendConfig
 
 BackendConfig = Annotated[
     VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig,

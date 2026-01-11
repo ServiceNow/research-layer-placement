@@ -31,13 +31,13 @@ from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator
 from place_layers.evaluator.backend_evaluator_config import TaskBasedEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.backend.base import (
+from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
 from place_layers.evaluator.traces.types import Trace
 from place_layers.evaluator.traces.writer import summarize_generations
-from place_layers.evaluator.backend.vllm import GenerationResult
+from place_layers.backend.vllm import GenerationResult
 from place_layers.evaluator.lm_eval_utils import check_correctness
 from place_layers.evaluator.task_runner import (
     prepare_task,

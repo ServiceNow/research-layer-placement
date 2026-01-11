@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self, Sequence
 import aiohttp
 from pydantic import Field
 
-from place_layers.evaluator.backend.base import (
+from place_layers.backend.base import (
     AsyncBackend,
     BaseBackendConfig,
     ChatMessage,
@@ -28,7 +28,7 @@ from place_layers.evaluator.backend.base import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.backend.vllm import GenerationResult
+    from place_layers.backend.vllm import GenerationResult
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,7 @@ class RESTBackend(AsyncBackend):
         Returns:
             GenerationResult with samples and prompt token IDs.
         """
-        from place_layers.evaluator.backend.vllm import (
+        from place_layers.backend.vllm import (
             GenerationResult,
         )
 

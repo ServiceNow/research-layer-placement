@@ -6,7 +6,7 @@ Provides polymorphic backends for model inference:
 - RESTBackend: Generic REST API backend
 """
 
-from place_layers.evaluator.backend.base import (
+from place_layers.backend.base import (
     AsyncBackend,
     BackendConfig,
     ChatMessage,

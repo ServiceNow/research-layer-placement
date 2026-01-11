@@ -54,7 +54,7 @@ from pydantic import Field
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.memory_logging import (
+from place_layers.core.memory_logging import (
     log_memory,
     reset_peak_memory_stats,
 )
@@ -158,7 +158,7 @@ class PrecomputeTracesCommand(BaseCommand):
 
     def _get_model_name(self) -> str:
         """Get model name/path from evaluator's backend config."""
-        from place_layers.evaluator.backend.base import (
+        from place_layers.backend.base import (
             TransformersBackendConfig,
             VLLMBackendConfig,
         )
