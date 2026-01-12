@@ -83,10 +83,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     def __init__(self, config: "BaseGenerativeEvaluatorConfig") -> None:
         super().__init__(config)
 
-    # =========================================================================
-    # Abstract Methods (subclasses must implement)
-    # =========================================================================
-
     @abstractmethod
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult
@@ -108,10 +104,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling, or None for default behavior."""
         return None
-
-    # =========================================================================
-    # Main Evaluation Entry Point
-    # =========================================================================
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate by generating completions and checking accuracy.
@@ -144,10 +136,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     def _summarize(self) -> "GenerationSummary":
         """Compute summary from disk. Override for different summary types."""
         return summarize_generations(self._output_dir)
-
-    # =========================================================================
-    # Sync Generation Loop
-    # =========================================================================
 
     def _run_tasks_sync(self) -> None:
         """Run all tasks synchronously with batching."""
@@ -271,10 +259,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         return processed
 
-    # =========================================================================
-    # Async Generation Loop
-    # =========================================================================
-
     async def _run_tasks_async(self) -> None:
         """Run all tasks asynchronously with worker pool."""
         assert isinstance(self._backend, AsyncBackend)
@@ -393,17 +377,8 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         return processed_count
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
-    """Base configuration for generative evaluators.
-
-    Provides shared generation parameters used by both GenerativeEvaluator
-    and TracePrecomputeEvaluator.
-    """
+    """Generation parameters for GenerativeEvaluator and TracePrecomputeEvaluator."""
 
     samples_per_problem: int = Field(
         description="Number of completions per problem",

@@ -95,14 +95,7 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
         return generations
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class GenerativeEvaluatorConfig(BaseGenerativeEvaluatorConfig):
-    """Configuration for generative evaluator."""
-
     _impl_class: ClassVar[type[BaseEvaluator]] = GenerativeEvaluator
 
     evaluator_type: Literal["generative"] = "generative"

@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import ClassVar, Self
 
 from pydantic import BaseModel, Field
-
-if TYPE_CHECKING:
-    pass  # No forward references needed now
 
 
 class BaseEvaluator[ParametersT]:
@@ -97,19 +94,12 @@ class BaseEvaluator[ParametersT]:
         return scores
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class BaseEvaluatorConfig(BaseModel):
     """Base configuration for all evaluator implementations."""
 
     model_config = {"arbitrary_types_allowed": True}
 
     evaluator_type: str = Field(description="Type identifier for evaluator")
-
-    # Each subclass must define this
     _impl_class: ClassVar[type[BaseEvaluator]]
 
     def create_evaluator(self) -> BaseEvaluator:

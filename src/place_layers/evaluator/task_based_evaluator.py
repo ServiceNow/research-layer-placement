@@ -130,27 +130,8 @@ class TaskBasedEvaluator(BackendEvaluator):
         return task, task_name, docs, remaining
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class TaskBasedEvaluatorConfig(BackendEvaluatorConfig):
-    """Configuration for evaluators that iterate over lm-eval tasks.
-
-    This is an intermediate base class for evaluators that process
-    lm-eval benchmark tasks (generative, likelihood). Concrete configs
-    should inherit from this and define evaluator_type and _impl_class.
-
-    Provides:
-    - tasks: List of lm-eval tasks to evaluate
-    - num_fewshot: Number of few-shot examples
-    - max_problems_per_task: Optional limit on problems per task
-    - split: Dataset split to use
-
-    Note: ImportanceWeightedEvaluatorConfig inherits from BackendEvaluatorConfig
-    directly since it uses trace datasets rather than lm-eval tasks.
-    """
+    """Config for evaluators that process lm-eval benchmark tasks."""
 
     tasks: list[TaskSpecInput] = Field(
         description="List of lm-eval tasks to evaluate (e.g., ['gsm8k', 'math'])"

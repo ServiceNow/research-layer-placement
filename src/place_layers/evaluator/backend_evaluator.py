@@ -55,11 +55,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     config: "BackendEvaluatorConfig"
 
     def __init__(self, config: "BackendEvaluatorConfig") -> None:
-        """Initialize evaluator with backend and trace writer.
-
-        Args:
-            config: Evaluator configuration with backend settings.
-        """
         super().__init__(config)
 
         # Create backend (but don't enter context yet)
@@ -171,10 +166,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         self._current_placement = mixer_names
 
-    # =========================================================================
-    # Backend Method Wrappers (sync/async dispatch)
-    # =========================================================================
-
     async def _compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
@@ -214,20 +205,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             return self._backend.compute_batch_log_probs(sequences)
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class BackendEvaluatorConfig(BaseEvaluatorConfig):
-    """Base configuration for evaluators using generation backends.
-
-    This is an intermediate base class - concrete evaluator configs
-    should inherit from this and define evaluator_type and _impl_class.
-
-    Provides:
-    - backend: Polymorphic backend configuration (vLLM, Transformers, REST)
-    """
+    """Base config for evaluators using generation backends (vLLM, Transformers, REST)."""
 
     backend: BackendConfig = Field(
         description="Generation backend configuration (vllm, transformers, or rest)"

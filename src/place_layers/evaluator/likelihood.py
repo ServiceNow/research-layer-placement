@@ -57,11 +57,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Evaluator Implementation
-# =============================================================================
-
-
 class LikelihoodEvaluator(TaskBasedEvaluator):
     """Evaluator for multiple-choice tasks using log-likelihood scoring.
 
@@ -90,10 +85,6 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             f"Saving likelihood results to: {self._output_dir}/validation.jsonl"
         )
 
-    # =========================================================================
-    # Main Evaluation Entry Point
-    # =========================================================================
-
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement configuration using likelihood-based accuracy.
 
@@ -118,10 +109,6 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         logger.info(f"\n{summary}")
 
         return summary.accuracy
-
-    # =========================================================================
-    # Evaluation Logic
-    # =========================================================================
 
     async def _run_evaluation(self) -> None:
         """Run likelihood evaluation across all tasks, streaming records to disk."""
@@ -322,16 +309,8 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         return chats, gold_idx, lengths, tuple(choices)
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
-    """Configuration for likelihood-based evaluator.
-
-    Used for multiple-choice tasks like MMLU, ARC, HellaSwag, etc.
-    """
+    """Config for multiple-choice tasks (MMLU, ARC, HellaSwag, etc.)."""
 
     _impl_class: ClassVar[type[BaseEvaluator]] = LikelihoodEvaluator
 

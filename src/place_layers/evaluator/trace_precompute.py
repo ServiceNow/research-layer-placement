@@ -104,17 +104,8 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
         return traces
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 class TracePrecomputeEvaluatorConfig(BaseGenerativeEvaluatorConfig):
-    """Configuration for trace precomputation evaluator.
-
-    Used to generate teacher traces with log-probabilities for
-    importance-weighted accuracy estimation.
-    """
+    """Generates teacher traces with log-probabilities for importance-weighted evaluation."""
 
     _impl_class: ClassVar[type[BaseEvaluator]] = TracePrecomputeEvaluator
 
