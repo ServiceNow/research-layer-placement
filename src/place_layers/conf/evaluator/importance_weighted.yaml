@@ -4,6 +4,9 @@
 # Uses importance sampling to estimate subnet accuracy from pre-computed
 # teacher traces. Much faster than generative evaluation (~10-100x).
 #
+# Traces from all sources are merged by task_name. Optional task_weights
+# allow weighting different tasks differently in the final score.
+#
 # This config uses interpolation to compose with other config groups:
 #   - backend: Generation backend (transformers, vllm, or rest)
 #
@@ -16,22 +19,25 @@ evaluator_type: importance_weighted
 # Backend configuration (composed from backend/ config group)
 backend: ${backend}
 
-# Trace sources - directories containing JSONL trace files
-# Weights will be normalized to sum to 1
+# Trace sources - list of directories containing JSONL trace files
+# Traces are merged by task_name across all sources
 trace_sources:
-  - path: /workspace/outputs/command=precompute_traces
-    weight: 1.0
-    name: GSM8K
-  # Example with multiple datasets:
-  # - path: /path/to/math_traces
-  #   weight: 1.0
-  #   name: MATH
-  # - path: /path/to/aime_traces
-  #   weight: 3.0  # AIME weighted 3x more important
-  #   name: AIME
-  # - path: /path/to/gpqa_traces
-  #   weight: 1.0
-  #   name: GPQA
+  - /workspace/outputs/command=precompute_traces
+  # Example with multiple sources:
+  # - /path/to/math_traces
+  # - /path/to/aime_traces
+  # - /path/to/gpqa_traces
+
+# Optional per-task weights for the final weighted accuracy
+# If null, all tasks are weighted equally
+# Missing tasks default to 1.0 with a warning
+# Extra keys are ignored with a warning
+task_weights: null
+# Example with custom weights:
+# task_weights:
+#   gsm8k: 1.0
+#   math: 2.0    # MATH weighted 2x
+#   aime: 3.0    # AIME weighted 3x
 
 # Importance sampling parameters
 weight_clip_min: 0.01

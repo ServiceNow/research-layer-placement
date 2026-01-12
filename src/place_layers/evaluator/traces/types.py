@@ -177,7 +177,6 @@ class ISProblemRecord(BaseModel):
     # === Problem Identification ===
     problem_id: str = Field(description="Unique identifier (e.g., 'gsm8k:42')")
     task_name: str = Field(description="lm-eval task name")
-    dataset_name: str = Field(description="Source dataset name (for weighted combination)")
 
     # === Per-Sample Data (parallel arrays, one element per trace/sample) ===
     sample_indices: tuple[int, ...] = Field(

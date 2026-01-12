@@ -15,15 +15,14 @@ Theory:
 
     Final accuracy is the mean of per-problem IS estimates.
 
-Multi-Dataset Support:
-    When evaluating across multiple benchmarks (MATH, AIME, GPQA, etc.),
-    we use stratified importance sampling. Each dataset is a separate stratum
-    with its own IS estimate, then combined with user-specified weights:
+Multi-Task Support:
+    Traces from multiple source directories are merged by task_name.
+    Each task gets its own IS estimate, then combined with optional
+    user-specified weights:
 
-        final_score = Σⱼ αⱼ × score_q(Dⱼ)
+        final_score = Σⱼ αⱼ × score_q(task_j)
 
-    This avoids issues with naive concatenation where dataset size would
-    implicitly determine importance.
+    If task_weights is not specified, all tasks are weighted equally.
 
 Numerical Stability:
     For long sequences, log-probabilities can be very negative (e.g., -5000).
@@ -62,33 +61,6 @@ from place_layers.evaluator.progress import create_progress
 logger = logging.getLogger(__name__)
 
 
-class TraceSource(BaseModel):
-    """Configuration for a single trace dataset source.
-
-    Each source represents a benchmark/dataset with pre-computed traces
-    and a weight indicating its importance in the final score.
-    """
-
-    model_config = {"frozen": True}
-
-    path: str = Field(description="Path to trace directory containing JSONL files")
-    weight: float = Field(
-        description="Importance weight for this dataset (will be normalized)",
-        gt=0.0,
-    )
-    name: str | None = Field(
-        description="Display name for logging (defaults to path basename)",
-        default=None,
-    )
-
-    @property
-    def display_name(self) -> str:
-        """Get display name, defaulting to path basename."""
-        if self.name:
-            return self.name
-        return Path(self.path).stem
-
-
 @dataclass
 class ProblemTraces:
     """Traces for a single problem, grouped for IS computation."""
@@ -103,55 +75,50 @@ class ProblemTraces:
 
 
 @dataclass
-class LoadedDataset:
-    """A loaded trace dataset with its normalized weight."""
+class MergedTraces:
+    """Traces merged from all sources, grouped by task_name."""
 
-    dataset: TraceDataset
-    weight: float  # Normalized weight (sums to 1 across all datasets)
-    name: str
+    # task_name -> problem_id -> ProblemTraces
+    by_task: dict[str, dict[str, ProblemTraces]] = field(default_factory=dict)
 
-    # Traces grouped by problem_id (computed lazily)
-    _problems_by_id: dict[str, ProblemTraces] | None = field(
-        default=None, repr=False
-    )
+    def add_trace(self, trace: "Trace") -> None:
+        """Add a trace to the merged collection."""
+        if trace.task_name not in self.by_task:
+            self.by_task[trace.task_name] = {}
+        task_problems = self.by_task[trace.task_name]
+        if trace.problem_id not in task_problems:
+            task_problems[trace.problem_id] = ProblemTraces(
+                problem_id=trace.problem_id,
+                task_name=trace.task_name,
+            )
+        task_problems[trace.problem_id].traces.append(trace)
 
     @property
-    def problems(self) -> dict[str, ProblemTraces]:
-        """Get traces grouped by problem_id."""
-        if self._problems_by_id is None:
-            self._problems_by_id = {}
-            for trace in self.dataset.traces:
-                if trace.problem_id not in self._problems_by_id:
-                    self._problems_by_id[trace.problem_id] = ProblemTraces(
-                        problem_id=trace.problem_id,
-                        task_name=trace.task_name,
-                    )
-                self._problems_by_id[trace.problem_id].traces.append(trace)
-        return self._problems_by_id
+    def task_names(self) -> list[str]:
+        """Get all task names."""
+        return list(self.by_task.keys())
 
+    def num_problems(self, task_name: str) -> int:
+        """Get number of problems for a task."""
+        return len(self.by_task.get(task_name, {}))
 
-@dataclass
-class DatasetScore:
-    """Score and diagnostics for a single dataset."""
-
-    name: str
-    score: float
-    weight: float
-    num_problems: int
-    num_traces: int
-    avg_ess: float  # Average ESS across problems
+    def num_traces(self, task_name: str) -> int:
+        """Get number of traces for a task."""
+        return sum(
+            len(p.traces) for p in self.by_task.get(task_name, {}).values()
+        )
 
 
 class ImportanceWeightedEvaluator(BackendEvaluator):
     """Evaluator using importance-weighted accuracy estimation.
 
     Loads a supernet student model and pre-computed teacher traces from
-    one or more datasets. For each placement configuration, estimates
-    accuracy by:
+    one or more directories. Traces are merged by task_name, then for each
+    placement configuration, estimates accuracy by:
     1. Setting mixer assignments on the model
     2. For each problem: compute student log-probs, IS estimate, ESS
     3. Stream ISProblemRecord to disk for each problem
-    4. Aggregate per-problem estimates into final score
+    4. Aggregate per-problem estimates into final score (optionally weighted by task)
 
     This is much faster than generation (~10-100x) because:
     - No autoregressive decoding (just forward passes)
@@ -162,17 +129,17 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
     config: "ImportanceWeightedEvaluatorConfig"
 
     def __init__(self, config: "ImportanceWeightedEvaluatorConfig") -> None:
-        # Load datasets first (before calling super().__init__ which needs Hydra)
-        self._datasets_to_load = config.trace_sources
         self._weight_clip_min = config.weight_clip_min
         self._weight_clip_max = config.weight_clip_max
 
         # Call parent init (sets up backend, trace writer, etc.)
         super().__init__(config)
 
-        # Load all trace datasets with normalized weights
-        self.datasets = self._load_datasets()
-        self._log_dataset_summary()
+        # Load and merge all traces by task_name
+        self.merged_traces = self._load_and_merge_traces()
+
+        # Compute normalized task weights
+        self.task_weights = self._compute_task_weights()
 
         # Pre-compute log weight clip bounds for numerical stability
         self._log_weight_clip_min = math.log(self._weight_clip_min)
@@ -180,64 +147,96 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
 
         logger.info(f"Saving IS results to: {self._output_dir}/validation.jsonl")
 
-    def _load_datasets(self) -> list[LoadedDataset]:
-        """Load all trace datasets and normalize weights."""
+    def _load_and_merge_traces(self) -> MergedTraces:
+        """Load traces from all sources and merge by task_name."""
         import time
 
-        sources = self._datasets_to_load
-        logger.info(f"Loading {len(sources)} trace source(s)...")
+        sources = self.config.trace_sources
+        logger.info(f"Loading traces from {len(sources)} source(s)...")
 
-        # Load datasets
-        loaded = []
-        total_weight = sum(s.weight for s in sources)
+        merged = MergedTraces()
+        total_traces = 0
 
-        for source in sources:
-            path = Path(source.path)
+        for source_path in sources:
+            path = Path(source_path)
             logger.info(f"Loading traces from {path}")
             start = time.perf_counter()
             dataset = TraceDataset.load_from_directory(path)
             elapsed = time.perf_counter() - start
+
+            # Add all traces to merged collection
+            for trace in dataset.traces:
+                merged.add_trace(trace)
+
+            total_traces += dataset.num_traces
             logger.info(
                 f"  Loaded {dataset.num_traces} traces from {len(dataset.task_names)} task(s) "
                 f"in {elapsed:.1f}s"
             )
-            normalized_weight = source.weight / total_weight
 
-            loaded.append(
-                LoadedDataset(
-                    dataset=dataset,
-                    weight=normalized_weight,
-                    name=source.display_name,
-                )
-            )
-
-        return loaded
-
-    def _log_dataset_summary(self) -> None:
-        """Log summary of loaded datasets."""
-        total_traces = sum(d.dataset.num_traces for d in self.datasets)
-        logger.info(
-            f"Loaded {len(self.datasets)} datasets with {total_traces} total traces:"
-        )
-        for d in self.datasets:
+        # Log summary by task
+        logger.info(f"Merged {total_traces} traces across {len(merged.task_names)} task(s):")
+        for task_name in sorted(merged.task_names):
             logger.info(
-                f"  {d.name}: {d.dataset.num_traces} traces, "
-                f"weight={d.weight:.1%}, "
-                f"teacher_acc={d.dataset.accuracy:.1%}"
+                f"  {task_name}: {merged.num_problems(task_name)} problems, "
+                f"{merged.num_traces(task_name)} traces"
             )
+
+        return merged
+
+    def _compute_task_weights(self) -> dict[str, float]:
+        """Compute normalized task weights.
+
+        Returns a dict mapping task_name -> normalized weight.
+        Handles missing/extra keys in config.task_weights with warnings.
+        """
+        task_names = set(self.merged_traces.task_names)
+        config_weights = self.config.task_weights
+
+        if config_weights is None:
+            # Equal weights for all tasks
+            weight = 1.0 / len(task_names) if task_names else 1.0
+            return {task: weight for task in task_names}
+
+        # Start with config weights, warn about issues
+        weights: dict[str, float] = {}
+        config_keys = set(config_weights.keys())
+
+        # Check for missing tasks (in data but not in config)
+        missing = task_names - config_keys
+        if missing:
+            logger.warning(
+                f"task_weights missing keys for: {sorted(missing)}. Using weight=1.0 for these."
+            )
+
+        # Check for extra tasks (in config but not in data)
+        extra = config_keys - task_names
+        if extra:
+            logger.warning(
+                f"task_weights has keys not in data: {sorted(extra)}. Ignoring these."
+            )
+
+        # Build weights dict
+        for task in task_names:
+            weights[task] = config_weights.get(task, 1.0)
+
+        # Normalize to sum to 1
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("Sum of task weights must be positive")
+
+        return {task: w / total for task, w in weights.items()}
 
     def _compute_problem_record(
         self,
         problem: ProblemTraces,
         student_log_probs: Sequence[float],
-        dataset_name: str,
     ) -> ISProblemRecord:
         """Compute IS estimate for a single problem and create record.
 
         Args:
             problem: The problem's traces.
             student_log_probs: Student log-probs for each trace (same order as problem.traces).
-            dataset_name: Name of the dataset this problem belongs to.
 
         Returns:
             ISProblemRecord with per-sample data and problem-level aggregates.
@@ -285,7 +284,6 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         return ISProblemRecord(
             problem_id=problem.problem_id,
             task_name=problem.task_name,
-            dataset_name=dataset_name,
             sample_indices=tuple(sample_indices),
             student_log_probs=tuple(student_log_probs),
             teacher_log_probs=tuple(teacher_log_probs),
@@ -298,21 +296,19 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             num_samples=len(weights),
         )
 
-    async def _compute_dataset_score(
+    async def _evaluate_task(
         self,
-        loaded: LoadedDataset,
-        completed_problems: set[int],
-    ) -> DatasetScore:
-        """Compute importance-weighted score for a dataset, streaming per-problem records.
+        task_name: str,
+        problems: dict[str, ProblemTraces],
+        completed_indices: set[int],
+    ) -> None:
+        """Evaluate a single task, streaming per-problem records to disk.
 
         Args:
-            loaded: The loaded dataset.
-            completed_problems: Set of problem indices already completed (for resumption).
-
-        Returns:
-            DatasetScore with aggregated metrics.
+            task_name: Name of the task (e.g., 'gsm8k').
+            problems: Dict mapping problem_id -> ProblemTraces.
+            completed_indices: Set of problem indices already completed (for resumption).
         """
-        problems = loaded.problems
         problem_ids = list(problems.keys())
 
         # Filter to remaining problems
@@ -321,27 +317,18 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             # Extract problem index from problem_id (format: "task_name:idx")
             try:
                 idx = int(pid.split(":")[-1])
-                if idx not in completed_problems:
+                if idx not in completed_indices:
                     remaining_problems.append(problems[pid])
             except ValueError:
                 # If we can't parse the index, include it (conservative)
                 remaining_problems.append(problems[pid])
 
         if not remaining_problems:
-            # All problems already completed - load from existing records
-            # For now, return zeros (we'd need to reload records for accurate stats)
-            logger.info(f"  All {len(problem_ids)} problems already completed")
-            return DatasetScore(
-                name=loaded.name,
-                score=0.0,
-                weight=loaded.weight,
-                num_problems=len(problem_ids),
-                num_traces=loaded.dataset.num_traces,
-                avg_ess=0.0,
-            )
+            logger.info(f"  Task '{task_name}': all {len(problem_ids)} problems already completed")
+            return
 
         logger.info(
-            f"  Processing {len(remaining_problems)} problems "
+            f"  Task '{task_name}': processing {len(remaining_problems)} problems "
             f"({len(problem_ids) - len(remaining_problems)} already completed)"
         )
 
@@ -364,49 +351,27 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
 
         # Process each problem, create records, and stream to disk
         records: list[ISProblemRecord] = []
-        total_is_estimate = 0.0
-        total_ess = 0.0
 
         with create_progress() as progress:
-            task = progress.add_task(
-                f"[cyan]{loaded.name}",
+            progress_task = progress.add_task(
+                f"[cyan]{task_name}",
                 total=len(remaining_problems),
             )
 
             for problem, (start, end) in zip(remaining_problems, problem_trace_ranges):
                 problem_log_probs = all_student_log_probs[start:end]
-                record = self._compute_problem_record(
-                    problem, problem_log_probs, dataset_name=loaded.name
-                )
+                record = self._compute_problem_record(problem, problem_log_probs)
                 records.append(record)
-
-                total_is_estimate += record.is_correct_estimate
-                total_ess += record.ess
-
-                progress.advance(task)
+                progress.advance(progress_task)
 
         # Stream all records to disk
         self._trace_writer.append(records)  # type: ignore[arg-type]
-
-        # Compute aggregates
-        num_problems = len(remaining_problems)
-        avg_score = total_is_estimate / num_problems if num_problems > 0 else 0.0
-        avg_ess = total_ess / num_problems if num_problems > 0 else 0.0
-
-        return DatasetScore(
-            name=loaded.name,
-            score=avg_score,
-            weight=loaded.weight,
-            num_problems=num_problems,
-            num_traces=len(all_traces),
-            avg_ess=avg_ess,
-        )
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement using stratified importance-weighted accuracy.
 
         Computes per-problem IS estimates, streams records to disk, and
-        combines with normalized weights.
+        combines with normalized task weights.
 
         Args:
             parameters: Layer placement to evaluate, or None for default config.
@@ -427,38 +392,28 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         else:
             logger.info("No placement specified, using default configuration")
 
-        # Compute per-dataset scores
+        # Evaluate each task
         start = time.perf_counter()
-        dataset_scores = []
 
-        for d in self.datasets:
+        for task_name in sorted(self.merged_traces.task_names):
+            problems = self.merged_traces.by_task[task_name]
             logger.info(
-                f"Computing score for dataset '{d.name}' "
-                f"({d.dataset.num_problems} problems, {d.dataset.num_traces} traces)"
+                f"Evaluating task '{task_name}': "
+                f"{len(problems)} problems, {self.merged_traces.num_traces(task_name)} traces"
             )
 
             # Get completed problems for resumption
-            # Note: We check per task_name within the dataset
-            completed: set[int] = set()
-            for task_name in d.dataset.task_names:
-                completed.update(get_completed_problems(self._output_dir, task_name))
+            completed = get_completed_problems(self._output_dir, task_name)
 
-            score = await self._compute_dataset_score(d, completed)
-            dataset_scores.append(score)
-            logger.info(
-                f"  {d.name}: score={score.score:.4f}, "
-                f"avg_ESS={score.avg_ess:.1f}, "
-                f"problems={score.num_problems}"
-            )
+            await self._evaluate_task(task_name, problems, completed)
 
         elapsed = time.perf_counter() - start
 
         # Compute summary from disk (single source of truth)
         summary = summarize_is(self._output_dir)
 
-        # Build weights dict for weighted combination
-        weights = {d.name: d.weight for d in self.datasets}
-        final_score = summary.weighted_accuracy(weights)
+        # Compute weighted accuracy using pre-computed task weights
+        final_score = summary.weighted_accuracy(self.task_weights)
 
         logger.info(f"\n{summary}")
         logger.info(f"Weighted accuracy: {final_score:.4f} (in {elapsed:.1f}s)")
@@ -498,9 +453,18 @@ class ImportanceWeightedEvaluatorConfig(BackendEvaluatorConfig):
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
 
-    # Trace sources - list of datasets with weights
-    trace_sources: list[TraceSource] = Field(
-        description="List of trace datasets with importance weights"
+    # Trace sources - list of paths to directories containing JSONL files
+    trace_sources: list[str] = Field(
+        description="List of paths to trace directories (merged by task_name)"
+    )
+
+    # Optional per-task weights for weighted accuracy
+    task_weights: dict[str, float] | None = Field(
+        default=None,
+        description="Per-task importance weights (task_name -> weight). "
+        "If None, all tasks are weighted equally. "
+        "Missing tasks default to 1.0 with a warning. "
+        "Extra keys are ignored with a warning.",
     )
 
     # Importance sampling parameters
@@ -518,4 +482,15 @@ class ImportanceWeightedEvaluatorConfig(BackendEvaluatorConfig):
         """Ensure at least one trace source is provided."""
         if not self.trace_sources:
             raise ValueError("At least one trace source is required")
+        return self
+
+    @model_validator(mode="after")
+    def validate_task_weights(self) -> Self:
+        """Ensure task weights are positive if provided."""
+        if self.task_weights:
+            for task, weight in self.task_weights.items():
+                if weight <= 0:
+                    raise ValueError(
+                        f"Task weight must be positive, got {weight} for '{task}'"
+                    )
         return self

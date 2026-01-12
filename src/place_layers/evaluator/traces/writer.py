@@ -223,11 +223,6 @@ def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
     return completed
 
 
-# =============================================================================
-# Generation Summary
-# =============================================================================
-
-
 class TaskStats(BaseModel):
     """Per-task statistics for generation evaluation."""
 
@@ -377,11 +372,6 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
     )
 
 
-# =============================================================================
-# Likelihood Summary
-# =============================================================================
-
-
 class LikelihoodTaskStats(BaseModel):
     """Per-task statistics for likelihood (multiple-choice) evaluation."""
 
@@ -513,13 +503,8 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
     )
 
 
-# =============================================================================
-# Importance-Weighted (IS) Summary
-# =============================================================================
-
-
-class ISDatasetStats(BaseModel):
-    """Per-dataset statistics for importance-weighted evaluation."""
+class ISTaskStats(BaseModel):
+    """Per-task statistics for importance-weighted evaluation."""
 
     model_config = {"frozen": True}
 
@@ -533,35 +518,35 @@ class ISSummary(BaseModel):
     """Summary statistics for importance-weighted evaluation.
 
     Computed from ISProblemRecord entries on disk - the single source of truth.
-    Grouped by dataset_name for proper weighted combination.
+    Grouped by task_name for proper weighted combination.
     """
 
     model_config = {"frozen": True}
 
-    dataset_stats: dict[str, ISDatasetStats] = Field(description="Statistics per dataset")
-    total_problems: int = Field(description="Total problems across all datasets")
-    total_samples: int = Field(description="Total samples across all datasets")
+    task_stats: dict[str, ISTaskStats] = Field(description="Statistics per task")
+    total_problems: int = Field(description="Total problems across all tasks")
+    total_samples: int = Field(description="Total samples across all tasks")
 
     def weighted_accuracy(self, weights: dict[str, float]) -> float:
-        """Compute weighted accuracy using provided dataset weights.
+        """Compute weighted accuracy using provided task weights.
 
         Args:
-            weights: Dict mapping dataset_name -> weight (should sum to 1).
+            weights: Dict mapping task_name -> weight (should sum to 1).
 
         Returns:
-            Weighted accuracy across datasets.
+            Weighted accuracy across tasks.
         """
         return sum(
-            self.dataset_stats[name].is_accuracy * weight
+            self.task_stats[name].is_accuracy * weight
             for name, weight in weights.items()
-            if name in self.dataset_stats
+            if name in self.task_stats
         )
 
     def __str__(self) -> str:
         lines = ["Importance-Weighted Evaluation Summary:"]
-        for dataset_name, stats in sorted(self.dataset_stats.items()):
+        for task_name, stats in sorted(self.task_stats.items()):
             lines.append(
-                f"  {dataset_name}: IS_acc={stats.is_accuracy:.4f}, "
+                f"  {task_name}: IS_acc={stats.is_accuracy:.4f}, "
                 f"ESS={stats.avg_ess:.1f}, "
                 f"problems={stats.num_problems}, samples={stats.num_samples}"
             )
@@ -581,7 +566,7 @@ def summarize_is(output_dir: Path) -> ISSummary:
         output_dir: Directory containing validation.jsonl.
 
     Returns:
-        ISSummary with per-dataset and aggregate statistics.
+        ISSummary with per-task and aggregate statistics.
     """
     from collections import defaultdict
 
@@ -589,9 +574,9 @@ def summarize_is(output_dir: Path) -> ISSummary:
     if not validation_path.exists():
         raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
 
-    # Group records by dataset
-    # dataset_name -> list of (is_correct_estimate, ess, num_samples)
-    dataset_results: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
+    # Group records by task_name
+    # task_name -> list of (is_correct_estimate, ess, num_samples)
+    task_results: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
     malformed = 0
 
     with validation_path.open() as f:
@@ -602,7 +587,7 @@ def summarize_is(output_dir: Path) -> ISSummary:
             try:
                 record = TraceRecordAdapter.validate_json(line)
                 if isinstance(record, ISProblemRecord):
-                    dataset_results[record.dataset_name].append(
+                    task_results[record.task_name].append(
                         (record.is_correct_estimate, record.ess, record.num_samples)
                     )
             except Exception as e:
@@ -612,18 +597,18 @@ def summarize_is(output_dir: Path) -> ISSummary:
     if malformed > 0:
         logger.warning(f"{malformed} malformed lines ignored in IS summary")
 
-    # Compute per-dataset statistics
-    dataset_stats: dict[str, ISDatasetStats] = {}
+    # Compute per-task statistics
+    task_stats: dict[str, ISTaskStats] = {}
     total_problems = 0
     total_samples = 0
 
-    for dataset_name, results in dataset_results.items():
+    for task_name, results in task_results.items():
         num_problems = len(results)
         num_samples = sum(ns for _, _, ns in results)
         is_accuracy = sum(ice for ice, _, _ in results) / num_problems if num_problems > 0 else 0.0
         avg_ess = sum(ess for _, ess, _ in results) / num_problems if num_problems > 0 else 0.0
 
-        dataset_stats[dataset_name] = ISDatasetStats(
+        task_stats[task_name] = ISTaskStats(
             num_problems=num_problems,
             num_samples=num_samples,
             is_accuracy=is_accuracy,
@@ -634,7 +619,7 @@ def summarize_is(output_dir: Path) -> ISSummary:
         total_samples += num_samples
 
     return ISSummary(
-        dataset_stats=dataset_stats,
+        task_stats=task_stats,
         total_problems=total_problems,
         total_samples=total_samples,
     )
