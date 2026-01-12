@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Self
+from typing import ClassVar, Self
 
-
-if TYPE_CHECKING:
-    from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
+from pydantic import BaseModel, Field
 
 
 class BaseEvaluator[ParametersT]:
@@ -20,7 +18,7 @@ class BaseEvaluator[ParametersT]:
             score = await evaluator.evaluate(placement)
     """
 
-    def __init__(self, config: BaseEvaluatorConfig) -> None:
+    def __init__(self, config: "BaseEvaluatorConfig") -> None:
         """
         Initialize the evaluator with configuration.
 
@@ -94,3 +92,16 @@ class BaseEvaluator[ParametersT]:
             score = await self.evaluate(parameters)
             scores.append(score)
         return scores
+
+
+class BaseEvaluatorConfig(BaseModel):
+    """Base configuration for all evaluator implementations."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    evaluator_type: str = Field(description="Type identifier for evaluator")
+    _impl_class: ClassVar[type[BaseEvaluator]]
+
+    def create_evaluator(self) -> BaseEvaluator:
+        """Smart constructor: instantiate evaluator from config."""
+        return self._impl_class(config=self)

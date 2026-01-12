@@ -21,7 +21,7 @@ from pydantic import Field
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.evaluator.importance_weighted.generation_backend import (
+from place_layers.backend.base import (
     TransformersBackendConfig,
 )
 

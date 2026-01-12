@@ -15,21 +15,17 @@ trace generation and evaluation, so that prompts match exactly.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
 
-from place_layers.evaluator.importance_weighted.generation_backend import ChatMessage
+from place_layers.backend.base import ChatMessage
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Protocols and Types
-# =============================================================================
 
 
 class Docs(Protocol):
@@ -42,11 +38,6 @@ class Docs(Protocol):
 
     def __len__(self) -> int: ...
     def __getitem__(self, index: int) -> dict: ...
-
-
-# =============================================================================
-# Task Configuration
-# =============================================================================
 
 
 class TaskSpec(BaseModel):
@@ -83,11 +74,6 @@ class TaskSpec(BaseModel):
 
 # Union type for task specification (string or TaskSpec object)
 TaskSpecInput = str | TaskSpec
-
-
-# =============================================================================
-# Task Helper Functions
-# =============================================================================
 
 
 def normalize_task_spec(task: TaskSpecInput, default_num_fewshot: int) -> dict:
@@ -163,11 +149,6 @@ def get_docs(task: "Task", split: str) -> Docs:
     return cast(Docs, docs)
 
 
-# =============================================================================
-# Prompt Construction
-# =============================================================================
-
-
 def build_chat_messages(
     task: "Task",
     doc: dict,
@@ -203,11 +184,6 @@ def build_chat_messages(
     messages.append({"role": "user", "content": question})
 
     return messages
-
-
-# =============================================================================
-# Correctness Checking
-# =============================================================================
 
 
 def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
@@ -257,11 +233,6 @@ def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
         f"Record will be saved with correct=None."
     )
     return None
-
-
-# =============================================================================
-# Task Loading
-# =============================================================================
 
 
 def load_task(
