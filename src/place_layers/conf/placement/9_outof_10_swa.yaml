@@ -1,0 +1,3 @@
+# @package _global_
+# Attn at every 10th layer. The rest is SWA
+placement: [attention, swa, swa, swa, swa, swa, swa, swa, swa, swa]
