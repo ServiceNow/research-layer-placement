@@ -22,11 +22,7 @@ backend: ${backend}
 # Trace sources - list of directories containing JSONL trace files
 # Traces are merged by task_name across all sources
 trace_sources:
-  - /workspace/outputs/command=precompute_traces
-  # Example with multiple sources:
-  # - /path/to/math_traces
-  # - /path/to/aime_traces
-  # - /path/to/gpqa_traces
+  - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
 
 # Optional per-task weights for the final weighted accuracy
 # If null, all tasks are weighted equally
