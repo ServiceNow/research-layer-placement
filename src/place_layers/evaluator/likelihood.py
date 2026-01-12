@@ -9,6 +9,48 @@ likelihood evaluation:
 - Selects argmax as the prediction
 - Compares to gold answer index
 
+Scoring Approach: Input Token Logprobs (NOT Generation)
+-------------------------------------------------------
+This evaluator uses **input token scoring**, not generation. The key insight
+is that we don't need the model to generate anything - we just need the
+probability it assigns to tokens we provide as input.
+
+For each choice (e.g., "A", "B", "C", "D"), we:
+
+1. **Send the answer as INPUT** (not as a generation target):
+   ```
+   messages = [
+       {role: "user", content: "Question...\\nA. ...\\nB. ...\\nAnswer:"},
+       {role: "assistant", content: "B"}  # <-- Answer is INPUT
+   ]
+   ```
+
+2. **Get logprobs for input tokens** (backend-specific):
+
+   **vLLM backend**: Request `prompt_logprobs` which returns logprobs for all
+   INPUT tokens. vLLM requires `max_tokens >= 1`, so we set `max_tokens=1`,
+   but we never read the generated token - only `prompt_logprobs`.
+
+   **Transformers backend**: Tokenize the full sequence (context + answer),
+   run a single forward pass, compute log_softmax over logits. No generation
+   loop - just one forward pass on the complete input.
+
+   Both backends produce logprobs for the full input sequence:
+   ```
+   [..., <|im_start|>, assistant, \\n, B, <|im_end|>, ...]
+                                       ^
+                                       └── We extract this logprob
+   ```
+
+3. **Use diff-based scoring**: Compare token sequences across all choices to
+   find where they differ (the answer token position). This is chat-template
+   agnostic - works regardless of how the template wraps messages.
+
+This approach is more principled than generation-based scoring because:
+- We measure exactly P(answer | context), not P(answer | context, model's prefix)
+- No sampling variance - deterministic logprob extraction
+- Faster - no autoregressive generation needed (just one forward pass)
+
 Key design principles:
 - Uses build_chat_messages for context construction (shared with generative)
 - Uses compute_chat_log_probs with diff-based scoring (template-agnostic)

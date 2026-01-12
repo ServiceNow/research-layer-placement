@@ -568,8 +568,17 @@ class VLLMBackend(AsyncBackend):
     ) -> list[ChatLogProbResult]:
         """Score a group of chats that share the same context.
 
-        Uses diff-based approach: find positions where token IDs differ,
-        then sum logprobs at those positions.
+        Uses INPUT token scoring via vLLM's prompt_logprobs feature. The answer
+        choices are sent as part of the input (in assistant messages), and we
+        extract logprobs for those input tokens. No generation is needed.
+
+        The diff-based approach finds positions where token sequences differ
+        across choices, then extracts logprobs at those positions. This is
+        chat-template agnostic.
+
+        Note: vLLM requires max_tokens >= 1, so we set max_tokens=1. However,
+        we never extract the generated token from the response - we only read
+        prompt_logprobs. The generated content in data["choices"] is ignored.
 
         Returns ChatLogProbResult with full token-level information.
         """
@@ -581,11 +590,15 @@ class VLLMBackend(AsyncBackend):
             comp_msgs: Sequence[ChatMessage],
         ) -> dict:
             messages = list(context_msgs) + list(comp_msgs)
+            # We use INPUT token scoring: the answer is in comp_msgs (assistant
+            # message), and prompt_logprobs gives us logprobs for all input tokens.
+            # max_tokens=1 is the minimum vLLM accepts; the generated token is
+            # discarded. We only use prompt_logprobs for the input.
             payload = {
                 "model": self._client.config.model,
                 "messages": messages,
-                "max_tokens": 1,
-                "prompt_logprobs": 1,
+                "max_tokens": 1,  # vLLM minimum; generated token is discarded
+                "prompt_logprobs": 1,  # Return logprobs for INPUT tokens
                 "temperature": 0,
             }
             async with self._client._semaphore:
@@ -876,21 +889,23 @@ class TransformersBackend(SyncBackend):
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
     ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions with full observability.
+        """Compute log probabilities for chat completions using INPUT token scoring.
 
-        Uses prefix/suffix matching approach (same as vLLM backend):
+        Uses the same approach as vLLM backend but with direct model access:
         1. Group chats by context (same context = same multiple-choice question)
-        2. Tokenize all full messages for each group
-        3. Find answer token ranges using prefix/suffix matching
-        4. Compute logprobs via forward pass
-        5. SUM logprobs for answer tokens (matches lm-eval semantics)
+        2. Tokenize FULL sequence (context + answer) - answer is INPUT, not generated
+        3. Run single forward pass on complete input - NO generation loop
+        4. Compute log_softmax over logits to get per-token logprobs
+        5. Find answer token ranges using diff-based prefix/suffix matching
+        6. SUM logprobs for answer tokens (matches lm-eval semantics)
 
         This approach is template-agnostic - we find common prefix (context +
         template overhead) and common suffix (end tokens) to isolate the
-        actual answer tokens.
+        actual answer tokens. No autoregressive generation needed.
 
         Args:
             chats: List of (context_messages, completion_messages) tuples.
+                   completion_messages contain the answer as INPUT.
 
         Returns:
             List of ChatLogProbResult with full token-level detail.
