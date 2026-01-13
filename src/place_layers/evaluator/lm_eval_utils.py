@@ -285,7 +285,7 @@ def load_task(
 
     # Include custom tasks directory (e.g., gsm8k_strip_end)
     custom_tasks_dir = Path(__file__).parent.parent / "tasks"
-    include_path = str(custom_tasks_dir) if custom_tasks_dir.exists() else None
+    include_path = str(custom_tasks_dir)
 
     task_name = get_task_name(task_spec)
     task_config = normalize_task_spec(task_spec, default_num_fewshot)

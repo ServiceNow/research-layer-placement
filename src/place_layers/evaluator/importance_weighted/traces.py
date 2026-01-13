@@ -95,6 +95,10 @@ class SkippedProblem(BaseModel):
     problem_id: str = Field(description="Unique identifier for the source problem")
     task_name: str = Field(description="lm-eval task name")
     reason: str = Field(description="Why the problem was skipped")
+    truncated_generations: list[str] | None = Field(
+        default=None,
+        description="Truncated generation texts (for debugging)",
+    )
 
 
 TraceRecord = Annotated[

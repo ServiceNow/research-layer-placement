@@ -274,6 +274,7 @@ def run_generation_sync(
                     problem_id=f"{task_name}:{idx}",
                     task_name=task_name,
                     reason=f"all {len(result.samples)} samples truncated",
+                    truncated_generations=[s.text for s in result.samples],
                 )
                 writer.append([skipped])
 
@@ -374,6 +375,7 @@ async def run_generation_async(
                             problem_id=f"{task_name}:{idx}",
                             task_name=task_name,
                             reason=f"all {len(result.samples)} samples truncated",
+                            truncated_generations=[s.text for s in result.samples],
                         )
                         writer.append([skipped])
 
