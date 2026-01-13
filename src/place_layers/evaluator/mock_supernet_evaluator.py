@@ -8,8 +8,7 @@ from typing import ClassVar, Literal
 from pydantic import Field
 
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
+from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
@@ -52,9 +51,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     window layers, etc.).
     """
 
+    config: "MockSupernetEvaluatorConfig"
+
     def __init__(self, config: "MockSupernetEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: MockSupernetEvaluatorConfig  # Type narrowing
 
         # Generate landscape structure from seed
         # This represents the supernet's learned preferences

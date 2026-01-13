@@ -1,0 +1,12 @@
+# @package task
+# MMLU quick task configuration - single subject for fast testing
+#
+# Uses mmlu_abstract_algebra (100 problems) for quick evaluation.
+# For full MMLU evaluation, use mmlu.yaml instead.
+
+tasks:
+  - mmlu_abstract_algebra
+
+num_fewshot: 5
+max_problems_per_task: null  # 100 problems in abstract_algebra
+split: test
