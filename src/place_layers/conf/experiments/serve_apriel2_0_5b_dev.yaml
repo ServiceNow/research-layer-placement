@@ -1,0 +1,15 @@
+# @package _global_
+# Start REST server with Apriel2-0.5B-dev
+#
+# Usage:
+#   python -m place_layers +experiments=serve_apriel2_0_5b_dev
+#
+# Multi-GPU (run in separate terminals):
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8081
+
+defaults:
+  - /command: serve
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - _self_

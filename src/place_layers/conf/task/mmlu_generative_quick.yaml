@@ -1,0 +1,9 @@
+# @package task
+# MMLU Generative quick - single subject for fast testing
+
+tasks:
+  - mmlu_abstract_algebra_generative
+
+num_fewshot: 5
+max_problems_per_task: null
+split: test

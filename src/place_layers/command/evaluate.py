@@ -57,8 +57,8 @@ class EvaluateCommandOutput(BaseModel):
 
     timestamp: str = Field(description="ISO timestamp of evaluation")
     evaluator_type: str = Field(description="Type of evaluator used")
-    mixer_names: list[str] = Field(description="Available mixer types")
-    num_layers: int = Field(description="Number of layers")
+    mixer_names: list[str] | None = Field(description="Available mixer types (null if not discovered)")
+    num_layers: int | None = Field(description="Number of layers (null if not discovered)")
     result: EvaluationResult = Field(description="Evaluation result")
 
 
@@ -77,34 +77,28 @@ class EvaluateCommand(BaseCommand):
 
         # Create and use evaluator with context manager for proper cleanup
         async with self.config.evaluator.create_evaluator() as evaluator:
-            num_layers = evaluator.num_layers
-            num_mixers = evaluator.num_mixers
-
-            logger.info(
-                f"Evaluator: {self.config.evaluator.evaluator_type}, "
-                f"{num_layers} layers, {num_mixers} mixers"
-            )
-
-            # Validate mixer_names length
-            if len(self.config.mixer_names) != num_mixers:
-                raise ValueError(
-                    f"mixer_names has {len(self.config.mixer_names)} entries, "
-                    f"but evaluator has {num_mixers} mixers"
-                )
-
-            # Build name-to-index mapping
-            name_to_idx = {name: idx for idx, name in enumerate(self.config.mixer_names)}
-
-            # Check if model supports placement (multiple mixer types)
-            supports_placement = len(set(self.config.mixer_names)) > 1
-
             # Handle placement
             if self.config.placement is not None:
-                # Placement specified - model must support it
+                # Placement specified - need model structure for validation
+                num_layers = evaluator.num_layers
+                num_mixers = evaluator.num_mixers
+                mixer_names = evaluator.mixer_names
+
+                logger.info(
+                    f"Evaluator: {self.config.evaluator.evaluator_type}, "
+                    f"{num_layers} layers, {num_mixers} mixers"
+                )
+                logger.info(f"Available mixers: {mixer_names}")
+
+                # Build name-to-index mapping
+                name_to_idx = {name: idx for idx, name in enumerate(mixer_names)}
+
+                # Check if model supports placement (multiple mixer types)
+                supports_placement = len(set(mixer_names)) > 1
                 if not supports_placement:
                     raise ValueError(
                         f"Placement specified but model only has one mixer type "
-                        f"({self.config.mixer_names[0]}). Use placement=null for "
+                        f"({mixer_names[0]}). Use placement=null for "
                         f"non-supernet models."
                     )
 
@@ -145,13 +139,13 @@ class EvaluateCommand(BaseCommand):
                     placement_indices=list(indices),
                 )
             else:
-                # No placement - evaluate with default model configuration
+                # No placement - evaluate default configuration without model structure
                 logger.info("No placement specified, evaluating default configuration")
+                num_layers = None
+                mixer_names = None
 
-                # Use all-zeros placement (first mixer type for all layers)
-                default_indices = tuple(0 for _ in range(num_layers))
-                layer_placement = LayerPlacement(assignments=default_indices)
-                score = await evaluator.evaluate(layer_placement)
+                # Evaluate with None placement (evaluator handles this)
+                score = await evaluator.evaluate(None)  # type: ignore[arg-type]
 
                 result = EvaluationResult(
                     placement=None,
@@ -165,7 +159,7 @@ class EvaluateCommand(BaseCommand):
         output = EvaluateCommandOutput(
             timestamp=datetime.now().isoformat(),
             evaluator_type=self.config.evaluator.evaluator_type,
-            mixer_names=self.config.mixer_names,
+            mixer_names=list(mixer_names) if mixer_names else None,
             num_layers=num_layers,
             result=result,
         )
@@ -186,13 +180,8 @@ class EvaluateCommandConfig(BaseCommandConfig):
     command: Literal["evaluate"] = "evaluate"
 
     # Evaluator configuration (discriminated union)
+    # The evaluator provides model structure (num_layers, mixer_names) after initialization
     evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
-
-    # Mixer names (defines name-to-index mapping)
-    mixer_names: list[str] = Field(
-        description="List of mixer names in index order "
-        "(e.g., ['attention', 'mamba', 'gdn'])"
-    )
 
     # Single placement (use Hydra --multirun for sweeps)
     placement: list[str] | None = Field(

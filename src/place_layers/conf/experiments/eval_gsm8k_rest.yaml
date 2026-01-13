@@ -1,0 +1,29 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on GSM8K via REST backend
+#
+# Prerequisites:
+#   Start one or more servers first:
+#   python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8080
+#
+# Usage:
+#   python -m place_layers +experiments=eval_gsm8k_rest
+#
+# Multi-server (for multi-GPU):
+#   python -m place_layers +experiments=eval_gsm8k_rest \
+#       'backend.servers=["http://localhost:8080","http://localhost:8081"]'
+#
+# Note: Model structure (num_layers, mixer_names) is discovered automatically
+# from the REST servers via /info endpoint. No model config needed.
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: rest
+  - /task: gsm8k
+  - /generation: greedy
+  - _self_
+
+# Default to single local server
+backend:
+  servers:
+    - http://localhost:8080

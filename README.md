@@ -35,6 +35,24 @@ Evaluate a checkpoint on GSM8K with all-attention placement:
 python -m place_layers +experiments=eval_gsm8k_attention
 ```
 
+## Backend Support
+
+The key differentiator between backends is **placement switching** - the ability to dynamically change which mixer each layer uses. This is required for supernet evaluation and optimization.
+
+| Backend | Placement Switching | Best For |
+|---------|---------------------|----------|
+| **Transformers** | ✅ Yes | Single-GPU supernet evaluation/optimization |
+| **REST** | ✅ Yes | Multi-GPU distributed supernet evaluation/optimization |
+| **vLLM** | ❌ No | Fast trace generation from standard (non-supernet) teachers |
+
+**Why vLLM doesn't support placement switching:**
+
+vLLM is a standard inference server - it doesn't know about supernet architecture. The model runs with its default/compiled placement. This is fine for:
+- Generating traces from standard teachers (e.g., `Qwen/Qwen2-0.5B-Instruct`)
+- Evaluating non-supernet models
+
+But it cannot be used for supernet optimization or comparing different placements.
+
 ## Commands
 
 ### 1. Evaluate (`command=evaluate`)
@@ -150,7 +168,7 @@ python -m place_layers \
 
 **Output:** `validation.jsonl` with traces containing `teacher_log_prob` for each completion.
 
-### 3. Placement Optimization
+### 3. Placement Optimization (`command=optimize`)
 
 Find optimal placements within a latency budget using cost-constrained search with IS evaluation.
 
@@ -569,9 +587,9 @@ This project uses [Hydra](https://hydra.cc/) for configuration. Key config group
 | Group | Options | Description |
 |-------|---------|-------------|
 | `command` | evaluate, optimize, precompute_traces, serve | What to run |
-| `evaluator` | generative, importance_weighted, mock_supernet | How to score placements |
+| `evaluator` | generative, likelihood, importance_weighted, mock_* | How to score placements |
 | `backend` | transformers, vllm, rest | Model inference backend |
-| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model checkpoint |
+| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model loading config |
 | `task` | gsm8k, gsm8k_quick | Evaluation task |
 | `generation` | greedy, greedy_short, sampling | Generation parameters |
 | `placement` | all_attention, every_Nth_gdn/kda | Layer placement |

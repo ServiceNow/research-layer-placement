@@ -1,35 +1,40 @@
 # @package evaluator
+# Importance-weighted accuracy evaluator
+#
+# Uses importance sampling to estimate subnet accuracy from pre-computed
+# teacher traces. Much faster than generative evaluation (~10-100x).
+#
+# Traces from all sources are merged by task_name. Optional task_weights
+# allow weighting different tasks differently in the final score.
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (transformers, vllm, or rest)
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=importance_weighted \
+#       +backend=transformers +model=apriel2_0_5b_dev
+
 evaluator_type: importance_weighted
 
-# Model configuration
-model_path: /tmp/qwen2/trained-supernet
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
 
-# Trace sources - directories containing JSONL trace files
-# Weights will be normalized to sum to 1
+# Trace sources - list of directories containing JSONL trace files
+# Traces are merged by task_name across all sources
 trace_sources:
-  - path: /workspace/outputs/command=precompute_traces
-    weight: 1.0
-    name: GSM8K
-  # Example with multiple datasets:
-  # - path: /path/to/math_traces
-  #   weight: 1.0
-  #   name: MATH
-  # - path: /path/to/aime_traces
-  #   weight: 3.0  # AIME weighted 3x more important
-  #   name: AIME
-  # - path: /path/to/gpqa_traces
-  #   weight: 1.0
-  #   name: GPQA
+  - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
 
-# Model loading options
-torch_dtype: bfloat16
-device_map: auto
+# Optional per-task weights for the final weighted accuracy
+# If null, all tasks are weighted equally
+# Missing tasks default to 1.0 with a warning
+# Extra keys are ignored with a warning
+task_weights: null
+# Example with custom weights:
+# task_weights:
+#   gsm8k: 1.0
+#   math: 2.0    # MATH weighted 2x
+#   aime: 3.0    # AIME weighted 3x
 
 # Importance sampling parameters
 weight_clip_min: 0.01
 weight_clip_max: 100.0
-
-# Batching parameters (for performance tuning)
-# Note: batch_size > 2 may OOM on smaller GPUs with long sequences
-trace_batch_size: 2  # Max traces per forward pass (higher = faster but more memory)
-trace_length_tolerance: 64  # Max token length difference within a batch

@@ -8,8 +8,7 @@ from typing import ClassVar, Literal
 from pydantic import Field
 
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.base_evaluator_config import BaseEvaluatorConfig
+from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
@@ -52,9 +51,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     window layers, etc.).
     """
 
+    config: "MockSupernetEvaluatorConfig"
+
     def __init__(self, config: "MockSupernetEvaluatorConfig") -> None:
         super().__init__(config)
-        self.config: MockSupernetEvaluatorConfig  # Type narrowing
 
         # Generate landscape structure from seed
         # This represents the supernet's learned preferences
@@ -82,6 +82,11 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     def num_mixers(self) -> int:
         """Number of mixer types (from config, since this is a mock evaluator)."""
         return self.config.num_mixers
+
+    @property
+    def mixer_names(self) -> tuple[str, ...]:
+        """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
+        return tuple(f"mixer_{i}" for i in range(self.config.num_mixers))
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """

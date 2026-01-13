@@ -14,6 +14,7 @@ from place_layers.command.landscape_analysis import LandscapeAnalysisCommandConf
 from place_layers.command.optimize import OptimizeCommandConfig
 from place_layers.command.precompute_traces import PrecomputeTracesCommandConfig
 from place_layers.command.sensitivity_analysis import SensitivityAnalysisCommandConfig
+from place_layers.command.serve import ServeCommandConfig
 
 
 # Discriminated union of all commands
@@ -25,7 +26,8 @@ CommandConfig = Annotated[
     | HyperparameterAnalysisCommandConfig
     | CalibrateSACommandConfig
     | PrecomputeTracesCommandConfig
-    | EvaluateCommandConfig,
+    | EvaluateCommandConfig
+    | ServeCommandConfig,
     Field(discriminator="command"),
 ]
 
