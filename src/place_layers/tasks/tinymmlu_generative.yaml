@@ -1,0 +1,34 @@
+# tinyMMLU Generative - generate answer letter instead of computing likelihoods
+#
+# Uses tinyBenchmarks/tinyMMLU dataset from HuggingFace
+# https://huggingface.co/datasets/tinyBenchmarks/tinyMMLU
+#
+# This variant uses generate_until output type so it works with the
+# generative evaluator and can be used for trace precomputation.
+
+task: tinymmlu_generative
+dataset_path: tinyBenchmarks/tinyMMLU
+output_type: generate_until
+test_split: test
+doc_to_text: "{{question}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nAnswer:"
+doc_to_target: "{{['A', 'B', 'C', 'D'][answer]}}"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+generation_kwargs:
+  until:
+    - "\n"
+    - "</s>"
+    - "<|im_end|>"
+    - "<|end|>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 5
+repeats: 1
+num_fewshot: 5
+fewshot_split: dev
+metadata:
+  version: 1.0

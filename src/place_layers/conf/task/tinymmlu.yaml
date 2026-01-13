@@ -1,0 +1,16 @@
+# @package task
+# tinyMMLU task configuration (multiple-choice / likelihood-based)
+#
+# Compact 100-example subset of MMLU for quick evaluation
+# Uses built-in lm-eval-harness tinyMMLU task (multiple_choice output type)
+# Use with +evaluator=likelihood (NOT generative)
+#
+# https://huggingface.co/datasets/tinyBenchmarks/tinyMMLU
+# Requires: pip install git+https://github.com/felipemaiapolo/tinyBenchmarks
+
+tasks:
+  - tinyMMLU  # Built-in lm-eval task (multiple_choice)
+
+num_fewshot: 5
+max_problems_per_task: null  # null = full test set (100 problems)
+split: test
