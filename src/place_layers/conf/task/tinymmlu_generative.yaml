@@ -10,6 +10,6 @@
 tasks:
   - tinymmlu_generative  # Custom generative task
 
-num_fewshot: 5
+num_fewshot: 0  # tinyMMLU mixes subjects, so few-shot examples don't match
 max_problems_per_task: null  # null = full test set (100 problems)
 split: test

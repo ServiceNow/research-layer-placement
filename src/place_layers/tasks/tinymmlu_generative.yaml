@@ -28,7 +28,7 @@ generation_kwargs:
   temperature: 0.0
   max_gen_toks: 5
 repeats: 1
-num_fewshot: 5
+num_fewshot: 0  # tinyMMLU mixes subjects, so few-shot examples would be from wrong subject
 fewshot_split: dev
 metadata:
   version: 1.0
