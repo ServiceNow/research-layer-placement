@@ -32,6 +32,34 @@ class ChatMessage(TypedDict):
     content: str
 
 
+def _format_messages_raw(messages: Sequence[ChatMessage]) -> str:
+    """Format chat messages as raw text without any chat template.
+
+    This is used when use_chat_template=False to bypass the tokenizer's
+    chat template (which may add unwanted system prompts or special tokens).
+
+    Format:
+    - System messages: content followed by newlines
+    - User messages: content followed by newlines
+    - Assistant messages: content (no trailing newline for last message)
+
+    Args:
+        messages: List of ChatMessage dicts.
+
+    Returns:
+        Plain text representation of the messages.
+    """
+    parts: list[str] = []
+    for i, msg in enumerate(messages):
+        content = msg["content"]
+        # Don't add trailing newline to last message (the answer)
+        if i < len(messages) - 1:
+            parts.append(content + "\n")
+        else:
+            parts.append(content)
+    return "".join(parts)
+
+
 # =============================================================================
 # Model Structure
 # =============================================================================
@@ -172,6 +200,7 @@ class AsyncBackend(ABC):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
@@ -182,6 +211,8 @@ class AsyncBackend(ABC):
             chats: List of (context_messages, completion_messages) tuples.
                 context_messages: Messages forming the context (e.g., few-shot + question).
                 completion_messages: Messages to score (e.g., assistant answer).
+            use_chat_template: Whether to apply the tokenizer's chat template.
+                   If False, messages are formatted as raw text without special tokens.
 
         Returns:
             List of ChatLogProbResult with token IDs, per-token logprobs,
@@ -333,6 +364,7 @@ class SyncBackend(ABC):
     def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
@@ -343,6 +375,8 @@ class SyncBackend(ABC):
             chats: List of (context_messages, completion_messages) tuples.
                 context_messages: Messages forming the context (e.g., few-shot + question).
                 completion_messages: Messages to score (e.g., assistant answer).
+            use_chat_template: Whether to apply the tokenizer's chat template.
+                   If False, messages are formatted as raw text without special tokens.
 
         Returns:
             List of ChatLogProbResult with token IDs, per-token logprobs,
@@ -508,6 +542,7 @@ class VLLMBackend(AsyncBackend):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
@@ -523,10 +558,21 @@ class VLLMBackend(AsyncBackend):
 
         Args:
             chats: List of (context_messages, completion_messages) tuples.
+            use_chat_template: Whether to apply the chat template. Note: vLLM
+                applies the chat template server-side, so this option is ignored.
+                Use the transformers backend if you need to disable the chat template.
 
         Returns:
             List of ChatLogProbResult with full token-level detail.
         """
+        if not use_chat_template:
+            import logging
+            logging.getLogger(__name__).warning(
+                "use_chat_template=False is not supported by vLLM backend. "
+                "The server applies the chat template automatically. "
+                "Use the transformers backend if you need to disable the chat template."
+            )
+
         if not chats:
             return []
 
@@ -888,6 +934,7 @@ class TransformersBackend(SyncBackend):
     def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
         """Compute log probabilities for chat completions using INPUT token scoring.
 
@@ -906,6 +953,8 @@ class TransformersBackend(SyncBackend):
         Args:
             chats: List of (context_messages, completion_messages) tuples.
                    completion_messages contain the answer as INPUT.
+            use_chat_template: Whether to apply the tokenizer's chat template.
+                   If False, messages are formatted as raw text without special tokens.
 
         Returns:
             List of ChatLogProbResult with full token-level detail.
@@ -938,11 +987,15 @@ class TransformersBackend(SyncBackend):
             token_sequences: list[list[int]] = []
             for _, comp_msgs in group:
                 full_msgs = list(ctx_msgs) + list(comp_msgs)
-                full_text = tokenizer.apply_chat_template(
-                    full_msgs,  # type: ignore[arg-type]
-                    tokenize=False,
-                    add_generation_prompt=False,
-                )
+                if use_chat_template:
+                    full_text = tokenizer.apply_chat_template(
+                        full_msgs,  # type: ignore[arg-type]
+                        tokenize=False,
+                        add_generation_prompt=False,
+                    )
+                else:
+                    # Format as raw text without chat template
+                    full_text = _format_messages_raw(full_msgs)
                 tokens = tokenizer.encode(full_text, add_special_tokens=False)  # type: ignore[arg-type]
                 token_sequences.append(tokens)
 

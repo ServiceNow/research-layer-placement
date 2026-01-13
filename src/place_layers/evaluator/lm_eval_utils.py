@@ -153,6 +153,7 @@ def build_chat_messages(
     doc: dict,
     num_fewshot: int,
     fewshot_as_multiturn: bool = True,
+    system_message: str | None = None,
 ) -> list[ChatMessage]:
     """Build chat messages for a problem with few-shot examples.
 
@@ -167,16 +168,26 @@ def build_chat_messages(
         fewshot_as_multiturn: If True, few-shot examples appear as alternating
             user/assistant turns. If False, all examples are concatenated in
             a single user message. Default True matches typical chat model usage.
+        system_message: Optional system message to prepend. If provided (including
+            empty string), this overrides the tokenizer's default system message.
+            Use "" to explicitly disable system messages.
 
     Returns:
         List of ChatMessage dicts with role/content keys.
     """
+    messages: list[ChatMessage] = []
+
+    # Prepend system message if provided (including empty string to override default)
+    if system_message is not None and system_message != "":
+        messages.append({"role": "system", "content": system_message})
+
     # Get few-shot context using lm-eval's sampler
     # fewshot_as_multiturn=True: each example is a separate user/assistant turn
     # fewshot_as_multiturn=False: all examples concatenated in one user message
-    messages: list[ChatMessage] = task.sampler.get_chat_context(
+    fewshot_messages: list[ChatMessage] = task.sampler.get_chat_context(
         doc, num_fewshot=num_fewshot, fewshot_as_multiturn=fewshot_as_multiturn
     )
+    messages.extend(fewshot_messages)
 
     # Append the actual question as the final user message
     question = task.doc_to_text(doc)
