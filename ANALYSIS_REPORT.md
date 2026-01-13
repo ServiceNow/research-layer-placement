@@ -965,29 +965,29 @@ All analyses can be reproduced with the following commands:
 
 ```bash
 # Single optimization run
-python -m place_layers command=optimize evaluator=jet_nemotron_2b problem=jet_nemotron_2b
+python -m place_layers command=optimize evaluator=mock_jet_nemotron_2b problem=jet_nemotron_2b
 
 # Convergence analysis (1000 runs, default)
-python -m place_layers command=convergence_analysis evaluator=small problem=small
-python -m place_layers command=convergence_analysis evaluator=jet_nemotron_2b problem=jet_nemotron_2b
-python -m place_layers command=convergence_analysis evaluator=jet_nemotron_4b problem=jet_nemotron_4b
-python -m place_layers command=convergence_analysis evaluator=apriel_h_1_5_15b problem=apriel_h_1_5_15b
+python -m place_layers command=convergence_analysis evaluator=mock_small problem=small
+python -m place_layers command=convergence_analysis evaluator=mock_jet_nemotron_2b problem=jet_nemotron_2b
+python -m place_layers command=convergence_analysis evaluator=mock_jet_nemotron_4b problem=jet_nemotron_4b
+python -m place_layers command=convergence_analysis evaluator=mock_apriel_h_1_5_15b problem=apriel_h_1_5_15b
 
 # Override default (useful for quick testing)
-python -m place_layers command=convergence_analysis evaluator=small problem=small n_runs=20
+python -m place_layers command=convergence_analysis evaluator=mock_small problem=small n_runs=20
 
 # Landscape analysis (exhaustive enumeration for small model)
-python -m place_layers command=landscape_analysis evaluator=small problem=small
+python -m place_layers command=landscape_analysis evaluator=mock_small problem=small
 
 # Sensitivity analysis
-python -m place_layers command=sensitivity_analysis evaluator=small problem=small
+python -m place_layers command=sensitivity_analysis evaluator=mock_small problem=small
 
 # Hyperparameter analysis (tests 96 beam width × threshold combinations)
-python -m place_layers command=hyperparameter_analysis evaluator=apriel_h_1_5_15b problem=apriel_h_1_5_15b
+python -m place_layers command=hyperparameter_analysis evaluator=mock_apriel_h_1_5_15b problem=apriel_h_1_5_15b
 
 # Test across different seeds (landscape structures)
-python -m place_layers command=hyperparameter_analysis evaluator=apriel_h_1_5_15b problem=apriel_h_1_5_15b evaluator.seed=100
-python -m place_layers command=hyperparameter_analysis evaluator=apriel_h_1_5_15b problem=apriel_h_1_5_15b evaluator.seed=200
+python -m place_layers command=hyperparameter_analysis evaluator=mock_apriel_h_1_5_15b problem=apriel_h_1_5_15b evaluator.seed=100
+python -m place_layers command=hyperparameter_analysis evaluator=mock_apriel_h_1_5_15b problem=apriel_h_1_5_15b evaluator.seed=200
 ```
 
 **Output structure:**

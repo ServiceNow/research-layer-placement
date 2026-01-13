@@ -142,7 +142,6 @@ class EvaluateCommand(BaseCommand):
                 # No placement - evaluate default configuration without model structure
                 logger.info("No placement specified, evaluating default configuration")
                 num_layers = None
-                num_mixers = None
                 mixer_names = None
 
                 # Evaluate with None placement (evaluator handles this)
