@@ -69,7 +69,7 @@ conf/
 │   └── precompute_traces.yaml
 │
 ├── evaluator/              # Evaluator configs (@package evaluator)
-│   ├── generative.yaml     # Uses interpolation: ${backend}, ${model.num_layers}
+│   ├── generative.yaml     # Uses interpolation: ${backend}, ${task.tasks}
 │   ├── importance_weighted.yaml
 │   └── mock_supernet.yaml
 │
@@ -122,7 +122,6 @@ defaults:
 # @package _global_
 
 command: evaluate
-mixer_names: ${model.mixer_names}
 placement: null
 ```
 
@@ -145,9 +144,8 @@ torch_dtype: bfloat16
 
 evaluator_type: generative
 backend: ${backend}
-num_layers: ${model.num_layers}
 tasks: ${task.tasks}
-# ...
+# Model structure (num_layers, mixer_names) discovered at runtime from backend
 ```
 
 #### 5. Experiments Use Global Scope with Absolute Paths

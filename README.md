@@ -587,9 +587,9 @@ This project uses [Hydra](https://hydra.cc/) for configuration. Key config group
 | Group | Options | Description |
 |-------|---------|-------------|
 | `command` | evaluate, optimize, precompute_traces, serve | What to run |
-| `evaluator` | generative, likelihood, importance_weighted, trace_precompute, mock_supernet | How to score placements |
+| `evaluator` | generative, likelihood, importance_weighted, mock_* | How to score placements |
 | `backend` | transformers, vllm, rest | Model inference backend |
-| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model checkpoint |
+| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model loading config |
 | `task` | gsm8k, gsm8k_quick | Evaluation task |
 | `generation` | greedy, greedy_short, sampling | Generation parameters |
 | `placement` | all_attention, every_Nth_gdn/kda | Layer placement |
