@@ -30,3 +30,11 @@ split: ${task.split}
 
 # Batching parameters
 batch_size: 32
+
+# Chat template control
+# Set use_chat_template to false to bypass the tokenizer's chat template
+# (useful when the model's default system prompt conflicts with evaluation)
+use_chat_template: true
+# Optional custom system message. Set to override the tokenizer's default.
+# Leave as null to use the tokenizer's default system message.
+system_message: null

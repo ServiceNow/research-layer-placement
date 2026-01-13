@@ -23,6 +23,7 @@ from pydantic import Field
 from place_layers.backend.base import (
     AsyncBackend,
     BaseBackendConfig,
+    ChatLogProbResult,
     ChatMessage,
     ModelStructure,
 )
@@ -400,7 +401,8 @@ class RESTBackend(AsyncBackend):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[float]:
+        use_chat_template: bool = True,
+    ) -> list[ChatLogProbResult]:
         """Compute chat log-probs - NOT YET IMPLEMENTED for REST backend.
 
         The REST servers run TransformersBackend which supports this,

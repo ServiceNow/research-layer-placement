@@ -169,6 +169,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def _compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
         """Compute log probabilities for chat completions.
 
@@ -176,14 +177,20 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         Args:
             chats: List of (context_messages, completion_messages) tuples.
+            use_chat_template: Whether to apply the tokenizer's chat template.
+                   If False, messages are formatted as raw text without special tokens.
 
         Returns:
             List of ChatLogProbResult with token-level detail.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_chat_log_probs(chats)
+            return await self._backend.compute_chat_log_probs(
+                chats, use_chat_template=use_chat_template
+            )
         else:
-            return self._backend.compute_chat_log_probs(chats)
+            return self._backend.compute_chat_log_probs(
+                chats, use_chat_template=use_chat_template
+            )
 
     async def _compute_batch_log_probs(
         self,
