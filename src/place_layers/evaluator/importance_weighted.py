@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal, Self, Sequence
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
