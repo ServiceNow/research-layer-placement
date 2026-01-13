@@ -8,7 +8,7 @@
 #   python -m place_layers +experiments=eval_gsm8k_is
 #
 # To evaluate different placements:
-#   python -m place_layers +experiments=eval_gsm8k_is placement=every_4th_gdn
+#   python -m place_layers +experiments=eval_gsm8k_is +placement=every_4th_gdn
 
 defaults:
   - /command: evaluate
@@ -21,6 +21,7 @@ defaults:
 evaluator:
   model_path: ${model.model_path}
   trace_sources:
-    - path: ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
-      weight: 1.0
-      name: GSM8K
+    - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
+  # Optional: weight tasks differently (defaults to equal weights)
+  # task_weights:
+  #   gsm8k: 1.0

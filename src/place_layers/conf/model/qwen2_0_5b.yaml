@@ -1,11 +1,11 @@
 # @package model
 # Qwen2-0.5B model configuration
 #
-# Standard Qwen2 model (not a supernet - single mixer type)
+# Standard Qwen2 model (not a supernet - single mixer type).
+#
+# Note: Model structure (num_layers, mixer_names) is discovered at runtime
+# from the actual model by the backend. Only loading parameters are specified here.
 
 model_path: Qwen/Qwen2-0.5B-Instruct
-num_layers: 24
-mixer_names:
-  - attention
 trust_remote_code: false
 torch_dtype: bfloat16
