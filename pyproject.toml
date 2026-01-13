@@ -31,6 +31,7 @@ transformers = {version = ">=4.35.0", optional = true}
 accelerate = ">=0.20.0"
 lm-eval = ">=0.4.0"
 datasets = {version = ">=2.14.0", optional = true}
+tinybenchmarks = {git = "https://github.com/felipemaiapolo/tinyBenchmarks"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
