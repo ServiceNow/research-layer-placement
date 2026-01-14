@@ -10,7 +10,7 @@ task: tinymmlu_generative
 dataset_path: tinyBenchmarks/tinyMMLU
 output_type: generate_until
 test_split: test
-doc_to_text: "{{question}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nAnswer:"
+doc_to_text: "{{input_formatted}}"
 doc_to_target: "{{['A', 'B', 'C', 'D'][answer]}}"
 metric_list:
   - metric: exact_match
@@ -28,7 +28,6 @@ generation_kwargs:
   temperature: 0.0
   max_gen_toks: 5
 repeats: 1
-num_fewshot: 0  # tinyMMLU mixes subjects, so few-shot examples would be from wrong subject
-fewshot_split: dev
+num_fewshot: 0  # Few-shot examples already included in input_formatted
 metadata:
   version: 1.0
