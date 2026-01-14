@@ -61,6 +61,67 @@ from place_layers.evaluator.progress import create_progress
 logger = logging.getLogger(__name__)
 
 
+def compute_is_estimate(
+    student_log_probs: Sequence[float],
+    teacher_log_probs: Sequence[float],
+    correct_flags: Sequence[bool | None],
+    log_clip_min: float,
+    log_clip_max: float,
+) -> tuple[tuple[float, ...], float, float, float, tuple[float, float]]:
+    """Compute IS estimate from raw log-probs. Single source of truth.
+
+    This function is the ONE codepath for IS computation, used by both:
+    - ImportanceWeightedEvaluator._compute_problem_record() for initial computation
+    - summarize_is() for re-aggregation with different clipping parameters
+
+    Args:
+        student_log_probs: Student model log-prob for each sample.
+        teacher_log_probs: Teacher model log-prob for each sample.
+        correct_flags: Correctness flag for each sample.
+        log_clip_min: Minimum log importance weight (for clipping).
+        log_clip_max: Maximum log importance weight (for clipping).
+
+    Returns:
+        Tuple of:
+        - log_importance_weights: Raw (unclipped) log weights for observability
+        - is_correct_estimate: IS estimate of P(correct)
+        - ess: Effective sample size
+        - weight_sum: Sum of (clipped) importance weights
+        - weight_range: (min, max) of (clipped) importance weights
+    """
+    # Compute raw log importance weights (stored for observability)
+    raw_log_weights: list[float] = []
+    for s_lp, t_lp in zip(student_log_probs, teacher_log_probs):
+        raw_log_weights.append(s_lp - t_lp)
+
+    # Apply clipping for numerical stability when computing IS estimate
+    clipped_log_weights = [
+        max(log_clip_min, min(log_clip_max, lw)) for lw in raw_log_weights
+    ]
+    weights = [math.exp(lw) for lw in clipped_log_weights]
+
+    # Compute IS estimate: sum(w * correct) / sum(w)
+    weight_sum = sum(weights)
+    if weight_sum == 0:
+        is_correct_estimate = 0.0
+    else:
+        weighted_correct = sum(
+            w * (1.0 if c else 0.0) for w, c in zip(weights, correct_flags)
+        )
+        is_correct_estimate = weighted_correct / weight_sum
+
+    # Compute ESS: (sum(w))^2 / sum(w^2)
+    weight_sq_sum = sum(w * w for w in weights)
+    if weight_sq_sum == 0:
+        ess = 0.0
+    else:
+        ess = (weight_sum * weight_sum) / weight_sq_sum
+
+    weight_range = (min(weights), max(weights)) if weights else (0.0, 0.0)
+
+    return (tuple(raw_log_weights), is_correct_estimate, ess, weight_sum, weight_range)
+
+
 @dataclass
 class ProblemTraces:
     """Traces for a single problem, grouped for IS computation."""
@@ -241,45 +302,21 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         Returns:
             ISProblemRecord with per-sample data and problem-level aggregates.
         """
-        sample_indices: list[int] = []
-        teacher_log_probs: list[float] = []
-        correct_flags: list[bool | None] = []
-        log_importance_weights: list[float] = []
+        # Extract data from traces
+        sample_indices = [trace.sample_idx for trace in problem.traces]
+        teacher_log_probs = [trace.teacher_log_prob for trace in problem.traces]
+        correct_flags = [trace.correct for trace in problem.traces]
 
-        for trace, student_lp in zip(problem.traces, student_log_probs):
-            sample_indices.append(trace.sample_idx)
-            teacher_log_probs.append(trace.teacher_log_prob)
-            correct_flags.append(trace.correct)
-
-            # Log importance weight: log w = log q - log p
-            log_weight = student_lp - trace.teacher_log_prob
-
-            # Clip in log-space for numerical stability
-            log_weight = max(
+        # Use shared IS computation function
+        log_importance_weights, is_correct_estimate, ess, weight_sum, weight_range = (
+            compute_is_estimate(
+                student_log_probs,
+                teacher_log_probs,
+                correct_flags,
                 self._log_weight_clip_min,
-                min(self._log_weight_clip_max, log_weight),
+                self._log_weight_clip_max,
             )
-            log_importance_weights.append(log_weight)
-
-        # Compute importance weights
-        weights = [math.exp(lw) for lw in log_importance_weights]
-
-        # Compute IS estimate: sum(w * correct) / sum(w)
-        weight_sum = sum(weights)
-        if weight_sum == 0:
-            is_correct_estimate = 0.0
-        else:
-            weighted_correct = sum(
-                w * (1.0 if c else 0.0) for w, c in zip(weights, correct_flags)
-            )
-            is_correct_estimate = weighted_correct / weight_sum
-
-        # Compute ESS: (sum(w))^2 / sum(w^2)
-        weight_sq_sum = sum(w * w for w in weights)
-        if weight_sq_sum == 0:
-            ess = 0.0
-        else:
-            ess = (weight_sum * weight_sum) / weight_sq_sum
+        )
 
         return ISProblemRecord(
             problem_id=problem.problem_id,
@@ -288,12 +325,12 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             student_log_probs=tuple(student_log_probs),
             teacher_log_probs=tuple(teacher_log_probs),
             correct_flags=tuple(correct_flags),
-            log_importance_weights=tuple(log_importance_weights),
+            log_importance_weights=log_importance_weights,
             is_correct_estimate=is_correct_estimate,
             ess=ess,
             weight_sum=weight_sum,
-            weight_range=(min(weights), max(weights)) if weights else (0.0, 0.0),
-            num_samples=len(weights),
+            weight_range=weight_range,
+            num_samples=len(sample_indices),
         )
 
     async def _evaluate_task(
@@ -410,7 +447,12 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         elapsed = time.perf_counter() - start
 
         # Compute summary from disk (single source of truth)
-        summary = summarize_is(self._output_dir)
+        # Pass clipping parameters so summarize_is recomputes with current settings
+        summary = summarize_is(
+            self._output_dir,
+            clip_min=self._weight_clip_min,
+            clip_max=self._weight_clip_max,
+        )
 
         # Compute weighted accuracy using pre-computed task weights
         final_score = summary.weighted_accuracy(self.task_weights)

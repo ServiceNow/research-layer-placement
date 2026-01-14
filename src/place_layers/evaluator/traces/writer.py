@@ -556,23 +556,42 @@ class ISSummary(BaseModel):
         return "\n".join(lines)
 
 
-def summarize_is(output_dir: Path) -> ISSummary:
+def summarize_is(
+    output_dir: Path,
+    clip_min: float = 1e-300,
+    clip_max: float = 1e300,
+) -> ISSummary:
     """Compute summary statistics from ISProblemRecord entries on disk.
 
     This is the authoritative way to compute IS evaluation metrics.
     The validation.jsonl file is the single source of truth.
 
+    IMPORTANT: This function RECOMPUTES IS estimates from raw log-probs
+    stored in each record, applying the specified clipping bounds. The
+    stored `is_correct_estimate` and `ess` fields in records are IGNORED
+    (they are for observability only). This allows re-running with different
+    clipping parameters without re-computing expensive model forward passes.
+
     Args:
         output_dir: Directory containing validation.jsonl.
+        clip_min: Minimum importance weight (default: 1e-300, effectively no clipping).
+        clip_max: Maximum importance weight (default: 1e300, effectively no clipping).
 
     Returns:
         ISSummary with per-task and aggregate statistics.
     """
+    import math
     from collections import defaultdict
+
+    # Local import to avoid circular dependency
+    from place_layers.evaluator.importance_weighted import compute_is_estimate
 
     validation_path = output_dir / "validation.jsonl"
     if not validation_path.exists():
         raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    log_clip_min = math.log(clip_min)
+    log_clip_max = math.log(clip_max)
 
     # Group records by task_name
     # task_name -> list of (is_correct_estimate, ess, num_samples)
@@ -587,8 +606,16 @@ def summarize_is(output_dir: Path) -> ISSummary:
             try:
                 record = TraceRecordAdapter.validate_json(line)
                 if isinstance(record, ISProblemRecord):
+                    # RECOMPUTE IS estimate from raw log-probs with current clipping
+                    _, is_estimate, ess, _, _ = compute_is_estimate(
+                        record.student_log_probs,
+                        record.teacher_log_probs,
+                        record.correct_flags,
+                        log_clip_min,
+                        log_clip_max,
+                    )
                     task_results[record.task_name].append(
-                        (record.is_correct_estimate, record.ess, record.num_samples)
+                        (is_estimate, ess, record.num_samples)
                     )
             except Exception as e:
                 malformed += 1

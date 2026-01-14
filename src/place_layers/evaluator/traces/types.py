@@ -192,7 +192,8 @@ class ISProblemRecord(BaseModel):
         description="Correctness flag for each sample (from input traces)"
     )
     log_importance_weights: tuple[float, ...] = Field(
-        description="Clipped log importance weights: log(student) - log(teacher)"
+        description="Raw log importance weights: log(student) - log(teacher). "
+        "Stored WITHOUT clipping for observability; clipping applied at aggregation."
     )
 
     # === Problem-Level IS Estimate ===
