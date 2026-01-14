@@ -1,0 +1,9 @@
+# @package model
+# Apriel-2 model after lr-annealing.
+#
+# Mixers: attention, gdn, kda, sliding_window
+
+# this one is apriel 1.6 supernet annealed
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_sndist_mix1_1p6an7_lr3e-05_lfmse0.5_rkl0.5_fkl0.5_sl16384_iters5000/export/apriel2/4500/
+trust_remote_code: true
+torch_dtype: bfloat16
