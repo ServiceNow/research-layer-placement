@@ -1,0 +1,11 @@
+# @package model
+# Apriel-1.5-15b-Thinker model configuration
+#
+# Standard Apriel-1.5-15b-Thinker model (not a supernet - single mixer type)
+
+model_path: /mnt/checkpoints/upstream/Apriel-1.5-15b-Thinker/
+num_layers: 48
+mixer_names:
+  - attention
+trust_remote_code: true
+torch_dtype: bfloat16

@@ -30,6 +30,9 @@ metric_list:
       - "\\.$"
       # Strip <|end|> token and surrounding whitespace (including newlines)
       - "\\s*<\\|end\\|>\\s*"
+      # Strip [BEGIN FINAL RESPONSE] and [END FINAL RESPONSE] markers with surrounding whitespace
+      - "\\s*\\[BEGIN FINAL RESPONSE\\]\\s*"
+      - "\\s*\\[END FINAL RESPONSE\\]\\s*"
 generation_kwargs:
   until:
     - "Question:"

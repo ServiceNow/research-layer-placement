@@ -1,3 +1,3 @@
 # @package _global_
-# SWA at every 2nd layer (12 SWA layers for 24-layer model)
-placement: [attention, swa]
+# Sliding window attention at every 2nd layer (12 SWA layers for 24-layer model)
+placement: [attention, sliding_window]
