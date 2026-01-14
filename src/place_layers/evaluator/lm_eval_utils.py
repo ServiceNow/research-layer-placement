@@ -265,16 +265,10 @@ def load_task(
     import lm_eval.tasks
     from lm_eval.tasks import TaskManager, get_task_dict
 
-<<<<<<< HEAD
-    # Include custom tasks directory (e.g., gsm8k_strip_end)
-    custom_tasks_dir = Path(__file__).parent.parent / "tasks"
-    include_path = str(custom_tasks_dir)
-=======
     # Monkey-patch Path.relative_to to handle external custom tasks
     # This fixes a bug in lm-eval-harness 0.4.x where it crashes when
     # trying to print the relative path of custom tasks outside its package
     _original_relative_to = Path.relative_to
->>>>>>> origin/raymond/fix-lm-eval-task
 
     def _patched_relative_to(self, other, *args, **kwargs):
         """Patched relative_to that returns absolute path on ValueError."""

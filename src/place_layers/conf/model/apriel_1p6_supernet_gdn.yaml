@@ -4,9 +4,5 @@
 # Use with placement=[gdn] to set all layers to GDN
 
 model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_sndist_mix1_1_lr3e-05_lfmse0.5_rkl0.5_fkl0.5_sl16384_iters500000/export/apriel2/22000/
-num_layers: 48
-mixer_names:
-  - attention
-  - gdn
 trust_remote_code: true
 torch_dtype: bfloat16
