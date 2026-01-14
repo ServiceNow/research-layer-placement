@@ -1,0 +1,12 @@
+# @package task
+# GSM8K with <|end|> token stripping
+#
+# Use this for models that output special end tokens after the answer
+# (e.g., Apriel's [BEGIN FINAL RESPONSE]...#### 18\n<|end|>)
+
+tasks:
+  - gsm8k_strip_end
+
+num_fewshot: 5
+max_problems_per_task: null  # null = full test set (1319 problems)
+split: test

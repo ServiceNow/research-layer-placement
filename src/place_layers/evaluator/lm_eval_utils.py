@@ -249,13 +249,40 @@ def load_task(
     Returns:
         Configured lm-eval Task object.
     """
+    from pathlib import Path
+
+    import lm_eval.tasks
     from lm_eval.tasks import TaskManager, get_task_dict
 
-    task_name = get_task_name(task_spec)
-    task_config = normalize_task_spec(task_spec, default_num_fewshot)
-    task_manager = TaskManager()
-    task_dict = get_task_dict([task_config], task_manager=task_manager)
-    task = task_dict[task_name]
+    # Monkey-patch Path.relative_to to handle external custom tasks
+    # This fixes a bug in lm-eval-harness 0.4.x where it crashes when
+    # trying to print the relative path of custom tasks outside its package
+    _original_relative_to = Path.relative_to
+
+    def _patched_relative_to(self, other, *args, **kwargs):
+        """Patched relative_to that returns absolute path on ValueError."""
+        try:
+            return _original_relative_to(self, other, *args, **kwargs)
+        except ValueError:
+            # If paths aren't relative, just return self (absolute path)
+            return self
+
+    # Temporarily patch Path.relative_to
+    Path.relative_to = _patched_relative_to
+
+    try:
+        # Include custom tasks directory (e.g., gsm8k_strip_end)
+        custom_tasks_dir = Path(__file__).parent.parent / "tasks"
+        include_path = str(custom_tasks_dir) if custom_tasks_dir.exists() else None
+
+        task_name = get_task_name(task_spec)
+        task_config = normalize_task_spec(task_spec, default_num_fewshot)
+        task_manager = TaskManager(include_path=include_path)
+        task_dict = get_task_dict([task_config], task_manager=task_manager)
+        task = task_dict[task_name]
+    finally:
+        # Restore original relative_to
+        Path.relative_to = _original_relative_to
 
     # Set seed if provided
     if seed is not None:
