@@ -380,6 +380,7 @@ class LikelihoodTaskStats(BaseModel):
     num_problems: int = Field(description="Number of problems")
     num_correct: int = Field(description="Number correct (raw)")
     num_correct_norm: int = Field(description="Number correct (length-normalized)")
+    brier_score: float = Field(description="Brier score (lower is better, 0 = perfect)")
 
     @property
     def accuracy(self) -> float:
@@ -404,6 +405,7 @@ class LikelihoodSummary(BaseModel):
     total_problems: int = Field(description="Total problems across all tasks")
     total_correct: int = Field(description="Total correct (raw)")
     total_correct_norm: int = Field(description="Total correct (length-normalized)")
+    brier_score: float = Field(description="Brier score (lower is better, 0 = perfect)")
 
     @property
     def accuracy(self) -> float:
@@ -422,15 +424,50 @@ class LikelihoodSummary(BaseModel):
                 f"  {task_name}: {stats.num_correct}/{stats.num_problems} "
                 f"({stats.accuracy:.1%}), "
                 f"norm={stats.num_correct_norm}/{stats.num_problems} "
-                f"({stats.accuracy_norm:.1%})"
+                f"({stats.accuracy_norm:.1%}), "
+                f"brier={stats.brier_score:.4f}"
             )
         lines.append(
             f"  TOTAL: {self.total_correct}/{self.total_problems} "
             f"({self.accuracy:.1%}), "
             f"norm={self.total_correct_norm}/{self.total_problems} "
-            f"({self.accuracy_norm:.1%})"
+            f"({self.accuracy_norm:.1%}), "
+            f"brier={self.brier_score:.4f}"
         )
         return "\n".join(lines)
+
+
+def _compute_brier_score(log_probs: tuple[float, ...], gold_idx: int) -> float:
+    """Compute Brier score for a single problem.
+
+    Brier score = sum((p_i - y_i)^2) where:
+    - p_i is the predicted probability for class i (from softmax of log probs)
+    - y_i is 1 if class i is the correct answer, 0 otherwise
+
+    Lower is better. Perfect calibration gives 0.
+
+    Args:
+        log_probs: Log probabilities for each choice.
+        gold_idx: Index of the correct answer.
+
+    Returns:
+        Brier score for this problem.
+    """
+    import numpy as np
+
+    # Convert log probs to probabilities via softmax
+    log_probs_arr = np.array(log_probs)
+    # Subtract max for numerical stability
+    log_probs_arr = log_probs_arr - np.max(log_probs_arr)
+    probs = np.exp(log_probs_arr)
+    probs = probs / probs.sum()
+
+    # One-hot encode gold answer
+    one_hot = np.zeros(len(log_probs))
+    one_hot[gold_idx] = 1.0
+
+    # Brier score = sum of squared differences
+    return float(np.sum((probs - one_hot) ** 2))
 
 
 def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
@@ -452,8 +489,8 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
         raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
 
     # Group records by task
-    # task_name -> list of (correct, correct_norm) tuples
-    task_results: dict[str, list[tuple[bool, bool]]] = defaultdict(list)
+    # task_name -> list of (correct, correct_norm, brier_score) tuples
+    task_results: dict[str, list[tuple[bool, bool, float]]] = defaultdict(list)
     malformed = 0
 
     with validation_path.open() as f:
@@ -464,8 +501,11 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
             try:
                 record = TraceRecordAdapter.validate_json(line)
                 if isinstance(record, LikelihoodRecord):
+                    brier = _compute_brier_score(
+                        record.choice_log_probs, record.gold_idx
+                    )
                     task_results[record.task_name].append(
-                        (record.correct, record.correct_norm)
+                        (record.correct, record.correct_norm, brier)
                     )
             except Exception as e:
                 malformed += 1
@@ -479,27 +519,34 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
     total_problems = 0
     total_correct = 0
     total_correct_norm = 0
+    total_brier_sum = 0.0
 
     for task_name, results in task_results.items():
         num_problems = len(results)
-        num_correct = sum(1 for c, _ in results if c)
-        num_correct_norm = sum(1 for _, cn in results if cn)
+        num_correct = sum(1 for c, _, _ in results if c)
+        num_correct_norm = sum(1 for _, cn, _ in results if cn)
+        task_brier = sum(b for _, _, b in results) / num_problems if num_problems > 0 else 0.0
 
         task_stats[task_name] = LikelihoodTaskStats(
             num_problems=num_problems,
             num_correct=num_correct,
             num_correct_norm=num_correct_norm,
+            brier_score=task_brier,
         )
 
         total_problems += num_problems
         total_correct += num_correct
         total_correct_norm += num_correct_norm
+        total_brier_sum += sum(b for _, _, b in results)
+
+    total_brier = total_brier_sum / total_problems if total_problems > 0 else 0.0
 
     return LikelihoodSummary(
         task_stats=task_stats,
         total_problems=total_problems,
         total_correct=total_correct,
         total_correct_norm=total_correct_norm,
+        brier_score=total_brier,
     )
 
 

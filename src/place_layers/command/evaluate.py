@@ -21,6 +21,7 @@ Usage
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -44,7 +45,14 @@ class EvaluationResult(BaseModel):
     placement: list[str] | None = Field(
         description="Mixer names per layer (null if no placement)"
     )
-    score: float = Field(description="Evaluation score")
+    score: float = Field(description="Evaluation score (accuracy)")
+    brier_score: float | None = Field(
+        default=None,
+        description="Brier score for likelihood evaluation (lower is better, null for non-likelihood)"
+    )
+    duration_seconds: float = Field(
+        description="Evaluation runtime in seconds"
+    )
     placement_indices: list[int] | None = Field(
         description="Mixer indices per layer (null if no placement)"
     )
@@ -131,11 +139,18 @@ class EvaluateCommand(BaseCommand):
                 # Create LayerPlacement and evaluate
                 layer_placement = LayerPlacement(assignments=indices)
                 logger.info(f"Evaluating placement: {extended_layers[:6]}...")
+                start_time = time.perf_counter()
                 score = await evaluator.evaluate(layer_placement)
+                duration = time.perf_counter() - start_time
+
+                # Get brier_score if available (likelihood evaluator)
+                brier_score = getattr(evaluator, "brier_score", None)
 
                 result = EvaluationResult(
                     placement=extended_layers,
                     score=score,
+                    brier_score=brier_score,
+                    duration_seconds=duration,
                     placement_indices=list(indices),
                 )
             else:
@@ -145,15 +160,22 @@ class EvaluateCommand(BaseCommand):
                 mixer_names = None
 
                 # Evaluate with None placement (evaluator handles this)
+                start_time = time.perf_counter()
                 score = await evaluator.evaluate(None)  # type: ignore[arg-type]
+                duration = time.perf_counter() - start_time
+
+                # Get brier_score if available (likelihood evaluator)
+                brier_score = getattr(evaluator, "brier_score", None)
 
                 result = EvaluationResult(
                     placement=None,
                     score=score,
+                    brier_score=brier_score,
+                    duration_seconds=duration,
                     placement_indices=None,
                 )
 
-            logger.info(f"Score: {score:.6f}")
+            logger.info(f"Score: {score:.6f} (took {duration:.1f}s)")
 
         # Save results
         output = EvaluateCommandOutput(

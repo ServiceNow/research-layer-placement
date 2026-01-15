@@ -150,7 +150,17 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         summary = summarize_likelihood(self._output_dir)
         logger.info(f"\n{summary}")
 
+        # Store summary for access to additional metrics (e.g., brier_score)
+        self._last_summary = summary
+
         return summary.accuracy
+
+    @property
+    def brier_score(self) -> float | None:
+        """Brier score from the last evaluation (None if not yet evaluated)."""
+        if hasattr(self, "_last_summary") and self._last_summary is not None:
+            return self._last_summary.brier_score
+        return None
 
     async def _run_evaluation(self) -> None:
         """Run likelihood evaluation across all tasks, streaming records to disk."""
