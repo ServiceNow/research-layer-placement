@@ -23,6 +23,7 @@ from pydantic import Field
 from place_layers.backend.base import (
     AsyncBackend,
     BaseBackendConfig,
+    ChatLogProbResult,
     ChatMessage,
     ModelStructure,
 )
@@ -400,19 +401,116 @@ class RESTBackend(AsyncBackend):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[float]:
-        """Compute chat log-probs - NOT YET IMPLEMENTED for REST backend.
+    ) -> list[ChatLogProbResult]:
+        """Compute log probabilities for chat completions with full observability.
 
-        The REST servers run TransformersBackend which supports this,
-        but we need to add a /compute_chat_log_probs endpoint to expose it.
+        This distributes chats across servers and returns detailed per-token
+        log probability information for each chat.
 
-        For now, use TransformersBackend directly for likelihood evaluation.
+        Args:
+            chats: List of (context_messages, completion_messages) tuples.
+
+        Returns:
+            List of ChatLogProbResult with token IDs, logprobs, answer ranges,
+            and total scores.
         """
-        raise NotImplementedError(
-            "Chat-based log-prob scoring is not yet implemented for REST backend. "
-            "The server needs a /compute_chat_log_probs endpoint. "
-            "For now, use TransformersBackend directly for likelihood evaluation."
-        )
+        if not chats:
+            return []
+
+        # Distribute chats across servers in round-robin fashion
+        # Each chunk is (server_url, [(original_idx, chat), ...])
+        chunks: list[
+            tuple[
+                str,
+                list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]],
+            ]
+        ] = [(server, []) for server in self._servers]
+
+        for idx, chat in enumerate(chats):
+            server_idx = idx % len(self._servers)
+            chunks[server_idx][1].append((idx, chat))
+
+        # Process chunks in parallel
+        tasks = []
+        for server, chunk_chats in chunks:
+            if chunk_chats:  # Skip empty chunks
+                tasks.append(self._compute_chunk_chat_log_probs(server, chunk_chats))
+
+        chunk_results = await asyncio.gather(*tasks)
+
+        # Reassemble results in original order
+        results: list[tuple[int, ChatLogProbResult]] = []
+        for chunk_result in chunk_results:
+            results.extend(chunk_result)
+
+        # Sort by original index and extract ChatLogProbResults
+        results.sort(key=lambda x: x[0])
+        return [r[1] for r in results]
+
+    async def _compute_chunk_chat_log_probs(
+        self,
+        server: str,
+        indexed_chats: list[
+            tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]
+        ],
+    ) -> list[tuple[int, ChatLogProbResult]]:
+        """Compute chat log probs for a chunk of chats on a specific server.
+
+        Args:
+            server: Server URL.
+            indexed_chats: List of (original_idx, (context, completion)) tuples.
+
+        Returns:
+            List of (original_idx, ChatLogProbResult) tuples.
+        """
+        session = self._ensure_session()
+
+        # Extract chats for request
+        chats_payload = [
+            {
+                "context_messages": [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in context_msgs
+                ],
+                "completion_messages": [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in completion_msgs
+                ],
+            }
+            for _, (context_msgs, completion_msgs) in indexed_chats
+        ]
+
+        payload = {
+            "chats": chats_payload,
+            "placement": self._current_placement,
+        }
+
+        async with self._semaphore:
+            async with session.post(
+                f"{server}/compute_chat_log_probs", json=payload
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise RESTBackendError(
+                        f"Compute chat log probs failed (status {resp.status}): {error_text}"
+                    )
+                data = await resp.json()
+
+        results_data = data["results"]
+
+        # Convert response to ChatLogProbResult objects
+        results = [
+            ChatLogProbResult(
+                token_ids=tuple(r["token_ids"]),
+                logprobs=tuple(r["logprobs"]),
+                answer_range=tuple(r["answer_range"]),
+                total_log_prob=r["total_log_prob"],
+            )
+            for r in results_data
+        ]
+
+        # Pair results with original indices
+        return [(idx, result) for (idx, _), result in zip(indexed_chats, results)]
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.

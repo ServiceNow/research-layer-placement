@@ -28,6 +28,8 @@ from fastapi import FastAPI, HTTPException
 
 from place_layers.server.schemas import (
     BatchGenerateRequest,
+    ComputeChatLogProbsRequest,
+    ComputeChatLogProbsResponse,
     ComputeLogProbsRequest,
     ComputeLogProbsResponse,
     ErrorResponse,
@@ -221,6 +223,56 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception("Log prob computation failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/compute_chat_log_probs", response_model=ComputeChatLogProbsResponse)
+    def compute_chat_log_probs(
+        req: ComputeChatLogProbsRequest,
+    ) -> ComputeChatLogProbsResponse:
+        """Compute log probabilities for chat completions.
+
+        This endpoint applies chat templates to the messages, tokenizes them,
+        identifies answer tokens, and computes per-token log probabilities.
+
+        If placement is provided, sets the mixer configuration before scoring.
+        """
+        if backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+
+        try:
+            # Set placement if provided
+            if req.placement is not None:
+                backend.set_placement(req.placement)
+
+            # Convert chat pairs to tuple format expected by backend
+            chats = [
+                (
+                    tuple(m.model_dump() for m in chat.context_messages),
+                    tuple(m.model_dump() for m in chat.completion_messages),
+                )
+                for chat in req.chats
+            ]
+
+            # Compute chat log probs
+            results = backend.compute_chat_log_probs(chats)
+
+            # Convert results to schema format
+            results_schema = [
+                {
+                    "token_ids": list(r.token_ids),
+                    "logprobs": list(r.logprobs),
+                    "answer_range": r.answer_range,
+                    "total_log_prob": r.total_log_prob,
+                }
+                for r in results
+            ]
+
+            return ComputeChatLogProbsResponse(results=results_schema)
+
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Chat log prob computation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/set_placement")
