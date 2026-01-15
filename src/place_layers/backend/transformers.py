@@ -64,6 +64,13 @@ class TransformersClientConfig(BaseModel):
         default=True,
         description="Trust remote code when loading model",
     )
+    attn_implementation: str | None = Field(
+        default="eager",
+        description="Attention implementation (eager, sdpa, flash_attention_2). "
+        "SDPA (default PyTorch) uses CUDA graphs which are NOT thread-safe. "
+        "Use 'eager' for REST servers that handle concurrent requests, or when running "
+        "with multiple workers. Set to 'sdpa' or 'flash_attention_2' only for single-threaded use.",
+    )
 
 
 class TransformersClient:
@@ -193,11 +200,21 @@ class TransformersClient:
         }
         torch_dtype = dtype_map.get(self.config.torch_dtype, torch.bfloat16)
 
+        # Build kwargs for model loading
+        load_kwargs = {
+            "torch_dtype": torch_dtype,
+            "device_map": self.config.device_map,
+            "trust_remote_code": self.config.trust_remote_code,
+        }
+
+        # Add attn_implementation if specified
+        if self.config.attn_implementation is not None:
+            load_kwargs["attn_implementation"] = self.config.attn_implementation
+            logger.info(f"Using attention implementation: {self.config.attn_implementation}")
+
         model = model_class.from_pretrained(
             self.config.model_path,
-            torch_dtype=torch_dtype,
-            device_map=self.config.device_map,
-            trust_remote_code=self.config.trust_remote_code,
+            **load_kwargs,
         )
         return model
 
