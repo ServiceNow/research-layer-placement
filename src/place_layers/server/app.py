@@ -28,8 +28,13 @@ from fastapi import FastAPI, HTTPException
 
 from place_layers.server.schemas import (
     BatchGenerateRequest,
+    ChatLogProbResultSchema,
+    ComputeChatLogProbsRequest,
+    ComputeChatLogProbsResponse,
     ComputeLogProbsRequest,
     ComputeLogProbsResponse,
+    ComputeTextLogProbsRequest,
+    ComputeTextLogProbsResponse,
     ErrorResponse,
     GenerateRequest,
     HealthResponse,
@@ -223,12 +228,62 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             logger.exception("Log prob computation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/compute_text_log_probs", response_model=ComputeTextLogProbsResponse)
+    def compute_text_log_probs(
+        req: ComputeTextLogProbsRequest,
+    ) -> ComputeTextLogProbsResponse:
+        """Compute log probabilities for text continuations."""
+        assert backend is not None
+        try:
+            log_probs = backend.compute_text_log_probs(
+                contexts=req.contexts,
+                continuations=req.continuations,
+            )
+            return ComputeTextLogProbsResponse(log_probs=log_probs)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Text log prob computation failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/compute_chat_log_probs", response_model=ComputeChatLogProbsResponse)
+    def compute_chat_log_probs(
+        req: ComputeChatLogProbsRequest,
+    ) -> ComputeChatLogProbsResponse:
+        """Compute log probabilities for chat completions."""
+        assert backend is not None
+        try:
+            # Convert chat messages to dict format expected by backend
+            chats = [
+                (
+                    [m.model_dump() for m in context_msgs],
+                    [m.model_dump() for m in completion_msgs],
+                )
+                for context_msgs, completion_msgs in req.chats
+            ]
+            results = backend.compute_chat_log_probs(chats)
+            response_results = [
+                ChatLogProbResultSchema(
+                    token_ids=list(r.token_ids),
+                    logprobs=list(r.logprobs),
+                    answer_range=r.answer_range,
+                    total_log_prob=r.total_log_prob,
+                )
+                for r in results
+            ]
+            return ComputeChatLogProbsResponse(results=response_results)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Chat log prob computation failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.post("/set_placement")
     def set_placement(req: SetPlacementRequest) -> dict:
-        """Explicitly set mixer placement (for debugging/testing).
+        """Set mixer placement for subsequent requests.
 
-        In normal operation, placement is included in each request.
-        This endpoint is useful for testing placement changes independently.
+        This sets the placement state on the server. All subsequent
+        requests will use this placement until it is changed.
         """
         if backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
