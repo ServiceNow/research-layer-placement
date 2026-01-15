@@ -151,63 +151,6 @@ class HealthResponse(BaseModel):
     status: str = Field(description="Server status")
 
 
-class ChatLogProbResultSchema(BaseModel):
-    """Detailed result from chat log-prob computation."""
-
-    model_config = {"frozen": True}
-
-    token_ids: list[int] = Field(
-        description="Full token sequence for this chat (context + completion)"
-    )
-    logprobs: list[float | None] = Field(
-        description="Per-token logprobs (None for first token which has no prior context)"
-    )
-    answer_range: tuple[int, int] = Field(
-        description="(start, end) indices identifying answer tokens in token_ids"
-    )
-    total_log_prob: float = Field(
-        description="Total log probability (sum of answer token logprobs)"
-    )
-
-
-class ChatPairSchema(BaseModel):
-    """A single chat pair for log-prob computation."""
-
-    model_config = {"frozen": True}
-
-    context_messages: list[ChatMessageSchema] = Field(
-        description="Context messages (e.g., question and instruction)"
-    )
-    completion_messages: list[ChatMessageSchema] = Field(
-        description="Completion messages (e.g., the answer choice)"
-    )
-
-
-class ComputeChatLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of chat completions."""
-
-    model_config = {"frozen": True}
-
-    chats: list[ChatPairSchema] = Field(
-        description="List of (context, completion) chat pairs to score"
-    )
-    placement: list[str] | None = Field(
-        default=None,
-        description="Mixer placement for each layer. "
-        "If provided, server will set this placement before scoring.",
-    )
-
-
-class ComputeChatLogProbsResponse(BaseModel):
-    """Response from chat log-prob computation."""
-
-    model_config = {"frozen": True}
-
-    results: list[ChatLogProbResultSchema] = Field(
-        description="Detailed log-prob results for each chat pair"
-    )
-
-
 class ErrorResponse(BaseModel):
     """Error response."""
 
