@@ -35,6 +35,13 @@ task_weights: null
 #   math: 2.0    # MATH weighted 2x
 #   aime: 3.0    # AIME weighted 3x
 
-# Importance sampling parameters
-weight_clip_min: 0.01
-weight_clip_max: 100.0
+# Importance sampling clipping parameters
+# These bounds are applied at aggregation time (in summarize_is), not during
+# record creation. This allows re-running with different clipping without
+# recomputing expensive model forward passes.
+#
+# Default: effectively no clipping (1e-300 to 1e300)
+# For numerical stability with extreme weight ratios, you may want tighter bounds
+# e.g., weight_clip_min: 1e-100, weight_clip_max: 1e100
+weight_clip_min: 1e-300
+weight_clip_max: 1e300
