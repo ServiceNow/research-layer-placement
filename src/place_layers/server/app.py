@@ -237,6 +237,12 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
         """
         if backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
+        if len(req.contexts) != len(req.continuations):
+            raise HTTPException(
+                status_code=400,
+                detail=f"contexts and continuations must have same length, "
+                f"got {len(req.contexts)} and {len(req.continuations)}",
+            )
         try:
             # Set placement if provided
             if req.placement is not None:
