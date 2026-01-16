@@ -110,16 +110,6 @@ class ComputeLogProbsResponse(BaseModel):
     )
 
 
-class SetPlacementRequest(BaseModel):
-    """Request to set mixer placement (for debugging/testing)."""
-
-    model_config = {"frozen": True}
-
-    mixer_names: list[str] = Field(
-        description="Mixer name for each layer (e.g., ['attention', 'mamba', ...])"
-    )
-
-
 class InfoResponse(BaseModel):
     """Server info response."""
 
@@ -158,3 +148,67 @@ class ErrorResponse(BaseModel):
 
     error: str = Field(description="Error message")
     detail: str | None = Field(default=None, description="Additional error details")
+
+
+class ComputeTextLogProbsRequest(BaseModel):
+    """Request for computing log probabilities of text continuations."""
+
+    model_config = {"frozen": True}
+
+    contexts: list[str] = Field(description="List of context strings")
+    continuations: list[str] = Field(description="List of continuation strings to score")
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer. "
+        "If provided, server will set this placement before scoring.",
+    )
+
+
+class ComputeTextLogProbsResponse(BaseModel):
+    """Response from text log probability computation."""
+
+    model_config = {"frozen": True}
+
+    log_probs: list[float] = Field(
+        description="Log probabilities for each context/continuation pair"
+    )
+
+
+class ChatLogProbResultSchema(BaseModel):
+    """Result of chat log probability computation with full observability."""
+
+    model_config = {"frozen": True}
+
+    token_ids: list[int] = Field(description="Full token sequence for this chat")
+    logprobs: list[float | None] = Field(
+        description="Per-token logprobs (None for first token)"
+    )
+    answer_range: tuple[int, int] = Field(
+        description="(start, end) indices for answer tokens"
+    )
+    total_log_prob: float = Field(description="Sum of logprobs for answer tokens")
+
+
+class ComputeChatLogProbsRequest(BaseModel):
+    """Request for computing log probabilities of chat completions."""
+
+    model_config = {"frozen": True}
+
+    chats: list[tuple[list[ChatMessageSchema], list[ChatMessageSchema]]] = Field(
+        description="List of (context_messages, completion_messages) tuples"
+    )
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer. "
+        "If provided, server will set this placement before scoring.",
+    )
+
+
+class ComputeChatLogProbsResponse(BaseModel):
+    """Response from chat log probability computation."""
+
+    model_config = {"frozen": True}
+
+    results: list[ChatLogProbResultSchema] = Field(
+        description="Log probability results for each chat"
+    )
