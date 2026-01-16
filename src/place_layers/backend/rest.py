@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, Sequence
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Self, Sequence
 
 import aiohttp
 from pydantic import Field
@@ -594,13 +594,13 @@ class RESTBackend(AsyncBackend):
         results.sort(key=lambda x: x[0])
         return [r[1] for r in results]
 
-    async def _distribute_batch(
+    async def _distribute_batch[T, R](
         self,
-        items: list[tuple[int, Any]],
+        items: list[tuple[int, T]],
         endpoint: str,
-        make_payload: Any,  # Callable[[list], dict]
-        parse_response: Any,  # Callable[[list, dict], list[tuple[int, Any]]]
-    ) -> list[tuple[int, Any]]:
+        make_payload: Callable[[list[tuple[int, T]]], dict[str, Any]],
+        parse_response: Callable[[list[tuple[int, T]], dict[str, Any]], list[tuple[int, R]]],
+    ) -> list[tuple[int, R]]:
         """Distribute batch items across servers with failover.
 
         Args:

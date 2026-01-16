@@ -233,7 +233,8 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
         req: ComputeTextLogProbsRequest,
     ) -> ComputeTextLogProbsResponse:
         """Compute log probabilities for text continuations."""
-        assert backend is not None
+        if backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
         try:
             log_probs = backend.compute_text_log_probs(
                 contexts=req.contexts,
@@ -251,7 +252,8 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
         req: ComputeChatLogProbsRequest,
     ) -> ComputeChatLogProbsResponse:
         """Compute log probabilities for chat completions."""
-        assert backend is not None
+        if backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
         try:
             # Convert chat messages to dict format expected by backend
             chats = [
