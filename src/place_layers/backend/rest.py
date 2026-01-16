@@ -370,10 +370,11 @@ class RESTBackend(AsyncBackend):
                                 raise RESTBackendError(
                                     f"Request failed (status {resp.status}): {error_text}"
                                 )
-                            # Success
+                            # Success - parse response (errors here are not connection issues)
                             self._server_pool.mark_success(server)
                             return await resp.json()
-                except aiohttp.ClientError as e:
+                except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+                    # Connection/timeout errors - mark unhealthy, try next server
                     self._server_pool.mark_failure(server)
                     errors.append((server, str(e)))
                     continue

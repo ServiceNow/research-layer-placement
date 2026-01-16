@@ -361,7 +361,7 @@ class TestConnectionErrors:
                 # Server 1 raises connection error
                 m.post(
                     "http://s1:8080/generate",
-                    exception=aiohttp.ClientError("Connection refused"),
+                    exception=aiohttp.ClientConnectionError("Connection refused"),
                 )
                 # Server 2 works
                 m.post(
