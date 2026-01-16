@@ -3,10 +3,11 @@
 This module provides an AsyncBackend implementation that distributes
 requests across multiple REST servers, each running a TransformersBackend.
 
-Placement is managed as stateful server state:
-- set_placement() calls /set_placement on all servers
-- All servers must be set to the same placement before evaluation
-- Subsequent requests use the server's current placement state
+Placement is managed via per-request placement fields:
+- set_placement() stores placement locally on the client
+- Every request includes the placement in its payload
+- Servers update their state if the incoming placement differs
+- This ensures consistency even when servers recover from failures
 """
 
 from __future__ import annotations
@@ -680,12 +681,16 @@ class RESTBackend(AsyncBackend):
             (idx, (ctx, cont)) for idx, (ctx, cont) in enumerate(zip(contexts, continuations))
         ]
 
+        # Capture current placement for the lambda
+        placement = self._current_placement
+
         results = await self._distribute_batch(
             items=items,
             endpoint="/compute_text_log_probs",
             make_payload=lambda chunk_items: {
                 "contexts": [ctx for _, (ctx, _) in chunk_items],
                 "continuations": [cont for _, (_, cont) in chunk_items],
+                "placement": placement,
             },
             parse_response=lambda chunk_items, data: [
                 (idx, lp) for (idx, _), lp in zip(chunk_items, data["log_probs"])
@@ -719,6 +724,9 @@ class RESTBackend(AsyncBackend):
             (idx, chat) for idx, chat in enumerate(chats)
         ]
 
+        # Capture current placement for the closure
+        placement = self._current_placement
+
         def make_payload(
             chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]]
         ) -> dict[str, Any]:
@@ -727,6 +735,7 @@ class RESTBackend(AsyncBackend):
                     (list(context), list(completion))
                     for _, (context, completion) in chunk_items
                 ],
+                "placement": placement,
             }
 
         def parse_response(
@@ -756,43 +765,21 @@ class RESTBackend(AsyncBackend):
         return [r[1] for r in results]
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
-        """Set mixer placement on all servers.
+        """Set mixer placement for subsequent requests.
 
-        Calls /set_placement on each server to update their state.
-        All servers must succeed for the placement to be considered set.
+        The placement is stored locally and sent with every request.
+        Servers will update their state automatically when they receive
+        a request with a different placement than their current state.
+
+        This design ensures placement consistency even when servers
+        recover from failures - the first request after recovery will
+        update the server's placement.
 
         Args:
             mixer_names: Mixer name for each layer.
         """
-        session = self._ensure_session()
-        placement_list = list(mixer_names)
-
-        async def set_on_server(server: str) -> tuple[str, str | None]:
-            """Set placement on a single server, returning (server, error)."""
-            try:
-                payload = {"mixer_names": placement_list}
-                async with session.post(f"{server}/set_placement", json=payload) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        return (server, f"HTTP {resp.status}: {error_text}")
-                    return (server, None)
-            except Exception as e:
-                return (server, str(e))
-
-        results = await asyncio.gather(
-            *[set_on_server(s) for s in self._server_pool.servers]
-        )
-
-        # Check for failures
-        failed = [(server, error) for server, error in results if error is not None]
-        if failed:
-            failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
-            raise RESTBackendError(f"Failed to set placement on servers: {failed_msg}")
-
-        self._current_placement = placement_list
-        logger.debug(
-            f"Placement set on {len(self._server_pool.servers)} servers: {placement_list}"
-        )
+        self._current_placement = list(mixer_names)
+        logger.debug(f"Placement set locally: {self._current_placement}")
 
 
 class RESTBackendConfig(BaseBackendConfig):
