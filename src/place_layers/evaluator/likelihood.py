@@ -73,7 +73,10 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
@@ -97,6 +100,20 @@ if TYPE_CHECKING:
     from place_layers.evaluator.lm_eval_utils import Docs
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PreparedBatch:
+    """Prepared batch data for async prefetching."""
+
+    batch_indices: list[int]
+    all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]]
+    gold_indices: list[int]
+    choice_counts: list[int]
+    choice_lengths: list[list[int]]
+    choice_texts: list[tuple[str, ...]]
+    context_messages_list: list[tuple[ChatMessage, ...]]
+    choice_messages_list: list[tuple[ChatMessage, ...]]
 
 
 class LikelihoodEvaluator(TaskBasedEvaluator):
@@ -139,7 +156,10 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             Accuracy (fraction of problems where argmax prediction is correct).
         """
         if parameters is not None:
+            placement_start = time.perf_counter()
             await self._set_placement(parameters)
+            placement_time = time.perf_counter() - placement_start
+            logger.debug(f"Set placement took {placement_time:.2f}s")
         else:
             logger.debug("No placement specified, using default configuration")
 
@@ -148,7 +168,8 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
         # Compute summary from disk (single source of truth)
         summary = summarize_likelihood(self._output_dir)
-        logger.info(f"\n{summary}")
+        # Use print() for summary - logger.info goes to file only (console is WARNING+)
+        print(f"\n{summary}")
 
         # Store summary for access to additional metrics (e.g., brier_score)
         self._last_summary = summary
@@ -164,8 +185,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
     async def _run_evaluation(self) -> None:
         """Run likelihood evaluation across all tasks, streaming records to disk."""
+        self._last_inference_duration = 0.0
+
         for task_spec in self.config.tasks:
-            # Use _prepare_task for loading and resumption
             prepared = self._prepare_task(task_spec, "multiple_choice")
 
             if prepared is None:
@@ -178,8 +200,52 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                 f"Task '{task_name}': evaluating {len(remaining_indices)} problems"
             )
 
-            # Evaluate task (streams records to disk)
+            # Evaluate task (streams records to disk) - this is the inference time
+            start = time.perf_counter()
             await self._evaluate_task(task, task_name, docs, remaining_indices)
+            self._last_inference_duration += time.perf_counter() - start
+
+    def _prepare_batch(
+        self,
+        task: "Task",
+        docs: "Docs",
+        batch_indices: list[int],
+    ) -> _PreparedBatch:
+        """Prepare a batch by building chat tuples (CPU work).
+
+        This is extracted to enable async prefetching - preparing the next batch
+        while GPU inference runs on the current batch.
+        """
+        batch_docs = [docs[idx] for idx in batch_indices]
+
+        all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
+        gold_indices: list[int] = []
+        choice_counts: list[int] = []
+        choice_lengths: list[list[int]] = []
+        choice_texts: list[tuple[str, ...]] = []
+        context_messages_list: list[tuple[ChatMessage, ...]] = []
+        choice_messages_list: list[tuple[ChatMessage, ...]] = []
+
+        for doc in batch_docs:
+            chats, gold_idx, lengths, raw_choices = self._build_choice_chats(task, doc)
+            all_chats.extend(chats)
+            gold_indices.append(gold_idx)
+            choice_counts.append(len(chats))
+            choice_lengths.append(lengths)
+            choice_texts.append(raw_choices)
+            context_messages_list.append(tuple(chats[0][0]))
+            choice_messages_list.append(tuple(c[1][0] for c in chats))
+
+        return _PreparedBatch(
+            batch_indices=batch_indices,
+            all_chats=all_chats,
+            gold_indices=gold_indices,
+            choice_counts=choice_counts,
+            choice_lengths=choice_lengths,
+            choice_texts=choice_texts,
+            context_messages_list=context_messages_list,
+            choice_messages_list=choice_messages_list,
+        )
 
     async def _evaluate_task(
         self,
@@ -190,119 +256,114 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
     ) -> None:
         """Evaluate a single task using chat-based log-prob scoring.
 
-        Uses build_chat_messages for context and compute_chat_log_probs for
-        scoring, which implements a diff-based approach that is chat template
-        agnostic. Streams LikelihoodRecord entries to disk.
+        Uses async prefetching to prepare the next batch while GPU inference
+        runs on the current batch. This overlaps CPU work (chat building) with
+        GPU work (inference) for better throughput.
         """
         n_problems = len(remaining_indices)
+        batch_size = self.config.batch_size
+
+        # Compute batch boundaries
+        batch_starts = list(range(0, n_problems, batch_size))
+        num_batches = len(batch_starts)
+
+        if num_batches == 0:
+            return
 
         with create_progress() as progress:
             progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
 
-            # Process in batches for efficiency
-            batch_size = self.config.batch_size
-            for i in range(0, n_problems, batch_size):
-                batch_indices = remaining_indices[i : i + batch_size]
-                batch_docs = [docs[idx] for idx in batch_indices]
+            # Prepare first batch synchronously
+            first_indices = remaining_indices[batch_starts[0] : batch_starts[0] + batch_size]
+            current_batch = self._prepare_batch(task, docs, first_indices)
 
-                # Build chat tuples for all choices in this batch
-                # Each problem contributes N chats where N = number of choices
-                all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
-                gold_indices: list[int] = []
-                choice_counts: list[int] = []
-                choice_lengths: list[list[int]] = []  # For length normalization
-                choice_texts: list[tuple[str, ...]] = []  # Raw choice strings
-                context_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Context per problem
-                choice_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Choices as ChatMessages
-
-                for doc in batch_docs:
-                    chats, gold_idx, lengths, raw_choices = self._build_choice_chats(
-                        task, doc
+            for batch_idx in range(num_batches):
+                # Start prefetching next batch in background thread (if not last batch)
+                next_batch_task = None
+                if batch_idx + 1 < num_batches:
+                    next_start = batch_starts[batch_idx + 1]
+                    next_indices = remaining_indices[next_start : next_start + batch_size]
+                    next_batch_task = asyncio.create_task(
+                        asyncio.to_thread(self._prepare_batch, task, docs, next_indices)
                     )
-                    all_chats.extend(chats)
-                    gold_indices.append(gold_idx)
-                    choice_counts.append(len(chats))
-                    choice_lengths.append(lengths)
-                    choice_texts.append(raw_choices)
-                    # Extract context messages (same for all choices in this problem)
-                    context_messages_list.append(tuple(chats[0][0]))
-                    # Extract choice messages (the assistant message for each choice)
-                    choice_messages_list.append(tuple(c[1][0] for c in chats))
 
-                # Compute log-probs using chat-based API (diff-based scoring)
-                # Returns ChatLogProbResult with full token-level detail
+                # Run inference on current batch (GPU work)
                 results = await self._compute_chat_log_probs(
-                    all_chats, use_chat_template=self.config.use_chat_template
+                    current_batch.all_chats, use_chat_template=self.config.use_chat_template
                 )
 
-                # Unpack results per document and create records
-                offset = 0
-                batch_records: list[LikelihoodRecord] = []
-                for (
-                    gold_idx,
-                    n_choices,
-                    lengths,
-                    raw_choices,
-                    context_msgs,
-                    choice_msgs,
-                    problem_idx,
-                ) in zip(
-                    gold_indices,
-                    choice_counts,
-                    choice_lengths,
-                    choice_texts,
-                    context_messages_list,
-                    choice_messages_list,
-                    batch_indices,
-                ):
-                    # Extract results for this problem
-                    doc_results = results[offset : offset + n_choices]
-                    offset += n_choices
-
-                    # Extract log probs for prediction
-                    doc_log_probs = [r.total_log_prob for r in doc_results]
-
-                    # Raw accuracy
-                    pred = int(np.argmax(doc_log_probs))
-                    correct = pred == gold_idx
-
-                    # Length-normalized accuracy
-                    normalized = np.array(doc_log_probs) / np.array(lengths)
-                    pred_norm = int(np.argmax(normalized))
-                    correct_norm = pred_norm == gold_idx
-
-                    # Create record with full observability
-                    record = LikelihoodRecord(
-                        problem_id=f"{task_name}:{problem_idx}",
-                        task_name=task_name,
-                        # Chat messages
-                        context_messages=context_msgs,
-                        raw_choices=raw_choices,
-                        choices=choice_msgs,
-                        # Token-level data per choice
-                        choice_token_ids=tuple(r.token_ids for r in doc_results),
-                        choice_logprobs=tuple(r.logprobs for r in doc_results),
-                        choice_answer_ranges=tuple(r.answer_range for r in doc_results),
-                        # Scores
-                        choice_log_probs=tuple(doc_log_probs),
-                        choice_lengths=tuple(lengths),
-                        # Predictions
-                        gold_idx=gold_idx,
-                        pred_idx=pred,
-                        pred_idx_norm=pred_norm,
-                        correct=correct,
-                        correct_norm=correct_norm,
-                    )
-                    batch_records.append(record)
+                # Process results and create records
+                batch_records = self._process_batch_results(
+                    task_name, current_batch, results
+                )
 
                 # Stream records to disk
                 self._trace_writer.append(batch_records)  # type: ignore[arg-type]
+                progress.advance(progress_task, len(current_batch.batch_indices))
 
-                progress.advance(progress_task, len(batch_docs))
+                # Wait for next batch to be ready (if prefetched)
+                if next_batch_task is not None:
+                    current_batch = await next_batch_task
+
+    def _process_batch_results(
+        self,
+        task_name: str,
+        batch: _PreparedBatch,
+        results: list,
+    ) -> list[LikelihoodRecord]:
+        """Process inference results and create records."""
+        offset = 0
+        batch_records: list[LikelihoodRecord] = []
+
+        for (
+            gold_idx,
+            n_choices,
+            lengths,
+            raw_choices,
+            context_msgs,
+            choice_msgs,
+            problem_idx,
+        ) in zip(
+            batch.gold_indices,
+            batch.choice_counts,
+            batch.choice_lengths,
+            batch.choice_texts,
+            batch.context_messages_list,
+            batch.choice_messages_list,
+            batch.batch_indices,
+        ):
+            doc_results = results[offset : offset + n_choices]
+            offset += n_choices
+
+            doc_log_probs = [r.total_log_prob for r in doc_results]
+
+            pred = int(np.argmax(doc_log_probs))
+            correct = pred == gold_idx
+
+            normalized = np.array(doc_log_probs) / np.array(lengths)
+            pred_norm = int(np.argmax(normalized))
+            correct_norm = pred_norm == gold_idx
+
+            record = LikelihoodRecord(
+                problem_id=f"{task_name}:{problem_idx}",
+                task_name=task_name,
+                context_messages=context_msgs,
+                raw_choices=raw_choices,
+                choices=choice_msgs,
+                choice_token_ids=tuple(r.token_ids for r in doc_results),
+                choice_logprobs=tuple(r.logprobs for r in doc_results),
+                choice_answer_ranges=tuple(r.answer_range for r in doc_results),
+                choice_log_probs=tuple(doc_log_probs),
+                choice_lengths=tuple(lengths),
+                gold_idx=gold_idx,
+                pred_idx=pred,
+                pred_idx_norm=pred_norm,
+                correct=correct,
+                correct_norm=correct_norm,
+            )
+            batch_records.append(record)
+
+        return batch_records
 
     def _build_choice_chats(
         self, task: "Task", doc: dict

@@ -67,6 +67,9 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # Track current placement to avoid redundant set_placement calls
         self._current_placement: tuple[str, ...] | None = None
 
+        # Track inference duration (excludes data loading)
+        self._last_inference_duration: float = 0.0
+
         # Set up trace writer for saving results
         hydra_cfg = HydraConfig.get()
         self._output_dir = Path(hydra_cfg.runtime.output_dir)
@@ -132,6 +135,11 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
                 "mixer_names not available - evaluator must be entered first"
             )
         return self._mixer_names
+
+    @property
+    def inference_duration(self) -> float:
+        """Duration of last evaluation's inference in seconds (excludes data loading)."""
+        return self._last_inference_duration
 
     async def _set_placement(self, parameters: LayerPlacement) -> None:
         """Validate and set the mixer placement on the backend.

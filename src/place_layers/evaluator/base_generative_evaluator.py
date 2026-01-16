@@ -141,6 +141,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """Run all tasks synchronously with batching."""
         assert isinstance(self._backend, SyncBackend)
 
+        # Reset inference duration for this evaluation
+        self._last_inference_duration = 0.0
+
         for task_spec in self.config.tasks:
             prepared = self._prepare_task(
                 task_spec, "generate_until", seed=self._get_fewshot_seed()
@@ -150,7 +153,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 continue
 
             task, task_name, docs, remaining = prepared
+            start = time.perf_counter()
             self._run_generation_sync(task, task_name, docs, remaining)
+            self._last_inference_duration += time.perf_counter() - start
 
     def _run_generation_sync(
         self,
@@ -263,6 +268,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """Run all tasks asynchronously with worker pool."""
         assert isinstance(self._backend, AsyncBackend)
 
+        # Reset inference duration for this evaluation
+        self._last_inference_duration = 0.0
+
         for task_spec in self.config.tasks:
             prepared = self._prepare_task(
                 task_spec, "generate_until", seed=self._get_fewshot_seed()
@@ -272,7 +280,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 continue
 
             task, task_name, docs, remaining = prepared
+            start = time.perf_counter()
             await self._run_generation_async(task, task_name, docs, remaining)
+            self._last_inference_duration += time.perf_counter() - start
 
     async def _run_generation_async(
         self,

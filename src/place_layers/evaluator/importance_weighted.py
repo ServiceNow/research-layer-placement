@@ -392,9 +392,10 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         else:
             logger.info("No placement specified, using default configuration")
 
-        # Evaluate each task
-        start = time.perf_counter()
+        # Reset inference duration for this evaluation
+        self._last_inference_duration = 0.0
 
+        # Evaluate each task
         for task_name in sorted(self.merged_traces.task_names):
             problems = self.merged_traces.by_task[task_name]
             logger.info(
@@ -402,12 +403,13 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 f"{len(problems)} problems, {self.merged_traces.num_traces(task_name)} traces"
             )
 
-            # Get completed problems for resumption
+            # Get completed problems for resumption (not timed)
             completed = get_completed_problems(self._output_dir, task_name)
 
+            # Time only the inference
+            start = time.perf_counter()
             await self._evaluate_task(task_name, problems, completed)
-
-        elapsed = time.perf_counter() - start
+            self._last_inference_duration += time.perf_counter() - start
 
         # Compute summary from disk (single source of truth)
         summary = summarize_is(self._output_dir)
@@ -416,7 +418,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         final_score = summary.weighted_accuracy(self.task_weights)
 
         logger.info(f"\n{summary}")
-        logger.info(f"Weighted accuracy: {final_score:.4f} (in {elapsed:.1f}s)")
+        logger.info(f"Weighted accuracy: {final_score:.4f} (in {self._last_inference_duration:.1f}s)")
 
         return final_score
 
