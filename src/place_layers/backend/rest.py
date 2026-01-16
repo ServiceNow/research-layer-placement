@@ -375,6 +375,11 @@ class RESTBackend(AsyncBackend):
                             return await resp.json()
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
                     # Connection/timeout errors - mark unhealthy, try next server
+                    # Log the specific exception type to diagnose connection issues
+                    logger.debug(
+                        f"Connection error to {server} on {endpoint}: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     self._server_pool.mark_failure(server)
                     errors.append((server, str(e)))
                     continue
