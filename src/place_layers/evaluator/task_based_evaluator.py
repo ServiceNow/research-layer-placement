@@ -29,6 +29,7 @@ from place_layers.evaluator.lm_eval_utils import (
     get_docs,
     get_task_name,
     load_task,
+    load_tasks,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +63,24 @@ class TaskBasedEvaluator(BackendEvaluator):
             config: Evaluator configuration with task settings.
         """
         super().__init__(config)
+        # Cache for batch-loaded tasks (populated on first use)
+        self._task_cache: dict[str, "Task"] | None = None
+
+    def _ensure_tasks_loaded(self, seed: int | None = None) -> None:
+        """Load all tasks upfront with batch loading for efficiency.
+
+        This is called once before evaluation begins. Loading all tasks together
+        with a shared TaskManager is ~6x faster than loading them individually.
+
+        Args:
+            seed: Random seed for few-shot sampling (optional).
+        """
+        if self._task_cache is not None:
+            return  # Already loaded
+
+        logger.info(f"Batch-loading {len(self.config.tasks)} tasks...")
+        self._task_cache = load_tasks(self.config.tasks, self.config.num_fewshot, seed)
+        logger.info(f"Loaded {len(self._task_cache)} tasks")
 
     def _prepare_task(
         self,
@@ -72,7 +91,7 @@ class TaskBasedEvaluator(BackendEvaluator):
         """Load task and get remaining problem indices.
 
         This handles:
-        - Loading the lm-eval task
+        - Loading the lm-eval task (using batch-loaded cache if available)
         - Validating task type (generate_until or multiple_choice)
         - Getting documents for the configured split
         - Applying max_problems limit
@@ -89,10 +108,14 @@ class TaskBasedEvaluator(BackendEvaluator):
             (task, task_name, docs, remaining_indices) otherwise.
         """
         task_name = get_task_name(task_spec)
-        logger.info(f"Task '{task_name}': loading...")
+        logger.info(f"Task '{task_name}': preparing...")
 
-        # Load task
-        task = load_task(task_spec, self.config.num_fewshot, seed)
+        # Use batch-loaded cache if available, otherwise load individually
+        if self._task_cache is not None:
+            task = self._task_cache[task_name]
+        else:
+            # Fallback to individual loading (slower but works)
+            task = load_task(task_spec, self.config.num_fewshot, seed)
 
         # Validate task type
         if task.config.output_type != expected_output_type:

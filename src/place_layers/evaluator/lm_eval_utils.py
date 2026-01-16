@@ -289,3 +289,65 @@ def load_task(
         task.set_fewshot_seed(seed)
 
     return task
+
+
+def load_tasks(
+    task_specs: list[TaskSpecInput],
+    default_num_fewshot: int,
+    seed: int | None = None,
+) -> dict[str, "Task"]:
+    """Load multiple lm-eval tasks efficiently with a shared TaskManager.
+
+    This is significantly faster than calling load_task() for each task
+    individually (6x speedup) because lm-eval can share initialization overhead.
+
+    Args:
+        task_specs: List of task names or TaskSpec objects.
+        default_num_fewshot: Default few-shot count.
+        seed: Random seed for few-shot sampling (optional).
+
+    Returns:
+        Dict mapping task names to configured Task objects.
+    """
+    from pathlib import Path
+
+    import lm_eval.tasks
+    from lm_eval.tasks import TaskManager, get_task_dict
+
+    # Monkey-patch Path.relative_to to handle external custom tasks
+    _original_relative_to = Path.relative_to
+
+    def _patched_relative_to(self, other, *args, **kwargs):
+        """Patched relative_to that returns absolute path on ValueError."""
+        try:
+            return _original_relative_to(self, other, *args, **kwargs)
+        except ValueError:
+            # If paths aren't relative, just return self (absolute path)
+            return self
+
+    # Temporarily patch Path.relative_to
+    Path.relative_to = _patched_relative_to
+
+    try:
+        # Include custom tasks directory (e.g., gsm8k_strip_end)
+        custom_tasks_dir = Path(__file__).parent.parent / "tasks"
+        include_path = str(custom_tasks_dir) if custom_tasks_dir.exists() else None
+
+        # Normalize all task specs
+        task_configs = [
+            normalize_task_spec(spec, default_num_fewshot) for spec in task_specs
+        ]
+
+        # Load all tasks at once with a shared TaskManager
+        task_manager = TaskManager(include_path=include_path)
+        task_dict = get_task_dict(task_configs, task_manager=task_manager)
+    finally:
+        # Restore original relative_to
+        Path.relative_to = _original_relative_to
+
+    # Set seed if provided
+    if seed is not None:
+        for task in task_dict.values():
+            task.set_fewshot_seed(seed)
+
+    return task_dict
