@@ -26,7 +26,7 @@ from tenacity.wait import wait_base
 from place_layers.backend.base import (
     AsyncBackend,
     BaseBackendConfig,
-    ChatLogProbResult,
+    LogProbResult,
     ChatMessage,
     ModelStructure,
 )
@@ -656,8 +656,8 @@ class RESTBackend(AsyncBackend):
         self,
         contexts: Sequence[str],
         continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with full observability.
 
         Distributes the contexts/continuations across healthy servers
         for parallel computation.
@@ -667,7 +667,8 @@ class RESTBackend(AsyncBackend):
             continuations: List of continuation strings to score.
 
         Returns:
-            List of log probabilities in input order.
+            List of LogProbResult with token IDs, per-token logprobs,
+            answer ranges, and total scores.
         """
         if len(contexts) != len(continuations):
             raise ValueError(
@@ -694,18 +695,24 @@ class RESTBackend(AsyncBackend):
                 "placement": placement,
             },
             parse_response=lambda chunk_items, data: [
-                (idx, lp) for (idx, _), lp in zip(chunk_items, data["log_probs"])
+                (idx, LogProbResult(
+                    token_ids=tuple(r["token_ids"]),
+                    logprobs=tuple(r["logprobs"]),
+                    answer_range=tuple(r["answer_range"]),
+                    total_log_prob=r["total_log_prob"],
+                ))
+                for (idx, _), r in zip(chunk_items, data["results"])
             ],
         )
 
-        # Sort by original index and extract log probs
+        # Sort by original index and extract results
         results.sort(key=lambda x: x[0])
         return [r[1] for r in results]
 
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions.
 
         Distributes chats across healthy servers.
@@ -714,7 +721,7 @@ class RESTBackend(AsyncBackend):
             chats: List of (context_messages, completion_messages) tuples.
 
         Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
+            List of LogProbResult with token IDs, per-token logprobs,
             answer range, and total log probability.
         """
         if not chats:
@@ -742,10 +749,10 @@ class RESTBackend(AsyncBackend):
         def parse_response(
             chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]],
             data: dict[str, Any],
-        ) -> list[tuple[int, ChatLogProbResult]]:
+        ) -> list[tuple[int, LogProbResult]]:
             results = []
             for (idx, _), result_data in zip(chunk_items, data["results"]):
-                result = ChatLogProbResult(
+                result = LogProbResult(
                     token_ids=tuple(result_data["token_ids"]),
                     logprobs=tuple(result_data["logprobs"]),
                     answer_range=tuple(result_data["answer_range"]),

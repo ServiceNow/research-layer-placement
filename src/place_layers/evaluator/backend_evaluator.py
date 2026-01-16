@@ -22,7 +22,7 @@ from pydantic import Field
 from place_layers.backend.base import (
     AsyncBackend,
     BackendConfig,
-    ChatLogProbResult,
+    LogProbResult,
     ChatMessage,
     SyncBackend,
 )
@@ -169,7 +169,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def _compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions.
 
         Handles sync/async dispatch based on backend type.
@@ -178,7 +178,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             chats: List of (context_messages, completion_messages) tuples.
 
         Returns:
-            List of ChatLogProbResult with token-level detail.
+            List of LogProbResult with token-level detail.
         """
         if isinstance(self._backend, AsyncBackend):
             return await self._backend.compute_chat_log_probs(chats)
@@ -203,6 +203,29 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             return await self._backend.compute_batch_log_probs(sequences)
         else:
             return self._backend.compute_batch_log_probs(sequences)
+
+    async def _compute_text_log_probs(
+        self,
+        contexts: Sequence[str],
+        continuations: Sequence[str],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with full observability.
+
+        Handles sync/async dispatch based on backend type.
+        This API bypasses chat templates entirely - useful for evaluating
+        models without any chat formatting.
+
+        Args:
+            contexts: List of context/prompt strings.
+            continuations: List of continuation strings to score.
+
+        Returns:
+            List of LogProbResult with token-level detail.
+        """
+        if isinstance(self._backend, AsyncBackend):
+            return await self._backend.compute_text_log_probs(contexts, continuations)
+        else:
+            return self._backend.compute_text_log_probs(contexts, continuations)
 
 
 class BackendEvaluatorConfig(BaseEvaluatorConfig):

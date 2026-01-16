@@ -164,22 +164,12 @@ class ComputeTextLogProbsRequest(BaseModel):
     )
 
 
-class ComputeTextLogProbsResponse(BaseModel):
-    """Response from text log probability computation."""
+class LogProbResultSchema(BaseModel):
+    """Result of log probability computation with full observability."""
 
     model_config = {"frozen": True}
 
-    log_probs: list[float] = Field(
-        description="Log probabilities for each context/continuation pair"
-    )
-
-
-class ChatLogProbResultSchema(BaseModel):
-    """Result of chat log probability computation with full observability."""
-
-    model_config = {"frozen": True}
-
-    token_ids: list[int] = Field(description="Full token sequence for this chat")
+    token_ids: list[int] = Field(description="Full token sequence")
     logprobs: list[float | None] = Field(
         description="Per-token logprobs (None for first token)"
     )
@@ -187,6 +177,16 @@ class ChatLogProbResultSchema(BaseModel):
         description="(start, end) indices for answer tokens"
     )
     total_log_prob: float = Field(description="Sum of logprobs for answer tokens")
+
+
+class ComputeTextLogProbsResponse(BaseModel):
+    """Response from text log probability computation."""
+
+    model_config = {"frozen": True}
+
+    results: list[LogProbResultSchema] = Field(
+        description="Log probability results for each context/continuation pair"
+    )
 
 
 class ComputeChatLogProbsRequest(BaseModel):
@@ -209,6 +209,6 @@ class ComputeChatLogProbsResponse(BaseModel):
 
     model_config = {"frozen": True}
 
-    results: list[ChatLogProbResultSchema] = Field(
+    results: list[LogProbResultSchema] = Field(
         description="Log probability results for each chat"
     )

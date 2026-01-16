@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import numpy as np
 from pydantic import Field
 
-from place_layers.backend.base import ChatMessage
+from place_layers.backend.base import ChatMessage, LogProbResult
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.lm_eval_utils import build_chat_messages
@@ -178,36 +178,42 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         docs: "Docs",
         remaining_indices: list[int],
     ) -> None:
-        """Evaluate a single task using chat-based log-prob scoring.
+        """Evaluate a single task using log-prob scoring.
 
-        Uses build_chat_messages for context and compute_chat_log_probs for
-        scoring, which implements a diff-based approach that is chat template
-        agnostic. Streams LikelihoodRecord entries to disk.
+        Dispatches to chat-based or text-based scoring based on config.use_chat_template.
+        Streams LikelihoodRecord entries to disk.
         """
+        if self.config.use_chat_template:
+            await self._evaluate_task_chat(task, task_name, docs, remaining_indices)
+        else:
+            await self._evaluate_task_text(task, task_name, docs, remaining_indices)
+
+    async def _evaluate_task_chat(
+        self,
+        task: "Task",
+        task_name: str,
+        docs: "Docs",
+        remaining_indices: list[int],
+    ) -> None:
+        """Evaluate using chat-based log-prob scoring (with chat template)."""
         n_problems = len(remaining_indices)
 
         with create_progress() as progress:
             progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
 
-            # Process in batches for efficiency
             batch_size = self.config.batch_size
             for i in range(0, n_problems, batch_size):
                 batch_indices = remaining_indices[i : i + batch_size]
                 batch_docs = [docs[idx] for idx in batch_indices]
 
                 # Build chat tuples for all choices in this batch
-                # Each problem contributes N chats where N = number of choices
                 all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
                 gold_indices: list[int] = []
                 choice_counts: list[int] = []
-                choice_lengths: list[list[int]] = []  # For length normalization
-                choice_texts: list[tuple[str, ...]] = []  # Raw choice strings
-                context_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Context per problem
-                choice_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Choices as ChatMessages
+                choice_lengths: list[list[int]] = []
+                choice_texts: list[tuple[str, ...]] = []
+                context_messages_list: list[tuple[ChatMessage, ...]] = []
+                choice_messages_list: list[tuple[ChatMessage, ...]] = []
 
                 for doc in batch_docs:
                     chats, gold_idx, lengths, raw_choices = self._build_choice_chats(
@@ -218,16 +224,13 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     choice_counts.append(len(chats))
                     choice_lengths.append(lengths)
                     choice_texts.append(raw_choices)
-                    # Extract context messages (same for all choices in this problem)
                     context_messages_list.append(tuple(chats[0][0]))
-                    # Extract choice messages (the assistant message for each choice)
                     choice_messages_list.append(tuple(c[1][0] for c in chats))
 
-                # Compute log-probs using chat-based API (diff-based scoring)
-                # Returns ChatLogProbResult with full token-level detail
+                # Compute log-probs using chat-based API
                 results = await self._compute_chat_log_probs(all_chats)
 
-                # Unpack results per document and create records
+                # Unpack results and create records
                 offset = 0
                 batch_records: list[LikelihoodRecord] = []
                 for (
@@ -247,38 +250,28 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     choice_messages_list,
                     batch_indices,
                 ):
-                    # Extract results for this problem
                     doc_results = results[offset : offset + n_choices]
                     offset += n_choices
 
-                    # Extract log probs for prediction
                     doc_log_probs = [r.total_log_prob for r in doc_results]
-
-                    # Raw accuracy
                     pred = int(np.argmax(doc_log_probs))
                     correct = pred == gold_idx
 
-                    # Length-normalized accuracy
                     normalized = np.array(doc_log_probs) / np.array(lengths)
                     pred_norm = int(np.argmax(normalized))
                     correct_norm = pred_norm == gold_idx
 
-                    # Create record with full observability
                     record = LikelihoodRecord(
                         problem_id=f"{task_name}:{problem_idx}",
                         task_name=task_name,
-                        # Chat messages
                         context_messages=context_msgs,
                         raw_choices=raw_choices,
                         choices=choice_msgs,
-                        # Token-level data per choice
                         choice_token_ids=tuple(r.token_ids for r in doc_results),
                         choice_logprobs=tuple(r.logprobs for r in doc_results),
                         choice_answer_ranges=tuple(r.answer_range for r in doc_results),
-                        # Scores
                         choice_log_probs=tuple(doc_log_probs),
                         choice_lengths=tuple(lengths),
-                        # Predictions
                         gold_idx=gold_idx,
                         pred_idx=pred,
                         pred_idx_norm=pred_norm,
@@ -287,9 +280,146 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     )
                     batch_records.append(record)
 
-                # Stream records to disk
                 self._trace_writer.append(batch_records)  # type: ignore[arg-type]
+                progress.advance(progress_task, len(batch_docs))
 
+    async def _evaluate_task_text(
+        self,
+        task: "Task",
+        task_name: str,
+        docs: "Docs",
+        remaining_indices: list[int],
+    ) -> None:
+        """Evaluate using text-based log-prob scoring (no chat template).
+
+        Like the chat-based approach, this uses diff-based scoring to find where
+        token sequences differ between choices. This ensures we only score the
+        actual answer tokens, not shared prefix/suffix tokens.
+        """
+        from place_layers.core.token_utils import find_differing_ranges
+
+        n_problems = len(remaining_indices)
+
+        with create_progress() as progress:
+            progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
+
+            batch_size = self.config.batch_size
+            for i in range(0, n_problems, batch_size):
+                batch_indices = remaining_indices[i : i + batch_size]
+                batch_docs = [docs[idx] for idx in batch_indices]
+
+                # Build text contexts and choices for all problems in batch
+                all_contexts: list[str] = []
+                all_continuations: list[str] = []
+                gold_indices: list[int] = []
+                choice_counts: list[int] = []
+                choice_lengths: list[list[int]] = []
+                choice_texts: list[tuple[str, ...]] = []
+                context_strings: list[str] = []
+
+                for doc in batch_docs:
+                    context, choices, gold_idx, lengths, raw_choices = (
+                        self._build_choice_texts(task, doc)
+                    )
+                    # Each choice becomes a separate (context, continuation) pair
+                    for choice in choices:
+                        all_contexts.append(context)
+                        all_continuations.append(choice)
+                    gold_indices.append(gold_idx)
+                    choice_counts.append(len(choices))
+                    choice_lengths.append(lengths)
+                    choice_texts.append(raw_choices)
+                    context_strings.append(context)
+
+                # Compute log-probs using text-based API
+                results = await self._compute_text_log_probs(
+                    all_contexts, all_continuations
+                )
+
+                # Unpack results and create records
+                offset = 0
+                batch_records: list[LikelihoodRecord] = []
+                for (
+                    gold_idx,
+                    n_choices,
+                    lengths,
+                    raw_choices,
+                    context_str,
+                    problem_idx,
+                ) in zip(
+                    gold_indices,
+                    choice_counts,
+                    choice_lengths,
+                    choice_texts,
+                    context_strings,
+                    batch_indices,
+                ):
+                    doc_results = results[offset : offset + n_choices]
+                    offset += n_choices
+
+                    # Apply diff-based scoring: find where token sequences differ
+                    # This matches what compute_chat_log_probs does internally
+                    token_sequences = [list(r.token_ids) for r in doc_results]
+                    diff_ranges = find_differing_ranges(token_sequences)
+
+                    # Re-compute total_log_prob using diff ranges (not original answer_range)
+                    doc_log_probs: list[float] = []
+                    updated_results: list[LogProbResult] = []
+                    for r, (start, end) in zip(doc_results, diff_ranges):
+                        # Sum logprobs in the differing range (filter out None)
+                        answer_logprobs: list[float] = [
+                            lp
+                            for pos in range(start, end)
+                            if pos < len(r.logprobs)
+                            for lp in [r.logprobs[pos]]
+                            if lp is not None
+                        ]
+                        total_lp = sum(answer_logprobs) if answer_logprobs else 0.0
+                        doc_log_probs.append(total_lp)
+                        # Store updated result with diff-based answer_range
+                        updated_results.append(LogProbResult(
+                            token_ids=r.token_ids,
+                            logprobs=r.logprobs,
+                            answer_range=(start, end),
+                            total_log_prob=total_lp,
+                        ))
+
+                    pred = int(np.argmax(doc_log_probs))
+                    correct = pred == gold_idx
+
+                    normalized = np.array(doc_log_probs) / np.array(lengths)
+                    pred_norm = int(np.argmax(normalized))
+                    correct_norm = pred_norm == gold_idx
+
+                    # For text-based, store context as a single user message
+                    context_msgs: tuple[ChatMessage, ...] = (
+                        {"role": "user", "content": context_str},
+                    )
+                    # Choices as assistant messages
+                    choice_msgs: tuple[ChatMessage, ...] = tuple(
+                        {"role": "assistant", "content": choice} for choice in raw_choices
+                    )
+
+                    record = LikelihoodRecord(
+                        problem_id=f"{task_name}:{problem_idx}",
+                        task_name=task_name,
+                        context_messages=context_msgs,
+                        raw_choices=raw_choices,
+                        choices=choice_msgs,
+                        choice_token_ids=tuple(r.token_ids for r in updated_results),
+                        choice_logprobs=tuple(r.logprobs for r in updated_results),
+                        choice_answer_ranges=tuple(r.answer_range for r in updated_results),
+                        choice_log_probs=tuple(doc_log_probs),
+                        choice_lengths=tuple(lengths),
+                        gold_idx=gold_idx,
+                        pred_idx=pred,
+                        pred_idx_norm=pred_norm,
+                        correct=correct,
+                        correct_norm=correct_norm,
+                    )
+                    batch_records.append(record)
+
+                self._trace_writer.append(batch_records)  # type: ignore[arg-type]
                 progress.advance(progress_task, len(batch_docs))
 
     def _build_choice_chats(
@@ -350,6 +480,59 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
         return chats, gold_idx, lengths, tuple(choices)
 
+    def _build_choice_texts(
+        self, task: "Task", doc: dict
+    ) -> tuple[str, list[str], int, list[int], tuple[str, ...]]:
+        """Build raw text context and choices for text-based scoring.
+
+        This method constructs prompts WITHOUT chat template formatting.
+        Used when use_chat_template=False.
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+
+        Returns:
+            Tuple of:
+            - Context string (few-shot examples + question)
+            - List of choice strings (continuations)
+            - Gold answer index
+            - List of choice lengths (in characters) for normalization
+            - Tuple of choice texts (for recording)
+        """
+        # Build context: few-shot examples + question as raw text
+        # Use lm-eval's doc_to_text for the question
+        question_raw = task.doc_to_text(doc)
+        question: str = str(question_raw) if question_raw is not None else ""
+
+        # Build few-shot context using lm-eval's fewshot_context
+        # This returns raw text without chat formatting
+        num_fewshot = task.config.num_fewshot or 0
+        context: str
+        if num_fewshot > 0:
+            # Get few-shot examples as raw text
+            fewshot_ctx = task.fewshot_context(doc, num_fewshot)
+            context = (str(fewshot_ctx) if fewshot_ctx else "") + question
+        else:
+            context = question
+
+        # Get choices and gold answer
+        choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
+        gold_target = task.doc_to_target(doc)
+
+        # Determine gold index
+        if isinstance(gold_target, int):
+            gold_idx = gold_target
+        elif isinstance(gold_target, str):
+            gold_idx = choices.index(gold_target)
+        else:
+            gold_idx = gold_target[0] if gold_target else 0
+
+        # Build lengths for normalization
+        lengths = [len(choice) for choice in choices]
+
+        return context, choices, gold_idx, lengths, tuple(choices)
+
 
 class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
     """Config for multiple-choice tasks (MMLU, ARC, HellaSwag, etc.)."""
@@ -357,6 +540,14 @@ class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
     _impl_class: ClassVar[type[BaseEvaluator]] = LikelihoodEvaluator
 
     evaluator_type: Literal["likelihood"] = "likelihood"
+
+    # Chat template control
+    use_chat_template: bool = Field(
+        default=True,
+        description="Whether to use chat template formatting. When False, prompts are "
+        "formatted as raw text (context + choice) without any chat structure. "
+        "Use False for evaluating base models or when chat template is undesired.",
+    )
 
     # Batching
     batch_size: int = Field(

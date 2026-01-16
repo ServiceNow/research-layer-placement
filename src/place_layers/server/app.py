@@ -28,7 +28,7 @@ from fastapi import FastAPI, HTTPException
 
 from place_layers.server.schemas import (
     BatchGenerateRequest,
-    ChatLogProbResultSchema,
+    LogProbResultSchema,
     ComputeChatLogProbsRequest,
     ComputeChatLogProbsResponse,
     ComputeLogProbsRequest,
@@ -248,11 +248,21 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             if req.placement is not None:
                 backend.set_placement(req.placement)
 
-            log_probs = backend.compute_text_log_probs(
+            results = backend.compute_text_log_probs(
                 contexts=req.contexts,
                 continuations=req.continuations,
             )
-            return ComputeTextLogProbsResponse(log_probs=log_probs)
+            return ComputeTextLogProbsResponse(
+                results=[
+                    LogProbResultSchema(
+                        token_ids=list(r.token_ids),
+                        logprobs=list(r.logprobs),
+                        answer_range=r.answer_range,
+                        total_log_prob=r.total_log_prob,
+                    )
+                    for r in results
+                ]
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
@@ -284,7 +294,7 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             ]
             results = backend.compute_chat_log_probs(chats)
             response_results = [
-                ChatLogProbResultSchema(
+                LogProbResultSchema(
                     token_ids=list(r.token_ids),
                     logprobs=list(r.logprobs),
                     answer_range=r.answer_range,
