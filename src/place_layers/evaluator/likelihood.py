@@ -225,7 +225,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
                 # Compute log-probs using chat-based API (diff-based scoring)
                 # Returns ChatLogProbResult with full token-level detail
-                results = await self._compute_chat_log_probs(all_chats)
+                results = await self._compute_chat_log_probs(
+                    all_chats, use_chat_template=self.config.use_chat_template
+                )
 
                 # Unpack results per document and create records
                 offset = 0
@@ -318,7 +320,12 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             - Tuple of choice texts (for recording)
         """
         # Get context messages using the shared builder
-        context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
+        context_msgs = build_chat_messages(
+            task,
+            doc,
+            task.config.num_fewshot or 0,
+            system_message=self.config.system_message,
+        )
 
         # Get choices and gold answer
         # doc_to_choice is on ConfigurableTask, but all YAML-defined tasks use it
@@ -363,4 +370,17 @@ class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
         default=32,
         description="Batch size for log-prob computation",
         gt=0,
+    )
+
+    # Chat template control
+    use_chat_template: bool = Field(
+        default=True,
+        description="Whether to apply the tokenizer's chat template. "
+        "Set to False to use raw text without special tokens.",
+    )
+    system_message: str | None = Field(
+        default=None,
+        description="Custom system message to prepend. If None and use_chat_template=True, "
+        "the tokenizer's default system message is used. Set to empty string to disable "
+        "system message entirely.",
     )

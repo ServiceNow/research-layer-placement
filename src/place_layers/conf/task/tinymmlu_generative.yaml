@@ -1,0 +1,15 @@
+# @package task
+# tinyMMLU Generative task configuration
+#
+# Compact 100-example subset of MMLU for quick evaluation
+# Uses custom generative task (generate_until output type)
+# Use with +evaluator=generative
+#
+# https://huggingface.co/datasets/tinyBenchmarks/tinyMMLU
+
+tasks:
+  - tinymmlu_generative  # Custom generative task
+
+num_fewshot: 0
+max_problems_per_task: null  # null = full test set (100 problems)
+split: test

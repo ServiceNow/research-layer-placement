@@ -705,8 +705,9 @@ class RESTBackend(AsyncBackend):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        use_chat_template: bool = True,
     ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions.
+        """Compute chat log-probs - NOT YET IMPLEMENTED for REST backend.
 
         Distributes chats across healthy servers.
 

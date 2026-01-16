@@ -1,0 +1,11 @@
+# @package evaluator
+# Likelihood evaluator WITHOUT chat template
+#
+# Same as likelihood.yaml but bypasses the tokenizer's chat template.
+# Useful when the model's default system prompt conflicts with evaluation
+# (e.g., the system prompt asks for step-by-step reasoning before answering).
+
+defaults:
+  - likelihood
+
+use_chat_template: false
