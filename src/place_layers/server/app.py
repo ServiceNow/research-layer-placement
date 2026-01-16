@@ -39,7 +39,6 @@ from place_layers.server.schemas import (
     GenerateRequest,
     HealthResponse,
     InfoResponse,
-    SetPlacementRequest,
 )
 
 if TYPE_CHECKING:
@@ -232,9 +231,23 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
     def compute_text_log_probs(
         req: ComputeTextLogProbsRequest,
     ) -> ComputeTextLogProbsResponse:
-        """Compute log probabilities for text continuations."""
-        assert backend is not None
+        """Compute log probabilities for text continuations.
+
+        If placement is provided, sets the mixer configuration before scoring.
+        """
+        if backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+        if len(req.contexts) != len(req.continuations):
+            raise HTTPException(
+                status_code=400,
+                detail=f"contexts and continuations must have same length, "
+                f"got {len(req.contexts)} and {len(req.continuations)}",
+            )
         try:
+            # Set placement if provided
+            if req.placement is not None:
+                backend.set_placement(req.placement)
+
             log_probs = backend.compute_text_log_probs(
                 contexts=req.contexts,
                 continuations=req.continuations,
@@ -250,9 +263,17 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
     def compute_chat_log_probs(
         req: ComputeChatLogProbsRequest,
     ) -> ComputeChatLogProbsResponse:
-        """Compute log probabilities for chat completions."""
-        assert backend is not None
+        """Compute log probabilities for chat completions.
+
+        If placement is provided, sets the mixer configuration before scoring.
+        """
+        if backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
         try:
+            # Set placement if provided
+            if req.placement is not None:
+                backend.set_placement(req.placement)
+
             # Convert chat messages to dict format expected by backend
             chats = [
                 (
@@ -276,26 +297,6 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception("Chat log prob computation failed")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/set_placement")
-    def set_placement(req: SetPlacementRequest) -> dict:
-        """Set mixer placement for subsequent requests.
-
-        This sets the placement state on the server. All subsequent
-        requests will use this placement until it is changed.
-        """
-        if backend is None:
-            raise HTTPException(status_code=503, detail="Backend not initialized")
-
-        try:
-            backend.set_placement(req.mixer_names)
-            return {"status": "ok", "placement": req.mixer_names}
-
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.exception("Set placement failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

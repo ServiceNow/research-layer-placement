@@ -110,16 +110,6 @@ class ComputeLogProbsResponse(BaseModel):
     )
 
 
-class SetPlacementRequest(BaseModel):
-    """Request to set mixer placement (for debugging/testing)."""
-
-    model_config = {"frozen": True}
-
-    mixer_names: list[str] = Field(
-        description="Mixer name for each layer (e.g., ['attention', 'mamba', ...])"
-    )
-
-
 class InfoResponse(BaseModel):
     """Server info response."""
 
@@ -167,6 +157,11 @@ class ComputeTextLogProbsRequest(BaseModel):
 
     contexts: list[str] = Field(description="List of context strings")
     continuations: list[str] = Field(description="List of continuation strings to score")
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer. "
+        "If provided, server will set this placement before scoring.",
+    )
 
 
 class ComputeTextLogProbsResponse(BaseModel):
@@ -201,6 +196,11 @@ class ComputeChatLogProbsRequest(BaseModel):
 
     chats: list[tuple[list[ChatMessageSchema], list[ChatMessageSchema]]] = Field(
         description="List of (context_messages, completion_messages) tuples"
+    )
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer. "
+        "If provided, server will set this placement before scoring.",
     )
 
 
