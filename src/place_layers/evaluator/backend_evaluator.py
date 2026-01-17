@@ -206,26 +206,30 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     async def _compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
         Handles sync/async dispatch based on backend type.
         This API bypasses chat templates entirely - useful for evaluating
         models without any chat formatting.
 
+        Like compute_chat_log_probs, inputs are grouped by context for diff-based
+        scoring - we find where token sequences differ across choices.
+
         Args:
-            contexts: List of context/prompt strings.
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples where:
+                - context: The shared context/prompt string
+                - choices: List of continuation strings to score
 
         Returns:
-            List of LogProbResult with token-level detail.
+            List of LogProbResult (flattened across groups) with diff-based
+            answer_range and total_log_prob.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_text_log_probs(contexts, continuations)
+            return await self._backend.compute_text_log_probs(text_groups)
         else:
-            return self._backend.compute_text_log_probs(contexts, continuations)
+            return self._backend.compute_text_log_probs(text_groups)
 
 
 class BackendEvaluatorConfig(BaseEvaluatorConfig):

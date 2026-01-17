@@ -654,60 +654,76 @@ class RESTBackend(AsyncBackend):
 
     async def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        Distributes the contexts/continuations across healthy servers
-        for parallel computation.
+        Distributes text groups across healthy servers for parallel computation.
+        Each server applies diff-based scoring internally.
 
         Args:
-            contexts: List of context strings.
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples.
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores.
+            List of LogProbResult (flattened across all groups) with diff-based
+            answer_range and total_log_prob.
         """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-        if not contexts:
+        if not text_groups:
             return []
 
-        # Create indexed items: (idx, (context, continuation))
-        items: list[tuple[int, tuple[str, str]]] = [
-            (idx, (ctx, cont)) for idx, (ctx, cont) in enumerate(zip(contexts, continuations))
+        # Create indexed items: (group_idx, (context, choices))
+        # We track group index and choice count to reassemble results
+        items: list[tuple[int, tuple[str, Sequence[str]]]] = [
+            (idx, (context, choices))
+            for idx, (context, choices) in enumerate(text_groups)
         ]
 
-        # Capture current placement for the lambda
+        # Capture current placement for the closure
         placement = self._current_placement
 
-        results = await self._distribute_batch(
+        def make_payload(
+            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]]
+        ) -> dict[str, Any]:
+            return {
+                "text_groups": [
+                    (context, list(choices))
+                    for _, (context, choices) in chunk_items
+                ],
+                "placement": placement,
+            }
+
+        def parse_response(
+            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]],
+            data: dict[str, Any],
+        ) -> list[tuple[int, LogProbResult]]:
+            # Server returns flattened results, we need to tag each with group index
+            results: list[tuple[int, LogProbResult]] = []
+            result_idx = 0
+            for group_idx, (_, choices) in chunk_items:
+                for _ in choices:
+                    r = data["results"][result_idx]
+                    results.append((
+                        group_idx,
+                        LogProbResult(
+                            token_ids=tuple(r["token_ids"]),
+                            logprobs=tuple(r["logprobs"]),
+                            answer_range=tuple(r["answer_range"]),
+                            total_log_prob=r["total_log_prob"],
+                        )
+                    ))
+                    result_idx += 1
+            return results
+
+        indexed_results = await self._distribute_batch(
             items=items,
             endpoint="/compute_text_log_probs",
-            make_payload=lambda chunk_items: {
-                "contexts": [ctx for _, (ctx, _) in chunk_items],
-                "continuations": [cont for _, (_, cont) in chunk_items],
-                "placement": placement,
-            },
-            parse_response=lambda chunk_items, data: [
-                (idx, LogProbResult(
-                    token_ids=tuple(r["token_ids"]),
-                    logprobs=tuple(r["logprobs"]),
-                    answer_range=tuple(r["answer_range"]),
-                    total_log_prob=r["total_log_prob"],
-                ))
-                for (idx, _), r in zip(chunk_items, data["results"])
-            ],
+            make_payload=make_payload,
+            parse_response=parse_response,
         )
 
-        # Sort by original index and extract results
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
+        # Sort by group index then flatten (results already in choice order within groups)
+        indexed_results.sort(key=lambda x: x[0])
+        return [r[1] for r in indexed_results]
 
     async def compute_chat_log_probs(
         self,

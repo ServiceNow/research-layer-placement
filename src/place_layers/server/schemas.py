@@ -151,12 +151,18 @@ class ErrorResponse(BaseModel):
 
 
 class ComputeTextLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of text continuations."""
+    """Request for computing log probabilities of text continuations.
+
+    Uses grouped API where each group is a (context, choices) tuple.
+    The server applies diff-based scoring to find answer token positions.
+    """
 
     model_config = {"frozen": True}
 
-    contexts: list[str] = Field(description="List of context strings")
-    continuations: list[str] = Field(description="List of continuation strings to score")
+    text_groups: list[tuple[str, list[str]]] = Field(
+        description="List of (context, choices) tuples. Each group contains "
+        "a shared context string and a list of choice strings to score."
+    )
     placement: list[str] | None = Field(
         default=None,
         description="Mixer placement for each layer. "
@@ -185,7 +191,8 @@ class ComputeTextLogProbsResponse(BaseModel):
     model_config = {"frozen": True}
 
     results: list[LogProbResultSchema] = Field(
-        description="Log probability results for each context/continuation pair"
+        description="Log probability results (flattened across all groups). "
+        "Results are ordered by group, then by choice within each group."
     )
 
 

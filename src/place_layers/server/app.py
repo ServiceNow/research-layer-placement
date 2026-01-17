@@ -231,27 +231,20 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
     def compute_text_log_probs(
         req: ComputeTextLogProbsRequest,
     ) -> ComputeTextLogProbsResponse:
-        """Compute log probabilities for text continuations.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
+        Uses grouped API where each group is a (context, choices) tuple.
+        The backend applies diff-based scoring to find answer token positions.
         If placement is provided, sets the mixer configuration before scoring.
         """
         if backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
-        if len(req.contexts) != len(req.continuations):
-            raise HTTPException(
-                status_code=400,
-                detail=f"contexts and continuations must have same length, "
-                f"got {len(req.contexts)} and {len(req.continuations)}",
-            )
         try:
             # Set placement if provided
             if req.placement is not None:
                 backend.set_placement(req.placement)
 
-            results = backend.compute_text_log_probs(
-                contexts=req.contexts,
-                continuations=req.continuations,
-            )
+            results = backend.compute_text_log_probs(req.text_groups)
             return ComputeTextLogProbsResponse(
                 results=[
                     LogProbResultSchema(

@@ -150,21 +150,25 @@ class AsyncBackend(ABC):
     @abstractmethod
     async def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        This is the text-based counterpart to compute_chat_log_probs.
-        Tokenization is handled internally by the backend.
+        This is the text-based counterpart to compute_chat_log_probs. Like the chat
+        API, inputs are grouped by context for diff-based scoring - we find where
+        token sequences differ across choices and only score those positions.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples where:
+                - context: The shared context/prompt string
+                - choices: List of continuation strings to score against this context
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores for each context/continuation pair.
+            List of LogProbResult (one per choice, flattened across all groups) with:
+                - token_ids: Full token sequence (context + choice)
+                - logprobs: Per-token log probabilities
+                - answer_range: (start, end) of differing tokens (the answer)
+                - total_log_prob: Sum of logprobs at differing positions
 
         Raises:
             NotImplementedError: If backend doesn't support text-based scoring.
@@ -312,21 +316,25 @@ class SyncBackend(ABC):
     @abstractmethod
     def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        This is the text-based counterpart to compute_chat_log_probs.
-        Tokenization is handled internally by the backend.
+        This is the text-based counterpart to compute_chat_log_probs. Like the chat
+        API, inputs are grouped by context for diff-based scoring - we find where
+        token sequences differ across choices and only score those positions.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples where:
+                - context: The shared context/prompt string
+                - choices: List of continuation strings to score against this context
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores for each context/continuation pair.
+            List of LogProbResult (one per choice, flattened across all groups) with:
+                - token_ids: Full token sequence (context + choice)
+                - logprobs: Per-token log probabilities
+                - answer_range: (start, end) of differing tokens (the answer)
+                - total_log_prob: Sum of logprobs at differing positions
 
         Raises:
             NotImplementedError: If backend doesn't support text-based scoring.
@@ -476,49 +484,64 @@ class VLLMBackend(AsyncBackend):
 
     async def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        Uses vLLM's text_offset in the response to determine where the
-        continuation starts, avoiding the need for local tokenization.
+        Like compute_chat_log_probs, this groups choices by context and uses
+        diff-based scoring to find where token sequences differ.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples.
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores.
+            List of LogProbResult (flattened across all groups) with diff-based
+            answer_range and total_log_prob.
         """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
+        if not text_groups:
             return []
 
-        # Send all scoring requests concurrently, bounded by semaphore
-        tasks = [
-            self._client.score_text_completion(ctx, cont, request_id=str(i))
-            for i, (ctx, cont) in enumerate(zip(contexts, continuations))
-        ]
+        from place_layers.core.token_utils import find_differing_ranges
 
-        text_results = await asyncio.gather(*tasks)
+        all_results: list[LogProbResult] = []
 
-        # Convert TextScoringResult to LogProbResult
-        return [
-            LogProbResult(
-                token_ids=r.token_ids,
-                logprobs=r.logprobs,
-                answer_range=r.answer_range,
-                total_log_prob=r.total_logprob,
-            )
-            for r in text_results
-        ]
+        for context, choices in text_groups:
+            if not choices:
+                continue
+
+            # Send all (context + choice) pairs to vLLM concurrently
+            tasks = [
+                self._client.score_text_completion(context, choice, request_id=str(i))
+                for i, choice in enumerate(choices)
+            ]
+            text_results = await asyncio.gather(*tasks)
+
+            # Extract token sequences for diff-based scoring
+            token_sequences = [list(r.token_ids) for r in text_results]
+
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
+
+            # Build LogProbResult with correct answer_range and total_log_prob
+            for r, (start, end) in zip(text_results, answer_ranges):
+                # Sum logprobs in the differing range
+                answer_logprobs: list[float] = [
+                    lp
+                    for pos in range(start, end)
+                    if pos < len(r.logprobs)
+                    for lp in [r.logprobs[pos]]
+                    if lp is not None
+                ]
+                total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
+
+                all_results.append(LogProbResult(
+                    token_ids=r.token_ids,
+                    logprobs=r.logprobs,
+                    answer_range=(start, end),
+                    total_log_prob=total_log_prob,
+                ))
+
+        return all_results
 
     async def compute_chat_log_probs(
         self,
@@ -863,47 +886,49 @@ class TransformersBackend(SyncBackend):
 
     def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
+        text_groups: Sequence[tuple[str, Sequence[str]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with full observability.
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        Tokenizes contexts and continuations internally, builds the full token
-        sequence, and computes per-token logprobs using a forward pass.
+        Like compute_chat_log_probs, this groups choices by context and uses
+        diff-based scoring to find where token sequences differ.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples.
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores.
+            List of LogProbResult (flattened across all groups) with diff-based
+            answer_range and total_log_prob.
         """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
+        if not text_groups:
             return []
 
+        from place_layers.core.token_utils import find_differing_ranges
+
         tokenizer = self._client.tokenizer
+        all_results: list[LogProbResult] = []
 
-        # Tokenize all contexts and continuations, build full sequences and ranges
-        token_sequences: list[list[int]] = []
-        ranges: list[tuple[int, int]] = []
-        for ctx, cont in zip(contexts, continuations):
-            # Context gets special tokens (BOS), continuation does not
-            ctx_tokens = tokenizer.encode(ctx, add_special_tokens=True)
-            cont_tokens = tokenizer.encode(cont, add_special_tokens=False)
-            full_sequence = ctx_tokens + cont_tokens
-            token_sequences.append(full_sequence)
-            # Answer range: from end of context to end of full sequence
-            ranges.append((len(ctx_tokens), len(full_sequence)))
+        for context, choices in text_groups:
+            if not choices:
+                continue
 
-        # Use shared scoring method that returns full LogProbResult
-        return self._score_sequences_in_ranges(token_sequences, ranges)
+            # Tokenize all (context + choice) sequences for this group
+            token_sequences: list[list[int]] = []
+            for choice in choices:
+                # Context gets special tokens (BOS), choice does not
+                ctx_tokens = tokenizer.encode(context, add_special_tokens=True)
+                choice_tokens = tokenizer.encode(choice, add_special_tokens=False)
+                full_sequence = ctx_tokens + choice_tokens
+                token_sequences.append(full_sequence)
+
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
+
+            # Compute logprobs and build results
+            results = self._score_sequences_in_ranges(token_sequences, answer_ranges)
+            all_results.extend(results)
+
+        return all_results
 
     def compute_chat_log_probs(
         self,

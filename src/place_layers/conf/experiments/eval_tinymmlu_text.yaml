@@ -1,0 +1,30 @@
+# @package _global_
+# Evaluate likelihood on tinyMMLU using text-based scoring (no chat template)
+#
+# This uses the text-based API which bypasses chat template formatting.
+# Useful for evaluating base models or comparing chat vs text scoring.
+#
+# Usage:
+#   python -m place_layers +experiments=eval_tinymmlu_text
+
+defaults:
+  - /command: evaluate
+  - /evaluator: likelihood
+  - /backend: vllm
+  - _self_
+
+# Override backend settings for local vLLM
+backend:
+  base_url: http://localhost:8000
+  model: Qwen/Qwen2-0.5B-Instruct
+
+# Override evaluator settings
+# Note: tinyMMLU has few-shot examples baked into doc_to_text, so num_fewshot=0
+evaluator:
+  tasks:
+    - tinyMMLU
+  num_fewshot: 0
+  max_problems_per_task: null
+  split: test
+  use_chat_template: false
+  batch_size: 8

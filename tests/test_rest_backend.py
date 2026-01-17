@@ -426,6 +426,7 @@ class TestComputeTextLogProbs:
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # Both servers respond successfully with full LogProbResult format
+                # Server 1 handles groups 0 and 2
                 m.post(
                     "http://s1:8080/compute_text_log_probs",
                     payload={
@@ -445,6 +446,7 @@ class TestComputeTextLogProbs:
                         ]
                     },
                 )
+                # Server 2 handles groups 1 and 3
                 m.post(
                     "http://s2:8080/compute_text_log_probs",
                     payload={
@@ -465,12 +467,15 @@ class TestComputeTextLogProbs:
                     },
                 )
 
-                results = await backend.compute_text_log_probs(
-                    contexts=["ctx1", "ctx2", "ctx3", "ctx4"],
-                    continuations=["cont1", "cont2", "cont3", "cont4"],
-                )
+                # New grouped API: each group is (context, [choices])
+                results = await backend.compute_text_log_probs([
+                    ("ctx1", ["A"]),  # group 0
+                    ("ctx2", ["B"]),  # group 1
+                    ("ctx3", ["C"]),  # group 2
+                    ("ctx4", ["D"]),  # group 3
+                ])
 
-                # Results should be in original order
+                # Results should be in original order (flattened)
                 assert len(results) == 4
                 # Each result is a LogProbResult
                 assert all(hasattr(r, "total_log_prob") for r in results)
@@ -496,23 +501,20 @@ class TestComputeTextLogProbs:
                     },
                 )
 
-                results = await backend.compute_text_log_probs(
-                    contexts=["The capital of France is"],
-                    continuations=[" Paris"],
-                )
+                # New grouped API: (context, [choices])
+                results = await backend.compute_text_log_probs([
+                    ("The capital of France is", [" Paris"]),
+                ])
 
                 assert len(results) == 1
                 assert results[0].total_log_prob == -1.5
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
 
     async def test_empty_input_returns_empty(self, config: RESTBackendConfig):
-        """Empty contexts/continuations returns empty without server calls."""
+        """Empty text_groups returns empty without server calls."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                results = await backend.compute_text_log_probs(
-                    contexts=[],
-                    continuations=[],
-                )
+                results = await backend.compute_text_log_probs([])
                 assert results == []
 
 
