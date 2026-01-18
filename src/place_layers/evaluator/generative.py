@@ -68,8 +68,8 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
     ) -> list[Generation]:
         """Create Generation records from a generation result.
 
-        Includes truncated samples with truncated=True and correct=None
-        (incomplete text makes correctness checking unreliable).
+        Includes truncated samples with truncated=True and correct=False
+        (incomplete text is treated as incorrect).
         """
         task_name = task.config.task or ""
         generations = []
