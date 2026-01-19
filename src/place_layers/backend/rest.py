@@ -330,8 +330,6 @@ class RESTBackend(AsyncBackend):
         Raises:
             RESTBackendError: If all servers fail after retries.
         """
-        session = self._ensure_session()
-
         @retry(
             retry=retry_if_exception_type(AllServersFailedError),
             wait=WaitForServerRecovery(self._server_pool),
@@ -349,39 +347,10 @@ class RESTBackend(AsyncBackend):
             errors: list[tuple[str, str]] = []
             for server in servers_to_try:
                 try:
-                    async with self._get_semaphore(server):
-                        async with session.post(
-                            f"{server}{endpoint}", json=payload
-                        ) as resp:
-                            if resp.status == 503:
-                                # Server unavailable - mark unhealthy, try next
-                                self._server_pool.mark_failure(server)
-                                errors.append((server, "503 Service Unavailable"))
-                                continue
-                            if resp.status >= 500:
-                                # Server error - mark unhealthy, try next
-                                error_text = await resp.text()
-                                self._server_pool.mark_failure(server)
-                                errors.append((server, f"{resp.status}: {error_text}"))
-                                continue
-                            if resp.status >= 400:
-                                # Client error - don't retry, raise immediately
-                                error_text = await resp.text()
-                                raise RESTBackendError(
-                                    f"Request failed (status {resp.status}): {error_text}"
-                                )
-                            # Success - parse response (errors here are not connection issues)
-                            self._server_pool.mark_success(server)
-                            logger.info(f"Request to {endpoint} handled by {server}")
-                            return await resp.json()
-                except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
-                    # Connection/timeout errors - mark unhealthy, try next server
-                    # Log the specific exception type to diagnose connection issues
-                    logger.debug(
-                        f"Connection error to {server} on {endpoint}: "
-                        f"{type(e).__name__}: {e}"
-                    )
-                    self._server_pool.mark_failure(server)
+                    # Use common HTTP request logic
+                    return await self._do_http_request(server, endpoint, payload)
+                except RESTBackendError as e:
+                    # Server failed - try next server
                     errors.append((server, str(e)))
                     continue
 
@@ -394,19 +363,19 @@ class RESTBackend(AsyncBackend):
         except AllServersFailedError as e:
             raise RESTBackendError(str(e)) from e
 
-    async def _call_server(
+    async def _do_http_request(
         self,
         server: str,
         endpoint: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """Call a specific server directly without failover.
+        """Execute an HTTP POST request to a specific server.
 
-        This is used by _distribute_batch to ensure requests go to their
-        assigned servers. If the server fails, the error propagates up.
+        Handles response status codes, marks server health, and logs the request.
+        This is the core HTTP logic shared by both _call_server and _call_with_failover.
 
         Args:
-            server: Specific server URL to call.
+            server: Server URL to call.
             endpoint: API endpoint (e.g., "/compute_chat_log_probs").
             payload: JSON payload to send.
 
@@ -414,7 +383,7 @@ class RESTBackend(AsyncBackend):
             JSON response from the server.
 
         Raises:
-            RESTBackendError: If the request fails.
+            RESTBackendError: If the request fails (4xx, 5xx, or connection error).
         """
         session = self._ensure_session()
 
@@ -442,6 +411,30 @@ class RESTBackend(AsyncBackend):
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
             self._server_pool.mark_failure(server)
             raise RESTBackendError(f"Connection error to {server}: {e}") from e
+
+    async def _call_server(
+        self,
+        server: str,
+        endpoint: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Call a specific server directly without failover.
+
+        This is used by _distribute_batch to ensure requests go to their
+        assigned servers. If the server fails, the error propagates up.
+
+        Args:
+            server: Specific server URL to call.
+            endpoint: API endpoint (e.g., "/compute_chat_log_probs").
+            payload: JSON payload to send.
+
+        Returns:
+            JSON response from the server.
+
+        Raises:
+            RESTBackendError: If the request fails.
+        """
+        return await self._do_http_request(server, endpoint, payload)
 
     async def _validate_servers(self) -> None:
         """Validate all servers are reachable and have consistent configuration.
