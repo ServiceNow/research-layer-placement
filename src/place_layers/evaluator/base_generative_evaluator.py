@@ -79,9 +79,16 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     """
 
     config: "BaseGenerativeEvaluatorConfig"
+    _last_summary: "GenerationSummary | None"
 
     def __init__(self, config: "BaseGenerativeEvaluatorConfig") -> None:
         super().__init__(config)
+        self._last_summary = None
+
+    @property
+    def last_summary(self) -> "GenerationSummary | None":
+        """Get the summary from the last evaluate() call."""
+        return self._last_summary
 
     @abstractmethod
     def _make_records(
@@ -129,6 +136,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         # Compute summary from disk (single source of truth)
         summary = self._summarize()
+        self._last_summary = summary  # Store for access after evaluate()
         logger.info(f"\n{summary}")
 
         return summary.problem_accuracy
@@ -408,4 +416,9 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         description="Nucleus sampling parameter",
         gt=0.0,
         le=1.0,
+    )
+    filter_name: str | None = Field(
+        default=None,
+        description="Name of lm-eval filter to apply for answer extraction "
+        "(e.g., 'strict-match', 'apriel-extract'). If None, uses raw completion.",
     )

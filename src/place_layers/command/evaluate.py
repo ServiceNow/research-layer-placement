@@ -33,8 +33,44 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.base_evaluator import BaseEvaluator
 
 logger = logging.getLogger(__name__)
+
+
+def _get_filter_accuracy(evaluator: BaseEvaluator) -> dict[str, "FilterAccuracy"] | None:
+    """Extract per-filter accuracy from evaluator's last summary if available."""
+    summary = getattr(evaluator, "last_summary", None)
+    if summary is None:
+        return None
+
+    filter_stats = getattr(summary, "filter_stats", None)
+    if not filter_stats:
+        return None
+
+    total_problems = summary.total_problems
+    total_samples = summary.total_samples
+
+    return {
+        filter_name: FilterAccuracy(
+            problems_correct=fstats.problems_correct,
+            samples_correct=fstats.samples_correct,
+            problem_accuracy=fstats.problem_accuracy(total_problems),
+            sample_accuracy=fstats.sample_accuracy(total_samples),
+        )
+        for filter_name, fstats in filter_stats.items()
+    }
+
+
+class FilterAccuracy(BaseModel):
+    """Per-filter accuracy stats."""
+
+    model_config = {"frozen": True}
+
+    problems_correct: int = Field(description="Problems with at least one correct sample")
+    samples_correct: int = Field(description="Number of correct samples")
+    problem_accuracy: float = Field(description="Problem accuracy (pass@k)")
+    sample_accuracy: float = Field(description="Sample accuracy")
 
 
 class EvaluationResult(BaseModel):
@@ -58,6 +94,10 @@ class EvaluationResult(BaseModel):
     )
     placement_indices: list[int] | None = Field(
         description="Mixer indices per layer (null if no placement)"
+    )
+    filter_accuracy: dict[str, FilterAccuracy] | None = Field(
+        default=None,
+        description="Per-filter accuracy stats (null if no filters)"
     )
 
 
@@ -152,6 +192,9 @@ class EvaluateCommand(BaseCommand):
                 # Get brier_score if available (likelihood evaluator)
                 brier_score = getattr(evaluator, "brier_score", None)
 
+                # Get per-filter accuracy if available (generative evaluator)
+                filter_accuracy = _get_filter_accuracy(evaluator)
+
                 result = EvaluationResult(
                     placement=extended_layers,
                     score=score,
@@ -159,6 +202,7 @@ class EvaluateCommand(BaseCommand):
                     duration_seconds=total_duration,
                     inference_duration_seconds=inference_duration,
                     placement_indices=list(indices),
+                    filter_accuracy=filter_accuracy,
                 )
             else:
                 # No placement - evaluate default configuration without model structure
@@ -177,6 +221,9 @@ class EvaluateCommand(BaseCommand):
                 # Get brier_score if available (likelihood evaluator)
                 brier_score = getattr(evaluator, "brier_score", None)
 
+                # Get per-filter accuracy if available (generative evaluator)
+                filter_accuracy = _get_filter_accuracy(evaluator)
+
                 result = EvaluationResult(
                     placement=None,
                     score=score,
@@ -184,6 +231,7 @@ class EvaluateCommand(BaseCommand):
                     duration_seconds=total_duration,
                     inference_duration_seconds=inference_duration,
                     placement_indices=None,
+                    filter_accuracy=filter_accuracy,
                 )
 
             logger.info(

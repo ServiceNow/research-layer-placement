@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from place_layers.evaluator.traces.types import (
     BaseGeneration,
+    Generation,
     ISProblemRecord,
     LikelihoodRecord,
     SkippedProblem,
@@ -223,6 +224,23 @@ def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
     return completed
 
 
+class FilterStats(BaseModel):
+    """Per-filter statistics."""
+
+    model_config = {"frozen": True}
+
+    problems_correct: int = Field(description="Problems with at least one correct sample")
+    samples_correct: int = Field(description="Number of correct samples")
+
+    def problem_accuracy(self, num_problems: int) -> float:
+        """Pass@k accuracy for this filter."""
+        return self.problems_correct / num_problems if num_problems > 0 else 0.0
+
+    def sample_accuracy(self, num_samples: int) -> float:
+        """Per-sample accuracy for this filter."""
+        return self.samples_correct / num_samples if num_samples > 0 else 0.0
+
+
 class TaskStats(BaseModel):
     """Per-task statistics for generation evaluation."""
 
@@ -232,6 +250,12 @@ class TaskStats(BaseModel):
     num_samples: int = Field(description="Total number of samples")
     problems_correct: int = Field(description="Problems with at least one correct sample")
     samples_correct: int = Field(description="Number of correct samples")
+
+    # Per-filter statistics
+    filter_stats: dict[str, FilterStats] = Field(
+        default_factory=dict,
+        description="Statistics per filter",
+    )
 
     @property
     def problem_accuracy(self) -> float:
@@ -261,6 +285,12 @@ class GenerationSummary(BaseModel):
     problems_correct: int = Field(description="Problems with at least one correct sample")
     samples_correct: int = Field(description="Total correct samples")
 
+    # Per-filter aggregate statistics
+    filter_stats: dict[str, FilterStats] = Field(
+        default_factory=dict,
+        description="Aggregate statistics per filter across all tasks",
+    )
+
     @property
     def problem_accuracy(self) -> float:
         """Pass@k accuracy: fraction of problems with any correct sample."""
@@ -273,6 +303,8 @@ class GenerationSummary(BaseModel):
 
     def __str__(self) -> str:
         lines = ["Generation Summary:"]
+
+        # Per-task stats
         for task_name, stats in sorted(self.task_stats.items()):
             lines.append(
                 f"  {task_name}: {stats.problems_correct}/{stats.num_problems} problems "
@@ -280,12 +312,28 @@ class GenerationSummary(BaseModel):
                 f"{stats.samples_correct}/{stats.num_samples} samples "
                 f"({stats.sample_accuracy:.1%})"
             )
+
+        # Total stats
         lines.append(
             f"  TOTAL: {self.problems_correct}/{self.total_problems} problems "
             f"({self.problem_accuracy:.1%}), "
             f"{self.samples_correct}/{self.total_samples} samples "
             f"({self.sample_accuracy:.1%})"
         )
+
+        # Per-filter stats if available
+        if self.filter_stats:
+            lines.append("\nPer-filter accuracy:")
+            for filter_name, fstats in sorted(self.filter_stats.items()):
+                prob_acc = fstats.problem_accuracy(self.total_problems)
+                samp_acc = fstats.sample_accuracy(self.total_samples)
+                lines.append(
+                    f"  {filter_name}: {fstats.problems_correct}/{self.total_problems} problems "
+                    f"({prob_acc:.1%}), "
+                    f"{fstats.samples_correct}/{self.total_samples} samples "
+                    f"({samp_acc:.1%})"
+                )
+
         return "\n".join(lines)
 
 
@@ -312,6 +360,10 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
     task_problems: dict[str, dict[str, list[bool | None]]] = defaultdict(
         lambda: defaultdict(list)
     )
+    # Per-filter: filter_name -> problem_id -> list of correctness values
+    filter_problems: dict[str, dict[str, list[bool | None]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     malformed = 0
 
     with validation_path.open() as f:
@@ -325,6 +377,12 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
                     task_problems[record.task_name][record.problem_id].append(
                         record.correct
                     )
+                    # Collect per-filter results if available (Generation records)
+                    if isinstance(record, Generation) and record.filter_results:
+                        for filter_name, fresult in record.filter_results.items():
+                            filter_problems[filter_name][record.problem_id].append(
+                                fresult.correct
+                            )
             except Exception as e:
                 malformed += 1
                 logger.warning(f"Malformed line {line_num}: {e}")
@@ -363,12 +421,29 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
         total_problems_correct += problems_correct
         total_samples_correct += samples_correct
 
+    # Compute per-filter aggregate statistics
+    aggregate_filter_stats: dict[str, FilterStats] = {}
+    for filter_name, problems in filter_problems.items():
+        problems_correct = sum(
+            1 for samples in problems.values()
+            if any(s is True for s in samples)
+        )
+        samples_correct = sum(
+            sum(1 for s in samples if s is True)
+            for samples in problems.values()
+        )
+        aggregate_filter_stats[filter_name] = FilterStats(
+            problems_correct=problems_correct,
+            samples_correct=samples_correct,
+        )
+
     return GenerationSummary(
         task_stats=task_stats,
         total_problems=total_problems,
         total_samples=total_samples,
         problems_correct=total_problems_correct,
         samples_correct=total_samples_correct,
+        filter_stats=aggregate_filter_stats,
     )
 
 

@@ -196,7 +196,107 @@ def build_chat_messages(
     return messages
 
 
-def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
+def _apply_filter_ensemble(filter_ensemble: Any, completion: str) -> str:
+    """Apply a filter ensemble to a completion.
+
+    Args:
+        filter_ensemble: The lm-eval FilterEnsemble to apply.
+        completion: The raw completion text.
+
+    Returns:
+        The filtered/extracted answer string.
+    """
+    resps: Any = [[completion]]
+    docs = [None]
+
+    for f in filter_ensemble.filters:
+        filter_instance = f()
+        resps = filter_instance.apply(resps, docs)
+        # Convert map to list if needed
+        if hasattr(resps, "__iter__") and not isinstance(resps, (list, str)):
+            resps = list(resps)
+
+    result = resps[0] if resps else completion
+    return result if isinstance(result, str) else str(result)
+
+
+def apply_filter(task: "Task", completion: str, filter_name: str | None = None) -> str:
+    """Apply a task's filter to extract the answer from a completion.
+
+    Args:
+        task: The lm-eval task with filters defined.
+        completion: The raw completion text.
+        filter_name: Name of filter to use (e.g., "strict-match", "apriel-extract").
+                     If None, returns completion unchanged.
+
+    Returns:
+        The filtered/extracted answer string.
+    """
+    if filter_name is None:
+        return completion
+
+    # Find the named filter
+    for filt in getattr(task, "_filters", []):
+        if filt.name == filter_name:
+            return _apply_filter_ensemble(filt, completion)
+
+    logger.warning(f"Filter '{filter_name}' not found in task, using raw completion")
+    return completion
+
+
+def apply_all_filters(task: "Task", completion: str) -> dict[str, str]:
+    """Apply all task filters to extract answers from a completion.
+
+    Args:
+        task: The lm-eval task with filters defined.
+        completion: The raw completion text.
+
+    Returns:
+        Dict mapping filter name to filtered/extracted answer string.
+        If no filters defined, returns {"none": completion}.
+    """
+    filters = getattr(task, "_filters", [])
+    if not filters:
+        return {"none": completion}
+
+    return {filt.name: _apply_filter_ensemble(filt, completion) for filt in filters}
+
+
+def _check_correctness_single(
+    task: "Task", doc: dict, filtered: str
+) -> bool | None:
+    """Check if a single filtered response is correct.
+
+    Returns:
+        True if correct, False if incorrect, None if cannot determine.
+    """
+    metrics: dict[str, Any] | None = task.process_results(doc, [filtered])
+
+    if metrics is None:
+        return None
+
+    # Prefer exact_match
+    if "exact_match" in metrics:
+        value = metrics["exact_match"]
+        if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
+            return value == 1 or value == 1.0
+
+    # Fallback: first binary metric we find
+    for value in metrics.values():
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
+            return value == 1 or value == 1.0
+
+    return None
+
+
+def check_correctness(
+    task: "Task",
+    doc: dict,
+    completion: str,
+    filter_name: str | None = None,
+) -> tuple[bool | None, str]:
     """Check if completion is correct using task's process_results.
 
     For generate_until tasks, lm-eval returns metrics like:
@@ -211,38 +311,46 @@ def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
         task: The lm-eval task.
         doc: The problem document.
         completion: The generated completion text.
+        filter_name: Optional filter to apply before checking correctness.
 
     Returns:
-        True if correct, False if incorrect, None if correctness cannot
-        be determined from the task's metrics.
+        Tuple of (correct, filtered_response) where correct is True if correct,
+        False if incorrect, None if correctness cannot be determined.
     """
-    metrics: dict[str, Any] | None = task.process_results(doc, [completion])
+    filtered = apply_filter(task, completion, filter_name)
+    correct = _check_correctness_single(task, doc, filtered)
 
-    if metrics is None:
+    if correct is None:
         logger.warning(
-            "process_results returned None. Record will be saved with correct=None."
+            "Could not determine correctness. Record will be saved with correct=None."
         )
-        return None
 
-    # Prefer exact_match - it's the standard metric and uses symbolic
-    # verification for math tasks (more accurate than string matching)
-    if "exact_match" in metrics:
-        value = metrics["exact_match"]
-        if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
-            return value == 1 or value == 1.0
+    return correct, filtered
 
-    # Fallback: first binary metric we find
-    for value in metrics.values():
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
-            return value == 1 or value == 1.0
 
-    logger.warning(
-        f"Could not determine correctness from metrics {metrics}. "
-        f"Record will be saved with correct=None."
-    )
-    return None
+def check_correctness_all_filters(
+    task: "Task",
+    doc: dict,
+    completion: str,
+) -> dict[str, tuple[bool | None, str]]:
+    """Check correctness for all filters defined in the task.
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+        completion: The generated completion text.
+
+    Returns:
+        Dict mapping filter name to (correct, filtered_response) tuple.
+    """
+    filtered_responses = apply_all_filters(task, completion)
+
+    results = {}
+    for filter_name, filtered in filtered_responses.items():
+        correct = _check_correctness_single(task, doc, filtered)
+        results[filter_name] = (correct, filtered)
+
+    return results
 
 
 def load_task(

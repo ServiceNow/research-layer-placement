@@ -78,6 +78,15 @@ class Trace(BaseGeneration):
     )
 
 
+class FilterResult(BaseModel):
+    """Result of applying a filter to a completion."""
+
+    model_config = {"frozen": True}
+
+    correct: bool | None = Field(description="Whether the filtered answer is correct")
+    filtered_response: str = Field(description="The extracted answer after filtering")
+
+
 class Generation(BaseGeneration):
     """A generation from evaluation (without teacher log-probs).
 
@@ -85,6 +94,18 @@ class Generation(BaseGeneration):
     """
 
     record_type: Literal["generation"] = "generation"
+
+    # Legacy field for backward compatibility (deprecated)
+    filtered_response: str = Field(
+        default="",
+        description="(Deprecated) Use filter_results instead",
+    )
+
+    # Per-filter results: {filter_name: FilterResult}
+    filter_results: dict[str, FilterResult] = Field(
+        default_factory=dict,
+        description="Per-filter correctness and extracted answers",
+    )
 
 
 class SkippedProblem(BaseModel):

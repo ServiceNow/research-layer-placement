@@ -88,7 +88,9 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
                 logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
                 continue
 
-            correct = check_correctness(task, doc, sample.text)
+            correct, _filtered = check_correctness(
+                task, doc, sample.text, filter_name=self.config.filter_name
+            )
             trace = Trace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=tuple(sample.token_ids),

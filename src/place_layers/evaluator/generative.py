@@ -31,8 +31,11 @@ from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,
     BaseGenerativeEvaluatorConfig,
 )
-from place_layers.evaluator.lm_eval_utils import check_correctness
-from place_layers.evaluator.traces.types import Generation
+from place_layers.evaluator.lm_eval_utils import (
+    check_correctness,
+    check_correctness_all_filters,
+)
+from place_layers.evaluator.traces.types import FilterResult, Generation
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
@@ -80,7 +83,28 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
                 logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
                 continue
 
-            correct = check_correctness(task, doc, sample.text)
+            # Get correctness for all filters (or single filter if specified)
+            if self.config.filter_name is None:
+                # Evaluate all filters
+                all_results = check_correctness_all_filters(task, doc, sample.text)
+                filter_results = {
+                    name: FilterResult(correct=correct, filtered_response=filtered)
+                    for name, (correct, filtered) in all_results.items()
+                }
+                # Use first filter's result for backward-compatible `correct` field
+                first_filter = next(iter(all_results.keys()))
+                correct, filtered_response = all_results[first_filter]
+            else:
+                # Single filter mode
+                correct, filtered_response = check_correctness(
+                    task, doc, sample.text, filter_name=self.config.filter_name
+                )
+                filter_results = {
+                    self.config.filter_name: FilterResult(
+                        correct=correct, filtered_response=filtered_response
+                    )
+                }
+
             gen = Generation(
                 prompt_tokens=tuple(result.prompt_token_ids),
                 completion_tokens=tuple(sample.token_ids),
@@ -89,6 +113,8 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
                 task_name=task_name,
                 sample_idx=sample_idx,
                 completion_text=sample.text,
+                filtered_response=filtered_response,
+                filter_results=filter_results,
             )
             generations.append(gen)
 
