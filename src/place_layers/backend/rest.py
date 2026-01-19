@@ -314,15 +314,18 @@ class RESTBackend(AsyncBackend):
         self,
         endpoint: str,
         payload: dict[str, Any],
+        preferred_server: str | None = None,
     ) -> dict[str, Any]:
         """Call an endpoint with failover across servers.
 
-        Tries healthy servers first, then unhealthy servers due for recovery.
+        Tries preferred server first (if specified), then falls back to other
+        healthy servers, then unhealthy servers due for recovery.
         Uses tenacity for retry with server-aware wait strategy.
 
         Args:
             endpoint: API endpoint (e.g., "/generate").
             payload: JSON payload to send.
+            preferred_server: Optional server to try first before others.
 
         Returns:
             JSON response from the server.
@@ -343,6 +346,17 @@ class RESTBackend(AsyncBackend):
                 raise AllServersFailedError(
                     "No servers available to try (all unhealthy, none due for check)"
                 )
+
+            # If preferred server is specified, try it first
+            if preferred_server is not None:
+                # Move preferred server to front of list (if it's in the list)
+                if preferred_server in servers_to_try:
+                    servers_to_try = [preferred_server] + [
+                        s for s in servers_to_try if s != preferred_server
+                    ]
+                else:
+                    # Preferred server not in healthy list - still try it first
+                    servers_to_try = [preferred_server] + servers_to_try
 
             errors: list[tuple[str, str]] = []
             for server in servers_to_try:
@@ -411,30 +425,6 @@ class RESTBackend(AsyncBackend):
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
             self._server_pool.mark_failure(server)
             raise RESTBackendError(f"Connection error to {server}: {e}") from e
-
-    async def _call_server(
-        self,
-        server: str,
-        endpoint: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Call a specific server directly without failover.
-
-        This is used by _distribute_batch to ensure requests go to their
-        assigned servers. If the server fails, the error propagates up.
-
-        Args:
-            server: Specific server URL to call.
-            endpoint: API endpoint (e.g., "/compute_chat_log_probs").
-            payload: JSON payload to send.
-
-        Returns:
-            JSON response from the server.
-
-        Raises:
-            RESTBackendError: If the request fails.
-        """
-        return await self._do_http_request(server, endpoint, payload)
 
     async def _validate_servers(self) -> None:
         """Validate all servers are reachable and have consistent configuration.
@@ -680,22 +670,9 @@ class RESTBackend(AsyncBackend):
                 return []
             logger.info(f"_distribute_batch: Assigned {len(chunk_items)} items to {server}")
             payload = make_payload(chunk_items)
-
-            # Try assigned server first
-            try:
-                data = await self._call_server(server, endpoint, payload)
-                return parse_response(chunk_items, data)
-            except RESTBackendError as e:
-                # Assigned server failed - try failover to other servers
-                logger.warning(
-                    f"Server {server} failed for {endpoint}, attempting failover: {e}"
-                )
-                try:
-                    data = await self._call_with_failover(endpoint, payload)
-                    return parse_response(chunk_items, data)
-                except RESTBackendError:
-                    # Failover also failed - re-raise
-                    raise
+            # Call with failover, preferring the assigned server
+            data = await self._call_with_failover(endpoint, payload, preferred_server=server)
+            return parse_response(chunk_items, data)
 
         tasks = [
             process_chunk(server, chunk_items)
