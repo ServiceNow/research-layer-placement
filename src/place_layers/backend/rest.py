@@ -347,16 +347,12 @@ class RESTBackend(AsyncBackend):
                     "No servers available to try (all unhealthy, none due for check)"
                 )
 
-            # If preferred server is specified, try it first
-            if preferred_server is not None:
-                # Move preferred server to front of list (if it's in the list)
-                if preferred_server in servers_to_try:
-                    servers_to_try = [preferred_server] + [
-                        s for s in servers_to_try if s != preferred_server
-                    ]
-                else:
-                    # Preferred server not in healthy list - still try it first
-                    servers_to_try = [preferred_server] + servers_to_try
+            # If preferred server is specified and healthy, try it first
+            if preferred_server is not None and preferred_server in servers_to_try:
+                # Move preferred server to front of list
+                servers_to_try = [preferred_server] + [
+                    s for s in servers_to_try if s != preferred_server
+                ]
 
             errors: list[tuple[str, str]] = []
             for server in servers_to_try:

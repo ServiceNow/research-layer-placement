@@ -125,7 +125,53 @@ async def test_distribute_batch_uses_preferred_server():
     print("✓ Preferred servers correctly passed to _call_with_failover!")
 
 
+@pytest.mark.asyncio
+async def test_call_with_failover_ignores_unhealthy_preferred():
+    """Verify that unhealthy preferred servers are ignored."""
+    from place_layers.backend.rest import RESTBackend, RESTBackendConfig
+
+    config = RESTBackendConfig(
+        servers=[
+            "http://server-0:8080",
+            "http://server-1:8080",
+        ],
+    )
+
+    backend = RESTBackend(config)
+
+    # Mark server-1 as unhealthy
+    backend._server_pool._health["http://server-1:8080"].mark_unhealthy()
+
+    called_servers = []
+
+    async def mock_do_http_request(server, endpoint, payload):
+        """Track which server is actually called."""
+        called_servers.append(server)
+        return {"result": "success"}
+
+    with patch.object(backend, "_do_http_request", side_effect=mock_do_http_request):
+        backend._session = MagicMock()
+        backend._server_semaphores = {
+            server: asyncio.Semaphore(8) for server in config.servers
+        }
+
+        # Try to call with unhealthy server-1 as preferred
+        await backend._call_with_failover(
+            "/test",
+            {"data": "test"},
+            preferred_server="http://server-1:8080"
+        )
+
+    print(f"\nCalled servers: {called_servers}")
+
+    # Should only call server-0 (the only healthy server)
+    # server-1 should be ignored even though it was preferred
+    assert called_servers == ["http://server-0:8080"]
+    print("✓ Unhealthy preferred server correctly ignored!")
+
+
 if __name__ == "__main__":
     # Run tests
     asyncio.run(test_distribute_batch_uses_assigned_servers())
     asyncio.run(test_distribute_batch_uses_preferred_server())
+    asyncio.run(test_call_with_failover_ignores_unhealthy_preferred())
