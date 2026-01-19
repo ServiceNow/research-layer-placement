@@ -372,6 +372,7 @@ class RESTBackend(AsyncBackend):
                                 )
                             # Success - parse response (errors here are not connection issues)
                             self._server_pool.mark_success(server)
+                            logger.info(f"Request to {endpoint} handled by {server}")
                             return await resp.json()
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
                     # Connection/timeout errors - mark unhealthy, try next server
@@ -392,6 +393,55 @@ class RESTBackend(AsyncBackend):
             return await _with_retry()
         except AllServersFailedError as e:
             raise RESTBackendError(str(e)) from e
+
+    async def _call_server(
+        self,
+        server: str,
+        endpoint: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Call a specific server directly without failover.
+
+        This is used by _distribute_batch to ensure requests go to their
+        assigned servers. If the server fails, the error propagates up.
+
+        Args:
+            server: Specific server URL to call.
+            endpoint: API endpoint (e.g., "/compute_chat_log_probs").
+            payload: JSON payload to send.
+
+        Returns:
+            JSON response from the server.
+
+        Raises:
+            RESTBackendError: If the request fails.
+        """
+        session = self._ensure_session()
+
+        try:
+            async with self._get_semaphore(server):
+                async with session.post(f"{server}{endpoint}", json=payload) as resp:
+                    if resp.status == 503:
+                        self._server_pool.mark_failure(server)
+                        raise RESTBackendError(f"{server} returned 503 Service Unavailable")
+                    if resp.status >= 500:
+                        error_text = await resp.text()
+                        self._server_pool.mark_failure(server)
+                        raise RESTBackendError(
+                            f"{server} returned {resp.status}: {error_text}"
+                        )
+                    if resp.status >= 400:
+                        error_text = await resp.text()
+                        raise RESTBackendError(
+                            f"Request failed (status {resp.status}): {error_text}"
+                        )
+                    # Success
+                    self._server_pool.mark_success(server)
+                    logger.info(f"Request to {endpoint} handled by {server}")
+                    return await resp.json()
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+            self._server_pool.mark_failure(server)
+            raise RESTBackendError(f"Connection error to {server}: {e}") from e
 
     async def _validate_servers(self) -> None:
         """Validate all servers are reachable and have consistent configuration.
@@ -635,13 +685,24 @@ class RESTBackend(AsyncBackend):
         ) -> list[tuple[int, Any]]:
             if not chunk_items:
                 return []
+            logger.info(f"_distribute_batch: Assigned {len(chunk_items)} items to {server}")
             payload = make_payload(chunk_items)
+
+            # Try assigned server first
             try:
-                data = await self._call_with_failover(endpoint, payload)
+                data = await self._call_server(server, endpoint, payload)
                 return parse_response(chunk_items, data)
-            except RESTBackendError:
-                # If failover exhausted, re-raise
-                raise
+            except RESTBackendError as e:
+                # Assigned server failed - try failover to other servers
+                logger.warning(
+                    f"Server {server} failed for {endpoint}, attempting failover: {e}"
+                )
+                try:
+                    data = await self._call_with_failover(endpoint, payload)
+                    return parse_response(chunk_items, data)
+                except RESTBackendError:
+                    # Failover also failed - re-raise
+                    raise
 
         tasks = [
             process_chunk(server, chunk_items)
