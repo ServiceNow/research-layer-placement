@@ -252,6 +252,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             problem_id=f"{task_name}:{idx}",
                             task_name=task_name,
                             reason=f"all {len(result.samples)} samples truncated",
+                            truncated_generations=[s.text for s in result.samples],
                         )
                         self._trace_writer.append([skipped])
 
@@ -350,6 +351,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                                     problem_id=f"{task_name}:{idx}",
                                     task_name=task_name,
                                     reason=f"all {len(result.samples)} samples truncated",
+                                    truncated_generations=[s.text for s in result.samples],
                                 )
                                 self._trace_writer.append([skipped])
 
