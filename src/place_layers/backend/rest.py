@@ -761,55 +761,100 @@ class RESTBackend(AsyncBackend):
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions.
+        """Compute log probabilities for chat completions with diff-based scoring.
 
-        Distributes chats across healthy servers.
+        Groups chats by context before distributing to servers. This ensures that
+        all choices for the same question go to the same server, which is required
+        for diff-based scoring to work correctly.
+
+        Like compute_text_log_probs, this method:
+        1. Groups chats by shared context (same question = same context)
+        2. Distributes groups (not individual chats) across servers
+        3. Each server receives all choices for its assigned questions
+        4. Server-side diff-based scoring identifies answer token ranges
 
         Args:
             chats: List of (context_messages, completion_messages) tuples.
 
         Returns:
             List of LogProbResult with token IDs, per-token logprobs,
-            answer range, and total log probability.
+            answer range, and total log probability (one per input chat, in order).
         """
         if not chats:
             return []
 
-        # Create indexed items
-        items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]] = [
-            (idx, chat) for idx, chat in enumerate(chats)
-        ]
+        from collections import defaultdict
+
+        # Group chats by context (same context = same multiple-choice question)
+        # Maps context_key -> list of (original_idx, completion_messages)
+        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
+            defaultdict(list)
+        )
+        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
+
+        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
+            # Use message content as key (same question → same key)
+            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
+            context_groups[ctx_key].append((i, comp_msgs))
+            context_msgs_by_key[ctx_key] = ctx_msgs
+
+        # Create items as groups: (group_idx, (context_msgs, list[completion_msgs]))
+        # Track mapping from group_idx back to original chat indices
+        group_to_original_indices: dict[int, list[int]] = {}
+        items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]] = []
+
+        for group_idx, (ctx_key, group) in enumerate(context_groups.items()):
+            ctx_msgs = context_msgs_by_key[ctx_key]
+            completion_msgs_list = [comp_msgs for _, comp_msgs in group]
+            original_indices = [orig_idx for orig_idx, _ in group]
+
+            items.append((group_idx, (ctx_msgs, completion_msgs_list)))
+            group_to_original_indices[group_idx] = original_indices
 
         # Capture current placement for the closure
         placement = self._current_placement
 
         def make_payload(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]]
+            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]]
         ) -> dict[str, Any]:
+            # Convert groups to server-side format
+            # Server expects: chats = [(context_msgs, completion_msgs), ...]
+            # We need to flatten groups back into individual chats for the server
+            all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
+            for _, (context, completions) in chunk_items:
+                for completion in completions:
+                    all_chats.append((list(context), list(completion)))
+
             return {
-                "chats": [
-                    (list(context), list(completion))
-                    for _, (context, completion) in chunk_items
-                ],
+                "chats": all_chats,
                 "placement": placement,
             }
 
         def parse_response(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]],
+            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]],
             data: dict[str, Any],
         ) -> list[tuple[int, LogProbResult]]:
-            results = []
-            for (idx, _), result_data in zip(chunk_items, data["results"]):
-                result = LogProbResult(
-                    token_ids=tuple(result_data["token_ids"]),
-                    logprobs=tuple(result_data["logprobs"]),
-                    answer_range=tuple(result_data["answer_range"]),
-                    total_log_prob=result_data["total_log_prob"],
-                )
-                results.append((idx, result))
+            # Server returns flattened results (one per chat)
+            # We need to tag each result with its original index
+            results: list[tuple[int, LogProbResult]] = []
+            result_idx = 0
+
+            for group_idx, (_, completions) in chunk_items:
+                original_indices = group_to_original_indices[group_idx]
+                for orig_idx in original_indices:
+                    r = data["results"][result_idx]
+                    result = LogProbResult(
+                        token_ids=tuple(r["token_ids"]),
+                        logprobs=tuple(r["logprobs"]),
+                        answer_range=tuple(r["answer_range"]),
+                        total_log_prob=r["total_log_prob"],
+                    )
+                    results.append((orig_idx, result))
+                    result_idx += 1
+
             return results
 
-        results = await self._distribute_batch(
+        indexed_results = await self._distribute_batch(
             items=items,
             endpoint="/compute_chat_log_probs",
             make_payload=make_payload,
@@ -817,8 +862,8 @@ class RESTBackend(AsyncBackend):
         )
 
         # Sort by original index and extract results
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
+        indexed_results.sort(key=lambda x: x[0])
+        return [r[1] for r in indexed_results]
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.
