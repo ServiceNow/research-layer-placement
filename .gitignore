@@ -80,3 +80,4 @@ Thumbs.db
 .devenv/
 .devenv.flake.nix
 .nfs*
+tests/.archive/
