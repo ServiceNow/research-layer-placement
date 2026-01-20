@@ -632,6 +632,58 @@ class RESTBackend(AsyncBackend):
         data = await self._call_with_failover("/generate", payload, preferred_server)
         return GenerationResult.model_validate(data)
 
+    def _parse_log_prob_result(self, r: dict[str, Any]) -> "LogProbResult":
+        """Parse a server response dict into a LogProbResult.
+
+        Args:
+            r: Server response dict with token_ids, logprobs, answer_range, total_log_prob.
+
+        Returns:
+            LogProbResult object.
+        """
+        from place_layers.backend.vllm import LogProbResult
+
+        return LogProbResult(
+            token_ids=tuple(r["token_ids"]),
+            logprobs=tuple(r["logprobs"]),
+            answer_range=tuple(r["answer_range"]),
+            total_log_prob=r["total_log_prob"],
+        )
+
+    def _extract_indexed_results[R](
+        self, indexed_results: list[tuple[int, R]]
+    ) -> list[R]:
+        """Sort indexed results by index and extract values.
+
+        Args:
+            indexed_results: List of (index, result) tuples.
+
+        Returns:
+            List of results sorted by index.
+        """
+        indexed_results.sort(key=lambda x: x[0])
+        return [r[1] for r in indexed_results]
+
+    def _get_available_servers(self, context: str = "") -> list[str]:
+        """Get available servers or raise if none available.
+
+        Args:
+            context: Optional context string for error message (e.g., "batch processing").
+
+        Returns:
+            List of available servers.
+
+        Raises:
+            RESTBackendError: If no servers are available.
+        """
+        servers = self._server_pool.get_servers_to_try()
+        if not servers:
+            msg = "No servers available"
+            if context:
+                msg += f" for {context}"
+            raise RESTBackendError(msg)
+        return servers
+
     async def compute_batch_log_probs(
         self,
         traces: Sequence[tuple[Sequence[int], Sequence[int]]],
@@ -651,9 +703,7 @@ class RESTBackend(AsyncBackend):
             return []
 
         # Get servers to use (healthy + due for recovery check)
-        servers = self._server_pool.get_servers_to_try()
-        if not servers:
-            raise RESTBackendError("No servers available for batch processing")
+        servers = self._get_available_servers("batch processing")
 
         # Distribute traces across servers
         indexed_traces: list[tuple[int, tuple[Sequence[int], Sequence[int]]]] = [
@@ -679,8 +729,7 @@ class RESTBackend(AsyncBackend):
         )
 
         # Sort by original index and extract log probs
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
+        return self._extract_indexed_results(results)
 
     async def _distribute_batch[T, R](
         self,
@@ -700,9 +749,7 @@ class RESTBackend(AsyncBackend):
         Returns:
             List of (index, result) tuples.
         """
-        servers = self._server_pool.get_servers_to_try()
-        if not servers:
-            raise RESTBackendError("No servers available")
+        servers = self._get_available_servers()
 
         # Distribute items across servers using round-robin
         # Counter operates on full server list to maintain consistent ordering
@@ -788,15 +835,7 @@ class RESTBackend(AsyncBackend):
             for group_idx, (_, choices) in chunk_items:
                 for _ in choices:
                     r = data["results"][result_idx]
-                    results.append((
-                        group_idx,
-                        LogProbResult(
-                            token_ids=tuple(r["token_ids"]),
-                            logprobs=tuple(r["logprobs"]),
-                            answer_range=tuple(r["answer_range"]),
-                            total_log_prob=r["total_log_prob"],
-                        )
-                    ))
+                    results.append((group_idx, self._parse_log_prob_result(r)))
                     result_idx += 1
             return results
 
@@ -808,8 +847,7 @@ class RESTBackend(AsyncBackend):
         )
 
         # Sort by group index then flatten (results already in choice order within groups)
-        indexed_results.sort(key=lambda x: x[0])
-        return [r[1] for r in indexed_results]
+        return self._extract_indexed_results(indexed_results)
 
     async def compute_chat_log_probs(
         self,
@@ -897,13 +935,7 @@ class RESTBackend(AsyncBackend):
                 original_indices = group_to_original_indices[group_idx]
                 for orig_idx in original_indices:
                     r = data["results"][result_idx]
-                    result = LogProbResult(
-                        token_ids=tuple(r["token_ids"]),
-                        logprobs=tuple(r["logprobs"]),
-                        answer_range=tuple(r["answer_range"]),
-                        total_log_prob=r["total_log_prob"],
-                    )
-                    results.append((orig_idx, result))
+                    results.append((orig_idx, self._parse_log_prob_result(r)))
                     result_idx += 1
 
             return results
@@ -916,8 +948,7 @@ class RESTBackend(AsyncBackend):
         )
 
         # Sort by original index and extract results
-        indexed_results.sort(key=lambda x: x[0])
-        return [r[1] for r in indexed_results]
+        return self._extract_indexed_results(indexed_results)
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.
