@@ -68,8 +68,8 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
     ) -> list[Generation]:
         """Create Generation records from a generation result.
 
-        Skips truncated samples (incomplete text makes correctness checking unreliable).
-        Returns empty list if all samples are truncated.
+        Includes truncated samples with truncated=True and correct=False
+        (incomplete text is treated as incorrect).
         """
         task_name = task.config.task or ""
         generations = []
@@ -77,14 +77,16 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
 
         for sample_idx, sample in enumerate(result.samples):
             if sample.truncated:
-                logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
-                continue
+                logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
+                correct = False  # Truncated = failed to produce complete answer
+            else:
+                correct = check_correctness(task, doc, sample.text)
 
-            correct = check_correctness(task, doc, sample.text)
             gen = Generation(
                 prompt_tokens=tuple(result.prompt_token_ids),
                 completion_tokens=tuple(sample.token_ids),
                 correct=correct,
+                truncated=sample.truncated,
                 problem_id=problem_id,
                 task_name=task_name,
                 sample_idx=sample_idx,

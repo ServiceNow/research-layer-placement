@@ -1,0 +1,18 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on MMLU with every 4th layer as GDN (likelihood)
+#
+# Usage:
+#   python -m place_layers +experiments=eval_mmlu_every4th_gdn
+
+defaults:
+  - /command: evaluate
+  - /evaluator: likelihood
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - /task: mmlu
+  - /placement: every_4th_gdn
+  - _self_
+
+evaluator:
+  use_chat_template: false
+  batch_size: 8

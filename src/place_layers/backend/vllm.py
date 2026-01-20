@@ -68,6 +68,22 @@ class ScoringResult(BaseModel):
     request_id: str = Field(description="Request identifier", default="")
 
 
+class TextScoringResult(BaseModel):
+    """Detailed result of text-based log probability computation."""
+
+    model_config = {"frozen": True}
+
+    token_ids: tuple[int, ...] = Field(description="Full token sequence (context + continuation)")
+    logprobs: tuple[float | None, ...] = Field(
+        description="Per-token logprobs (None for first token)"
+    )
+    answer_range: tuple[int, int] = Field(
+        description="(start, end) indices for continuation tokens"
+    )
+    total_logprob: float = Field(description="Sum of log-probabilities for continuation tokens")
+    request_id: str = Field(description="Request identifier", default="")
+
+
 class VLLMClient:
     """Async client for vLLM's OpenAI-compatible chat completions API.
 
@@ -290,8 +306,8 @@ class VLLMClient:
         context: str,
         continuation: str,
         request_id: str = "",
-    ) -> ScoringResult:
-        """Compute log probability of text continuation given text context.
+    ) -> TextScoringResult:
+        """Compute log probability of text continuation with full token detail.
 
         Unlike score_completion() which requires pre-tokenized inputs, this method
         accepts raw text and uses vLLM's text_offset in the response to determine
@@ -303,7 +319,8 @@ class VLLMClient:
             request_id: Optional identifier for tracking.
 
         Returns:
-            ScoringResult with total log probability and token count.
+            TextScoringResult with token IDs, per-token logprobs, answer range,
+            and total log probability.
         """
         session = self._ensure_session()
         url = f"{self.config.base_url.rstrip('/')}/v1/completions"
@@ -338,6 +355,29 @@ class VLLMClient:
         token_logprobs = logprobs_data.get("token_logprobs", [])
         text_offset = logprobs_data.get("text_offset", [])
 
+        # Extract tokens list
+        tokens = logprobs_data.get("tokens", [])
+
+        # Extract token IDs from prompt_logprobs
+        # vLLM's prompt_logprobs has token IDs as dictionary keys
+        # We find the actual token by matching decoded_token to tokens[i]
+        prompt_logprobs = choice.get("prompt_logprobs", [])
+        prompt_token_ids: list[int] = []
+        for i, token_str in enumerate(tokens):
+            if i < len(prompt_logprobs) and prompt_logprobs[i] is not None:
+                # Find the entry where decoded_token matches our token
+                for token_id_str, info in prompt_logprobs[i].items():
+                    if info.get("decoded_token") == token_str:
+                        prompt_token_ids.append(int(token_id_str))
+                        break
+                else:
+                    # Token not found in prompt_logprobs, use -1 as placeholder
+                    prompt_token_ids.append(-1)
+            else:
+                # First token (position 0) has null prompt_logprobs
+                # We can't determine its ID from this response
+                prompt_token_ids.append(-1)
+
         if not text_offset:
             raise RuntimeError(
                 "vLLM response missing text_offset. "
@@ -355,9 +395,11 @@ class VLLMClient:
 
         if cont_start_idx is None:
             # All tokens are context, no continuation tokens
-            return ScoringResult(
+            return TextScoringResult(
+                token_ids=tuple(prompt_token_ids),
+                logprobs=tuple(token_logprobs),
+                answer_range=(len(prompt_token_ids), len(prompt_token_ids)),
                 total_logprob=0.0,
-                num_completion_tokens=0,
                 request_id=request_id,
             )
 
@@ -367,9 +409,11 @@ class VLLMClient:
         valid_logprobs = [lp for lp in continuation_logprobs if lp is not None]
         total_logprob = sum(valid_logprobs)
 
-        return ScoringResult(
+        return TextScoringResult(
+            token_ids=tuple(prompt_token_ids),
+            logprobs=tuple(token_logprobs),
+            answer_range=(cont_start_idx, len(prompt_token_ids)),
             total_logprob=total_logprob,
-            num_completion_tokens=len(valid_logprobs),
             request_id=request_id,
         )
 

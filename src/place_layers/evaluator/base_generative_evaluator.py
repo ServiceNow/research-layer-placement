@@ -5,7 +5,7 @@ loop infrastructure for evaluators that sample completions from models:
 
 - Sync batched generation with memory logging
 - Async worker pool generation for throughput
-- SkippedProblem handling for errors and truncations
+- SkippedProblem handling for generation errors
 - Progress bars
 - Resumability via _prepare_task()
 
@@ -245,11 +245,11 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                     if records:
                         self._trace_writer.append(records)
                     else:
-                        # All samples were truncated/invalid
+                        # No samples returned (backend issue)
                         skipped = SkippedProblem(
                             problem_id=f"{task_name}:{idx}",
                             task_name=task_name,
-                            reason=f"all {len(result.samples)} samples truncated",
+                            reason="no samples returned",
                         )
                         self._trace_writer.append([skipped])
 
@@ -341,11 +341,11 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             if records:
                                 self._trace_writer.append(records)
                             else:
-                                # All samples were truncated/invalid
+                                # No samples returned (backend issue)
                                 skipped = SkippedProblem(
                                     problem_id=f"{task_name}:{idx}",
                                     task_name=task_name,
-                                    reason=f"all {len(result.samples)} samples truncated",
+                                    reason="no samples returned",
                                 )
                                 self._trace_writer.append([skipped])
 

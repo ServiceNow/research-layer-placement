@@ -151,12 +151,18 @@ class ErrorResponse(BaseModel):
 
 
 class ComputeTextLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of text continuations."""
+    """Request for computing log probabilities of text continuations.
+
+    Uses grouped API where each group is a (context, choices) tuple.
+    The server applies diff-based scoring to find answer token positions.
+    """
 
     model_config = {"frozen": True}
 
-    contexts: list[str] = Field(description="List of context strings")
-    continuations: list[str] = Field(description="List of continuation strings to score")
+    text_groups: list[tuple[str, list[str]]] = Field(
+        description="List of (context, choices) tuples. Each group contains "
+        "a shared context string and a list of choice strings to score."
+    )
     placement: list[str] | None = Field(
         default=None,
         description="Mixer placement for each layer. "
@@ -164,22 +170,12 @@ class ComputeTextLogProbsRequest(BaseModel):
     )
 
 
-class ComputeTextLogProbsResponse(BaseModel):
-    """Response from text log probability computation."""
+class LogProbResultSchema(BaseModel):
+    """Result of log probability computation with full observability."""
 
     model_config = {"frozen": True}
 
-    log_probs: list[float] = Field(
-        description="Log probabilities for each context/continuation pair"
-    )
-
-
-class ChatLogProbResultSchema(BaseModel):
-    """Result of chat log probability computation with full observability."""
-
-    model_config = {"frozen": True}
-
-    token_ids: list[int] = Field(description="Full token sequence for this chat")
+    token_ids: list[int] = Field(description="Full token sequence")
     logprobs: list[float | None] = Field(
         description="Per-token logprobs (None for first token)"
     )
@@ -187,6 +183,17 @@ class ChatLogProbResultSchema(BaseModel):
         description="(start, end) indices for answer tokens"
     )
     total_log_prob: float = Field(description="Sum of logprobs for answer tokens")
+
+
+class ComputeTextLogProbsResponse(BaseModel):
+    """Response from text log probability computation."""
+
+    model_config = {"frozen": True}
+
+    results: list[LogProbResultSchema] = Field(
+        description="Log probability results (flattened across all groups). "
+        "Results are ordered by group, then by choice within each group."
+    )
 
 
 class ComputeChatLogProbsRequest(BaseModel):
@@ -209,6 +216,6 @@ class ComputeChatLogProbsResponse(BaseModel):
 
     model_config = {"frozen": True}
 
-    results: list[ChatLogProbResultSchema] = Field(
+    results: list[LogProbResultSchema] = Field(
         description="Log probability results for each chat"
     )
