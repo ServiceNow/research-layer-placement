@@ -45,6 +45,7 @@ poetry.lock
 
 # Hydra
 outputs/
+outputs*/
 multirun/
 .hydra/
 

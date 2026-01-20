@@ -28,7 +28,6 @@ from place_layers.evaluator.lm_eval_utils import (
     TaskSpecInput,
     get_docs,
     get_task_name,
-    load_task,
     load_tasks,
 )
 
@@ -47,6 +46,7 @@ class TaskBasedEvaluator(BackendEvaluator):
 
     Subclasses must implement:
     - evaluate(): The actual evaluation logic
+    - _get_fewshot_seed(): Return seed for few-shot sampling (or None)
 
     Must be used as an async context manager:
 
@@ -63,35 +63,45 @@ class TaskBasedEvaluator(BackendEvaluator):
             config: Evaluator configuration with task settings.
         """
         super().__init__(config)
-        # Cache for batch-loaded tasks (populated on first use)
+        # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
 
-    def _ensure_tasks_loaded(self, seed: int | None = None) -> None:
-        """Load all tasks upfront with batch loading for efficiency.
+    def _get_fewshot_seed(self) -> int | None:
+        """Return seed for few-shot sampling, or None for default behavior.
 
-        This is called once before evaluation begins. Loading all tasks together
-        with a shared TaskManager is ~6x faster than loading them individually.
-
-        Args:
-            seed: Random seed for few-shot sampling (optional).
+        Subclasses can override this to provide a specific seed.
+        Default implementation returns None (no seed).
         """
-        if self._task_cache is not None:
-            return  # Already loaded
+        return None
 
+    async def __aenter__(self) -> Self:
+        """Enter context: initialize backend and load tasks.
+
+        Tasks are loaded here (not in __init__) because:
+        1. Backend must be initialized first
+        2. Seed may depend on evaluator-specific logic (_get_fewshot_seed)
+        3. Loading all tasks upfront is ~6x faster than individual loading
+        """
+        # Initialize backend first
+        await super().__aenter__()
+
+        # Load all tasks upfront for efficiency
+        seed = self._get_fewshot_seed()
         logger.info(f"Batch-loading {len(self.config.tasks)} tasks...")
         self._task_cache = load_tasks(self.config.tasks, self.config.num_fewshot, seed)
         logger.info(f"Loaded {len(self._task_cache)} tasks")
+
+        return self
 
     def _prepare_task(
         self,
         task_spec: TaskSpecInput,
         expected_output_type: Literal["generate_until", "multiple_choice"],
-        seed: int | None = None,
     ) -> tuple["Task", str, Docs, list[int]] | None:
-        """Load task and get remaining problem indices.
+        """Get task from cache and prepare for evaluation.
 
         This handles:
-        - Loading the lm-eval task (using batch-loaded cache if available)
+        - Retrieving the pre-loaded task from cache
         - Validating task type (generate_until or multiple_choice)
         - Getting documents for the configured split
         - Applying max_problems limit
@@ -101,7 +111,6 @@ class TaskBasedEvaluator(BackendEvaluator):
         Args:
             task_spec: Task name or TaskSpec with overrides.
             expected_output_type: Expected task type ('generate_until' or 'multiple_choice').
-            seed: Random seed for few-shot sampling (optional).
 
         Returns:
             None if task is already complete.
@@ -110,12 +119,13 @@ class TaskBasedEvaluator(BackendEvaluator):
         task_name = get_task_name(task_spec)
         logger.info(f"Task '{task_name}': preparing...")
 
-        # Use batch-loaded cache if available, otherwise load individually
-        if self._task_cache is not None:
-            task = self._task_cache[task_name]
-        else:
-            # Fallback to individual loading (slower but works)
-            task = load_task(task_spec, self.config.num_fewshot, seed)
+        # Tasks are always pre-loaded in __aenter__, so cache should never be None
+        if self._task_cache is None:
+            raise RuntimeError(
+                "Tasks not loaded. TaskBasedEvaluator must be used as async context manager."
+            )
+
+        task = self._task_cache[task_name]
 
         # Validate task type
         if task.config.output_type != expected_output_type:
