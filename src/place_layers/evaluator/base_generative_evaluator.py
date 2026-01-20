@@ -230,7 +230,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             task_name=task_name,
                             reason=str(e),
                         )
-                        await self._trace_writer.append([skipped])
+                        self._trace_writer.append_sync([skipped])
 
                     # Try to recover memory
                     force_garbage_collection()
@@ -243,7 +243,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                     records = self._make_records(task, doc, idx, result)
 
                     if records:
-                        await self._trace_writer.append(records)
+                        self._trace_writer.append_sync(records)
                     else:
                         # No samples returned (backend issue)
                         skipped = SkippedProblem(
@@ -251,7 +251,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             task_name=task_name,
                             reason="no samples returned",
                         )
-                        await self._trace_writer.append([skipped])
+                        self._trace_writer.append_sync([skipped])
 
                 processed += len(batch_indices)
                 progress.advance(progress_task, len(batch_indices))

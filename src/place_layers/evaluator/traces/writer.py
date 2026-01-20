@@ -73,6 +73,29 @@ class TraceWriter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
 
+    def append_sync(self, records: Sequence[TraceRecord]) -> None:
+        """Append records synchronously (for sync backends like Transformers).
+
+        Args:
+            records: Records to append.
+        """
+        # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
+        valid = [
+            r for r in records
+            if isinstance(r, (BaseGeneration, LikelihoodRecord, ISProblemRecord))
+        ]
+        skipped = [r for r in records if isinstance(r, SkippedProblem)]
+
+        if valid:
+            with (self.output_dir / "validation.jsonl").open("a") as f:
+                for record in valid:
+                    f.write(record.model_dump_json() + "\n")
+
+        if skipped:
+            with (self.output_dir / "skipped.jsonl").open("a") as f:
+                for record in skipped:
+                    f.write(record.model_dump_json() + "\n")
+
     async def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type.
 
