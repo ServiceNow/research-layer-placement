@@ -73,11 +73,11 @@ class TraceWriter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
 
-    def append_sync(self, records: Sequence[TraceRecord]) -> None:
-        """Append records synchronously (for sync backends like Transformers).
+    def _write_records(self, records: Sequence[TraceRecord]) -> None:
+        """Write records to disk (internal, no locking).
 
         Args:
-            records: Records to append.
+            records: Records to write.
         """
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
@@ -96,6 +96,14 @@ class TraceWriter:
                 for record in skipped:
                     f.write(record.model_dump_json() + "\n")
 
+    def append_sync(self, records: Sequence[TraceRecord]) -> None:
+        """Append records synchronously (for sync backends like Transformers).
+
+        Args:
+            records: Records to append.
+        """
+        self._write_records(records)
+
     async def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type.
 
@@ -103,24 +111,9 @@ class TraceWriter:
         Records may be written out of submission order when multiple tasks run in parallel,
         but this is safe since all downstream code (resumability, summarization) is order-independent.
         """
-        # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
-        valid = [
-            r for r in records
-            if isinstance(r, (BaseGeneration, LikelihoodRecord, ISProblemRecord))
-        ]
-        skipped = [r for r in records if isinstance(r, SkippedProblem)]
-
         # Acquire lock to ensure atomic file writes
         async with self._lock:
-            if valid:
-                with (self.output_dir / "validation.jsonl").open("a") as f:
-                    for record in valid:
-                        f.write(record.model_dump_json() + "\n")
-
-            if skipped:
-                with (self.output_dir / "skipped.jsonl").open("a") as f:
-                    for record in skipped:
-                        f.write(record.model_dump_json() + "\n")
+            self._write_records(records)
 
     def get_completed_problems(self, task_name: str) -> set[int]:
         """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
