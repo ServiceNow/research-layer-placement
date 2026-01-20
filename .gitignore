@@ -79,3 +79,4 @@ Thumbs.db
 # Devenv
 .devenv/
 .devenv.flake.nix
+.nfs*
