@@ -311,8 +311,10 @@ class RESTBackend(AsyncBackend):
             await self._session.close()
             raise
 
+        healthy = self._server_pool.healthy_count()
+        total = len(self._server_pool.servers)
         logger.info(
-            f"REST backend initialized with {len(self._server_pool.servers)} servers, "
+            f"REST backend initialized with {healthy}/{total} healthy servers, "
             f"max {self.max_concurrent_requests} concurrent requests"
         )
         if self._model_structure:
@@ -458,13 +460,15 @@ class RESTBackend(AsyncBackend):
             raise RESTBackendError(f"Connection error to {server}: {e}") from e
 
     async def _validate_servers(self) -> None:
-        """Validate all servers are reachable and have consistent configuration.
+        """Validate servers and check configuration consistency.
 
-        Fetches /info from all servers in parallel, verifies they're all healthy,
-        and checks that they all have the same configuration.
+        Fetches /info from all servers in parallel. Servers that fail to respond
+        are marked as unhealthy and will be retried during evaluation. At least
+        one server must be reachable. All reachable servers must have consistent
+        configuration.
 
         Raises:
-            RESTBackendError: If any server is unreachable or configurations differ.
+            RESTBackendError: If no servers are reachable or configurations differ.
         """
         session = self._ensure_session()
 
@@ -489,14 +493,25 @@ class RESTBackend(AsyncBackend):
         for server, data, error in results:
             if error is not None:
                 failed.append((server, error))
+                # Mark as unhealthy - will be retried during evaluation
+                self._server_pool.mark_failure(server)
             else:
                 assert data is not None  # If no error, data must exist
                 infos.append((server, data))
 
-        if failed:
+        if not infos:
+            # No servers reachable at all
             failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
             raise RESTBackendError(
-                f"Failed to connect to {len(failed)}/{len(self._server_pool.servers)} servers: {failed_msg}"
+                f"Failed to connect to all {len(self._server_pool.servers)} servers: {failed_msg}"
+            )
+
+        if failed:
+            # Some servers failed but at least one succeeded
+            failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
+            logger.warning(
+                f"Failed to connect to {len(failed)}/{len(self._server_pool.servers)} servers "
+                f"during initialization: {failed_msg}. These servers will be retried during evaluation."
             )
 
         # All succeeded - validate consistency
@@ -612,7 +627,9 @@ class RESTBackend(AsyncBackend):
             "placement": self._current_placement,
         }
 
-        data = await self._call_with_failover("/generate", payload)
+        # Use round-robin to select the preferred server for load balancing
+        preferred_server = self._server_pool.get_next_server_round_robin()
+        data = await self._call_with_failover("/generate", payload, preferred_server)
         return GenerationResult.model_validate(data)
 
     async def compute_batch_log_probs(
