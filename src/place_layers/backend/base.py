@@ -770,6 +770,7 @@ class TransformersBackend(SyncBackend):
             torch_dtype=config.torch_dtype,
             device_map=config.device_map,
             trust_remote_code=config.trust_remote_code,
+            revision=config.revision,
         )
         self._client = TransformersClient(client_config)
 
@@ -1151,6 +1152,10 @@ class TransformersBackendConfig(BaseBackendConfig):
         default=1,
         description="Number of prompts to batch together for generation",
         gt=0,
+    )
+    revision: str | None = Field(
+        default=None,
+        description="HuggingFace revision (branch, tag, or commit hash)",
     )
 
 

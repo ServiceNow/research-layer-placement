@@ -38,6 +38,10 @@ class BaseGeneration(BaseModel):
         description="Whether the answer extracted from completion is correct. "
         "None if correctness could not be determined."
     )
+    truncated: bool = Field(
+        default=False,
+        description="Whether generation hit max tokens without EOS.",
+    )
 
     # Metadata
     problem_id: str = Field(
@@ -342,6 +346,7 @@ class TraceDataset(BaseModel):
         task_names: set[str] = set()
         malformed = 0
 
+        truncated_count = 0
         if validation_path.exists():
             with validation_path.open() as f:
                 for line in f:
@@ -350,6 +355,10 @@ class TraceDataset(BaseModel):
                         continue
                     try:
                         trace = Trace.model_validate_json(line)
+                        # Skip truncated traces - they have incomplete reasoning
+                        if trace.truncated:
+                            truncated_count += 1
+                            continue
                         all_traces.append(trace)
                         task_names.add(trace.task_name)
                     except Exception:
@@ -357,6 +366,8 @@ class TraceDataset(BaseModel):
 
         if malformed > 0:
             logger.warning(f"{malformed} malformed lines ignored in validation.jsonl")
+        if truncated_count > 0:
+            logger.info(f"{truncated_count} truncated traces skipped (incomplete reasoning)")
 
         return cls(
             traces=tuple(all_traces),

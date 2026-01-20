@@ -11,4 +11,5 @@ tokenizer_path: null  # Defaults to model_path if null
 torch_dtype: ${model.torch_dtype}
 device_map: cuda
 trust_remote_code: ${model.trust_remote_code}
+revision: null  # HuggingFace revision (branch, tag, or commit hash)
 batch_size: 4
