@@ -82,3 +82,4 @@ Thumbs.db
 .nfs*
 tests/.archive/
 tests/.archive/
+.scratch/
