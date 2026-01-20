@@ -1,0 +1,3744 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "FastAPI",
+        "version": "0.1.0"
+    },
+    "paths": {
+        "/version": {
+            "get": {
+                "summary": "Get Version",
+                "operationId": "get_version_version_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Version"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "summary": "Set Version",
+                "operationId": "set_version_version_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Version"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Index",
+                "operationId": "index_api_v1__get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Stats"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/jobs": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Get Jobs",
+                "operationId": "get_jobs_api_v1_jobs_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Stats"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Create Jobs",
+                "operationId": "create_jobs_api_v1_jobs_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "items": {
+                                    "$ref": "#/components/schemas/JobSpec-Input"
+                                },
+                                "type": "array",
+                                "title": "Jobs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/PAJobSpec"
+                                    },
+                                    "type": "array",
+                                    "title": "Response Create Jobs Api V1 Jobs Post"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/stats": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Get Stats",
+                "operationId": "get_stats_api_v1_stats_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Stats"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/jobs/{index_or_job_id}/kill": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Kill Job",
+                "operationId": "kill_job_api_v1_jobs__index_or_job_id__kill_get",
+                "parameters": [
+                    {
+                        "name": "index_or_job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "integer"
+                                },
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "string",
+                                    "format": "uuid"
+                                }
+                            ],
+                            "title": "Index Or Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/KillJob"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/jobs/{index_or_job_id}/rerun": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Rerun Job",
+                "operationId": "rerun_job_api_v1_jobs__index_or_job_id__rerun_get",
+                "parameters": [
+                    {
+                        "name": "index_or_job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "integer"
+                                },
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "string",
+                                    "format": "uuid"
+                                }
+                            ],
+                            "title": "Index Or Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RerunJob"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/jobs/{index_or_job_id}": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Get Jobs Status",
+                "operationId": "get_jobs_status_api_v1_jobs__index_or_job_id__get",
+                "parameters": [
+                    {
+                        "name": "index_or_job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "integer"
+                                },
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "string",
+                                    "format": "uuid"
+                                }
+                            ],
+                            "title": "Index Or Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "anyOf": [
+                                        {
+                                            "$ref": "#/components/schemas/PAJob"
+                                        },
+                                        {
+                                            "$ref": "#/components/schemas/PAJobSpec"
+                                        }
+                                    ],
+                                    "title": "Response Get Jobs Status Api V1 Jobs  Index Or Job Id  Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/metrics": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Get Metrics",
+                "operationId": "get_metrics_api_v1_metrics_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary",
+                                    "title": "Response Get Metrics Api V1 Metrics Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/shutdown": {
+            "get": {
+                "tags": [
+                    "User routes"
+                ],
+                "summary": "Shutdown",
+                "operationId": "shutdown_api_v1_shutdown_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/health": {
+            "get": {
+                "tags": [
+                    "Governor routes V1"
+                ],
+                "summary": "V1 Health",
+                "operationId": "v1_health_v1_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthCheck"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/jobs": {
+            "get": {
+                "tags": [
+                    "Governor routes V1"
+                ],
+                "summary": "V1 Submit Jobs",
+                "operationId": "v1_submit_jobs_v1_jobs_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobsOpsV1"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Governor routes V1"
+                ],
+                "summary": "V1 Update Jobs",
+                "operationId": "v1_update_jobs_v1_jobs_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array",
+                                "title": "Jobs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v2/health": {
+            "get": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Health",
+                "operationId": "v2_health_governor_v2_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthCheck"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v2/jobs": {
+            "get": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Submit Jobs",
+                "operationId": "v2_submit_jobs_governor_v2_jobs_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobsOpsV2-Output"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Update Jobs",
+                "operationId": "v2_update_jobs_governor_v2_jobs_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array",
+                                "title": "Jobs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v2/early_kill": {
+            "get": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Early Kill Jobs Get",
+                "operationId": "v2_early_kill_jobs_get_governor_v2_early_kill_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EarlyKillOps"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Early Kill Jobs Put",
+                "operationId": "v2_early_kill_jobs_put_governor_v2_early_kill_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/EarlyKillOps"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v2/ops": {
+            "put": {
+                "tags": [
+                    "Governor routes V2"
+                ],
+                "summary": "V2 Update Jobs Spec",
+                "operationId": "v2_update_jobs_spec_governor_v2_ops_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/JobsOpsV2-Input"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v3/health": {
+            "get": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Health",
+                "operationId": "v3_health_governor_v3_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthCheck"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v3/jobs": {
+            "get": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Submit Jobs",
+                "operationId": "v3_submit_jobs_governor_v3_jobs_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobsOpsV2-Output"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Update Jobs",
+                "operationId": "v3_update_jobs_governor_v3_jobs_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array",
+                                "title": "Jobs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v3/early_kill": {
+            "get": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Early Kill Jobs Get",
+                "operationId": "v3_early_kill_jobs_get_governor_v3_early_kill_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EarlyKillOps"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Early Kill Jobs Put",
+                "operationId": "v3_early_kill_jobs_put_governor_v3_early_kill_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/EarlyKillOps"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/governor/v3/ops": {
+            "put": {
+                "tags": [
+                    "Governor routes V3"
+                ],
+                "summary": "V3 Update Jobs Spec",
+                "operationId": "v3_update_jobs_spec_governor_v3_ops_put",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/JobsOpsV2-Input"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "EarlyKillOps": {
+                "properties": {
+                    "jobs": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "integer"
+                                },
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "string",
+                                    "format": "uuid"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Jobs",
+                        "description": "List of job ID or index of jobs early killed"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "jobs"
+                ],
+                "title": "EarlyKillOps"
+            },
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "HealthCheck": {
+                "properties": {
+                    "isReady": {
+                        "type": "boolean",
+                        "title": "Isready",
+                        "description": "Define if process agent is ready",
+                        "default": false
+                    },
+                    "isShutdown": {
+                        "type": "boolean",
+                        "title": "Isshutdown",
+                        "description": "Define if process agent is shutdown",
+                        "default": false
+                    }
+                },
+                "type": "object",
+                "title": "HealthCheck"
+            },
+            "Job": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job (used in computing priority",
+                        "default": 0
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "Command to run",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "List of data mount points",
+                        "default": []
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "List of environment variable",
+                        "default": []
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "default": "ubuntu"
+                    },
+                    "isProcessAgent": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Isprocessagent",
+                        "description": "Enable the job as a Process Agent. Process Agent allows an efficient way to spawn children jobs without pulling for updates",
+                        "default": false
+                    },
+                    "role": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Role",
+                        "description": "Role to use with the job. Allow to query short living token for the role to request Toolkit API.",
+                        "default": ""
+                    },
+                    "scopes": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scopes",
+                        "description": "Set of permissions to be used on behalf of the user by the job"
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Working directory inside the container.",
+                        "default": ""
+                    },
+                    "resources": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobSpecResources"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "Interactive job. To be scheduled as soon as possible, regardless of the user's cluster occupancy. Limit of 1 per user",
+                        "default": false
+                    },
+                    "maxRunTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntime",
+                        "description": "Maximum job execution time in seconds.",
+                        "default": 0
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Allow job to be interrupted.",
+                        "default": false
+                    },
+                    "restartable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Restartable",
+                        "description": "Allow job to be interrupted and directly restarted as QUEUING.",
+                        "default": false
+                    },
+                    "replicaFailuresAllowed": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicafailuresallowed",
+                        "description": "Maximum number of replica failures allowed before cancelling all replica jobs (0 to replicas-1). Default is 0, meaning any failure cancels all replica jobs.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|([a-z0-9_]*)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "description": "Name of the resource"
+                    },
+                    "tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Tag"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tags",
+                        "description": "Tags of the resource"
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "default": {}
+                    },
+                    "id": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$",
+                        "title": "Id",
+                        "description": "Unique id of the resource"
+                    },
+                    "urn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(:(account|policy|role|user|team|privateregistry):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(:(data|job|service|role|policy|privateregistry):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?)?)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Urn",
+                        "description": "URN of the resource"
+                    },
+                    "fullName": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|[a-z0-9_]+(\\.[a-z0-9_]+)*$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fullname",
+                        "description": "Full name of the resource, including its parent full name followed by its name"
+                    },
+                    "organization": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+)$$",
+                        "title": "Organization",
+                        "description": "Organization of the resource"
+                    },
+                    "account": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$",
+                        "title": "Account",
+                        "description": "Account of the resource"
+                    },
+                    "creator": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$",
+                        "title": "Creator",
+                        "description": "Creator of the resource"
+                    },
+                    "created": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created",
+                        "description": "Date and time when the resource was created"
+                    },
+                    "owner": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Owner",
+                        "description": "Owner of the resource"
+                    },
+                    "ownerInherited": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ownerinherited",
+                        "description": "Owner Inherited of the resource"
+                    },
+                    "alive": {
+                        "type": "boolean",
+                        "title": "Alive"
+                    },
+                    "state": {
+                        "$ref": "#/components/schemas/JobState"
+                    },
+                    "stateInfo": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stateinfo",
+                        "default": ""
+                    },
+                    "updatedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Updatedon"
+                    },
+                    "processAgent": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Processagent",
+                        "description": "Id of the parent process agent"
+                    },
+                    "children": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/JobChildrenByState"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Children",
+                        "default": []
+                    },
+                    "replicaGroupId": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicagroupid",
+                        "description": "Id of the replica group"
+                    },
+                    "replicaRank": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 1024.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicarank",
+                        "description": "ReplicaRank used by the replica job",
+                        "default": 0
+                    },
+                    "runs": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/JobRun"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Runs"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "organization",
+                    "account",
+                    "creator",
+                    "created",
+                    "alive",
+                    "state"
+                ],
+                "title": "Job"
+            },
+            "JobChildrenByState": {
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "title": "State"
+                    },
+                    "jobs": {
+                        "items": {
+                            "type": "string",
+                            "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$"
+                        },
+                        "type": "array",
+                        "title": "Jobs"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "state",
+                    "jobs"
+                ],
+                "title": "JobChildrenByState"
+            },
+            "JobRun": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$",
+                        "title": "Id"
+                    },
+                    "jobId": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Jobid"
+                    },
+                    "createdOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Createdon"
+                    },
+                    "queuedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Queuedon"
+                    },
+                    "waitingTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Waitingtime"
+                    },
+                    "startedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Startedon"
+                    },
+                    "startupTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Startuptime"
+                    },
+                    "cancelRequestedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cancelrequestedon",
+                        "description": "Date of the request for the cancellation of the job"
+                    },
+                    "cancelRequestedBy": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cancelrequestedby",
+                        "description": "User/Role who has requested the cancellation of the job"
+                    },
+                    "stateInfo": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stateinfo",
+                        "default": ""
+                    },
+                    "endedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Endedon"
+                    },
+                    "runTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Runtime"
+                    },
+                    "totalTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Totaltime"
+                    },
+                    "ip": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ip"
+                    },
+                    "info": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Info"
+                    },
+                    "state": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobState"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": "QUEUING"
+                    },
+                    "exitCode": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 255.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Exitcode"
+                    },
+                    "resourceUsageUrl": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Resourceusageurl"
+                    },
+                    "nodeName": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Nodename"
+                    },
+                    "job": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/Job"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id"
+                ],
+                "title": "JobRun"
+            },
+            "JobSpec-Input": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job (used in computing priority",
+                        "default": 0
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "Command to run",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "List of data mount points",
+                        "default": []
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "List of environment variable",
+                        "default": []
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "default": "ubuntu"
+                    },
+                    "isProcessAgent": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Isprocessagent",
+                        "description": "Enable the job as a Process Agent. Process Agent allows an efficient way to spawn children jobs without pulling for updates",
+                        "default": false
+                    },
+                    "role": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Role",
+                        "description": "Role to use with the job. Allow to query short living token for the role to request Toolkit API.",
+                        "default": ""
+                    },
+                    "scopes": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scopes",
+                        "description": "Set of permissions to be used on behalf of the user by the job"
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Working directory inside the container.",
+                        "default": ""
+                    },
+                    "resources": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobSpecResources"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "Interactive job. To be scheduled as soon as possible, regardless of the user's cluster occupancy. Limit of 1 per user",
+                        "default": false
+                    },
+                    "maxRunTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntime",
+                        "description": "Maximum job execution time in seconds.",
+                        "default": 0
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Allow job to be interrupted.",
+                        "default": false
+                    },
+                    "restartable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Restartable",
+                        "description": "Allow job to be interrupted and directly restarted as QUEUING.",
+                        "default": false
+                    },
+                    "replicaFailuresAllowed": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicafailuresallowed",
+                        "description": "Maximum number of replica failures allowed before cancelling all replica jobs (0 to replicas-1). Default is 0, meaning any failure cancels all replica jobs.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "default": ""
+                    },
+                    "tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Tag"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tags",
+                        "description": "Tags of the resource"
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "default": {}
+                    }
+                },
+                "type": "object",
+                "title": "JobSpec"
+            },
+            "JobSpecResources": {
+                "properties": {
+                    "cpu": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cpu",
+                        "description": "Number of requested CPUs.",
+                        "default": 1
+                    },
+                    "cpuModel": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cpumodel",
+                        "description": "CPU model filter. A leading '!' reverses the filter.",
+                        "default": ""
+                    },
+                    "mem": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Mem",
+                        "description": "Requested amount of memory in gigabytes.",
+                        "default": 1
+                    },
+                    "gpu": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gpu",
+                        "description": "Number of requested GPUs.",
+                        "default": 0
+                    },
+                    "gpuMem": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gpumem",
+                        "description": "Requested amount of memory per GPU in gigabytes (used as a minimum to filter the GPU models).",
+                        "default": 0
+                    },
+                    "gpuModel": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gpumodel",
+                        "description": "GPU model filter. A leading '!' reverses the filter.",
+                        "default": ""
+                    },
+                    "gpuTensorCores": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gputensorcores",
+                        "description": "Request GPU tensor-cores.",
+                        "default": false
+                    },
+                    "gpuCudaVersion": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gpucudaversion",
+                        "description": "Required CUDA version.",
+                        "default": 0
+                    },
+                    "inference": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Inference",
+                        "description": "Request inference node.",
+                        "default": false
+                    },
+                    "replicas": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 1024.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicas",
+                        "description": "Number of replica to create for a replica job",
+                        "default": 0
+                    }
+                },
+                "type": "object",
+                "title": "JobSpecResources"
+            },
+            "JobState": {
+                "type": "string",
+                "enum": [
+                    "QUEUING",
+                    "QUEUED",
+                    "RUNNING",
+                    "CANCELLING",
+                    "CANCELLED",
+                    "INTERRUPTED",
+                    "FAILED",
+                    "SUCCEEDED"
+                ],
+                "title": "JobState"
+            },
+            "JobsOpsV1": {
+                "properties": {
+                    "submit_parallel": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Submit Parallel",
+                        "description": "Indicates if the submitted jobs are to be started in parallel",
+                        "default": false
+                    },
+                    "submit": {
+                        "items": {
+                            "$ref": "#/components/schemas/process_agent__models__jsv_models__JobSpec"
+                        },
+                        "type": "array",
+                        "title": "Submit",
+                        "description": "List of JobSpec to submit"
+                    },
+                    "rerun": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Rerun",
+                        "description": "List of jobId to rerun"
+                    },
+                    "kill": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Kill",
+                        "description": "List of jobId to kill"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "submit",
+                    "rerun",
+                    "kill"
+                ],
+                "title": "JobsOpsV1"
+            },
+            "JobsOpsV2-Input": {
+                "properties": {
+                    "submit_parallel": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Submit Parallel",
+                        "description": "Indicates if the submitted jobs are to be started in parallel",
+                        "default": false
+                    },
+                    "submit": {
+                        "items": {
+                            "$ref": "#/components/schemas/JobSpec-Input"
+                        },
+                        "type": "array",
+                        "title": "Submit",
+                        "description": "List of JobSpec to submit"
+                    },
+                    "rerun": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Rerun",
+                        "description": "List of jobId to rerun"
+                    },
+                    "kill": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Kill",
+                        "description": "List of jobId to kill"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "submit",
+                    "rerun",
+                    "kill"
+                ],
+                "title": "JobsOpsV2"
+            },
+            "JobsOpsV2-Output": {
+                "properties": {
+                    "submit_parallel": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Submit Parallel",
+                        "description": "Indicates if the submitted jobs are to be started in parallel",
+                        "default": false
+                    },
+                    "submit": {
+                        "items": {
+                            "$ref": "#/components/schemas/process_agent__models__toolkit_models__JobSpec"
+                        },
+                        "type": "array",
+                        "title": "Submit",
+                        "description": "List of JobSpec to submit"
+                    },
+                    "rerun": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Rerun",
+                        "description": "List of jobId to rerun"
+                    },
+                    "kill": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Kill",
+                        "description": "List of jobId to kill"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "submit",
+                    "rerun",
+                    "kill"
+                ],
+                "title": "JobsOpsV2"
+            },
+            "KillJob": {
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Human readable message",
+                        "default": ""
+                    },
+                    "killed": {
+                        "type": "boolean",
+                        "title": "Killed",
+                        "description": "Indicates if the job was killed",
+                        "default": false
+                    },
+                    "job": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/PAJob"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PAJobSpec"
+                            }
+                        ],
+                        "title": "Job",
+                        "description": "Job or JobSpec"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job"
+                ],
+                "title": "KillJob"
+            },
+            "PAJob": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job (used in computing priority",
+                        "default": 0
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "Command to run",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "List of data mount points",
+                        "default": []
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "List of environment variable",
+                        "default": []
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "default": "ubuntu"
+                    },
+                    "isProcessAgent": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Isprocessagent",
+                        "description": "Enable the job as a Process Agent. Process Agent allows an efficient way to spawn children jobs without pulling for updates",
+                        "default": false
+                    },
+                    "role": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Role",
+                        "description": "Role to use with the job. Allow to query short living token for the role to request Toolkit API.",
+                        "default": ""
+                    },
+                    "scopes": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scopes",
+                        "description": "Set of permissions to be used on behalf of the user by the job"
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Working directory inside the container.",
+                        "default": ""
+                    },
+                    "resources": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobSpecResources"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "Interactive job. To be scheduled as soon as possible, regardless of the user's cluster occupancy. Limit of 1 per user",
+                        "default": false
+                    },
+                    "maxRunTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntime",
+                        "description": "Maximum job execution time in seconds.",
+                        "default": 0
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Allow job to be interrupted.",
+                        "default": false
+                    },
+                    "restartable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Restartable",
+                        "description": "Allow job to be interrupted and directly restarted as QUEUING.",
+                        "default": false
+                    },
+                    "replicaFailuresAllowed": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicafailuresallowed",
+                        "description": "Maximum number of replica failures allowed before cancelling all replica jobs (0 to replicas-1). Default is 0, meaning any failure cancels all replica jobs.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|([a-z0-9_]*)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "description": "Name of the resource"
+                    },
+                    "tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Tag"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tags",
+                        "description": "Tags of the resource"
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "default": {}
+                    },
+                    "id": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$",
+                        "title": "Id",
+                        "description": "Unique id of the resource"
+                    },
+                    "urn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(:(account|policy|role|user|team|privateregistry):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(:(data|job|service|role|policy|privateregistry):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?)?)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Urn",
+                        "description": "URN of the resource"
+                    },
+                    "fullName": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^|[a-z0-9_]+(\\.[a-z0-9_]+)*$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Fullname",
+                        "description": "Full name of the resource, including its parent full name followed by its name"
+                    },
+                    "organization": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+)$$",
+                        "title": "Organization",
+                        "description": "Organization of the resource"
+                    },
+                    "account": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$",
+                        "title": "Account",
+                        "description": "Account of the resource"
+                    },
+                    "creator": {
+                        "type": "string",
+                        "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$",
+                        "title": "Creator",
+                        "description": "Creator of the resource"
+                    },
+                    "created": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created",
+                        "description": "Date and time when the resource was created"
+                    },
+                    "owner": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Owner",
+                        "description": "Owner of the resource"
+                    },
+                    "ownerInherited": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ownerinherited",
+                        "description": "Owner Inherited of the resource"
+                    },
+                    "alive": {
+                        "type": "boolean",
+                        "title": "Alive"
+                    },
+                    "state": {
+                        "$ref": "#/components/schemas/JobState"
+                    },
+                    "stateInfo": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stateinfo",
+                        "default": ""
+                    },
+                    "updatedOn": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Updatedon"
+                    },
+                    "processAgent": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Processagent",
+                        "description": "Id of the parent process agent"
+                    },
+                    "children": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/JobChildrenByState"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Children",
+                        "default": []
+                    },
+                    "replicaGroupId": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})|([a-z0-9_]+(\\.[a-z0-9_]+)+)$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicagroupid",
+                        "description": "Id of the replica group"
+                    },
+                    "replicaRank": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 1024.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicarank",
+                        "description": "ReplicaRank used by the replica job",
+                        "default": 0
+                    },
+                    "runs": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/JobRun"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Runs"
+                    },
+                    "pa_updated_on": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pa Updated On"
+                    },
+                    "pa_fetched_on": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pa Fetched On"
+                    },
+                    "previous_pa_state": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/PAState"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "pa_state": {
+                        "$ref": "#/components/schemas/PAState",
+                        "default": "PENDING"
+                    },
+                    "pa_state_changed": {
+                        "type": "boolean",
+                        "title": "Pa State Changed",
+                        "default": false
+                    },
+                    "state_changed": {
+                        "type": "boolean",
+                        "title": "State Changed",
+                        "default": false
+                    },
+                    "is_spec": {
+                        "type": "boolean",
+                        "title": "Is Spec",
+                        "default": false
+                    },
+                    "index": {
+                        "type": "integer",
+                        "minimum": 0.0,
+                        "title": "Index"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "organization",
+                    "account",
+                    "creator",
+                    "created",
+                    "alive",
+                    "state",
+                    "index"
+                ],
+                "title": "PAJob"
+            },
+            "PAJobSpec": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job (used in computing priority",
+                        "default": 0
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "Command to run",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "List of data mount points",
+                        "default": []
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "List of environment variable",
+                        "default": []
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "default": "ubuntu"
+                    },
+                    "isProcessAgent": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Isprocessagent",
+                        "description": "Enable the job as a Process Agent. Process Agent allows an efficient way to spawn children jobs without pulling for updates",
+                        "default": false
+                    },
+                    "role": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Role",
+                        "description": "Role to use with the job. Allow to query short living token for the role to request Toolkit API.",
+                        "default": ""
+                    },
+                    "scopes": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scopes",
+                        "description": "Set of permissions to be used on behalf of the user by the job"
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Working directory inside the container.",
+                        "default": ""
+                    },
+                    "resources": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobSpecResources"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "Interactive job. To be scheduled as soon as possible, regardless of the user's cluster occupancy. Limit of 1 per user",
+                        "default": false
+                    },
+                    "maxRunTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntime",
+                        "description": "Maximum job execution time in seconds.",
+                        "default": 0
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Allow job to be interrupted.",
+                        "default": false
+                    },
+                    "restartable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Restartable",
+                        "description": "Allow job to be interrupted and directly restarted as QUEUING.",
+                        "default": false
+                    },
+                    "replicaFailuresAllowed": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicafailuresallowed",
+                        "description": "Maximum number of replica failures allowed before cancelling all replica jobs (0 to replicas-1). Default is 0, meaning any failure cancels all replica jobs.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "default": ""
+                    },
+                    "tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Tag"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tags",
+                        "description": "Tags of the resource"
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "default": {}
+                    },
+                    "pa_updated_on": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pa Updated On"
+                    },
+                    "pa_fetched_on": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pa Fetched On"
+                    },
+                    "previous_pa_state": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/PAState"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "pa_state": {
+                        "$ref": "#/components/schemas/PAState",
+                        "default": "PENDING"
+                    },
+                    "pa_state_changed": {
+                        "type": "boolean",
+                        "title": "Pa State Changed",
+                        "default": false
+                    },
+                    "state_changed": {
+                        "type": "boolean",
+                        "title": "State Changed",
+                        "default": false
+                    },
+                    "is_spec": {
+                        "type": "boolean",
+                        "title": "Is Spec",
+                        "default": true
+                    },
+                    "index": {
+                        "type": "integer",
+                        "minimum": 0.0,
+                        "title": "Index"
+                    },
+                    "state": {
+                        "$ref": "#/components/schemas/JobState"
+                    },
+                    "creator": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Creator",
+                        "default": ""
+                    },
+                    "created": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created"
+                    },
+                    "process_agent": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "uuid"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Process Agent",
+                        "default": ""
+                    },
+                    "name_prefix": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name Prefix",
+                        "default": ""
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "index"
+                ],
+                "title": "PAJobSpec"
+            },
+            "PAState": {
+                "type": "string",
+                "enum": [
+                    "PENDING",
+                    "SUBMITTED",
+                    "CREATED",
+                    "KILL_REQUESTED",
+                    "KILL_SUBMITTED",
+                    "KILLED",
+                    "RERUN_REQUESTED",
+                    "RERUN_SUBMITTED",
+                    "EARLY_KILL_REQUESTED",
+                    "EARLY_KILL_SUBMITTED"
+                ],
+                "title": "PAState"
+            },
+            "RerunJob": {
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Human readable message",
+                        "default": ""
+                    },
+                    "rerunned": {
+                        "type": "boolean",
+                        "title": "Rerunned",
+                        "description": "Indicates if the job was rerun",
+                        "default": false
+                    },
+                    "job": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/PAJob"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PAJobSpec"
+                            }
+                        ],
+                        "title": "Job",
+                        "description": "Job or JobSpec"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job"
+                ],
+                "title": "RerunJob"
+            },
+            "Restart": {
+                "type": "string",
+                "enum": [
+                    "no",
+                    "on-interruption"
+                ],
+                "title": "Restart"
+            },
+            "Stats": {
+                "properties": {
+                    "isReady": {
+                        "type": "boolean",
+                        "title": "Isready",
+                        "description": "Define if process agent is ready",
+                        "default": false
+                    },
+                    "isShutdown": {
+                        "type": "boolean",
+                        "title": "Isshutdown",
+                        "description": "Define if process agent is shutdown",
+                        "default": false
+                    },
+                    "id": {
+                        "type": "string",
+                        "title": "Id",
+                        "description": "ID of the process agent",
+                        "default": ""
+                    },
+                    "user": {
+                        "type": "string",
+                        "title": "User",
+                        "description": "ID of the creator of the job",
+                        "default": false
+                    },
+                    "jobs": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "$ref": "#/components/schemas/PAJob"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/PAJobSpec"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Jobs",
+                        "description": "List of Job or JobSpec"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "title": "Total",
+                        "description": "Total of jobs",
+                        "default": 0
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "jobs"
+                ],
+                "title": "Stats"
+            },
+            "Tag": {
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "title": "Key"
+                    },
+                    "value": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Value"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "key"
+                ],
+                "title": "Tag"
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            },
+            "Version": {
+                "properties": {
+                    "version": {
+                        "type": "integer",
+                        "title": "Version",
+                        "description": "Version of the process agent",
+                        "default": 1
+                    }
+                },
+                "type": "object",
+                "title": "Version"
+            },
+            "process_agent__models__jsv_models__JobSpec": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job. Used to compute the job priority"
+                    },
+                    "billCode": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 255
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Billcode",
+                        "description": "The bill code of the job",
+                        "default": "default"
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "The command to launch on the image.",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "The mapping of data to mount with an optional directory. The format of each mapping is \"data-UUID/directory:/container/directory[:rwo]\""
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "The environment variables to pass to the container. The format for each variable is \"VAR=value\"",
+                        "default": []
+                    },
+                    "evictOthersIfNeeded": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Evictothersifneeded",
+                        "description": "If true, and there is no more room to run jobs immediately, kill jobs w/o that flag in order to make room.",
+                        "default": false
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 255
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "description": "The docker image to launch.",
+                        "default": ""
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "If false, a batch job, if true, block.This field has no effect as far as the job service is concerned. It's is there for stats tracking purposes.",
+                        "default": false
+                    },
+                    "labels": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Labels",
+                        "description": "The labels of the job.",
+                        "default": []
+                    },
+                    "maxRunTimeSecs": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntimesecs",
+                        "description": "The maximum run time allowed for the job. If it is exceeded, the job will be killed. If set to 0, there is nomax run time and the job can run forever.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 255
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "description": "The name of the job.",
+                        "default": ""
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "description": "Various optional parameters",
+                        "default": {}
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Indicates if this job is preemptable.",
+                        "default": false
+                    },
+                    "reqCores": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reqcores",
+                        "description": "The number of required cores for the job.",
+                        "default": 1
+                    },
+                    "reqGpus": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reqgpus",
+                        "description": "The number of required gpus for the job.",
+                        "default": 0
+                    },
+                    "reqRamGbytes": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reqramgbytes",
+                        "description": "The number of required gigabytes of ram for the job.",
+                        "default": 1
+                    },
+                    "restart": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/Restart"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Restart policy. One of: \n\tno - don't restart \ton-interruption - restart on interruption (such as a borgy scheduling preemption or a node crash)",
+                        "default": "no"
+                    },
+                    "stdin": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stdin",
+                        "description": "This field has no effect as far as the job service is concerned. It's is there for stats tracking purposes.",
+                        "default": false
+                    },
+                    "volumes": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Volumes",
+                        "description": "The mapping of volumes to mount. The format of each mapping is \"/machine/directory:/container/directory[:rwo]\"",
+                        "default": []
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 255
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Relayed to docker run, working directory inside the container",
+                        "default": ""
+                    }
+                },
+                "type": "object",
+                "title": "JobSpec"
+            },
+            "process_agent__models__toolkit_models__JobSpec": {
+                "properties": {
+                    "bid": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bid",
+                        "description": "Bid for the job (used in computing priority",
+                        "default": 0
+                    },
+                    "command": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Command",
+                        "description": "Command to run",
+                        "default": []
+                    },
+                    "data": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Data",
+                        "description": "List of data mount points",
+                        "default": []
+                    },
+                    "environmentVars": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Environmentvars",
+                        "description": "List of environment variable",
+                        "default": []
+                    },
+                    "image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Image",
+                        "default": "ubuntu"
+                    },
+                    "isProcessAgent": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Isprocessagent",
+                        "description": "Enable the job as a Process Agent. Process Agent allows an efficient way to spawn children jobs without pulling for updates",
+                        "default": false
+                    },
+                    "role": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Role",
+                        "description": "Role to use with the job. Allow to query short living token for the role to request Toolkit API.",
+                        "default": ""
+                    },
+                    "scopes": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scopes",
+                        "description": "Set of permissions to be used on behalf of the user by the job"
+                    },
+                    "workdir": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Workdir",
+                        "description": "Working directory inside the container.",
+                        "default": ""
+                    },
+                    "resources": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/JobSpecResources"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "interactive": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Interactive",
+                        "description": "Interactive job. To be scheduled as soon as possible, regardless of the user's cluster occupancy. Limit of 1 per user",
+                        "default": false
+                    },
+                    "maxRunTime": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Maxruntime",
+                        "description": "Maximum job execution time in seconds.",
+                        "default": 0
+                    },
+                    "preemptable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preemptable",
+                        "description": "Allow job to be interrupted.",
+                        "default": false
+                    },
+                    "restartable": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Restartable",
+                        "description": "Allow job to be interrupted and directly restarted as QUEUING.",
+                        "default": false
+                    },
+                    "replicaFailuresAllowed": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Replicafailuresallowed",
+                        "description": "Maximum number of replica failures allowed before cancelling all replica jobs (0 to replicas-1). Default is 0, meaning any failure cancels all replica jobs.",
+                        "default": 0
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name",
+                        "default": ""
+                    },
+                    "tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Tag"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tags",
+                        "description": "Tags of the resource"
+                    },
+                    "options": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Options",
+                        "default": {}
+                    }
+                },
+                "type": "object",
+                "title": "JobSpec"
+            }
+        }
+    }
+}

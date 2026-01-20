@@ -1114,9 +1114,9 @@ class TransformersBackendConfig(BaseBackendConfig):
 # =============================================================================
 
 # Import REST backend here to avoid circular imports (it imports from this module)
-from place_layers.backend.rest import RESTBackendConfig
+from place_layers.backend.rest import PARESTBackendConfig, RESTBackendConfig
 
 BackendConfig = Annotated[
-    VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig,
+    VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig | PARESTBackendConfig,
     Field(discriminator="backend_type"),
 ]

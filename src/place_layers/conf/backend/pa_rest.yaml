@@ -1,0 +1,26 @@
+# @package backend
+# PA REST backend configuration for Process Agent managed servers
+#
+# Fetches server list dynamically from a Process Agent orchestrator.
+# The PA orchestrator automatically spawns and manages serve jobs,
+# providing auto-recovery when servers fail.
+#
+# Usage (no model config needed - structure discovered from servers):
+#   python -m place_layers +command=evaluate +backend=pa_rest \
+#       backend.pa_url='http://my-pa-host:8080' \
+#       +evaluator=generative +task=gsm8k +generation=greedy
+
+backend_type: pa_rest
+
+# Process Agent URL
+# The PA should expose:
+#   - GET /servers -> {"servers": ["http://host1:port1", ...]}
+#   - GET /health -> {"status": "ok", "active_children": N}
+pa_url: ${oc.env:PA_URL,http://localhost:8666}
+
+# Maximum concurrent requests per server
+# Total concurrent = max_concurrent_per_server * num_servers_from_pa
+max_concurrent_per_server: 8
+
+# Request timeout in seconds
+timeout_seconds: 300
