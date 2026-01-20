@@ -70,6 +70,7 @@ class TransformersClientConfig(BaseModel):
         "SDPA (default PyTorch) uses CUDA graphs which are NOT thread-safe. "
         "Use 'eager' for REST servers that handle concurrent requests, or when running "
         "with multiple workers. Set to 'sdpa' or 'flash_attention_2' only for single-threaded use.",
+    )
     revision: str | None = Field(
         default=None,
         description="HuggingFace revision (branch, tag, or commit hash)",
