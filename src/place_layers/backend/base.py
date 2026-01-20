@@ -53,18 +53,20 @@ class ModelStructure:
 
 
 @dataclass(frozen=True)
-class ChatLogProbResult:
-    """Detailed result from chat log-prob computation.
+class LogProbResult:
+    """Detailed result from log-prob computation.
 
     Contains all token-level information needed for observability:
-    - Full token sequence (after chat template applied)
+    - Full token sequence (after formatting/chat template applied)
     - Per-token logprobs
     - Answer range (which tokens were identified as "the answer")
     - Total score (sum of answer logprobs)
+
+    Used by both compute_chat_log_probs and compute_text_log_probs.
     """
 
     token_ids: tuple[int, ...]
-    """Full token sequence for this chat (context + completion)."""
+    """Full token sequence (context + completion)."""
 
     logprobs: tuple[float | None, ...]
     """Per-token logprobs (None for first token which has no prior context)."""
@@ -148,20 +150,25 @@ class AsyncBackend(ABC):
     @abstractmethod
     async def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations (text-based).
+        text_groups: Sequence[tuple[str, Sequence[str]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        This is the text-based counterpart to compute_batch_log_probs.
-        Tokenization is handled internally by the backend.
+        This is the text-based counterpart to compute_chat_log_probs. Like the chat
+        API, inputs are grouped by context for diff-based scoring - we find where
+        token sequences differ across choices and only score those positions.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples where:
+                - context: The shared context/prompt string
+                - choices: List of continuation strings to score against this context
 
         Returns:
-            List of log P(continuation | context) values in input order.
+            List of LogProbResult (one per choice, flattened across all groups) with:
+                - token_ids: Full token sequence (context + choice)
+                - logprobs: Per-token log probabilities
+                - answer_range: (start, end) of differing tokens (the answer)
+                - total_log_prob: Sum of logprobs at differing positions
 
         Raises:
             NotImplementedError: If backend doesn't support text-based scoring.
@@ -172,7 +179,7 @@ class AsyncBackend(ABC):
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
         This is the chat-level counterpart to compute_batch_log_probs.
@@ -184,7 +191,7 @@ class AsyncBackend(ABC):
                 completion_messages: Messages to score (e.g., assistant answer).
 
         Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
+            List of LogProbResult with token IDs, per-token logprobs,
             answer ranges, and total scores for each chat.
         """
         pass
@@ -309,20 +316,25 @@ class SyncBackend(ABC):
     @abstractmethod
     def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations (text-based).
+        text_groups: Sequence[tuple[str, Sequence[str]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        This is the text-based counterpart to compute_batch_log_probs.
-        Tokenization is handled internally by the backend.
+        This is the text-based counterpart to compute_chat_log_probs. Like the chat
+        API, inputs are grouped by context for diff-based scoring - we find where
+        token sequences differ across choices and only score those positions.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples where:
+                - context: The shared context/prompt string
+                - choices: List of continuation strings to score against this context
 
         Returns:
-            List of log P(continuation | context) values in input order.
+            List of LogProbResult (one per choice, flattened across all groups) with:
+                - token_ids: Full token sequence (context + choice)
+                - logprobs: Per-token log probabilities
+                - answer_range: (start, end) of differing tokens (the answer)
+                - total_log_prob: Sum of logprobs at differing positions
 
         Raises:
             NotImplementedError: If backend doesn't support text-based scoring.
@@ -333,7 +345,7 @@ class SyncBackend(ABC):
     def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
         This is the chat-level counterpart to compute_batch_log_probs.
@@ -345,7 +357,7 @@ class SyncBackend(ABC):
                 completion_messages: Messages to score (e.g., assistant answer).
 
         Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
+            List of LogProbResult with token IDs, per-token logprobs,
             answer ranges, and total scores for each chat.
         """
         pass
@@ -472,43 +484,69 @@ class VLLMBackend(AsyncBackend):
 
     async def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
+        text_groups: Sequence[tuple[str, Sequence[str]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        Uses vLLM's text_offset in the response to determine where the
-        continuation starts, avoiding the need for local tokenization.
+        Like compute_chat_log_probs, this groups choices by context and uses
+        diff-based scoring to find where token sequences differ.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples.
 
         Returns:
-            List of log P(continuation | context) values in input order.
+            List of LogProbResult (flattened across all groups) with diff-based
+            answer_range and total_log_prob.
         """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
+        if not text_groups:
             return []
 
-        # Send all scoring requests concurrently, bounded by semaphore
-        tasks = [
-            self._client.score_text_completion(ctx, cont, request_id=str(i))
-            for i, (ctx, cont) in enumerate(zip(contexts, continuations))
-        ]
+        from place_layers.core.token_utils import find_differing_ranges
 
-        results = await asyncio.gather(*tasks)
-        return [r.total_logprob for r in results]
+        all_results: list[LogProbResult] = []
+
+        for context, choices in text_groups:
+            if not choices:
+                continue
+
+            # Send all (context + choice) pairs to vLLM concurrently
+            tasks = [
+                self._client.score_text_completion(context, choice, request_id=str(i))
+                for i, choice in enumerate(choices)
+            ]
+            text_results = await asyncio.gather(*tasks)
+
+            # Extract token sequences for diff-based scoring
+            token_sequences = [list(r.token_ids) for r in text_results]
+
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
+
+            # Build LogProbResult with correct answer_range and total_log_prob
+            for r, (start, end) in zip(text_results, answer_ranges):
+                # Sum logprobs in the differing range
+                answer_logprobs: list[float] = [
+                    lp
+                    for pos in range(start, end)
+                    if pos < len(r.logprobs)
+                    for lp in [r.logprobs[pos]]
+                    if lp is not None
+                ]
+                total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
+
+                all_results.append(LogProbResult(
+                    token_ids=r.token_ids,
+                    logprobs=r.logprobs,
+                    answer_range=(start, end),
+                    total_log_prob=total_log_prob,
+                ))
+
+        return all_results
 
     async def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions with full observability.
 
         Uses vLLM's prompt_logprobs feature with a diff-based approach:
@@ -525,7 +563,7 @@ class VLLMBackend(AsyncBackend):
             chats: List of (context_messages, completion_messages) tuples.
 
         Returns:
-            List of ChatLogProbResult with full token-level detail.
+            List of LogProbResult with full token-level detail.
         """
         if not chats:
             return []
@@ -545,7 +583,7 @@ class VLLMBackend(AsyncBackend):
             context_msgs_by_key[ctx_key] = ctx_msgs
 
         # Process each context group
-        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
+        all_results: list[LogProbResult | None] = [None] * len(chats)
 
         for ctx_key, group in context_groups.items():
             ctx_msgs = context_msgs_by_key[ctx_key]
@@ -555,7 +593,7 @@ class VLLMBackend(AsyncBackend):
 
         # Fill any None results with empty results (shouldn't happen)
         return [
-            r if r is not None else ChatLogProbResult(
+            r if r is not None else LogProbResult(
                 token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
             )
             for r in all_results
@@ -565,7 +603,7 @@ class VLLMBackend(AsyncBackend):
         self,
         context_msgs: Sequence[ChatMessage],
         group: list[tuple[int, Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Score a group of chats that share the same context.
 
         Uses INPUT token scoring via vLLM's prompt_logprobs feature. The answer
@@ -580,7 +618,7 @@ class VLLMBackend(AsyncBackend):
         we never extract the generated token from the response - we only read
         prompt_logprobs. The generated content in data["choices"] is ignored.
 
-        Returns ChatLogProbResult with full token-level information.
+        Returns LogProbResult with full token-level information.
         """
         session = self._client._ensure_session()
         url = f"{self._client.config.base_url.rstrip('/')}/v1/chat/completions"
@@ -640,8 +678,8 @@ class VLLMBackend(AsyncBackend):
 
         answer_ranges = find_differing_ranges(token_sequences)
 
-        # Build ChatLogProbResult for each chat
-        results: list[ChatLogProbResult] = []
+        # Build LogProbResult for each chat
+        results: list[LogProbResult] = []
         for tokens, logprobs, (start, end) in zip(
             token_sequences, logprob_sequences, answer_ranges
         ):
@@ -656,7 +694,7 @@ class VLLMBackend(AsyncBackend):
             # Convert token_ids: replace None with 0 (shouldn't happen in practice)
             clean_token_ids = tuple(t if t is not None else 0 for t in tokens)
 
-            results.append(ChatLogProbResult(
+            results.append(LogProbResult(
                 token_ids=clean_token_ids,
                 logprobs=tuple(logprobs),
                 answer_range=(start, end),
@@ -848,47 +886,54 @@ class TransformersBackend(SyncBackend):
 
     def compute_text_log_probs(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
+        text_groups: Sequence[tuple[str, Sequence[str]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with diff-based scoring.
 
-        Tokenizes contexts and continuations internally, then delegates to
-        compute_batch_log_probs for efficient batched computation.
+        Like compute_chat_log_probs, this groups choices by context and uses
+        diff-based scoring to find where token sequences differ.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            text_groups: List of (context, choices) tuples.
 
         Returns:
-            List of log P(continuation | context) values in input order.
+            List of LogProbResult (flattened across all groups) with diff-based
+            answer_range and total_log_prob.
         """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
+        if not text_groups:
             return []
 
+        from place_layers.core.token_utils import find_differing_ranges
+
         tokenizer = self._client.tokenizer
+        all_results: list[LogProbResult] = []
 
-        # Tokenize all contexts and continuations
-        traces: list[tuple[Sequence[int], Sequence[int]]] = []
-        for ctx, cont in zip(contexts, continuations):
-            # Context gets special tokens (BOS), continuation does not
-            ctx_tokens = tokenizer.encode(ctx, add_special_tokens=True)
-            cont_tokens = tokenizer.encode(cont, add_special_tokens=False)
-            traces.append((ctx_tokens, cont_tokens))
+        for context, choices in text_groups:
+            if not choices:
+                continue
 
-        # Delegate to token-based method
-        return self.compute_batch_log_probs(traces)
+            # Tokenize all (context + choice) sequences for this group
+            token_sequences: list[list[int]] = []
+            for choice in choices:
+                # Context gets special tokens (BOS), choice does not
+                ctx_tokens = tokenizer.encode(context, add_special_tokens=True)
+                choice_tokens = tokenizer.encode(choice, add_special_tokens=False)
+                full_sequence = ctx_tokens + choice_tokens
+                token_sequences.append(full_sequence)
+
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
+
+            # Compute logprobs and build results
+            results = self._score_sequences_in_ranges(token_sequences, answer_ranges)
+            all_results.extend(results)
+
+        return all_results
 
     def compute_chat_log_probs(
         self,
         chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions using INPUT token scoring.
 
         Uses the same approach as vLLM backend but with direct model access:
@@ -908,7 +953,7 @@ class TransformersBackend(SyncBackend):
                    completion_messages contain the answer as INPUT.
 
         Returns:
-            List of ChatLogProbResult with full token-level detail.
+            List of LogProbResult with full token-level detail.
         """
         if not chats:
             return []
@@ -929,7 +974,7 @@ class TransformersBackend(SyncBackend):
             context_msgs_by_key[ctx_key] = ctx_msgs
 
         # Process each context group
-        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
+        all_results: list[LogProbResult | None] = [None] * len(chats)
 
         for ctx_key, group in context_groups.items():
             ctx_msgs = context_msgs_by_key[ctx_key]
@@ -959,7 +1004,7 @@ class TransformersBackend(SyncBackend):
 
         # Fill any None results with empty results (shouldn't happen)
         return [
-            r if r is not None else ChatLogProbResult(
+            r if r is not None else LogProbResult(
                 token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
             )
             for r in all_results
@@ -969,7 +1014,7 @@ class TransformersBackend(SyncBackend):
         self,
         token_sequences: list[list[int]],
         ranges: list[tuple[int, int]],
-    ) -> list[ChatLogProbResult]:
+    ) -> list[LogProbResult]:
         """Compute logprobs for each sequence and return full results.
 
         Args:
@@ -977,7 +1022,7 @@ class TransformersBackend(SyncBackend):
             ranges: List of (start, end) tuples, one per sequence.
 
         Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
+            List of LogProbResult with token IDs, per-token logprobs,
             answer ranges, and total scores.
         """
         import torch
@@ -985,11 +1030,11 @@ class TransformersBackend(SyncBackend):
         model = self._client.model
         device = next(model.parameters()).device
 
-        results: list[ChatLogProbResult] = []
+        results: list[LogProbResult] = []
 
         for tokens, (start, end) in zip(token_sequences, ranges):
             if not tokens:
-                results.append(ChatLogProbResult(
+                results.append(LogProbResult(
                     token_ids=(),
                     logprobs=(),
                     answer_range=(start, end),
@@ -1023,7 +1068,7 @@ class TransformersBackend(SyncBackend):
             ]
             total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
 
-            results.append(ChatLogProbResult(
+            results.append(LogProbResult(
                 token_ids=tuple(tokens),
                 logprobs=tuple(all_logprobs),
                 answer_range=(start, end),

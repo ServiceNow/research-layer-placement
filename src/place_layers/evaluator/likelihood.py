@@ -74,12 +74,13 @@ Usage
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
 from pydantic import Field
 
-from place_layers.backend.base import ChatMessage
+from place_layers.backend.base import ChatMessage, LogProbResult
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.lm_eval_utils import build_chat_messages
@@ -97,6 +98,34 @@ if TYPE_CHECKING:
     from place_layers.evaluator.lm_eval_utils import Docs
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PredictionResult:
+    """Result of computing predictions from log-probabilities."""
+
+    log_probs: list[float]
+    """Log-probability for each choice."""
+    pred_idx: int
+    """Predicted choice index (argmax of log_probs)."""
+    correct: bool
+    """Whether prediction matches gold answer."""
+    pred_idx_norm: int
+    """Predicted choice index with length normalization."""
+    correct_norm: bool
+    """Whether length-normalized prediction matches gold answer."""
+
+
+@dataclass(frozen=True)
+class ChoiceMetadata:
+    """Metadata about choices for a multiple-choice problem."""
+
+    gold_idx: int
+    """Index of the correct answer."""
+    lengths: list[int]
+    """Character length of each choice (for normalization)."""
+    raw_choices: tuple[str, ...]
+    """Original choice text strings."""
 
 
 class LikelihoodEvaluator(TaskBasedEvaluator):
@@ -178,128 +207,242 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         docs: "Docs",
         remaining_indices: list[int],
     ) -> None:
-        """Evaluate a single task using chat-based log-prob scoring.
+        """Evaluate a single task using log-prob scoring.
 
-        Uses build_chat_messages for context and compute_chat_log_probs for
-        scoring, which implements a diff-based approach that is chat template
-        agnostic. Streams LikelihoodRecord entries to disk.
+        Dispatches to chat-based or text-based scoring based on config.use_chat_template.
+        Streams LikelihoodRecord entries to disk.
         """
+        if self.config.use_chat_template:
+            await self._evaluate_task_chat(task, task_name, docs, remaining_indices)
+        else:
+            await self._evaluate_task_text(task, task_name, docs, remaining_indices)
+
+    async def _evaluate_task_chat(
+        self,
+        task: "Task",
+        task_name: str,
+        docs: "Docs",
+        remaining_indices: list[int],
+    ) -> None:
+        """Evaluate using chat-based log-prob scoring (with chat template)."""
         n_problems = len(remaining_indices)
 
         with create_progress() as progress:
             progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
 
-            # Process in batches for efficiency
             batch_size = self.config.batch_size
             for i in range(0, n_problems, batch_size):
                 batch_indices = remaining_indices[i : i + batch_size]
                 batch_docs = [docs[idx] for idx in batch_indices]
 
                 # Build chat tuples for all choices in this batch
-                # Each problem contributes N chats where N = number of choices
                 all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
-                gold_indices: list[int] = []
+                metadata_list: list[ChoiceMetadata] = []
                 choice_counts: list[int] = []
-                choice_lengths: list[list[int]] = []  # For length normalization
-                choice_texts: list[tuple[str, ...]] = []  # Raw choice strings
-                context_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Context per problem
-                choice_messages_list: list[
-                    tuple[ChatMessage, ...]
-                ] = []  # Choices as ChatMessages
+                context_messages_list: list[tuple[ChatMessage, ...]] = []
+                choice_messages_list: list[tuple[ChatMessage, ...]] = []
 
                 for doc in batch_docs:
-                    chats, gold_idx, lengths, raw_choices = self._build_choice_chats(
-                        task, doc
-                    )
+                    chats, metadata = self._build_choice_chats(task, doc)
                     all_chats.extend(chats)
-                    gold_indices.append(gold_idx)
+                    metadata_list.append(metadata)
                     choice_counts.append(len(chats))
-                    choice_lengths.append(lengths)
-                    choice_texts.append(raw_choices)
-                    # Extract context messages (same for all choices in this problem)
                     context_messages_list.append(tuple(chats[0][0]))
-                    # Extract choice messages (the assistant message for each choice)
                     choice_messages_list.append(tuple(c[1][0] for c in chats))
 
-                # Compute log-probs using chat-based API (diff-based scoring)
-                # Returns ChatLogProbResult with full token-level detail
+                # Compute log-probs using chat-based API
                 results = await self._compute_chat_log_probs(all_chats)
 
-                # Unpack results per document and create records
+                # Unpack results and create records
                 offset = 0
                 batch_records: list[LikelihoodRecord] = []
-                for (
-                    gold_idx,
-                    n_choices,
-                    lengths,
-                    raw_choices,
-                    context_msgs,
-                    choice_msgs,
-                    problem_idx,
-                ) in zip(
-                    gold_indices,
+                for metadata, n_choices, context_msgs, choice_msgs, problem_idx in zip(
+                    metadata_list,
                     choice_counts,
-                    choice_lengths,
-                    choice_texts,
                     context_messages_list,
                     choice_messages_list,
                     batch_indices,
                 ):
-                    # Extract results for this problem
                     doc_results = results[offset : offset + n_choices]
                     offset += n_choices
 
-                    # Extract log probs for prediction
-                    doc_log_probs = [r.total_log_prob for r in doc_results]
+                    pred = self._compute_prediction(
+                        doc_results, metadata.gold_idx, metadata.lengths
+                    )
 
-                    # Raw accuracy
-                    pred = int(np.argmax(doc_log_probs))
-                    correct = pred == gold_idx
-
-                    # Length-normalized accuracy
-                    normalized = np.array(doc_log_probs) / np.array(lengths)
-                    pred_norm = int(np.argmax(normalized))
-                    correct_norm = pred_norm == gold_idx
-
-                    # Create record with full observability
                     record = LikelihoodRecord(
                         problem_id=f"{task_name}:{problem_idx}",
                         task_name=task_name,
-                        # Chat messages
                         context_messages=context_msgs,
-                        raw_choices=raw_choices,
+                        raw_choices=metadata.raw_choices,
                         choices=choice_msgs,
-                        # Token-level data per choice
                         choice_token_ids=tuple(r.token_ids for r in doc_results),
                         choice_logprobs=tuple(r.logprobs for r in doc_results),
                         choice_answer_ranges=tuple(r.answer_range for r in doc_results),
-                        # Scores
-                        choice_log_probs=tuple(doc_log_probs),
-                        choice_lengths=tuple(lengths),
-                        # Predictions
-                        gold_idx=gold_idx,
-                        pred_idx=pred,
-                        pred_idx_norm=pred_norm,
-                        correct=correct,
-                        correct_norm=correct_norm,
+                        choice_log_probs=tuple(pred.log_probs),
+                        choice_lengths=tuple(metadata.lengths),
+                        gold_idx=metadata.gold_idx,
+                        pred_idx=pred.pred_idx,
+                        pred_idx_norm=pred.pred_idx_norm,
+                        correct=pred.correct,
+                        correct_norm=pred.correct_norm,
                     )
                     batch_records.append(record)
 
-                # Stream records to disk
                 self._trace_writer.append(batch_records)  # type: ignore[arg-type]
-
                 progress.advance(progress_task, len(batch_docs))
+
+    async def _evaluate_task_text(
+        self,
+        task: "Task",
+        task_name: str,
+        docs: "Docs",
+        remaining_indices: list[int],
+    ) -> None:
+        """Evaluate using text-based log-prob scoring (no chat template).
+
+        Uses the same diff-based scoring approach as chat-based evaluation,
+        but without chat template formatting. The backend handles diff-based
+        scoring internally, so we just need to build the text groups.
+        """
+        n_problems = len(remaining_indices)
+
+        with create_progress() as progress:
+            progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
+
+            batch_size = self.config.batch_size
+            for i in range(0, n_problems, batch_size):
+                batch_indices = remaining_indices[i : i + batch_size]
+                batch_docs = [docs[idx] for idx in batch_indices]
+
+                # Build text groups for all problems in batch
+                text_groups: list[tuple[str, list[str]]] = []
+                metadata_list: list[ChoiceMetadata] = []
+                choice_counts: list[int] = []
+                context_strings: list[str] = []
+
+                for doc in batch_docs:
+                    context, choices, metadata = self._build_choice_texts(task, doc)
+                    text_groups.append((context, choices))
+                    metadata_list.append(metadata)
+                    choice_counts.append(len(choices))
+                    context_strings.append(context)
+
+                # Compute log-probs using text-based API (diff-based scoring in backend)
+                results = await self._compute_text_log_probs(text_groups)
+
+                # Unpack results and create records
+                offset = 0
+                batch_records: list[LikelihoodRecord] = []
+                for metadata, n_choices, context_str, problem_idx in zip(
+                    metadata_list,
+                    choice_counts,
+                    context_strings,
+                    batch_indices,
+                ):
+                    doc_results = results[offset : offset + n_choices]
+                    offset += n_choices
+
+                    pred = self._compute_prediction(
+                        doc_results, metadata.gold_idx, metadata.lengths
+                    )
+
+                    # For text-based, store context as a single user message
+                    context_msgs: tuple[ChatMessage, ...] = (
+                        {"role": "user", "content": context_str},
+                    )
+                    # Choices as assistant messages
+                    choice_msgs: tuple[ChatMessage, ...] = tuple(
+                        {"role": "assistant", "content": choice}
+                        for choice in metadata.raw_choices
+                    )
+
+                    record = LikelihoodRecord(
+                        problem_id=f"{task_name}:{problem_idx}",
+                        task_name=task_name,
+                        context_messages=context_msgs,
+                        raw_choices=metadata.raw_choices,
+                        choices=choice_msgs,
+                        choice_token_ids=tuple(r.token_ids for r in doc_results),
+                        choice_logprobs=tuple(r.logprobs for r in doc_results),
+                        choice_answer_ranges=tuple(r.answer_range for r in doc_results),
+                        choice_log_probs=tuple(pred.log_probs),
+                        choice_lengths=tuple(metadata.lengths),
+                        gold_idx=metadata.gold_idx,
+                        pred_idx=pred.pred_idx,
+                        pred_idx_norm=pred.pred_idx_norm,
+                        correct=pred.correct,
+                        correct_norm=pred.correct_norm,
+                    )
+                    batch_records.append(record)
+
+                self._trace_writer.append(batch_records)  # type: ignore[arg-type]
+                progress.advance(progress_task, len(batch_docs))
+
+    def _get_gold_idx(self, task: "Task", doc: dict, choices: list[str]) -> int:
+        """Extract gold answer index from task and document.
+
+        Handles the various formats that lm-eval tasks use to specify the correct answer:
+        - int: Direct index
+        - str: Choice text (looked up in choices list)
+        - list: Multiple correct answers (uses first one)
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+            choices: List of choice strings.
+
+        Returns:
+            Index of the gold answer in the choices list.
+        """
+        gold_target = task.doc_to_target(doc)
+        if isinstance(gold_target, int):
+            return gold_target
+        elif isinstance(gold_target, str):
+            return choices.index(gold_target)
+        else:
+            # For multiple correct answers, use first one
+            return gold_target[0] if gold_target else 0
+
+    def _compute_prediction(
+        self,
+        results: list[LogProbResult],
+        gold_idx: int,
+        lengths: list[int],
+    ) -> PredictionResult:
+        """Compute predictions from log-prob results.
+
+        Takes the log-probabilities from the backend and computes:
+        - Raw prediction (argmax of log-probs)
+        - Length-normalized prediction (argmax of log-probs / lengths)
+
+        Args:
+            results: Log-prob results from backend (one per choice).
+            gold_idx: Index of the correct answer.
+            lengths: Character lengths of each choice (for normalization).
+
+        Returns:
+            PredictionResult with log_probs, predictions, and correctness flags.
+        """
+        log_probs = [r.total_log_prob for r in results]
+        pred_idx = int(np.argmax(log_probs))
+        correct = pred_idx == gold_idx
+
+        normalized = np.array(log_probs) / np.array(lengths)
+        pred_idx_norm = int(np.argmax(normalized))
+        correct_norm = pred_idx_norm == gold_idx
+
+        return PredictionResult(
+            log_probs=log_probs,
+            pred_idx=pred_idx,
+            correct=correct,
+            pred_idx_norm=pred_idx_norm,
+            correct_norm=correct_norm,
+        )
 
     def _build_choice_chats(
         self, task: "Task", doc: dict
-    ) -> tuple[
-        list[tuple[list[ChatMessage], list[ChatMessage]]],
-        int,
-        list[int],
-        tuple[str, ...],
-    ]:
+    ) -> tuple[list[tuple[list[ChatMessage], list[ChatMessage]]], ChoiceMetadata]:
         """Build chat message tuples for each choice.
 
         Uses build_chat_messages for context (few-shot + question), then creates
@@ -311,11 +454,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             doc: The problem document.
 
         Returns:
-            Tuple of:
-            - List of (context_messages, completion_messages) tuples, one per choice
-            - Gold answer index
-            - List of choice lengths (in characters) for normalization
-            - Tuple of choice texts (for recording)
+            Tuple of (chats, metadata) where:
+            - chats: List of (context_messages, completion_messages) tuples
+            - metadata: ChoiceMetadata with gold_idx, lengths, and raw_choices
         """
         # Get context messages using the shared builder
         context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
@@ -323,18 +464,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         # Get choices and gold answer
         # doc_to_choice is on ConfigurableTask, but all YAML-defined tasks use it
         choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
-        gold_target = task.doc_to_target(doc)
-
-        # Determine gold index from target
-        # Target can be: int (index), str (choice text), or list (multiple correct)
-        if isinstance(gold_target, int):
-            gold_idx = gold_target
-        elif isinstance(gold_target, str):
-            gold_idx = choices.index(gold_target)
-        else:
-            # For multiple correct answers, use first one
-            # This is rare but handle it gracefully
-            gold_idx = gold_target[0] if gold_target else 0
+        gold_idx = self._get_gold_idx(task, doc, choices)
 
         # Build chat tuples for each choice
         chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
@@ -348,7 +478,67 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             chats.append((context_msgs, completion_msgs))
             lengths.append(len(choice))  # Character length for normalization
 
-        return chats, gold_idx, lengths, tuple(choices)
+        metadata = ChoiceMetadata(
+            gold_idx=gold_idx,
+            lengths=lengths,
+            raw_choices=tuple(choices),
+        )
+        return chats, metadata
+
+    def _build_choice_texts(
+        self, task: "Task", doc: dict
+    ) -> tuple[str, list[str], ChoiceMetadata]:
+        """Build raw text context and choices for text-based scoring.
+
+        This method constructs prompts WITHOUT chat template formatting.
+        Used when use_chat_template=False.
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+
+        Returns:
+            Tuple of (context, choices, metadata) where:
+            - context: Few-shot examples + question as raw text
+            - choices: List of choice strings (continuations)
+            - metadata: ChoiceMetadata with gold_idx, lengths, and raw_choices
+        """
+        # Build context: few-shot examples + question as raw text
+        num_fewshot = task.config.num_fewshot or 0
+        context: str
+        if num_fewshot > 0:
+            # fewshot_context returns few-shot examples AND the current question
+            fewshot_ctx = task.fewshot_context(doc, num_fewshot)
+            context = str(fewshot_ctx) if fewshot_ctx else ""
+        else:
+            # Zero-shot: just the question
+            question_raw = task.doc_to_text(doc)
+            context = str(question_raw) if question_raw is not None else ""
+
+        # Get choices and gold answer
+        raw_choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
+        gold_idx = self._get_gold_idx(task, doc, raw_choices)
+
+        # Match lm-eval's _encode_pair approach:
+        # 1. Move trailing whitespace from context to continuation
+        # 2. Prepend target_delimiter to choices
+        # This ensures proper tokenization at word boundaries
+        n_spaces = len(context) - len(context.rstrip())
+        trailing_ws = context[-n_spaces:] if n_spaces > 0 else ""
+        context = context.rstrip()
+
+        delimiter = task.config.target_delimiter
+        choices = [trailing_ws + delimiter + c for c in raw_choices]
+
+        # Build lengths for normalization (use raw choices for char-level normalization)
+        lengths = [len(choice) for choice in raw_choices]
+
+        metadata = ChoiceMetadata(
+            gold_idx=gold_idx,
+            lengths=lengths,
+            raw_choices=tuple(raw_choices),  # Original choices without space prefix
+        )
+        return context, choices, metadata
 
 
 class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
@@ -357,6 +547,14 @@ class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
     _impl_class: ClassVar[type[BaseEvaluator]] = LikelihoodEvaluator
 
     evaluator_type: Literal["likelihood"] = "likelihood"
+
+    # Chat template control
+    use_chat_template: bool = Field(
+        default=True,
+        description="Whether to use chat template formatting. When False, prompts are "
+        "formatted as raw text (context + choice) without any chat structure. "
+        "Use False for evaluating base models or when chat template is undesired.",
+    )
 
     # Batching
     batch_size: int = Field(
