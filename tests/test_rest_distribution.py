@@ -1,7 +1,6 @@
 """Test that REST backend correctly distributes requests across servers."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,21 +26,26 @@ async def test_distribute_batch_uses_assigned_servers():
     # Track which server each request goes to (track preferred_server from _call_with_failover)
     request_log = []
 
+    # Store original method
     original_call_with_failover = backend._call_with_failover
 
-    async def mock_call_with_failover(endpoint, payload, preferred_server=None):
-        """Mock _call_with_failover to track preferred server."""
+    async def tracking_call_with_failover(endpoint, payload, preferred_server=None):
+        """Wrapper to track preferred server while calling original method."""
         request_log.append(preferred_server)
-        return {"results": [{"token_ids": [], "logprobs": [], "answer_range": [0, 1], "total_log_prob": 0.0}] * len(payload.get("chats", []))}
+        # Return mock response instead of calling original
+        num_chats = len(payload.get("chats", []))
+        return {"results": [{"token_ids": [], "logprobs": [], "answer_range": [0, 1], "total_log_prob": 0.0}] * num_chats}
 
-    # Patch _call_with_failover
-    with patch.object(backend, "_call_with_failover", side_effect=mock_call_with_failover):
-        # Simulate entering context manager
-        backend._session = MagicMock()
-        backend._server_semaphores = {
-            server: asyncio.Semaphore(8) for server in config.servers
-        }
+    # Temporarily replace method
+    backend._call_with_failover = tracking_call_with_failover
 
+    # Simulate entering context manager (minimal setup needed for _distribute_batch)
+    backend._session = object()  # type: ignore[assignment]
+    backend._server_semaphores = {
+        server: asyncio.Semaphore(8) for server in config.servers
+    }
+
+    try:
         # Create 8 dummy items to distribute
         items = [(i, ([], [])) for i in range(8)]
 
@@ -57,6 +61,9 @@ async def test_distribute_batch_uses_assigned_servers():
                 for i, (idx, _) in enumerate(chunk_items)
             ],
         )
+    finally:
+        # Restore original method
+        backend._call_with_failover = original_call_with_failover
 
     # Verify requests were distributed across all 4 servers
     assert len(request_log) == 4, f"Expected 4 requests, got {len(request_log)}"
@@ -91,17 +98,25 @@ async def test_distribute_batch_uses_preferred_server():
 
     preferred_servers_log = []
 
-    async def mock_call_with_failover(endpoint, payload, preferred_server=None):
+    # Store original method
+    original_call_with_failover = backend._call_with_failover
+
+    async def tracking_call_with_failover(endpoint, payload, preferred_server=None):
         """Track which preferred_server is passed."""
         preferred_servers_log.append(preferred_server)
-        return {"results": [{"token_ids": [], "logprobs": [], "answer_range": [0, 1], "total_log_prob": 0.0}] * len(payload.get("chats", []))}
+        num_chats = len(payload.get("chats", []))
+        return {"results": [{"token_ids": [], "logprobs": [], "answer_range": [0, 1], "total_log_prob": 0.0}] * num_chats}
 
-    with patch.object(backend, "_call_with_failover", side_effect=mock_call_with_failover):
-        backend._session = MagicMock()
-        backend._server_semaphores = {
-            server: asyncio.Semaphore(8) for server in config.servers
-        }
+    # Temporarily replace method
+    backend._call_with_failover = tracking_call_with_failover
 
+    # Simulate entering context manager
+    backend._session = object()  # type: ignore[assignment]
+    backend._server_semaphores = {
+        server: asyncio.Semaphore(8) for server in config.servers
+    }
+
+    try:
         # 4 items distributed across 2 servers
         items = [(i, ([], [])) for i in range(4)]
 
@@ -114,6 +129,9 @@ async def test_distribute_batch_uses_preferred_server():
                 for i, (idx, _) in enumerate(chunk_items)
             ],
         )
+    finally:
+        # Restore original method
+        backend._call_with_failover = original_call_with_failover
 
     print(f"\nPreferred servers: {preferred_servers_log}")
 
@@ -128,7 +146,6 @@ async def test_distribute_batch_uses_preferred_server():
 @pytest.mark.asyncio
 async def test_call_with_failover_ignores_unhealthy_preferred():
     """Verify that unhealthy preferred servers are ignored."""
-    from place_layers.backend.rest import RESTBackend, RESTBackendConfig
 
     config = RESTBackendConfig(
         servers=[
@@ -144,23 +161,33 @@ async def test_call_with_failover_ignores_unhealthy_preferred():
 
     called_servers = []
 
-    async def mock_do_http_request(server, endpoint, payload):
+    # Store original method
+    original_do_http_request = backend._do_http_request
+
+    async def tracking_do_http_request(server, _endpoint, _payload):
         """Track which server is actually called."""
         called_servers.append(server)
         return {"result": "success"}
 
-    with patch.object(backend, "_do_http_request", side_effect=mock_do_http_request):
-        backend._session = MagicMock()
-        backend._server_semaphores = {
-            server: asyncio.Semaphore(8) for server in config.servers
-        }
+    # Temporarily replace method
+    backend._do_http_request = tracking_do_http_request
 
+    # Simulate entering context manager
+    backend._session = object()  # type: ignore[assignment]
+    backend._server_semaphores = {
+        server: asyncio.Semaphore(8) for server in config.servers
+    }
+
+    try:
         # Try to call with unhealthy server-1 as preferred
         await backend._call_with_failover(
             "/test",
             {"data": "test"},
             preferred_server="http://server-1:8080"
         )
+    finally:
+        # Restore original method
+        backend._do_http_request = original_do_http_request
 
     print(f"\nCalled servers: {called_servers}")
 
