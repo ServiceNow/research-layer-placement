@@ -14,6 +14,7 @@ Directory structure:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -63,14 +64,22 @@ class TraceWriter:
         load_dataset(output_dir, split='validation')
 
     State reconstruction scans both files, filtering by task_name field.
+
+    Thread-safe for concurrent writes from parallel task evaluation via asyncio.Lock.
     """
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = asyncio.Lock()
 
-    def append(self, records: Sequence[TraceRecord]) -> None:
-        """Append records to appropriate files based on record type."""
+    async def append(self, records: Sequence[TraceRecord]) -> None:
+        """Append records to appropriate files based on record type.
+
+        Thread-safe: Uses async lock to prevent concurrent writes from corrupting files.
+        Records may be written out of submission order when multiple tasks run in parallel,
+        but this is safe since all downstream code (resumability, summarization) is order-independent.
+        """
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
             r for r in records
@@ -78,15 +87,17 @@ class TraceWriter:
         ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
-        if valid:
-            with (self.output_dir / "validation.jsonl").open("a") as f:
-                for record in valid:
-                    f.write(record.model_dump_json() + "\n")
+        # Acquire lock to ensure atomic file writes
+        async with self._lock:
+            if valid:
+                with (self.output_dir / "validation.jsonl").open("a") as f:
+                    for record in valid:
+                        f.write(record.model_dump_json() + "\n")
 
-        if skipped:
-            with (self.output_dir / "skipped.jsonl").open("a") as f:
-                for record in skipped:
-                    f.write(record.model_dump_json() + "\n")
+            if skipped:
+                with (self.output_dir / "skipped.jsonl").open("a") as f:
+                    for record in skipped:
+                        f.write(record.model_dump_json() + "\n")
 
     def get_completed_problems(self, task_name: str) -> set[int]:
         """Scan validation.jsonl and skipped.jsonl to find completed problem indices.

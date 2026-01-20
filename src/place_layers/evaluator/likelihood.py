@@ -73,6 +73,7 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -182,10 +183,17 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         return summary.accuracy
 
     async def _run_evaluation(self) -> None:
-        """Run likelihood evaluation across all tasks, streaming records to disk."""
+        """Run likelihood evaluation across all tasks, streaming records to disk.
+
+        Tasks are evaluated either in parallel (default) or sequentially based on
+        config.parallel_tasks. The TraceWriter uses an async lock to ensure
+        thread-safe file writes in parallel mode.
+        """
         # Load all tasks upfront for efficiency (6x speedup vs individual loading)
         self._ensure_tasks_loaded()
 
+        # Collect tasks to evaluate
+        tasks_to_run = []
         for task_spec in self.config.tasks:
             # Use _prepare_task for loading and resumption
             prepared = self._prepare_task(task_spec, "multiple_choice")
@@ -200,8 +208,23 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                 f"Task '{task_name}': evaluating {len(remaining_indices)} problems"
             )
 
-            # Evaluate task (streams records to disk)
-            await self._evaluate_task(task, task_name, docs, remaining_indices)
+            # Queue task for evaluation
+            tasks_to_run.append(
+                (task, task_name, docs, remaining_indices)
+            )
+
+        # Run tasks in parallel or sequential mode
+        if tasks_to_run:
+            if self.config.parallel_tasks:
+                # Parallel: all tasks run concurrently
+                await asyncio.gather(*[
+                    self._evaluate_task(task, task_name, docs, remaining_indices)
+                    for task, task_name, docs, remaining_indices in tasks_to_run
+                ])
+            else:
+                # Sequential: tasks run one at a time
+                for task, task_name, docs, remaining_indices in tasks_to_run:
+                    await self._evaluate_task(task, task_name, docs, remaining_indices)
 
     async def _evaluate_task(
         self,
@@ -292,7 +315,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     )
                     batch_records.append(record)
 
-                self._trace_writer.append(batch_records)  # type: ignore[arg-type]
+                await self._trace_writer.append(batch_records)  # type: ignore[arg-type]
                 progress.advance(progress_task, len(batch_docs))
 
     async def _evaluate_task_text(
@@ -379,7 +402,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     )
                     batch_records.append(record)
 
-                self._trace_writer.append(batch_records)  # type: ignore[arg-type]
+                await self._trace_writer.append(batch_records)  # type: ignore[arg-type]
                 progress.advance(progress_task, len(batch_docs))
 
     def _get_gold_idx(self, task: "Task", doc: dict, choices: list[str]) -> int:
@@ -564,4 +587,10 @@ class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
         default=32,
         description="Batch size for log-prob computation",
         gt=0,
+    )
+
+    # Parallel processing
+    parallel_tasks: bool = Field(
+        default=True,
+        description="Whether to evaluate tasks in parallel. Set to False for sequential processing.",
     )

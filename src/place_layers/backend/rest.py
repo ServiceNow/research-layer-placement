@@ -114,10 +114,12 @@ class ServerPool:
     base_recovery_interval: float = 10.0  # Initial wait before retry
     max_recovery_interval: float = 300.0  # Cap at 5 minutes
     _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
+    _round_robin_counter: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize health tracking for all servers."""
         self._health = {server: ServerHealth() for server in self.servers}
+        self._round_robin_counter = 0
 
     def get_servers_to_try(self) -> list[str]:
         """Get servers in priority order for trying a request.
@@ -138,6 +140,39 @@ class ServerPool:
                 due_for_check.append(server)
 
         return healthy + due_for_check
+
+    def get_next_server_round_robin(self) -> str:
+        """Get the next healthy server in round-robin order.
+
+        Maintains a counter across calls to ensure even distribution across batches.
+        The counter operates on the full server list, but skips unhealthy servers.
+        This ensures consistent round-robin ordering even when servers fail.
+
+        Returns:
+            The selected server.
+
+        Raises:
+            ValueError: If no healthy servers are available.
+        """
+        servers_to_try = self.get_servers_to_try()
+        if not servers_to_try:
+            raise ValueError("No healthy servers available")
+
+        # Round-robin over the FULL server list, but skip unhealthy ones
+        # This maintains consistent ordering even when servers fail/recover
+        attempts = 0
+        while attempts < len(self.servers):
+            candidate = self.servers[self._round_robin_counter % len(self.servers)]
+            self._round_robin_counter += 1
+
+            # Check if this server is in the healthy list
+            if candidate in servers_to_try:
+                return candidate
+
+            attempts += 1
+
+        # Should never reach here if get_servers_to_try() returned non-empty list
+        raise ValueError("No healthy servers found in round-robin")
 
     def mark_success(self, server: str) -> None:
         """Mark a server as healthy after a successful request."""
@@ -652,10 +687,12 @@ class RESTBackend(AsyncBackend):
         if not servers:
             raise RESTBackendError("No servers available")
 
-        # Distribute items across servers
+        # Distribute items across servers using round-robin
+        # Counter operates on full server list to maintain consistent ordering
+        # even when servers fail/recover
         server_items: dict[str, list[tuple[int, Any]]] = {s: [] for s in servers}
-        for i, item in enumerate(items):
-            server = servers[i % len(servers)]
+        for item in items:
+            server = self._server_pool.get_next_server_round_robin()
             server_items[server].append(item)
 
         # Process each server's chunk
