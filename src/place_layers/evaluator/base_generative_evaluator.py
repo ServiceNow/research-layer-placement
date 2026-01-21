@@ -141,13 +141,8 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """Run all tasks synchronously with batching."""
         assert isinstance(self._backend, SyncBackend)
 
-        # Load all tasks upfront for efficiency (6x speedup vs individual loading)
-        self._ensure_tasks_loaded(seed=self._get_fewshot_seed())
-
         for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
+            prepared = self._prepare_task(task_spec, "generate_until")
 
             if prepared is None:
                 continue
@@ -266,13 +261,8 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """Run all tasks asynchronously with worker pool."""
         assert isinstance(self._backend, AsyncBackend)
 
-        # Load all tasks upfront for efficiency (6x speedup vs individual loading)
-        self._ensure_tasks_loaded(seed=self._get_fewshot_seed())
-
         for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
+            prepared = self._prepare_task(task_spec, "generate_until")
 
             if prepared is None:
                 continue

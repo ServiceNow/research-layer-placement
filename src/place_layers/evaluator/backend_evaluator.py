@@ -68,21 +68,18 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         self._current_placement: tuple[str, ...] | None = None
 
         # Set up trace writer for saving results
-        # Try to get output_dir from config first, then fall back to HydraConfig
-        if config.output_dir is not None:
-            self._output_dir = Path(config.output_dir)
-        else:
-            try:
-                hydra_cfg = HydraConfig.get()
-                self._output_dir = Path(hydra_cfg.runtime.output_dir)
-            except ValueError:
-                # HydraConfig not available (e.g., in tests)
-                # Use a default temp directory
-                import tempfile
-                self._output_dir = Path(tempfile.mkdtemp(prefix="place_layers_"))
-                logger.warning(
-                    f"HydraConfig not available, using temp output directory: {self._output_dir}"
-                )
+        # Always use Hydra's output directory
+        try:
+            hydra_cfg = HydraConfig.get()
+            self._output_dir = Path(hydra_cfg.runtime.output_dir)
+        except ValueError:
+            # HydraConfig not available (e.g., in tests)
+            # Use a default temp directory
+            import tempfile
+            self._output_dir = Path(tempfile.mkdtemp(prefix="place_layers_"))
+            logger.warning(
+                f"HydraConfig not available, using temp output directory: {self._output_dir}"
+            )
         self._trace_writer = TraceWriter(self._output_dir)
 
     async def __aenter__(self) -> Self:
@@ -250,8 +247,4 @@ class BackendEvaluatorConfig(BaseEvaluatorConfig):
 
     backend: BackendConfig = Field(
         description="Generation backend configuration (vllm, transformers, or rest)"
-    )
-    output_dir: str | None = Field(
-        default=None,
-        description="Output directory for results. If None, uses Hydra output directory.",
     )

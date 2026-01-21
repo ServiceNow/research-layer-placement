@@ -189,9 +189,6 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         config.parallel_tasks. The TraceWriter uses an async lock to ensure
         thread-safe file writes in parallel mode.
         """
-        # Load all tasks upfront for efficiency (6x speedup vs individual loading)
-        self._ensure_tasks_loaded()
-
         # Collect tasks to evaluate
         tasks_to_run = []
         for task_spec in self.config.tasks:

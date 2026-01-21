@@ -1,0 +1,32 @@
+# @package task
+# MMLU (Massive Multitask Language Understanding) task configuration
+#
+# MMLU is a benchmark for measuring knowledge across 57 subjects.
+# Uses multiple-choice format with 4 answer choices (A, B, C, D).
+# https://arxiv.org/abs/2009.03300
+#
+# Total: 57 subjects, ~14K problems
+
+tasks:
+  - mmlu_abstract_algebra
+  - mmlu_anatomy
+  - mmlu_astronomy
+  - mmlu_business_ethics
+  - mmlu_clinical_knowledge
+  - mmlu_college_biology
+  - mmlu_college_chemistry
+  - mmlu_college_computer_science
+  - mmlu_college_mathematics
+  - mmlu_college_medicine
+  - mmlu_college_physics
+  - mmlu_computer_security
+  - mmlu_conceptual_physics
+  - mmlu_econometrics
+  - mmlu_electrical_engineering
+  - mmlu_elementary_mathematics
+  - mmlu_formal_logic
+  - mmlu_global_facts
+
+num_fewshot: 5
+max_problems_per_task: 5  # null = full test set (~14K problems total)
+split: test
