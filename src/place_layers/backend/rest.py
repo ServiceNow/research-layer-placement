@@ -95,8 +95,15 @@ class ServerPool:
     Tracks which servers are healthy and schedules recovery checks for
     unhealthy servers using exponential backoff with a cap.
 
-    Usage:
-        pool = ServerPool(["http://server1:8080", "http://server2:8080"])
+    Supports two modes:
+    - Static mode: Fixed server list provided at initialization
+    - PA mode: Servers fetched dynamically from Process Agent
+
+    Usage (static mode):
+        pool = ServerPool(servers=["http://server1:8080", "http://server2:8080"])
+
+    Usage (PA mode):
+        pool = ServerPool(pa_url="http://pa:8080")
 
         # Get servers to try (healthy first, then unhealthy due for check)
         for server in pool.get_servers_to_try():
@@ -110,14 +117,88 @@ class ServerPool:
         raise AllServersFailedError("No servers available")
     """
 
-    servers: list[str]
+    servers: list[str] = field(default_factory=list)
+    pa_url: str | None = None
     base_recovery_interval: float = 10.0  # Initial wait before retry
     max_recovery_interval: float = 300.0  # Cap at 5 minutes
     _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
+    _session: aiohttp.ClientSession | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize health tracking for all servers."""
+        if not self.servers and not self.pa_url:
+            raise ValueError("Either servers or pa_url must be provided")
+        if self.servers and self.pa_url:
+            raise ValueError("Cannot provide both servers and pa_url")
         self._health = {server: ServerHealth() for server in self.servers}
+
+    async def fetch_servers_from_pa(self) -> list[str]:
+        """Fetch server list from Process Agent.
+
+        Returns:
+            List of server URLs from PA.
+
+        Raises:
+            RESTBackendError: If unable to fetch servers from PA.
+        """
+        if not self.pa_url:
+            raise ValueError("pa_url not configured")
+
+        if self._session is None:
+            raise RuntimeError("Session not initialized - call init_pa_mode() first")
+
+        try:
+            async with self._session.get(f"{self.pa_url}/servers") as resp:
+                if resp.status != 200:
+                    raise RESTBackendError(
+                        f"Failed to fetch servers from PA: HTTP {resp.status}"
+                    )
+                data = await resp.json()
+                servers = data.get("servers", [])
+                if not servers:
+                    raise RESTBackendError("PA returned empty server list")
+                logger.info(f"Fetched {len(servers)} servers from PA: {servers}")
+                return servers
+        except aiohttp.ClientError as e:
+            raise RESTBackendError(f"Failed to connect to PA at {self.pa_url}: {e}")
+
+    async def init_pa_mode(self, session: aiohttp.ClientSession) -> None:
+        """Initialize PA mode by fetching initial server list.
+
+        Args:
+            session: aiohttp session to use for PA requests.
+        """
+        if not self.pa_url:
+            return  # Not in PA mode
+
+        self._session = session
+        self.servers = await self.fetch_servers_from_pa()
+        self._health = {server: ServerHealth() for server in self.servers}
+
+    async def refresh_servers_from_pa(self) -> None:
+        """Refresh server list from PA (called when servers fail).
+
+        Updates the server list and initializes health tracking for new servers.
+        """
+        if not self.pa_url:
+            return  # Not in PA mode
+
+        new_servers = await self.fetch_servers_from_pa()
+
+        # Add new servers to health tracking
+        for server in new_servers:
+            if server not in self._health:
+                self._health[server] = ServerHealth()
+                logger.info(f"Added new server from PA: {server}")
+
+        # Remove servers that are no longer in the list
+        removed = set(self.servers) - set(new_servers)
+        for server in removed:
+            if server in self._health:
+                del self._health[server]
+                logger.info(f"Removed server no longer in PA list: {server}")
+
+        self.servers = new_servers
 
     def get_servers_to_try(self) -> list[str]:
         """Get servers in priority order for trying a request.
@@ -148,7 +229,10 @@ class ServerPool:
                 logger.info(f"Server {server} recovered and marked healthy")
 
     def mark_failure(self, server: str) -> None:
-        """Mark a server as unhealthy after a failed request."""
+        """Mark a server as unhealthy after a failed request.
+
+        In PA mode, this triggers a refresh of the server list.
+        """
         if server in self._health:
             self._health[server].mark_unhealthy()
             health = self._health[server]
@@ -161,6 +245,20 @@ class ServerPool:
                 f"(failures: {health.consecutive_failures}, "
                 f"next check in {wait_time:.1f}s)"
             )
+
+    async def handle_server_failure(self, server: str) -> None:
+        """Handle server failure, refreshing from PA if in PA mode.
+
+        Args:
+            server: The server that failed.
+        """
+        self.mark_failure(server)
+        if self.pa_url:
+            # In PA mode, refresh server list
+            try:
+                await self.refresh_servers_from_pa()
+            except RESTBackendError as e:
+                logger.error(f"Failed to refresh servers from PA: {e}")
 
     def next_recovery_check_time(self) -> float | None:
         """Get the earliest time when an unhealthy server should be rechecked.
@@ -237,12 +335,14 @@ class RESTBackend(AsyncBackend):
         self._current_placement: list[str] | None = None
         self._model_structure: ModelStructure | None = None
 
-        if not config.servers:
-            raise ValueError("At least one server URL must be provided")
+        # Validate config
+        if not config.servers and not getattr(config, 'pa_url', None):
+            raise ValueError("Either servers or pa_url must be provided")
 
         # Server pool with health tracking
         self._server_pool = ServerPool(
-            servers=list(config.servers),
+            servers=list(config.servers) if config.servers else [],
+            pa_url=getattr(config, 'pa_url', None),
             base_recovery_interval=config.base_recovery_interval,
             max_recovery_interval=config.max_recovery_interval,
         )
@@ -263,6 +363,14 @@ class RESTBackend(AsyncBackend):
             timeout=timeout,
             headers={"Content-Type": "application/json"},
         )
+
+        # Initialize PA mode if configured
+        try:
+            await self._server_pool.init_pa_mode(self._session)
+        except Exception:
+            await self._session.close()
+            raise
+
         # Create per-server semaphores for concurrency control
         self._server_semaphores = {
             server: asyncio.Semaphore(self._config.max_concurrent_per_server)
@@ -303,11 +411,20 @@ class RESTBackend(AsyncBackend):
         return self._session
 
     def _get_semaphore(self, server: str) -> asyncio.Semaphore:
-        """Get the semaphore for a specific server."""
+        """Get the semaphore for a specific server, creating it if needed.
+
+        This supports PA mode where servers may be added dynamically.
+        """
         if self._server_semaphores is None:
             raise RuntimeError(
                 "RESTBackend must be used as an async context manager"
             )
+        # Create semaphore on-demand for new servers (PA mode)
+        if server not in self._server_semaphores:
+            self._server_semaphores[server] = asyncio.Semaphore(
+                self._config.max_concurrent_per_server
+            )
+            logger.debug(f"Created semaphore for new server: {server}")
         return self._server_semaphores[server]
 
     async def _call_with_failover(
@@ -355,13 +472,13 @@ class RESTBackend(AsyncBackend):
                         ) as resp:
                             if resp.status == 503:
                                 # Server unavailable - mark unhealthy, try next
-                                self._server_pool.mark_failure(server)
+                                await self._server_pool.handle_server_failure(server)
                                 errors.append((server, "503 Service Unavailable"))
                                 continue
                             if resp.status >= 500:
                                 # Server error - mark unhealthy, try next
                                 error_text = await resp.text()
-                                self._server_pool.mark_failure(server)
+                                await self._server_pool.handle_server_failure(server)
                                 errors.append((server, f"{resp.status}: {error_text}"))
                                 continue
                             if resp.status >= 400:
@@ -375,7 +492,7 @@ class RESTBackend(AsyncBackend):
                             return await resp.json()
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
                     # Connection/timeout errors - mark unhealthy, try next server
-                    self._server_pool.mark_failure(server)
+                    await self._server_pool.handle_server_failure(server)
                     errors.append((server, str(e)))
                     continue
 
@@ -814,7 +931,50 @@ class RESTBackendConfig(BaseBackendConfig):
     backend_type: Literal["rest"] = "rest"
 
     servers: list[str] = Field(
+        default=[],
         description="List of server URLs (e.g., ['http://localhost:8080', 'http://localhost:8081'])"
+    )
+    max_concurrent_per_server: int = Field(
+        default=8,
+        description="Maximum concurrent requests per server",
+        ge=1,
+    )
+    timeout_seconds: int = Field(
+        default=300,
+        description="Request timeout in seconds",
+        ge=1,
+    )
+    base_recovery_interval: float = Field(
+        default=10.0,
+        description="Initial wait time before retrying an unhealthy server (seconds)",
+        ge=0.1,
+    )
+    max_recovery_interval: float = Field(
+        default=300.0,
+        description="Maximum wait time between recovery checks (seconds)",
+        ge=1.0,
+    )
+    max_retries: int = Field(
+        default=10,
+        description="Maximum number of retry attempts when all servers fail",
+        ge=1,
+    )
+
+
+class PARESTBackendConfig(BaseBackendConfig):
+    """Configuration for PA REST backend (Process Agent managed servers)."""
+
+    _backend_class: ClassVar[type[AsyncBackend]] = RESTBackend
+
+    backend_type: Literal["pa_rest"] = "pa_rest"
+
+    pa_url: str = Field(
+        description="Process Agent URL (e.g., 'http://pa-host:8080')"
+    )
+    servers: list[str] = Field(
+        default=[],
+        description="Not used in PA mode (servers fetched from PA)",
+        exclude=True,
     )
     max_concurrent_per_server: int = Field(
         default=8,

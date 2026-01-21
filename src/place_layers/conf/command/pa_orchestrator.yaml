@@ -1,0 +1,54 @@
+# @package _global_
+# PA Orchestrator command - manages multiple serve processes via Process Agent
+#
+# This command runs as a Process Agent job and spawns child serve jobs,
+# providing a single endpoint for dynamic server discovery with auto-recovery.
+#
+# Required config groups:
+#   - model: model configuration (model name passed to child serve jobs)
+#
+# Usage:
+#   1. Create PA spec file (pa_spec.yaml):
+#      image: 'your_image'
+#      isProcessAgent: true
+#      options:
+#        sidecars:
+#          process-agent:
+#            version: 3
+#
+#   2. Submit PA orchestrator job:
+#      eai job new -f pa_spec.yaml
+#
+#   3. Inside PA job, run orchestrator:
+#      python -m place_layers +command=pa_orchestrator +model=apriel2_0_5b_dev \
+#          num_children=4 child_spec.mem=32 child_spec.gpu=1 child_spec.image=ubuntu
+#
+# PA orchestrator exposes:
+#   - GET /servers -> {"servers": ["http://child1_ip:8080", ...]}
+#   - GET /health -> {"status": "ok", "active_children": N}
+
+command: pa_orchestrator
+
+# Model name (config group name, e.g., "apriel2_0_5b_dev")
+# This is passed to child serve jobs
+# Must be provided by user via CLI: model_name=apriel2_0_5b_dev
+model_name: ???
+
+# Child job specification
+child_spec:
+  mem: 32  # Memory in GB
+  gpu: 1   # Number of GPUs per child
+  image: registry.toolkit-sp.yul201.service-now.com/snow.research.afm/interactive-toolkit:25.12-py3-vllm014rc1  # Container image
+  port_start: 8080  # Starting port (increments for each child)
+
+# Number of child serve jobs to maintain
+num_children: 1
+
+# Health check interval (seconds)
+health_check_interval: 30
+
+# Server bind address (PA orchestrator API)
+host: ${oc.env:PA_ORCHESTRATOR_HOST,0.0.0.0}
+
+# Server port (PA orchestrator API)
+port: ${oc.env:PA_ORCHESTRATOR_PORT,8080}

@@ -1,0 +1,18 @@
+# Default Process Agent configuration
+#
+# This file contains PA-specific settings that are merged with user job specs.
+# Update this file if PA API version or requirements change.
+
+# Enable Process Agent mode
+isProcessAgent: true
+
+# Process Agent sidecar configuration
+options:
+  alphabits:
+        fusionflex: v2
+  sidecars:
+    process-agent:
+      version: 3  # PA API version
+
+# Job scheduling preferences
+preemptable: false  # Do not allow job preemption

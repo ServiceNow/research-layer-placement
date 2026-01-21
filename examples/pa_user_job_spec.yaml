@@ -1,0 +1,50 @@
+# Example user job spec for PA orchestrator
+# This spec is merged with PA-specific configuration
+#
+# NOTE: This example shows BOTH formats:
+# - PA API format (environmentVars array, resources object) - used directly
+# - User-friendly format (env dict) - converted by script
+#
+# The script automatically converts user-friendly fields to PA API format:
+# - env dict → environmentVars array
+# - workingDir → workdir
+# - top-level cpu/mem/gpu → resources object
+#
+# You can use either format or mix them (script won't override existing PA fields)
+
+# NOTE: Command format example (array of strings, even for bash -c)
+# command:
+#     - /tk/bin/start.sh
+#     - sleep
+#     - inf
+data:
+    - snow.home.denis_kocetkov:/home/toolkit:rw
+    - snow.research.fml.keys:/mnt/keys:rw
+    - snow.research.fml.datasets:/mnt/datasets:rw
+    - snow.research.fml.shared:/mnt/shared:rw
+    - snow.research.fml.transformers_cache:/mnt/transformers_cache:rw
+    - snow.research.fml.checkpoints:/mnt/checkpoints:rw
+    - snow.research.fml.denis_kocetkov_home:/mnt/old_home:rw
+    - snow.plato.slam.keys:/mnt/keys_slam:rw
+    - snow.plato.slam.checkpoints:/mnt/checkpoints_slam:rw
+
+environmentVars:
+    - HOME=/home/toolkit
+    - RESEARCH_INTERACTIVE_TOOLKIT=1
+
+image: registry.toolkit-sp.yul201.service-now.com/snow.research.afm/interactive-toolkit:25.12-py3-vllm014rc1
+
+resources:
+    cpu: 4
+    mem: 16 
+    gpu: 2
+    gpuMem: 12
+
+# Environment variables (will be converted to environmentVars array)
+env:
+  PYTHONPATH: /home/toolkit/code/research-layer-placement/src
+  LOG_LEVEL: INFO
+
+# Additional optional fields
+# name: my-pa-orchestrator
+# workingDir: /home/toolkit/code/research-layer-placement  # Will be converted to workdir
