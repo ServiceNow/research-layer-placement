@@ -182,8 +182,13 @@ class ServerPool:
             if was_unhealthy:
                 logger.info(f"Server {server} recovered and marked healthy")
 
-    def mark_failure(self, server: str) -> None:
-        """Mark a server as unhealthy after a failed request."""
+    def mark_failure(self, server: str, reason: str = "") -> None:
+        """Mark a server as unhealthy after a failed request.
+
+        Args:
+            server: Server URL that failed.
+            reason: Optional reason for the failure (for logging).
+        """
         if server in self._health:
             self._health[server].mark_unhealthy()
             health = self._health[server]
@@ -191,10 +196,11 @@ class ServerPool:
                 self.base_recovery_interval, self.max_recovery_interval
             )
             wait_time = next_check - time.monotonic()
+            reason_str = f": {reason}" if reason else ""
             logger.warning(
                 f"Server {server} marked unhealthy "
                 f"(failures: {health.consecutive_failures}, "
-                f"next check in {wait_time:.1f}s)"
+                f"next check in {wait_time:.1f}s){reason_str}"
             )
 
     def next_recovery_check_time(self) -> float | None:
@@ -398,6 +404,7 @@ class RESTBackend(AsyncBackend):
                     return await self._do_http_request(server, endpoint, payload)
                 except RESTBackendError as e:
                     # Server failed - try next server
+                    logger.debug(f"Server {server} failed for {endpoint}: {e}")
                     errors.append((server, str(e)))
                     continue
 
@@ -438,13 +445,15 @@ class RESTBackend(AsyncBackend):
             async with self._get_semaphore(server):
                 async with session.post(f"{server}{endpoint}", json=payload) as resp:
                     if resp.status == 503:
-                        self._server_pool.mark_failure(server)
-                        raise RESTBackendError(f"{server} returned 503 Service Unavailable")
+                        error_msg = "503 Service Unavailable"
+                        self._server_pool.mark_failure(server, error_msg)
+                        raise RESTBackendError(f"{server} returned {error_msg}")
                     if resp.status >= 500:
                         error_text = await resp.text()
-                        self._server_pool.mark_failure(server)
+                        error_msg = f"{resp.status}: {error_text}"
+                        self._server_pool.mark_failure(server, error_msg)
                         raise RESTBackendError(
-                            f"{server} returned {resp.status}: {error_text}"
+                            f"{server} returned {error_msg}"
                         )
                     if resp.status >= 400:
                         error_text = await resp.text()
@@ -456,8 +465,9 @@ class RESTBackend(AsyncBackend):
                     logger.info(f"Request to {endpoint} handled by {server}")
                     return await resp.json()
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
-            self._server_pool.mark_failure(server)
-            raise RESTBackendError(f"Connection error to {server}: {e}") from e
+            error_msg = f"Connection error: {type(e).__name__}: {e}"
+            self._server_pool.mark_failure(server, error_msg)
+            raise RESTBackendError(f"{error_msg} to {server}") from e
 
     async def _validate_servers(self) -> None:
         """Validate servers and check configuration consistency.
@@ -475,7 +485,9 @@ class RESTBackend(AsyncBackend):
         async def fetch_info(server: str) -> tuple[str, dict | None, str | None]:
             """Fetch info from a server, returning (server, data, error)."""
             try:
-                async with session.get(f"{server}/info") as resp:
+                # Use a short timeout for validation to fail fast on unhealthy servers
+                timeout = aiohttp.ClientTimeout(total=10.0)
+                async with session.get(f"{server}/info", timeout=timeout) as resp:
                     if resp.status == 200:
                         return (server, await resp.json(), None)
                     else:
@@ -494,7 +506,7 @@ class RESTBackend(AsyncBackend):
             if error is not None:
                 failed.append((server, error))
                 # Mark as unhealthy - will be retried during evaluation
-                self._server_pool.mark_failure(server)
+                self._server_pool.mark_failure(server, error)
             else:
                 assert data is not None  # If no error, data must exist
                 infos.append((server, data))
