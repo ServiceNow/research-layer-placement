@@ -641,8 +641,6 @@ class RESTBackend(AsyncBackend):
         Returns:
             LogProbResult object.
         """
-        from place_layers.backend.vllm import LogProbResult
-
         return LogProbResult(
             token_ids=tuple(r["token_ids"]),
             logprobs=tuple(r["logprobs"]),
