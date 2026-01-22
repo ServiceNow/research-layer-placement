@@ -1,0 +1,42 @@
+# @package backend
+# REST backend configuration with automatic DNS-based server list generation
+#
+# Automatically generates server URLs based on DNS pattern and server count.
+# Useful for distributed deployments with predictable DNS naming schemes.
+#
+# Example: With dns_prefix="dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f", num_servers=4, port=8080
+# Generates:
+#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-0:8080
+#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-1:8080
+#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-2:8080
+#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-3:8080
+#
+# Usage:
+#   # Using environment variables (recommended for deployment)
+#   DNS_PREFIX=my-cluster NUM_SERVERS=4 python -m place_layers \
+#       +command=evaluate +backend=rest_dns \
+#       +evaluator=generative +task=gsm8k +generation=greedy
+#
+#   # Using CLI overrides
+#   python -m place_layers +command=evaluate +backend=rest_dns \
+#       backend.dns_prefix=my-cluster backend.num_servers=4 \
+#       +evaluator=generative +task=gsm8k +generation=greedy
+
+backend_type: rest_dns
+
+# DNS prefix for server hostnames
+# Servers will be named: {dns_prefix}-id-{0..num_servers-1}
+dns_prefix: ${oc.env:DNS_PREFIX,dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f}
+
+# Number of servers to generate
+num_servers: ${oc.env:NUM_SERVERS,4}
+
+# Port for all servers (assumes uniform port across servers)
+port: 8080
+
+# Maximum concurrent requests per server
+# Total concurrent = max_concurrent_per_server * len(servers)
+max_concurrent_per_server: 8
+
+# Request timeout in seconds
+timeout_seconds: 300

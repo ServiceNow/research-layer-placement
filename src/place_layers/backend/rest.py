@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import Field
+from pydantic import Field, model_validator
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -462,7 +462,7 @@ class RESTBackend(AsyncBackend):
                         )
                     # Success
                     self._server_pool.mark_success(server)
-                    logger.info(f"Request to {endpoint} handled by {server}")
+                    logger.debug(f"Request to {endpoint} handled by {server}")
                     return await resp.json()
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
             error_msg = f"Connection error: {type(e).__name__}: {e}"
@@ -775,7 +775,7 @@ class RESTBackend(AsyncBackend):
         ) -> list[tuple[int, Any]]:
             if not chunk_items:
                 return []
-            logger.info(f"_distribute_batch: Assigned {len(chunk_items)} items to {server}")
+            logger.debug(f"_distribute_batch: Assigned {len(chunk_items)} items to {server}")
             payload = make_payload(chunk_items)
             # Call with failover, preferring the assigned server
             data = await self._call_with_failover(endpoint, payload, preferred_server=server)
@@ -1013,3 +1013,63 @@ class RESTBackendConfig(BaseBackendConfig):
         description="Maximum number of retry attempts when all servers fail",
         ge=1,
     )
+
+
+class RESTDNSBackendConfig(RESTBackendConfig):
+    """Configuration for REST backend with automatic DNS-based server list generation.
+
+    Generates server URLs automatically based on a DNS prefix and server count.
+    Useful for distributed deployments with predictable DNS naming schemes.
+
+    Example:
+        dns_prefix = "dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f"
+        num_servers = 4
+        port = 8080
+
+        Generates:
+        [
+            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-0:8080",
+            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-1:8080",
+            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-2:8080",
+            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-3:8080"
+        ]
+    """
+
+    backend_type: Literal["rest_dns"] = "rest_dns"
+
+    dns_prefix: str = Field(
+        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..num_servers-1})"
+    )
+    num_servers: int = Field(
+        description="Number of servers to generate",
+        ge=1,
+    )
+    port: int = Field(
+        default=8080,
+        description="Port for all servers (uniform across servers)",
+        ge=1,
+        le=65535,
+    )
+
+    # Override servers to make it optional with a default
+    servers: list[str] = Field(
+        default_factory=list,
+        description="Auto-generated server URLs (do not set manually)",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def generate_servers(cls, data: dict) -> dict:
+        """Auto-generate server list from DNS prefix and server count."""
+        # Only generate if servers not already provided
+        if not data.get("servers"):
+            dns_prefix = data.get("dns_prefix")
+            num_servers = data.get("num_servers")
+            port = data.get("port", 8080)
+
+            if dns_prefix is not None and num_servers is not None:
+                data["servers"] = [
+                    f"http://{dns_prefix}-id-{i}:{port}"
+                    for i in range(int(num_servers))
+                ]
+        return data
