@@ -4,11 +4,5 @@
 # Mixers: attention, gdn, kda, sliding_window
 
 model_path: /mnt/plato/checkpoints/fast_llm_exp/apriel_train/ap1p6_sndist_mix1_1p6an7_lr3e-05_lfmse0.5_rkl0.5_fkl0.5_sl16384_iters5000/export/apriel2/4500/
-num_layers: 48
-mixer_names:
-  - attention
-  - gdn
-  - kda
-  - sliding_window
 trust_remote_code: true
 torch_dtype: bfloat16
