@@ -65,6 +65,8 @@ class TaskBasedEvaluator(BackendEvaluator):
         super().__init__(config)
         # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
+        # Cache for docs to avoid re-loading datasets on every _prepare_task call
+        self._docs_cache: dict[str, Docs] = {}
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling, or None for default behavior.
@@ -81,6 +83,7 @@ class TaskBasedEvaluator(BackendEvaluator):
         1. Backend must be initialized first
         2. Seed may depend on evaluator-specific logic (_get_fewshot_seed)
         3. Loading all tasks upfront is ~6x faster than individual loading
+        4. Pre-loading docs avoids repeated metadata reads during evaluation
         """
         # Initialize backend first
         await super().__aenter__()
@@ -90,6 +93,15 @@ class TaskBasedEvaluator(BackendEvaluator):
         logger.info(f"Batch-loading {len(self.config.tasks)} tasks...")
         self._task_cache = load_tasks(self.config.tasks, self.config.num_fewshot, seed)
         logger.info(f"Loaded {len(self._task_cache)} tasks")
+
+        # Pre-load all docs to avoid repeated metadata reads during evaluation
+        # This happens during task loading anyway, but by doing it explicitly here
+        # we can cache the results and avoid re-reading on every _prepare_task call
+        logger.info(f"Pre-loading documents for {len(self._task_cache)} tasks...")
+        for task_name, task in self._task_cache.items():
+            task.download()  # Ensure dataset is downloaded
+            self._docs_cache[task_name] = get_docs(task, self.config.split)
+        logger.info(f"All documents pre-loaded")
 
         return self
 
@@ -134,11 +146,14 @@ class TaskBasedEvaluator(BackendEvaluator):
                 f"expected '{expected_output_type}'"
             )
 
-        # Download dataset if needed
-        task.download()
+        # Get documents from cache (or load and cache if first time)
+        if task_name not in self._docs_cache:
+            # Download dataset if needed (only on first access)
+            task.download()
+            # Load and cache documents
+            self._docs_cache[task_name] = get_docs(task, self.config.split)
 
-        # Get documents
-        docs = get_docs(task, self.config.split)
+        docs = self._docs_cache[task_name]
 
         # Apply max_problems limit
         total_problems = len(docs)
