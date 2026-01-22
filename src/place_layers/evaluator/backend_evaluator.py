@@ -67,20 +67,22 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # Track current placement to avoid redundant set_placement calls
         self._current_placement: tuple[str, ...] | None = None
 
-        # Set up trace writer for saving results
-        # Always use Hydra's output directory
+        # Set up output directory for saving results
+        # Always use Hydra's output directory as base
         try:
             hydra_cfg = HydraConfig.get()
-            self._output_dir = Path(hydra_cfg.runtime.output_dir)
+            self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
         except ValueError:
             # HydraConfig not available (e.g., in tests)
             # Use a default temp directory
             import tempfile
-            self._output_dir = Path(tempfile.mkdtemp(prefix="place_layers_"))
+            self._base_output_dir = Path(tempfile.mkdtemp(prefix="place_layers_"))
             logger.warning(
-                f"HydraConfig not available, using temp output directory: {self._output_dir}"
+                f"HydraConfig not available, using temp output directory: {self._base_output_dir}"
             )
-        self._trace_writer = TraceWriter(self._output_dir)
+
+        # Initialize trace writer with base directory (will be updated per-placement)
+        self._trace_writer = TraceWriter(self._base_output_dir)
 
     async def __aenter__(self) -> Self:
         """Enter context: initialize backend and get model structure."""
@@ -143,6 +145,15 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             )
         return self._mixer_names
 
+    @property
+    def _output_dir(self) -> Path:
+        """Current output directory for traces.
+
+        During optimization, this returns a placement-specific subdirectory.
+        For single evaluations, it returns the base output directory.
+        """
+        return self._trace_writer.output_dir
+
     async def _set_placement(self, parameters: LayerPlacement) -> None:
         """Validate and set the mixer placement on the backend.
 
@@ -166,6 +177,12 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         if mixer_names == self._current_placement:
             return
 
+        # Create placement-specific output directory and TraceWriter
+        # This ensures results from different placements don't get mixed up during optimization
+        placement_dir = self._get_placement_output_dir(mixer_names)
+        self._trace_writer = TraceWriter(placement_dir)
+        logger.debug(f"Created TraceWriter for placement subdirectory: {placement_dir.name}")
+
         # Skip for single-mixer models (no dynamic switching needed)
         if len(set(self.mixer_names)) > 1:
             if isinstance(self._backend, AsyncBackend):
@@ -175,6 +192,35 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             logger.debug(f"Set placement: {mixer_names[:4]}...")
 
         self._current_placement = mixer_names
+
+    def _get_placement_output_dir(self, placement: tuple[str, ...]) -> Path:
+        """Get placement-specific output directory.
+
+        Creates a subdirectory under the base output directory named by the placement.
+        This prevents result collisions when evaluating multiple placements.
+
+        Args:
+            placement: Tuple of mixer names for each layer.
+
+        Returns:
+            Path to placement-specific output directory.
+        """
+        # Create a compact representation of the placement
+        # For supernets, use a hash to keep directory names manageable
+        import hashlib
+        placement_str = ",".join(placement)
+        placement_hash = hashlib.md5(placement_str.encode()).hexdigest()[:8]
+
+        # Create subdirectory: placements/<hash>
+        placement_dir = self._base_output_dir / "placements" / placement_hash
+        placement_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write a readable placement file for debugging
+        placement_file = placement_dir / "placement.txt"
+        if not placement_file.exists():
+            placement_file.write_text(placement_str)
+
+        return placement_dir
 
     async def _compute_chat_log_probs(
         self,
