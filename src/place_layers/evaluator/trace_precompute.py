@@ -75,8 +75,10 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
         Unlike GenerativeEvaluator._make_records, this includes teacher_log_prob
         which is needed for importance sampling.
 
-        Includes truncated samples with truncated=True for observability.
-        IS aggregation should filter these out (incomplete reasoning chains).
+        Handles truncated samples based on config.evaluate_truncated_samples:
+        - If True: evaluates truncated samples for correctness (useful for extraction tasks)
+        - If False: marks truncated samples as incorrect (default for reasoning tasks)
+        IS aggregation can still filter based on truncated flag if needed.
         """
         task_name = task.config.task or ""
         traces = []
@@ -86,7 +88,12 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
         for sample_idx, sample in enumerate(result.samples):
             if sample.truncated:
                 logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
-                correct = False  # Truncated = failed to produce complete answer
+                if self.config.evaluate_truncated_samples:
+                    # Evaluate truncated samples - answer may be complete
+                    correct = check_correctness(task, doc, sample.text)
+                else:
+                    # Truncated = failed to produce complete answer
+                    correct = False
             else:
                 correct = check_correctness(task, doc, sample.text)
 

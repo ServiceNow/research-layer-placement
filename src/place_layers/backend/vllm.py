@@ -206,6 +206,98 @@ class VLLMClient:
             prompt_token_ids=prompt_token_ids,
         )
 
+    async def text_generate(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> GenerationResult:
+        """Generate n completions from text prompt without chat template.
+
+        Uses /v1/completions which treats the prompt as raw text.
+
+        Args:
+            prompt: Raw text prompt string.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        session = self._ensure_session()
+        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
+        payload = {
+            "model": self.config.model,
+            "prompt": prompt,
+            "n": n,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "logprobs": 1,  # Request logprobs (vLLM returns top logprob by default)
+            "echo": False,  # Don't echo the prompt
+        }
+
+        async with self._semaphore:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 400:
+                    error_text = await resp.text()
+                    raise VLLMBadRequestError(error_text)
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise RuntimeError(
+                        f"vLLM completions request failed with status {resp.status}: {error_text}"
+                    )
+                data = await resp.json()
+
+        # Extract prompt_token_ids from usage (completions API)
+        usage = data.get("usage") or {}
+        prompt_tokens_count = usage.get("prompt_tokens", 0)
+
+        # For completions API, we need to tokenize the prompt to get token IDs
+        prompt_token_ids = await self.tokenize(prompt)
+
+        samples: list[GeneratedSample] = []
+        for choice in data["choices"]:
+            text: str = choice["text"]
+            truncated = choice.get("finish_reason") == "length"
+
+            # Extract token IDs and logprobs from the choice
+            # vLLM completions API may return these differently than chat
+            logprobs_data = choice.get("logprobs") or {}
+            token_logprobs = logprobs_data.get("token_logprobs") or []
+            tokens = logprobs_data.get("tokens") or []
+
+            # Tokenize the completion text to get token IDs
+            # (vLLM completions might not return token_ids directly)
+            if tokens:
+                # If we have string tokens, we need to convert them
+                # For now, tokenize the completion text
+                token_ids = await self.tokenize(text)
+            else:
+                token_ids = []
+
+            samples.append(
+                GeneratedSample(
+                    text=text,
+                    token_ids=list(token_ids),
+                    token_logprobs=token_logprobs,
+                    truncated=truncated,
+                )
+            )
+
+        return GenerationResult(
+            request_id=request_id,
+            samples=samples,
+            prompt_token_ids=list(prompt_token_ids),
+        )
+
     async def tokenize(self, text: str) -> Sequence[int]:
         """Tokenize text using vLLM's tokenize endpoint.
 

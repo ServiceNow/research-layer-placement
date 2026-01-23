@@ -133,6 +133,32 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
+    async def agenerate_text(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> "GenerationResult":
+        """Generate n completions from a text prompt without chat template.
+
+        Args:
+            prompt: Raw text prompt string.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        pass
+
+    @abstractmethod
     async def compute_batch_log_probs(
         self,
         traces: Sequence[tuple[Sequence[int], Sequence[int]]],
@@ -273,6 +299,32 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> "GenerationResult":
+        """Generate n completions from a text prompt without chat template.
+
+        Args:
+            prompt: Raw text prompt string.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        pass
+
+    @abstractmethod
     def batch_generate(
         self,
         messages_batch: Sequence[list[ChatMessage]],
@@ -293,6 +345,30 @@ class SyncBackend(ABC):
 
         Returns:
             List of GenerationResult, one per message sequence.
+        """
+        pass
+
+    @abstractmethod
+    def batch_generate_text(
+        self,
+        prompts: Sequence[str],
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list["GenerationResult"]:
+        """Generate n completions for each text prompt without chat template.
+
+        Args:
+            prompts: List of raw text prompt strings.
+            n: Number of completions per prompt.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+
+        Returns:
+            List of GenerationResult, one per prompt.
         """
         pass
 
@@ -456,6 +532,25 @@ class VLLMBackend(AsyncBackend):
     ) -> "GenerationResult":
         return await self._client.chat_generate(
             messages=messages,
+            n=n,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            request_id=request_id,
+        )
+
+    async def agenerate_text(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> "GenerationResult":
+        return await self._client.text_generate(
+            prompt=prompt,
             n=n,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -862,6 +957,50 @@ class TransformersBackend(SyncBackend):
         """Generate n completions for each message sequence in batch."""
         return self._client.generate_batch(
             list(messages_batch),
+            n=n,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> "GenerationResult":
+        """Generate n completions from a text prompt without chat template."""
+        results = self._client.batch_generate_text(
+            [prompt],
+            n=n,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        result = results[0]
+        # Set request_id on the result
+        return type(result)(
+            request_id=request_id,
+            samples=result.samples,
+            prompt_token_ids=result.prompt_token_ids,
+        )
+
+    def batch_generate_text(
+        self,
+        prompts: Sequence[str],
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list["GenerationResult"]:
+        """Generate n completions for each text prompt without chat template."""
+        return self._client.batch_generate_text(
+            list(prompts),
             n=n,
             max_tokens=max_tokens,
             temperature=temperature,

@@ -1,0 +1,14 @@
+# @package generation
+# Short-form extraction (for SWDE, FDA tasks)
+#
+# These tasks extract short values (dates, names, numbers) from documents.
+# The original lm-eval tasks specify 48 tokens max and stop at newline,
+# but BaseGenerativeEvaluator uses this config instead.
+#
+# Note: For extraction tasks, you should set evaluator.evaluate_truncated_samples=true
+# to evaluate completions that reach max_new_tokens (the answer may be complete).
+
+samples_per_problem: 1
+max_new_tokens: 48
+temperature: 0.0  # 0 = greedy (deterministic)
+top_p: 1.0

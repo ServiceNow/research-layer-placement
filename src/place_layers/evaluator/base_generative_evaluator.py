@@ -37,7 +37,7 @@ from place_layers.core.memory_logging import (
     log_memory,
 )
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.lm_eval_utils import Docs, build_chat_messages
+from place_layers.evaluator.lm_eval_utils import Docs, build_chat_messages, build_text_prompt
 from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
@@ -185,12 +185,8 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             for batch_indices in _batched(remaining_indices, batch_size):
-                # Build messages for this batch
+                # Build prompts for this batch
                 batch_docs = [docs[idx] for idx in batch_indices]
-                messages_batch = [
-                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
-                    for doc in batch_docs
-                ]
 
                 # Log memory periodically
                 current_time = time.perf_counter()
@@ -198,15 +194,34 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                     log_memory(f"BATCH {processed}/{total}")
                     last_memory_log_time = current_time
 
-                # Generate completions
+                # Generate completions (dispatch based on use_chat_template)
                 try:
-                    results = self._backend.batch_generate(
-                        messages_batch,
-                        n=self.config.samples_per_problem,
-                        max_tokens=self.config.max_new_tokens,
-                        temperature=self.config.temperature,
-                        top_p=self.config.top_p,
-                    )
+                    if self.config.use_chat_template:
+                        # Chat-based generation (default)
+                        messages_batch = [
+                            build_chat_messages(task, doc, task.config.num_fewshot or 0)
+                            for doc in batch_docs
+                        ]
+                        results = self._backend.batch_generate(
+                            messages_batch,
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
+                    else:
+                        # Text-based generation (no chat template)
+                        prompts = [
+                            build_text_prompt(task, doc, task.config.num_fewshot or 0)
+                            for doc in batch_docs
+                        ]
+                        results = self._backend.batch_generate_text(
+                            prompts,
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
                 except Exception as e:
                     # Log memory state on exception
                     logger.error(f"Batch failed: {type(e).__name__}: {e}")
@@ -312,17 +327,31 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                         break
 
                     doc = docs[idx]
-                    messages = build_chat_messages(task, doc, task.config.num_fewshot or 0)
 
                     try:
-                        result = await backend.agenerate(
-                            messages,
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                            request_id=f"{task_name}:{idx}",
-                        )
+                        # Generate completions (dispatch based on use_chat_template)
+                        if self.config.use_chat_template:
+                            # Chat-based generation (default)
+                            messages = build_chat_messages(task, doc, task.config.num_fewshot or 0)
+                            result = await backend.agenerate(
+                                messages,
+                                n=self.config.samples_per_problem,
+                                max_tokens=self.config.max_new_tokens,
+                                temperature=self.config.temperature,
+                                top_p=self.config.top_p,
+                                request_id=f"{task_name}:{idx}",
+                            )
+                        else:
+                            # Text-based generation (no chat template)
+                            prompt = build_text_prompt(task, doc, task.config.num_fewshot or 0)
+                            result = await backend.agenerate_text(
+                                prompt,
+                                n=self.config.samples_per_problem,
+                                max_tokens=self.config.max_new_tokens,
+                                temperature=self.config.temperature,
+                                top_p=self.config.top_p,
+                                request_id=f"{task_name}:{idx}",
+                            )
 
                         # Create records
                         records = self._make_records(task, doc, idx, result)
@@ -392,4 +421,17 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         description="Nucleus sampling parameter",
         gt=0.0,
         le=1.0,
+    )
+    use_chat_template: bool = Field(
+        default=True,
+        description="Whether to use chat template formatting. When False, prompts are "
+        "formatted as raw text without any chat structure. "
+        "Use False for evaluating base models or when chat template is undesired.",
+    )
+    evaluate_truncated_samples: bool = Field(
+        default=False,
+        description="Whether to evaluate truncated samples for correctness. "
+        "When True, samples that reach max_new_tokens are still checked against the ground truth. "
+        "Useful for extraction tasks where the answer may be complete before hitting the limit. "
+        "When False (default), truncated samples are automatically marked as incorrect.",
     )
