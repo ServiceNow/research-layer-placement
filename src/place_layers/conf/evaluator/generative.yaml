@@ -29,3 +29,13 @@ samples_per_problem: ${generation.samples_per_problem}
 max_new_tokens: ${generation.max_new_tokens}
 temperature: ${generation.temperature}
 top_p: ${generation.top_p}
+
+# Chat template control
+# Set to false for base models or when evaluating without chat formatting
+use_chat_template: true
+
+# Truncated sample handling
+# When true, samples reaching max_new_tokens are still evaluated for correctness
+# Useful for extraction tasks where the answer may be complete before hitting limit
+# When false (default), truncated samples are automatically marked as incorrect
+evaluate_truncated_samples: false
