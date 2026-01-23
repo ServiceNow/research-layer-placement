@@ -225,7 +225,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             task_name=task_name,
                             reason=str(e),
                         )
-                        self._trace_writer.append([skipped])
+                        self._trace_writer.append_sync([skipped])
 
                     # Try to recover memory
                     force_garbage_collection()
@@ -238,7 +238,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                     records = self._make_records(task, doc, idx, result)
 
                     if records:
-                        self._trace_writer.append(records)
+                        self._trace_writer.append_sync(records)
                     else:
                         # No samples returned (backend issue)
                         skipped = SkippedProblem(
@@ -246,7 +246,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                             task_name=task_name,
                             reason="no samples returned",
                         )
-                        self._trace_writer.append([skipped])
+                        self._trace_writer.append_sync([skipped])
 
                 processed += len(batch_indices)
                 progress.advance(progress_task, len(batch_indices))
@@ -329,7 +329,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
                         async with write_lock:
                             if records:
-                                self._trace_writer.append(records)
+                                await self._trace_writer.append(records)
                             else:
                                 # No samples returned (backend issue)
                                 skipped = SkippedProblem(
@@ -337,7 +337,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                                     task_name=task_name,
                                     reason="no samples returned",
                                 )
-                                self._trace_writer.append([skipped])
+                                await self._trace_writer.append([skipped])
 
                     except VLLMBadRequestError as e:
                         logger.warning(f"Skipping {task_name}:{idx} - {e}")
@@ -347,7 +347,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                                 task_name=task_name,
                                 reason=str(e),
                             )
-                            self._trace_writer.append([skipped])
+                            await self._trace_writer.append([skipped])
 
                     except Exception as e:
                         logger.warning(f"Problem {task_name}:{idx} failed: {e}")
@@ -357,7 +357,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                                 task_name=task_name,
                                 reason=str(e),
                             )
-                            self._trace_writer.append([skipped])
+                            await self._trace_writer.append([skipped])
 
                     processed_count += 1
                     progress.advance(progress_task)

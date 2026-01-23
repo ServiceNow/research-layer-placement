@@ -402,7 +402,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 progress.advance(progress_task)
 
         # Stream all records to disk
-        self._trace_writer.append(records)  # type: ignore[arg-type]
+        await self._trace_writer.append(records)  # type: ignore[arg-type]
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement using stratified importance-weighted accuracy.

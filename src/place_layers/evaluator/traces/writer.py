@@ -14,6 +14,7 @@ Directory structure:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -63,14 +64,21 @@ class TraceWriter:
         load_dataset(output_dir, split='validation')
 
     State reconstruction scans both files, filtering by task_name field.
+
+    Thread-safe for concurrent writes from parallel task evaluation via asyncio.Lock.
     """
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = asyncio.Lock()
 
-    def append(self, records: Sequence[TraceRecord]) -> None:
-        """Append records to appropriate files based on record type."""
+    def _write_records(self, records: Sequence[TraceRecord]) -> None:
+        """Write records to disk (internal, no locking).
+
+        Args:
+            records: Records to write.
+        """
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
             r for r in records
@@ -87,6 +95,25 @@ class TraceWriter:
             with (self.output_dir / "skipped.jsonl").open("a") as f:
                 for record in skipped:
                     f.write(record.model_dump_json() + "\n")
+
+    def append_sync(self, records: Sequence[TraceRecord]) -> None:
+        """Append records synchronously (for sync backends like Transformers).
+
+        Args:
+            records: Records to append.
+        """
+        self._write_records(records)
+
+    async def append(self, records: Sequence[TraceRecord]) -> None:
+        """Append records to appropriate files based on record type.
+
+        Thread-safe: Uses async lock to prevent concurrent writes from corrupting files.
+        Records may be written out of submission order when multiple tasks run in parallel,
+        but this is safe since all downstream code (resumability, summarization) is order-independent.
+        """
+        # Acquire lock to ensure atomic file writes
+        async with self._lock:
+            self._write_records(records)
 
     def get_completed_problems(self, task_name: str) -> set[int]:
         """Scan validation.jsonl and skipped.jsonl to find completed problem indices.

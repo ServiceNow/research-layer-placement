@@ -409,6 +409,112 @@ class TestEdgeCases:
                 assert results == []
 
 
+class TestInitializationWithPartialServerAvailability:
+    """Test that backend can start with some servers unavailable."""
+
+    @pytest.fixture
+    def config(self) -> RESTBackendConfig:
+        return RESTBackendConfig(
+            servers=["http://s1:8080", "http://s2:8080", "http://s3:8080"],
+            base_recovery_interval=0.1,
+            max_recovery_interval=1.0,
+            max_retries=3,
+        )
+
+    async def test_starts_with_one_server_available(self, config: RESTBackendConfig):
+        """Backend initializes successfully if at least one server is reachable."""
+        with aioresponses() as m:
+            # Only server 2 is available during initialization
+            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
+            m.get("http://s2:8080/info", payload=mock_server_info())
+            m.get("http://s3:8080/info", status=503)
+
+            backend = RESTBackend(config)
+            async with backend:
+                # Should initialize successfully with 1/3 servers
+                assert backend._server_pool.healthy_count() == 1
+                assert backend._server_pool._health["http://s1:8080"].healthy is False
+                assert backend._server_pool._health["http://s2:8080"].healthy is True
+                assert backend._server_pool._health["http://s3:8080"].healthy is False
+
+    async def test_works_with_partial_availability(self, config: RESTBackendConfig):
+        """Backend can process requests with only some servers healthy at start."""
+        with aioresponses() as m:
+            # Only server 2 available at init
+            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
+            m.get("http://s2:8080/info", payload=mock_server_info())
+            m.get("http://s3:8080/info", status=503)
+
+            backend = RESTBackend(config)
+            async with backend:
+                # Server 2 handles the request
+                m.post(
+                    "http://s2:8080/generate",
+                    payload={"samples": ["ok"], "prompt_token_ids": []},
+                )
+
+                result = await backend._call_with_failover("/generate", {"messages": []})
+                assert result["samples"] == ["ok"]
+
+    async def test_fails_if_all_servers_unavailable_at_init(
+        self, config: RESTBackendConfig
+    ):
+        """Backend fails to initialize if no servers are reachable."""
+        with aioresponses() as m:
+            # All servers unavailable
+            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
+            m.get("http://s2:8080/info", status=503)
+            m.get("http://s3:8080/info", status=500)
+
+            backend = RESTBackend(config)
+            with pytest.raises(RESTBackendError, match="Failed to connect to all"):
+                async with backend:
+                    pass
+
+    async def test_unavailable_servers_can_recover_during_evaluation(
+        self, config: RESTBackendConfig
+    ):
+        """Servers unavailable at init can be retried and recovered during evaluation."""
+        with aioresponses() as m:
+            # Only s2 available at init
+            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
+            m.get("http://s2:8080/info", payload=mock_server_info())
+            m.get("http://s3:8080/info", status=503)
+
+            backend = RESTBackend(config)
+            async with backend:
+                assert backend._server_pool.healthy_count() == 1
+
+                # Simulate time passing so recovery check is due for s1
+                backend._server_pool._health["http://s1:8080"].last_failure_time = (
+                    time.monotonic() - 10.0
+                )
+
+                # s2 handles the first request successfully
+                m.post(
+                    "http://s2:8080/generate",
+                    payload={"samples": ["from_s2"], "prompt_token_ids": []},
+                )
+
+                result = await backend._call_with_failover("/generate", {"messages": []})
+                assert result["samples"] == ["from_s2"]
+
+                # Now make s1 available for the next request
+                # s1 is tried first because we call it with preferred_server or it's in the try list
+                m.post(
+                    "http://s1:8080/generate",
+                    payload={"samples": ["recovered"], "prompt_token_ids": []},
+                )
+
+                result = await backend._call_with_failover(
+                    "/generate", {"messages": []}, preferred_server="http://s1:8080"
+                )
+                assert result["samples"] == ["recovered"]
+                # s1 should now be marked healthy
+                assert backend._server_pool._health["http://s1:8080"].healthy is True
+                assert backend._server_pool.healthy_count() == 2
+
+
 class TestComputeTextLogProbs:
     """Tests for compute_text_log_probs with failover."""
 
