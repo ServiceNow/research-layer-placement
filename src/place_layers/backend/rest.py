@@ -23,16 +23,11 @@ from pydantic import Field, model_validator
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
-from place_layers.backend.base import (
-    AsyncBackend,
-    BaseBackendConfig,
-    LogProbResult,
-    ChatMessage,
-    ModelStructure,
-)
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig
+from place_layers.backend.types import ChatMessage, LogProbResult, ModelStructure
 
 if TYPE_CHECKING:
-    from place_layers.backend.vllm import GenerationResult
+    from place_layers.clients.types import GenerationResult
 
 logger = logging.getLogger(__name__)
 
@@ -348,9 +343,7 @@ class RESTBackend(AsyncBackend):
     def _get_semaphore(self, server: str) -> asyncio.Semaphore:
         """Get the semaphore for a specific server."""
         if self._server_semaphores is None:
-            raise RuntimeError(
-                "RESTBackend must be used as an async context manager"
-            )
+            raise RuntimeError("RESTBackend must be used as an async context manager")
         return self._server_semaphores[server]
 
     async def _call_with_failover(
@@ -625,9 +618,7 @@ class RESTBackend(AsyncBackend):
         Returns:
             GenerationResult with samples and prompt token IDs.
         """
-        from place_layers.backend.vllm import (
-            GenerationResult,
-        )
+        from place_layers.clients.types import GenerationResult
 
         payload = {
             "messages": messages,
@@ -644,61 +635,11 @@ class RESTBackend(AsyncBackend):
         data = await self._call_with_failover("/generate", payload, preferred_server)
         return GenerationResult.model_validate(data)
 
-    def _parse_log_prob_result(self, r: dict[str, Any]) -> "LogProbResult":
-        """Parse a server response dict into a LogProbResult.
-
-        Args:
-            r: Server response dict with token_ids, logprobs, answer_range, total_log_prob.
-
-        Returns:
-            LogProbResult object.
-        """
-        return LogProbResult(
-            token_ids=tuple(r["token_ids"]),
-            logprobs=tuple(r["logprobs"]),
-            answer_range=tuple(r["answer_range"]),
-            total_log_prob=r["total_log_prob"],
-        )
-
-    def _extract_indexed_results[R](
-        self, indexed_results: list[tuple[int, R]]
-    ) -> list[R]:
-        """Sort indexed results by index and extract values.
-
-        Args:
-            indexed_results: List of (index, result) tuples.
-
-        Returns:
-            List of results sorted by index.
-        """
-        indexed_results.sort(key=lambda x: x[0])
-        return [r[1] for r in indexed_results]
-
-    def _get_available_servers(self, context: str = "") -> list[str]:
-        """Get available servers or raise if none available.
-
-        Args:
-            context: Optional context string for error message (e.g., "batch processing").
-
-        Returns:
-            List of available servers.
-
-        Raises:
-            RESTBackendError: If no servers are available.
-        """
-        servers = self._server_pool.get_servers_to_try()
-        if not servers:
-            msg = "No servers available"
-            if context:
-                msg += f" for {context}"
-            raise RESTBackendError(msg)
-        return servers
-
-    async def compute_batch_log_probs(
+    async def compute_token_log_probs(
         self,
         traces: Sequence[tuple[Sequence[int], Sequence[int]]],
     ) -> list[float]:
-        """Compute log probabilities for traces, distributed across servers.
+        """Compute log probabilities for token-based traces.
 
         Traces are distributed across healthy servers. Each server processes
         its chunk and results are reassembled.
@@ -746,7 +687,9 @@ class RESTBackend(AsyncBackend):
         items: list[tuple[int, T]],
         endpoint: str,
         make_payload: Callable[[list[tuple[int, T]]], dict[str, Any]],
-        parse_response: Callable[[list[tuple[int, T]], dict[str, Any]], list[tuple[int, R]]],
+        parse_response: Callable[
+            [list[tuple[int, T]], dict[str, Any]], list[tuple[int, R]]
+        ],
     ) -> list[tuple[int, R]]:
         """Distribute batch items across servers with failover.
 
@@ -825,12 +768,11 @@ class RESTBackend(AsyncBackend):
         placement = self._current_placement
 
         def make_payload(
-            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]]
+            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]],
         ) -> dict[str, Any]:
             return {
                 "text_groups": [
-                    (context, list(choices))
-                    for _, (context, choices) in chunk_items
+                    (context, list(choices)) for _, (context, choices) in chunk_items
                 ],
                 "placement": placement,
             }
@@ -845,7 +787,17 @@ class RESTBackend(AsyncBackend):
             for group_idx, (_, choices) in chunk_items:
                 for _ in choices:
                     r = data["results"][result_idx]
-                    results.append((group_idx, self._parse_log_prob_result(r)))
+                    results.append(
+                        (
+                            group_idx,
+                            LogProbResult(
+                                token_ids=tuple(r["token_ids"]),
+                                logprobs=tuple(r["logprobs"]),
+                                answer_range=tuple(r["answer_range"]),
+                                total_log_prob=r["total_log_prob"],
+                            ),
+                        )
+                    )
                     result_idx += 1
             return results
 
@@ -861,63 +813,36 @@ class RESTBackend(AsyncBackend):
 
     async def compute_chat_log_probs(
         self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
     ) -> list[LogProbResult]:
         """Compute log probabilities for chat completions with diff-based scoring.
 
-        Groups chats by context before distributing to servers. This ensures that
-        all choices for the same question go to the same server, which is required
-        for diff-based scoring to work correctly.
-
-        Like compute_text_log_probs, this method:
-        1. Groups chats by shared context (same question = same context)
-        2. Distributes groups (not individual chats) across servers
-        3. Each server receives all choices for its assigned questions
-        4. Server-side diff-based scoring identifies answer token ranges
+        Distributes chat groups across healthy servers.
 
         Args:
-            chats: List of (context_messages, completion_messages) tuples.
+            chat_groups: List of (context_messages, completion_messages) tuples where:
+                - context_messages: The shared prompt (system, user, etc.)
+                - completion_messages: Multiple assistant messages, one per choice
 
         Returns:
-            List of LogProbResult with token IDs, per-token logprobs,
-            answer range, and total log probability (one per input chat, in order).
+            List of LogProbResult (one per choice, flattened across all groups).
         """
-        if not chats:
+        if not chat_groups:
             return []
 
-        from collections import defaultdict
-
-        # Group chats by context (same context = same multiple-choice question)
-        # Maps context_key -> list of (original_idx, completion_messages)
-        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
-            defaultdict(list)
-        )
-        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
-
-        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
-            # Use message content as key (same question → same key)
-            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
-            context_groups[ctx_key].append((i, comp_msgs))
-            context_msgs_by_key[ctx_key] = ctx_msgs
-
-        # Create items as groups: (group_idx, (context_msgs, list[completion_msgs]))
-        # Track mapping from group_idx back to original chat indices
-        group_to_original_indices: dict[int, list[int]] = {}
-        items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]] = []
-
-        for group_idx, (ctx_key, group) in enumerate(context_groups.items()):
-            ctx_msgs = context_msgs_by_key[ctx_key]
-            completion_msgs_list = [comp_msgs for _, comp_msgs in group]
-            original_indices = [orig_idx for orig_idx, _ in group]
-
-            items.append((group_idx, (ctx_msgs, completion_msgs_list)))
-            group_to_original_indices[group_idx] = original_indices
+        # Create indexed items: (group_idx, (context, completions))
+        items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]] = [
+            (idx, (context, completions))
+            for idx, (context, completions) in enumerate(chat_groups)
+        ]
 
         # Capture current placement for the closure
         placement = self._current_placement
 
         def make_payload(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]]
+            chunk_items: list[
+                tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]
+            ],
         ) -> dict[str, Any]:
             # Convert groups to server-side format
             # Server expects: chats = [(context_msgs, completion_msgs), ...]
@@ -928,26 +853,37 @@ class RESTBackend(AsyncBackend):
                     all_chats.append((list(context), list(completion)))
 
             return {
-                "chats": all_chats,
+                "chat_groups": [
+                    (list(context), list(completions))
+                    for _, (context, completions) in chunk_items
+                ],
                 "placement": placement,
             }
 
         def parse_response(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], list[Sequence[ChatMessage]]]]],
+            chunk_items: list[
+                tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]
+            ],
             data: dict[str, Any],
         ) -> list[tuple[int, LogProbResult]]:
-            # Server returns flattened results (one per chat)
-            # We need to tag each result with its original index
+            # Server returns flattened results, we need to tag each with group index
             results: list[tuple[int, LogProbResult]] = []
             result_idx = 0
-
             for group_idx, (_, completions) in chunk_items:
-                original_indices = group_to_original_indices[group_idx]
-                for orig_idx in original_indices:
+                for _ in completions:
                     r = data["results"][result_idx]
-                    results.append((orig_idx, self._parse_log_prob_result(r)))
+                    results.append(
+                        (
+                            group_idx,
+                            LogProbResult(
+                                token_ids=tuple(r["token_ids"]),
+                                logprobs=tuple(r["logprobs"]),
+                                answer_range=tuple(r["answer_range"]),
+                                total_log_prob=r["total_log_prob"],
+                            ),
+                        )
+                    )
                     result_idx += 1
-
             return results
 
         indexed_results = await self._distribute_batch(
@@ -957,8 +893,9 @@ class RESTBackend(AsyncBackend):
             parse_response=parse_response,
         )
 
-        # Sort by original index and extract results
-        return self._extract_indexed_results(indexed_results)
+        # Sort by group index then flatten (results already in choice order within groups)
+        indexed_results.sort(key=lambda x: x[0])
+        return [r[1] for r in indexed_results]
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.

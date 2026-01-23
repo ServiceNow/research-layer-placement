@@ -1,26 +1,29 @@
 # @package _global_
-# Serve command - starts a REST server exposing TransformersBackend
+# Serve command - starts a REST server exposing a local backend
 #
 # Required config groups:
-#   - backend: transformers (only transformers supported for serving)
+#   - backend: transformers or local_vllm
 #   - model: model configuration (for model_path, etc.)
 #
 # Usage:
-#   # Start server on default port 8080
+#   # Start transformers server on default port 8080
 #   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev
+#
+#   # Start vLLM server (async, higher throughput)
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev
 #
 #   # Start server on custom port
 #   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
 #
 # Multi-GPU setup (run in separate terminals):
-#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
-#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
-#   CUDA_VISIBLE_DEVICES=2 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8082
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev port=8081
+#   CUDA_VISIBLE_DEVICES=2 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev port=8082
 
 command: serve
 
 # Backend configuration (from backend config group)
-# Note: Only transformers backend is supported for serving
+# Supports: transformers, local_vllm
 backend: ${backend}
 
 # Server bind address

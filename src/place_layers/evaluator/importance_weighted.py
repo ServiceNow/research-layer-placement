@@ -384,7 +384,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             (trace.prompt_tokens, trace.completion_tokens) for trace in all_traces
         ]
 
-        all_student_log_probs = await self._compute_batch_log_probs(traces_data)
+        all_student_log_probs = await self._compute_token_log_probs(traces_data)
 
         # Process each problem, create records, and stream to disk
         records: list[ISProblemRecord] = []

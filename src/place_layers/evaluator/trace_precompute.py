@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
 
-from place_layers.backend.vllm import GenerationResult
+from place_layers.clients.types import GenerationResult
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,

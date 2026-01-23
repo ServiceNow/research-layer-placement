@@ -258,23 +258,23 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                 batch_indices = remaining_indices[i : i + batch_size]
                 batch_docs = [docs[idx] for idx in batch_indices]
 
-                # Build chat tuples for all choices in this batch
-                all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
+                # Build chat groups for all choices in this batch
+                chat_groups: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
                 metadata_list: list[ChoiceMetadata] = []
                 choice_counts: list[int] = []
                 context_messages_list: list[tuple[ChatMessage, ...]] = []
                 choice_messages_list: list[tuple[ChatMessage, ...]] = []
 
                 for doc in batch_docs:
-                    chats, metadata = self._build_choice_chats(task, doc)
-                    all_chats.extend(chats)
+                    context_msgs, completion_msgs, metadata = self._build_choice_chats(task, doc)
+                    chat_groups.append((context_msgs, completion_msgs))
                     metadata_list.append(metadata)
-                    choice_counts.append(len(chats))
-                    context_messages_list.append(tuple(chats[0][0]))
-                    choice_messages_list.append(tuple(c[1][0] for c in chats))
+                    choice_counts.append(len(completion_msgs))
+                    context_messages_list.append(tuple(context_msgs))
+                    choice_messages_list.append(tuple(completion_msgs))
 
                 # Compute log-probs using chat-based API
-                results = await self._compute_chat_log_probs(all_chats)
+                results = await self._compute_chat_log_probs(chat_groups)
 
                 # Unpack results and create records
                 offset = 0
@@ -465,8 +465,8 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
     def _build_choice_chats(
         self, task: "Task", doc: dict
-    ) -> tuple[list[tuple[list[ChatMessage], list[ChatMessage]]], ChoiceMetadata]:
-        """Build chat message tuples for each choice.
+    ) -> tuple[list[ChatMessage], list[ChatMessage], ChoiceMetadata]:
+        """Build chat context and completion messages for each choice.
 
         Uses build_chat_messages for context (few-shot + question), then creates
         a completion message for each choice. The compute_chat_log_probs method
@@ -477,8 +477,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             doc: The problem document.
 
         Returns:
-            Tuple of (chats, metadata) where:
-            - chats: List of (context_messages, completion_messages) tuples
+            Tuple of (context_msgs, completion_msgs, metadata) where:
+            - context_msgs: The shared context messages (system, user, etc.)
+            - completion_msgs: List of assistant messages, one per choice
             - metadata: ChoiceMetadata with gold_idx, lengths, and raw_choices
         """
         # Get context messages using the shared builder
@@ -489,16 +490,12 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
         gold_idx = self._get_gold_idx(task, doc, choices)
 
-        # Build chat tuples for each choice
-        chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
+        # Build completion messages (one per choice)
+        completion_msgs: list[ChatMessage] = []
         lengths: list[int] = []
 
         for choice in choices:
-            # Completion is the assistant message with this choice
-            completion_msgs: list[ChatMessage] = [
-                {"role": "assistant", "content": choice}
-            ]
-            chats.append((context_msgs, completion_msgs))
+            completion_msgs.append({"role": "assistant", "content": choice})
             lengths.append(len(choice))  # Character length for normalization
 
         metadata = ChoiceMetadata(
@@ -506,7 +503,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             lengths=lengths,
             raw_choices=tuple(choices),
         )
-        return chats, metadata
+        return context_msgs, completion_msgs, metadata
 
     def _build_choice_texts(
         self, task: "Task", doc: dict

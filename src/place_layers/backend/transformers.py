@@ -1,136 +1,99 @@
-"""Low-level Transformers client for model operations.
-
-This module provides a context manager for HuggingFace model lifecycle
-and low-level operations like generation and log probability computation.
-Analogous to vllm_client.py for the vLLM HTTP API.
-
-Usage:
-    config = TransformersClientConfig(model_path="/path/to/model")
-    with TransformersClient(config) as client:
-        messages_batch = [[{"role": "user", "content": "Hello"}], ...]
-        results = client.generate_batch(messages_batch, n=8, max_tokens=512, ...)
-        log_probs = client.compute_batch_log_probs(traces, batch_size=8)
-"""
+"""TransformersBackend - Sync backend using HuggingFace Transformers."""
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Self, Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, Sequence
 
 import torch
 import torch.nn.functional as F
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from place_layers.backend.vllm import (
-    GeneratedSample,
-    GenerationResult,
-)
+from place_layers.backend.base import BaseBackendConfig, SyncBackend
+from place_layers.backend.types import ChatMessage, LogProbResult, ModelStructure
+from place_layers.clients.types import GeneratedSample, GenerationResult
 from place_layers.core.memory_logging import (
+    get_memory_stats,
     log_memory,
     log_memory_delta,
-    get_memory_stats,
-    MemoryMonitor,
-    force_garbage_collection,
-    log_gpu_memory_summary,
-    log_tensor_info,
 )
 
 if TYPE_CHECKING:
+    from place_layers.backend.apriel_validation import Apriel2Structure
     from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
 
-class TransformersClientConfig(BaseModel):
-    """Configuration for TransformersClient."""
+class TransformersBackend:
+    """Sync generation backend using HuggingFace Transformers.
 
-    model_config = {"frozen": True, "extra": "forbid"}
-
-    model_path: str = Field(description="Path to model (local or HF hub)")
-    tokenizer_path: str | None = Field(
-        default=None,
-        description="Path to tokenizer (defaults to model_path)",
-    )
-    torch_dtype: str = Field(
-        default="bfloat16",
-        description="Model dtype (float16, bfloat16, float32)",
-    )
-    device_map: str = Field(
-        default="cuda",
-        description="Device map for model loading",
-    )
-    trust_remote_code: bool = Field(
-        default=True,
-        description="Trust remote code when loading model",
-    )
-    attn_implementation: str | None = Field(
-        default="eager",
-        description="Attention implementation (eager, sdpa, flash_attention_2). "
-        "SDPA (default PyTorch) uses CUDA graphs which are NOT thread-safe. "
-        "Use 'eager' for REST servers that handle concurrent requests, or when running "
-        "with multiple workers. Set to 'sdpa' or 'flash_attention_2' only for single-threaded use.",
-    )
-    revision: str | None = Field(
-        default=None,
-        description="HuggingFace revision (branch, tag, or commit hash)",
-    )
-
-
-class TransformersClient:
-    """Context manager for HuggingFace model operations.
-
-    Handles model and tokenizer lifecycle (load on enter, unload on exit),
-    and provides methods for generation and log probability computation.
+    Handles model lifecycle, generation, and log probability computation.
+    Supports dynamic mixer placement for Apriel2 supernet models.
     """
 
-    def __init__(self, config: TransformersClientConfig) -> None:
-        self.config = config
-        self._model: PreTrainedModel | None = None
-        self._tokenizer: PreTrainedTokenizerBase | None = None
+    def __init__(self, config: "TransformersBackendConfig") -> None:
+        self._config = config
+        self._model: "PreTrainedModel | None" = None
+        self._tokenizer: "PreTrainedTokenizerBase | None" = None
         self._device: torch.device | None = None
+
+        # Apriel2 supernet support
+        self._apriel_structure: "Apriel2Structure | None" = None
+        self._current_placement: tuple[str, ...] | None = None
+
+    @property
+    def batch_size(self) -> int:
+        """Number of prompts to batch together."""
+        return self._config.batch_size
 
     @property
     def model(self) -> "PreTrainedModel":
         """Get the loaded model (raises if not in context)."""
         if self._model is None:
-            raise RuntimeError("Client not initialized. Use as context manager.")
+            raise RuntimeError("Backend not initialized. Use as context manager.")
         return self._model
 
     @property
     def tokenizer(self) -> "PreTrainedTokenizerBase":
         """Get the loaded tokenizer (raises if not in context)."""
         if self._tokenizer is None:
-            raise RuntimeError("Client not initialized. Use as context manager.")
+            raise RuntimeError("Backend not initialized. Use as context manager.")
         return self._tokenizer
 
     @property
     def device(self) -> torch.device:
         """Get the model's device (raises if not in context)."""
         if self._device is None:
-            raise RuntimeError("Client not initialized. Use as context manager.")
+            raise RuntimeError("Backend not initialized. Use as context manager.")
         return self._device
 
     def __enter__(self) -> Self:
         """Load model and tokenizer."""
         from transformers import AutoTokenizer
 
-        logger.info(f"Loading model from {self.config.model_path}...")
+        from place_layers.backend.apriel_validation import (
+            Apriel2ValidationError,
+            validate_apriel2_model,
+        )
+
+        logger.info(f"Loading model from {self._config.model_path}...")
         log_memory("MODEL LOAD START")
         mem_before = get_memory_stats()
         start_time = time.perf_counter()
 
-        # Load model using flexible loader
+        # Load model
         self._model = self._load_model()
         self._model.eval()
         self._device = next(self._model.parameters()).device
 
         # Load tokenizer
-        tokenizer_path = self.config.tokenizer_path or self.config.model_path
+        tokenizer_path = self._config.tokenizer_path or self._config.model_path
         self._tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
-            trust_remote_code=self.config.trust_remote_code,
-            revision=self.config.revision,
+            trust_remote_code=self._config.trust_remote_code,
+            revision=self._config.revision,
         )
 
         # Ensure pad_token is set (required for batched generation)
@@ -149,6 +112,13 @@ class TransformersClient:
         log_memory("MODEL LOAD END")
         log_memory_delta(mem_before, mem_after, "MODEL LOAD")
 
+        # Validate Apriel2 supernet structure
+        try:
+            self._apriel_structure = validate_apriel2_model(self._model)
+        except Apriel2ValidationError:
+            # Not an Apriel2 supernet - leave structure as None
+            pass
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -164,11 +134,7 @@ class TransformersClient:
         torch.cuda.empty_cache()
 
     def _load_model(self) -> "PreTrainedModel":
-        """Load the model, detecting appropriate class from config.
-
-        Supports both CausalLM and ImageTextToText models by inspecting
-        the model's auto_map configuration.
-        """
+        """Load the model, detecting appropriate class from config."""
         from transformers import (
             AutoConfig,
             AutoModelForCausalLM,
@@ -177,19 +143,21 @@ class TransformersClient:
 
         # Load config to determine model class from auto_map
         config = AutoConfig.from_pretrained(
-            self.config.model_path,
-            trust_remote_code=self.config.trust_remote_code,
-            revision=self.config.revision,
+            self._config.model_path,
+            trust_remote_code=self._config.trust_remote_code,
+            revision=self._config.revision,
         )
         auto_map = getattr(config, "auto_map", {})
         architectures = getattr(config, "architectures", [])
 
-        if "AutoModelForImageTextToText" in auto_map or "LlavaForConditionalGeneration" in architectures:
+        if (
+            "AutoModelForImageTextToText" in auto_map
+            or "LlavaForConditionalGeneration" in architectures
+        ):
             model_class = AutoModelForImageTextToText
         elif "AutoModelForCausalLM" in auto_map:
             model_class = AutoModelForCausalLM
         else:
-            # Default to CausalLM for standard models without auto_map
             logger.info(
                 f"No auto_map found (keys: {list(auto_map.keys())}), "
                 f"defaulting to AutoModelForCausalLM"
@@ -204,7 +172,7 @@ class TransformersClient:
             "bfloat16": torch.bfloat16,
             "float32": torch.float32,
         }
-        torch_dtype = dtype_map.get(self.config.torch_dtype, torch.bfloat16)
+        torch_dtype = dtype_map.get(self._config.torch_dtype, torch.bfloat16)
 
         # Build kwargs for model loading
         load_kwargs = {
@@ -220,18 +188,38 @@ class TransformersClient:
             logger.info(f"Using attention implementation: {self.config.attn_implementation}")
 
         model = model_class.from_pretrained(
-            self.config.model_path,
-            **load_kwargs,
+            self._config.model_path,
+            torch_dtype=torch_dtype,
+            device_map=self._config.device_map,
+            trust_remote_code=self._config.trust_remote_code,
+            revision=self._config.revision,
         )
         return model
+
+    @property
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
+
+        Raises:
+            NotImplementedError: If model is not an Apriel2 supernet.
+        """
+        if self._apriel_structure is None:
+            raise NotImplementedError(
+                "Model structure discovery requires an Apriel2 supernet model. "
+                "The loaded model does not support dynamic mixer placement."
+            )
+        return ModelStructure(
+            num_layers=self._apriel_structure.num_layers,
+            mixer_names=self._apriel_structure.mixer_names,
+        )
 
     # =========================================================================
     # Generation
     # =========================================================================
 
-    def generate_batch(
+    def batch_generate(
         self,
-        messages_batch: Sequence[list[dict[str, str]]],
+        messages_batch: Sequence[list[ChatMessage]],
         *,
         n: int,
         max_tokens: int,
@@ -241,17 +229,7 @@ class TransformersClient:
         """Generate n completions for each message sequence (truly batched).
 
         Tokenizes all message sequences together, runs a single batched generate call,
-        and extracts log probabilities from generation scores (no extra forward passes).
-
-        Args:
-            messages_batch: List of message sequences (each is list of role/content dicts).
-            n: Number of completions per sequence.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-
-        Returns:
-            List of GenerationResult, one per message sequence.
+        and extracts log probabilities from generation scores.
         """
         if not messages_batch:
             return []
@@ -259,30 +237,31 @@ class TransformersClient:
         batch_size = len(messages_batch)
         mem_before = get_memory_stats()
         logger.debug(
-            f"generate_batch: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
+            f"batch_generate: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
             f"GPU alloc={mem_before.gpu_allocated_gb:.2f}GB"
         )
 
         # Apply chat template to all message sequences
         prompt_texts = []
         for messages in messages_batch:
-            prompt_text = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+            prompt_text = self.tokenizer.apply_chat_template(
+                messages,  # type: ignore[arg-type]
+                tokenize=False,
+                add_generation_prompt=True,
             )
             prompt_texts.append(prompt_text)
 
         # Tokenize all prompts with left padding (required for batched generation)
-        # Save original padding side and restore after
-        original_padding_side = self._tokenizer.padding_side
-        self._tokenizer.padding_side = "left"
+        original_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
 
-        batch_encoding = self._tokenizer(
+        batch_encoding = self.tokenizer(
             prompt_texts,
             return_tensors="pt",
             padding=True,
         )
 
-        self._tokenizer.padding_side = original_padding_side
+        self.tokenizer.padding_side = original_padding_side
 
         # Track original prompt lengths (before padding)
         prompt_lengths = [
@@ -291,62 +270,55 @@ class TransformersClient:
         ]
 
         # Move to device
-        input_ids = batch_encoding.input_ids.to(self._device)
-        attention_mask = batch_encoding.attention_mask.to(self._device)
+        input_ids = batch_encoding.input_ids.to(self.device)
+        attention_mask = batch_encoding.attention_mask.to(self.device)
 
         # Generate with scores for log probability extraction
-        # temperature=0 means greedy (matches vLLM behavior)
         do_sample = temperature > 0
         with torch.no_grad():
-            outputs = self._model.generate(
+            outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_tokens,
-                temperature=temperature if do_sample else 1.0,  # Avoid temperature=0 warning
+                temperature=temperature if do_sample else 1.0,
                 top_p=top_p,
                 do_sample=do_sample,
                 num_return_sequences=n,
-                pad_token_id=self._tokenizer.pad_token_id,
-                eos_token_id=self._tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
                 output_scores=True,
                 return_dict_in_generate=True,
             )
 
-        # outputs.sequences: [batch_size * n, seq_len]
-        # outputs.scores: tuple of [batch_size * n, vocab_size] for each generated token
         sequences = outputs.sequences
-        scores = outputs.scores  # Tuple of logits for each generation step
+        scores = outputs.scores
 
         # Build results for each prompt
         results: list[GenerationResult] = []
         padded_prompt_len = input_ids.shape[1]
 
         for prompt_idx in range(batch_size):
-            # Get unpadded prompt tokens for this prompt
             prompt_start = padded_prompt_len - prompt_lengths[prompt_idx]
             prompt_tokens = input_ids[prompt_idx, prompt_start:].tolist()
 
             samples: list[GeneratedSample] = []
 
             for sample_idx in range(n):
-                # Output index in the flattened batch
                 output_idx = prompt_idx * n + sample_idx
-
-                # Extract completion tokens (after padded prompt)
                 full_sequence = sequences[output_idx].tolist()
                 completion_tokens = full_sequence[padded_prompt_len:]
 
                 # Remove trailing pad tokens
-                while completion_tokens and completion_tokens[-1] == self._tokenizer.pad_token_id:
+                while (
+                    completion_tokens
+                    and completion_tokens[-1] == self.tokenizer.pad_token_id
+                ):
                     completion_tokens.pop()
 
                 # Check if truncated
-                truncated = (
-                    len(completion_tokens) >= max_tokens
-                    and (
-                        not completion_tokens
-                        or completion_tokens[-1] != self._tokenizer.eos_token_id
-                    )
+                truncated = len(completion_tokens) >= max_tokens and (
+                    not completion_tokens
+                    or completion_tokens[-1] != self.tokenizer.eos_token_id
                 )
 
                 # Extract log probabilities from scores
@@ -358,7 +330,7 @@ class TransformersClient:
                         token_logprobs.append(step_log_probs[token_id].item())
 
                 # Decode completion text
-                completion_text = self._tokenizer.decode(
+                completion_text = self.tokenizer.decode(
                     completion_tokens, skip_special_tokens=True
                 )
 
@@ -379,9 +351,7 @@ class TransformersClient:
                 )
             )
 
-        # Clear cache after generation
         torch.cuda.empty_cache()
-
         return results
 
     def batch_generate_text(
@@ -569,194 +539,299 @@ class TransformersClient:
     # =========================================================================
 
     @torch.inference_mode()
-    def compute_log_prob(
+    def _score_sequences(
         self,
-        prompt_tokens: tuple[int, ...] | list[int],
-        completion_tokens: tuple[int, ...] | list[int],
-    ) -> float:
-        """Compute log probability of completion given prompt.
+        sequences: Sequence[Sequence[int]],
+        answer_ranges: Sequence[tuple[int, int]],
+    ) -> list[LogProbResult]:
+        """Score token sequences and compute log probs for specified ranges.
 
-        Performs a forward pass through the model and computes the sum of
-        log p(token | prefix) over all completion tokens.
+        This is the core batched scoring method. All compute_*_log_probs methods
+        call this with appropriate sequences and ranges.
 
         Args:
-            prompt_tokens: Tokenized prompt (context).
-            completion_tokens: Tokenized completion to score.
+            sequences: Token sequences to score.
+            answer_ranges: (start, end) ranges for each sequence indicating which
+                tokens contribute to total_log_prob. Range is [start, end).
 
         Returns:
-            Sum of log p(token | prefix) over completion tokens.
+            LogProbResult for each sequence with full token_ids, per-token logprobs,
+            answer_range, and total_log_prob.
         """
-        # Concatenate prompt and completion
-        full_tokens = list(prompt_tokens) + list(completion_tokens)
-        input_ids = torch.tensor([full_tokens], device=self._device)
+        if not sequences:
+            return []
 
-        # Forward pass
-        outputs = self._model(input_ids, use_cache=False)
-        logits = outputs.logits  # [1, seq_len, vocab_size]
+        # Prepare batched input with padding
+        max_len = max(len(seq) for seq in sequences)
+        pad_token_id = getattr(self.model.config, "pad_token_id", 0) or 0
 
-        # Extract log-probs for completion tokens
-        prompt_len = len(prompt_tokens)
-        completion_len = len(completion_tokens)
+        batch_input_ids = []
+        attention_masks = []
 
-        # logits[t] predicts token[t+1]
-        pred_logits = logits[0, prompt_len - 1 : prompt_len + completion_len - 1]
+        for seq in sequences:
+            seq_list = list(seq)
+            padding_needed = max_len - len(seq_list)
+            padded = seq_list + [pad_token_id] * padding_needed
+            mask = [1] * len(seq_list) + [0] * padding_needed
+            batch_input_ids.append(padded)
+            attention_masks.append(mask)
 
-        # Target tokens
-        targets = torch.tensor(list(completion_tokens), device=self._device)
+        input_ids = torch.tensor(batch_input_ids, device=self.device)
+        attention_mask = torch.tensor(attention_masks, device=self.device)
 
-        # Compute log softmax and gather
-        log_probs = F.log_softmax(pred_logits, dim=-1)
-        token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+        # Single batched forward pass
+        outputs = self.model(input_ids, attention_mask=attention_mask, use_cache=False)
+        logits = outputs.logits  # (batch, seq_len, vocab)
 
-        return token_log_probs.sum().item()
+        # Compute log probs
+        log_probs_tensor = torch.log_softmax(logits, dim=-1)
 
-    @torch.inference_mode()
-    def compute_batch_log_probs(
+        # Build results
+        results: list[LogProbResult] = []
+
+        for batch_idx, (seq, (start, end)) in enumerate(zip(sequences, answer_ranges)):
+            seq_list = list(seq)
+            seq_len = len(seq_list)
+
+            if seq_len == 0:
+                results.append(
+                    LogProbResult(
+                        token_ids=(),
+                        logprobs=(),
+                        answer_range=(start, end),
+                        total_log_prob=0.0,
+                    )
+                )
+                continue
+
+            # Build per-token logprobs (first token has no context, so None)
+            all_logprobs: list[float | None] = [None]
+            for pos in range(1, seq_len):
+                token_id = seq_list[pos]
+                # logits at position pos-1 predict token at position pos
+                lp = log_probs_tensor[batch_idx, pos - 1, token_id].item()
+                all_logprobs.append(lp)
+
+            # Sum logprobs in answer range
+            answer_logprobs = [
+                all_logprobs[pos]
+                for pos in range(start, end)
+                if pos < len(all_logprobs) and all_logprobs[pos] is not None
+            ]
+            total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0  # type: ignore[arg-type]
+
+            results.append(
+                LogProbResult(
+                    token_ids=tuple(seq_list),
+                    logprobs=tuple(all_logprobs),
+                    answer_range=(start, end),
+                    total_log_prob=total_log_prob,
+                )
+            )
+
+        return results
+
+    def compute_token_log_probs(
         self,
-        traces: list[tuple[tuple[int, ...], tuple[int, ...]]],
-        batch_size: int = 8,
-        length_tolerance: int = 128,
+        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
     ) -> list[float]:
-        """Compute log probabilities for a batch of traces.
+        """Compute log probabilities for token-based traces.
 
-        More efficient than calling compute_log_prob repeatedly when traces
-        have similar lengths, as it batches the forward pass.
-
-        Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
-            batch_size: Max traces per forward pass.
-            length_tolerance: Max token length difference within a batch.
-
-        Returns:
-            List of log probabilities in the same order as input traces.
+        Groups traces by length for efficient batched computation.
         """
         if not traces:
             return []
 
-        # Create indexed list with total lengths
-        indexed_traces = [
-            (i, prompt, completion, len(prompt) + len(completion))
-            for i, (prompt, completion) in enumerate(traces)
-        ]
+        # Build sequences and ranges from (prompt, completion) pairs
+        indexed_items: list[tuple[int, list[int], tuple[int, int]]] = []
+        for i, (prompt, completion) in enumerate(traces):
+            full_seq = list(prompt) + list(completion)
+            answer_range = (len(prompt), len(full_seq))
+            indexed_items.append((i, full_seq, answer_range))
 
         # Sort by length for better batching
-        indexed_traces.sort(key=lambda x: x[3])
+        indexed_items.sort(key=lambda x: len(x[1]))
 
         # Process in batches of similar length
         results = [0.0] * len(traces)
-        total_traces = len(indexed_traces)
-        processed = 0
-        num_batches = 0
-        start_time = time.perf_counter()
-        last_log_time = start_time
-
-        logger.info(
-            f"Computing log-probs for {total_traces} traces (batch_size={batch_size})"
-        )
+        batch_size = self._config.batch_size
+        length_tolerance = 128
 
         i = 0
-        while i < len(indexed_traces):
-            # Find batch boundaries
+        while i < len(indexed_items):
             batch_start = i
-            base_length = indexed_traces[i][3]
+            base_length = len(indexed_items[i][1])
 
             # Extend batch while lengths are within tolerance
             while (
-                i < len(indexed_traces)
+                i < len(indexed_items)
                 and i - batch_start < batch_size
-                and indexed_traces[i][3] - base_length <= length_tolerance
+                and len(indexed_items[i][1]) - base_length <= length_tolerance
             ):
                 i += 1
 
-            batch = indexed_traces[batch_start:i]
-            num_batches += 1
+            batch = indexed_items[batch_start:i]
+            batch_seqs = [item[1] for item in batch]
+            batch_ranges = [item[2] for item in batch]
+            batch_indices = [item[0] for item in batch]
 
-            if len(batch) == 1:
-                # Single item, use simple computation
-                idx, prompt, completion, _ = batch[0]
-                results[idx] = self.compute_log_prob(prompt, completion)
-            else:
-                # Batch computation with padding
-                batch_results = self._compute_batch_log_probs_padded(batch)
-                for (idx, _, _, _), log_prob in zip(batch, batch_results):
-                    results[idx] = log_prob
+            # Score batch
+            log_prob_results = self._score_sequences(batch_seqs, batch_ranges)
 
-            processed += len(batch)
+            # Extract total_log_prob and restore order
+            for idx, result in zip(batch_indices, log_prob_results):
+                results[idx] = result.total_log_prob
 
-            # Release cached GPU memory after each batch
             torch.cuda.empty_cache()
 
-            # Log progress every 10 seconds
-            now = time.perf_counter()
-            if now - last_log_time >= 10.0:
-                elapsed = now - start_time
-                rate = processed / elapsed
-                eta = (total_traces - processed) / rate if rate > 0 else 0
-                logger.info(
-                    f"Progress: {processed}/{total_traces} traces "
-                    f"({100*processed/total_traces:.1f}%), "
-                    f"{rate:.1f} traces/sec, ETA {eta:.0f}s"
-                )
-                last_log_time = now
-
-        elapsed = time.perf_counter() - start_time
-        logger.info(
-            f"Completed {total_traces} traces in {num_batches} batches, "
-            f"{elapsed:.1f}s ({total_traces/elapsed:.1f} traces/sec)"
-        )
-
         return results
 
-    def _compute_batch_log_probs_padded(
+    def compute_text_log_probs(
         self,
-        batch: list[tuple[int, tuple[int, ...], tuple[int, ...], int]],
-    ) -> list[float]:
-        """Compute log probs for a batch with padding."""
-        # Find max length for padding
-        max_len = max(item[3] for item in batch)
+        text_groups: Sequence[tuple[str, Sequence[str]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for text continuations with diff-based scoring."""
+        if not text_groups:
+            return []
 
-        # Prepare padded inputs
-        batch_input_ids = []
-        prompt_lengths = []
-        completion_lengths = []
+        from place_layers.core.token_utils import find_differing_ranges
 
-        pad_token_id = getattr(self._model.config, "pad_token_id", 0) or 0
+        all_results: list[LogProbResult] = []
 
-        for _, prompt, completion, total_len in batch:
-            full_tokens = list(prompt) + list(completion)
-            padding_needed = max_len - total_len
-            padded = full_tokens + [pad_token_id] * padding_needed
-            batch_input_ids.append(padded)
-            prompt_lengths.append(len(prompt))
-            completion_lengths.append(len(completion))
+        for context, choices in text_groups:
+            if not choices:
+                continue
 
-        # Create attention mask
-        attention_mask = [
-            [1] * (pl + cl) + [0] * (max_len - pl - cl)
-            for pl, cl in zip(prompt_lengths, completion_lengths)
-        ]
+            # Tokenize all (context + choice) sequences for this group
+            token_sequences: list[list[int]] = []
+            for choice in choices:
+                ctx_tokens = self.tokenizer.encode(context, add_special_tokens=True)
+                choice_tokens = self.tokenizer.encode(choice, add_special_tokens=False)
+                token_sequences.append(ctx_tokens + choice_tokens)
 
-        # Forward pass
-        input_ids = torch.tensor(batch_input_ids, device=self._device)
-        attn_mask = torch.tensor(attention_mask, device=self._device)
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
 
-        outputs = self._model(input_ids, attention_mask=attn_mask, use_cache=False)
-        logits = outputs.logits
+            # Score sequences (batched)
+            results = self._score_sequences(token_sequences, answer_ranges)
+            all_results.extend(results)
 
-        # Compute log probs for each item
-        results = []
-        for batch_idx, (_, prompt, completion, _) in enumerate(batch):
-            prompt_len = len(prompt)
-            completion_len = len(completion)
+        return all_results
 
-            pred_logits = logits[
-                batch_idx, prompt_len - 1 : prompt_len + completion_len - 1
-            ]
-            targets = torch.tensor(list(completion), device=self._device)
+    def compute_chat_log_probs(
+        self,
+        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+    ) -> list[LogProbResult]:
+        """Compute log probabilities for chat completions with diff-based scoring.
 
-            log_probs = F.log_softmax(pred_logits, dim=-1)
-            token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+        Args:
+            chat_groups: Sequence of (context_messages, completion_messages) tuples.
+                context_messages: The prompt (system, user, etc.)
+                completion_messages: Multiple assistant messages, one per choice.
+        """
+        if not chat_groups:
+            return []
 
-            results.append(token_log_probs.sum().item())
+        from place_layers.core.token_utils import find_differing_ranges
 
-        return results
+        all_results: list[LogProbResult] = []
+
+        for context_msgs, completion_msgs in chat_groups:
+            if not completion_msgs:
+                continue
+
+            # Tokenize all (context + choice) sequences for this group
+            token_sequences: list[list[int]] = []
+            for comp_msg in completion_msgs:
+                full_msgs = list(context_msgs) + [comp_msg]
+                full_text = self.tokenizer.apply_chat_template(
+                    full_msgs,  # type: ignore[arg-type]
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                tokens = self.tokenizer.encode(
+                    full_text, add_special_tokens=False  # type: ignore[arg-type]
+                )
+                token_sequences.append(tokens)
+
+            # Find answer token ranges using diff-based approach
+            answer_ranges = find_differing_ranges(token_sequences)
+
+            # Score sequences (batched)
+            results = self._score_sequences(token_sequences, answer_ranges)
+            all_results.extend(results)
+
+        return all_results
+
+    # =========================================================================
+    # Placement
+    # =========================================================================
+
+    def set_placement(self, mixer_names: Sequence[str]) -> None:
+        """Set mixer placement for Apriel2 supernet model."""
+        placement_tuple = tuple(mixer_names)
+
+        if self._current_placement == placement_tuple:
+            return
+
+        if self._apriel_structure is None:
+            raise ValueError(
+                "Model does not support dynamic placement. "
+                "Only Apriel2 supernet models support set_placement()."
+            )
+
+        if len(mixer_names) != self._apriel_structure.num_layers:
+            raise ValueError(
+                f"mixer_names length ({len(mixer_names)}) doesn't match "
+                f"model layers ({self._apriel_structure.num_layers})"
+            )
+
+        valid_mixers = set(self._apriel_structure.mixer_names)
+        for layer_idx, mixer_name in enumerate(mixer_names):
+            if mixer_name not in valid_mixers:
+                raise ValueError(
+                    f"Invalid mixer '{mixer_name}' at layer {layer_idx}. "
+                    f"Valid mixers: {valid_mixers}"
+                )
+
+        for layer_idx, mixer_name in enumerate(mixer_names):
+            self.model.model.decoder.blocks[layer_idx].mixer.main_mixer_name = (
+                mixer_name
+            )
+
+        self._current_placement = placement_tuple
+
+
+class TransformersBackendConfig(BaseBackendConfig):
+    """Configuration for Transformers generation backend."""
+
+    _backend_class: ClassVar[type[SyncBackend]] = TransformersBackend  # type: ignore[assignment]
+
+    backend_type: Literal["transformers"] = "transformers"
+
+    model_path: str = Field(description="Path to model (local or HF hub)")
+    tokenizer_path: str | None = Field(
+        default=None,
+        description="Path to tokenizer (defaults to model_path)",
+    )
+    torch_dtype: Literal["float16", "bfloat16", "float32"] = Field(
+        default="bfloat16",
+        description="Model dtype",
+    )
+    device_map: str = Field(
+        default="cuda",
+        description="Device map for model loading",
+    )
+    trust_remote_code: bool = Field(
+        default=True,
+        description="Trust remote code when loading model",
+    )
+    batch_size: int = Field(
+        default=1,
+        description="Number of prompts to batch together",
+        gt=0,
+    )
+    revision: str | None = Field(
+        default=None,
+        description="HuggingFace revision (branch, tag, or commit hash)",
+    )

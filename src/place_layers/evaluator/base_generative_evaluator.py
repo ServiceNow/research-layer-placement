@@ -27,10 +27,8 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.vllm import (
-    GenerationResult,
-    VLLMBadRequestError,
-)
+from place_layers.clients.types import GenerationResult
+from place_layers.clients.remote_vllm import VLLMBadRequestError
 from place_layers.core.memory_logging import (
     force_garbage_collection,
     log_gpu_memory_summary,

@@ -19,11 +19,11 @@ from typing import Self, Sequence
 from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
 
-from place_layers.backend.base import (
+from place_layers.backend import (
     AsyncBackend,
     BackendConfig,
-    LogProbResult,
     ChatMessage,
+    LogProbResult,
     SyncBackend,
 )
 from place_layers.core.types import LayerPlacement
@@ -224,28 +224,30 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     async def _compute_chat_log_probs(
         self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
+        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
     ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions.
+        """Compute log probabilities for chat completions with diff-based scoring.
 
         Handles sync/async dispatch based on backend type.
 
         Args:
-            chats: List of (context_messages, completion_messages) tuples.
+            chat_groups: List of (context_messages, completion_messages) tuples where:
+                - context_messages: The shared prompt (system, user, etc.)
+                - completion_messages: Multiple assistant messages, one per choice
 
         Returns:
-            List of LogProbResult with token-level detail.
+            List of LogProbResult (one per choice, flattened across all groups).
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_chat_log_probs(chats)
+            return await self._backend.compute_chat_log_probs(chat_groups)
         else:
-            return self._backend.compute_chat_log_probs(chats)
+            return self._backend.compute_chat_log_probs(chat_groups)
 
-    async def _compute_batch_log_probs(
+    async def _compute_token_log_probs(
         self,
         sequences: Sequence[tuple[tuple[int, ...], tuple[int, ...]]],
     ) -> list[float]:
-        """Compute log probabilities for token sequences.
+        """Compute log probabilities for token-based traces.
 
         Handles sync/async dispatch based on backend type.
 
@@ -256,9 +258,9 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             List of total log probabilities for each sequence.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_batch_log_probs(sequences)
+            return await self._backend.compute_token_log_probs(sequences)
         else:
-            return self._backend.compute_batch_log_probs(sequences)
+            return self._backend.compute_token_log_probs(sequences)
 
     async def _compute_text_log_probs(
         self,

@@ -42,7 +42,7 @@ from place_layers.server.schemas import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.backend.base import (
+    from place_layers.backend.transformers import (
         TransformersBackend,
         TransformersBackendConfig,
     )
@@ -143,17 +143,20 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             # Convert messages to dict format expected by backend
             messages = [m.model_dump() for m in req.messages]
 
-            # Generate
-            result = backend.generate(
-                messages=messages,
+            # Generate (single prompt via batch API)
+            results = backend.batch_generate(
+                messages_batch=[messages],
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
-                request_id=req.request_id,
             )
+            result = results[0]
 
-            return result.model_dump()
+            # Add request_id to response
+            response = result.model_dump()
+            response["request_id"] = req.request_id
+            return response
 
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -217,7 +220,7 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             ]
 
             # Compute log probs
-            log_probs = backend.compute_batch_log_probs(traces)
+            log_probs = backend.compute_token_log_probs(traces)
 
             return ComputeLogProbsResponse(log_probs=log_probs)
 
