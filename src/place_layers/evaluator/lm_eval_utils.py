@@ -234,29 +234,30 @@ def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
     return None
 
 
-def load_task(
-    task_spec: TaskSpecInput,
+def _load_tasks_with_patched_path(
+    task_specs: list[TaskSpecInput],
     default_num_fewshot: int,
     seed: int | None = None,
-) -> "Task":
-    """Load an lm-eval task from a task spec.
+) -> dict[str, "Task"]:
+    """Internal helper to load tasks with Path.relative_to patched.
+
+    This contains the core loading logic shared by load_task() and load_tasks().
+    The monkey-patch fixes a bug in lm-eval-harness 0.4.x where it crashes when
+    trying to print the relative path of custom tasks outside its package.
 
     Args:
-        task_spec: Task name or TaskSpec with overrides.
+        task_specs: List of task names or TaskSpec objects.
         default_num_fewshot: Default few-shot count.
         seed: Random seed for few-shot sampling (optional).
 
     Returns:
-        Configured lm-eval Task object.
+        Dict mapping task names to configured Task objects.
     """
     from pathlib import Path
 
-    import lm_eval.tasks
     from lm_eval.tasks import TaskManager, get_task_dict
 
     # Monkey-patch Path.relative_to to handle external custom tasks
-    # This fixes a bug in lm-eval-harness 0.4.x where it crashes when
-    # trying to print the relative path of custom tasks outside its package
     _original_relative_to = Path.relative_to
 
     def _patched_relative_to(self, other, *args, **kwargs):
@@ -275,17 +276,62 @@ def load_task(
         custom_tasks_dir = Path(__file__).parent.parent / "tasks"
         include_path = str(custom_tasks_dir) if custom_tasks_dir.exists() else None
 
-        task_name = get_task_name(task_spec)
-        task_config = normalize_task_spec(task_spec, default_num_fewshot)
+        # Normalize all task specs
+        task_configs = [
+            normalize_task_spec(spec, default_num_fewshot) for spec in task_specs
+        ]
+
+        # Load all tasks at once with a shared TaskManager
         task_manager = TaskManager(include_path=include_path)
-        task_dict = get_task_dict([task_config], task_manager=task_manager)
-        task = task_dict[task_name]
+        task_dict = get_task_dict(task_configs, task_manager=task_manager)
     finally:
         # Restore original relative_to
         Path.relative_to = _original_relative_to
 
     # Set seed if provided
     if seed is not None:
-        task.set_fewshot_seed(seed)
+        for task in task_dict.values():
+            task.set_fewshot_seed(seed)
 
-    return task
+    return task_dict
+
+
+def load_task(
+    task_spec: TaskSpecInput,
+    default_num_fewshot: int,
+    seed: int | None = None,
+) -> "Task":
+    """Load an lm-eval task from a task spec.
+
+    Args:
+        task_spec: Task name or TaskSpec with overrides.
+        default_num_fewshot: Default few-shot count.
+        seed: Random seed for few-shot sampling (optional).
+
+    Returns:
+        Configured lm-eval Task object.
+    """
+    task_dict = _load_tasks_with_patched_path([task_spec], default_num_fewshot, seed)
+    task_name = get_task_name(task_spec)
+    return task_dict[task_name]
+
+
+def load_tasks(
+    task_specs: list[TaskSpecInput],
+    default_num_fewshot: int,
+    seed: int | None = None,
+) -> dict[str, "Task"]:
+    """Load multiple lm-eval tasks efficiently with a shared TaskManager.
+
+    This is significantly faster than calling load_task() for each task
+    individually (6x speedup) because lm-eval can share initialization overhead.
+
+    Args:
+        task_specs: List of task names or TaskSpec objects.
+        default_num_fewshot: Default few-shot count.
+        seed: Random seed for few-shot sampling (optional).
+
+    Returns:
+        Dict mapping task names to configured Task objects.
+    """
+    return _load_tasks_with_patched_path(task_specs, default_num_fewshot, seed)

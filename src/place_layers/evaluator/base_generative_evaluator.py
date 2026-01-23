@@ -142,9 +142,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         assert isinstance(self._backend, SyncBackend)
 
         for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
+            prepared = self._prepare_task(task_spec, "generate_until")
 
             if prepared is None:
                 continue
@@ -264,9 +262,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         assert isinstance(self._backend, AsyncBackend)
 
         for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
+            prepared = self._prepare_task(task_spec, "generate_until")
 
             if prepared is None:
                 continue

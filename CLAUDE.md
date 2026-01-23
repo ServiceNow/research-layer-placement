@@ -4,6 +4,8 @@ This codebase implements inference benchmarking for supernet layer placement opt
 
 > **Note**: For generic Hydra+Pydantic patterns (discriminated unions, smart constructors, adding new components), see the `hydra-pydantic` skill which will be auto-triggered when relevant.
 
+> **Environment**: A Python virtual environment is available at `/home/toolkit/code/research-layer-placement/.venv/bin/python` for running code in this project.
+
 ---
 
 ## Table of Contents
@@ -204,3 +206,4 @@ python -m place_layers \
 | Missing `+` prefix | Use `+command=evaluate` not `command=evaluate` |
 | Relative paths in experiments | Use `/command: evaluate` not `command: evaluate` |
 | Hydra sub-defaults conflict | Use `override job_logging: rich_files` |
+| Output logs contain multiple runs | Hydra appends to existing output directories, so `app.log` files can contain logs from multiple consecutive runs with the same config. Check timestamps to identify run boundaries. |

@@ -45,6 +45,7 @@ poetry.lock
 
 # Hydra
 outputs/
+outputs*/
 multirun/
 .hydra/
 
@@ -78,3 +79,8 @@ Thumbs.db
 # Devenv
 .devenv/
 .devenv.flake.nix
+.nfs*
+tests/.archive/
+tests/.archive/
+.scratch/
+scripts/

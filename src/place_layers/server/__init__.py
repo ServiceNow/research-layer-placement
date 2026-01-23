@@ -7,5 +7,4 @@ from place_layers.server.schemas import (
     ComputeLogProbsRequest,
     GenerateRequest,
     InfoResponse,
-    SetPlacementRequest,
 )
