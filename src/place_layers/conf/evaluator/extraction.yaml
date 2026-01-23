@@ -1,0 +1,25 @@
+# @package evaluator
+# Extraction evaluator - generative evaluator configured for extraction tasks
+#
+# Key differences from standard generative evaluator:
+#   - use_chat_template: false (extraction tasks work better with raw text)
+#   - evaluate_truncated_samples: true (answer may be complete before max_tokens)
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (vllm or transformers)
+#   - task: Benchmark configuration (tasks, num_fewshot)
+#   - generation: Decoding parameters (should use generation=extraction)
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=extraction \
+#       +backend=transformers +model=qwen2_0_5b +task=swde +generation=extraction
+
+defaults:
+  - generative
+  - _self_
+
+# Override chat template for extraction tasks
+use_chat_template: false
+
+# Enable evaluation of truncated samples for extraction tasks
+evaluate_truncated_samples: true
