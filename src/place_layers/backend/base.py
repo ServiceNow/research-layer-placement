@@ -4,22 +4,91 @@ Provides a categorical abstraction for generation backends:
 - AsyncBackend: For remote servers (vLLM, sglang, OpenAI-compatible APIs)
 - SyncBackend: For local models (transformers)
 
-The command uses different execution strategies based on category:
-- AsyncBackend → async worker pool with max_concurrent_requests
-- SyncBackend → sync loop (sequential or batched processing)
+Scoring methods use an iterator-based API with keyed requests:
+- Caller submits requests with unique keys
+- Backend yields results in any order (first-completed for async)
+- Caller joins results by key, not position
+
+This design hides batching/concurrency from callers:
+- SyncBackend: Chunks requests internally, yields as batches complete
+- AsyncBackend: Manages concurrency with semaphores, yields as requests complete
 """
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, Self, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, ClassVar, Self, Sequence
 
 from pydantic import BaseModel, Field
 
-from place_layers.backend.types import ChatMessage, LogProbResult, ModelStructure
+from place_layers.backend.types import (
+    ChatMessage,
+    ChatScoringRequest,
+    ChatScoringResult,
+    ModelStructure,
+    TextScoringRequest,
+    TextScoringResult,
+    TokenScoringRequest,
+    TokenScoringResult,
+)
 
 if TYPE_CHECKING:
     from place_layers.clients.types import GenerationResult
+
+
+# =============================================================================
+# Async Concurrency Helper
+# =============================================================================
+
+
+async def concurrent_map[T, R](
+    items: Iterable[T],
+    process: Callable[[T], Coroutine[Any, Any, R]],
+    max_concurrent: int,
+) -> AsyncIterator[R]:
+    """Process items concurrently, yielding results as they complete.
+
+    Maintains up to max_concurrent tasks in flight. As each completes,
+    yields its result and schedules the next item. Results are yielded
+    in completion order, not input order.
+
+    Args:
+        items: Items to process.
+        process: Async function to apply to each item.
+        max_concurrent: Maximum concurrent tasks.
+
+    Yields:
+        Results in completion order.
+    """
+    pending: set[asyncio.Task[R]] = set()
+    items_iter = iter(items)
+    done_iterating = False
+
+    # Fill up to max_concurrent
+    for item in items_iter:
+        pending.add(asyncio.create_task(process(item)))
+        if len(pending) >= max_concurrent:
+            break
+    else:
+        done_iterating = True
+
+    # Process until all done
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        for task in done:
+            yield task.result()
+
+        # Refill from remaining items
+        if not done_iterating:
+            for item in items_iter:
+                pending.add(asyncio.create_task(process(item)))
+                if len(pending) >= max_concurrent:
+                    break
+            else:
+                done_iterating = True
 
 
 # =============================================================================
@@ -31,7 +100,8 @@ class AsyncBackend(ABC):
     """Base class for async generation backends (vLLM, sglang, etc.).
 
     These backends communicate with remote servers via HTTP and support
-    concurrent requests. Used with async worker pool execution.
+    concurrent requests. Scoring methods yield results as they complete
+    (not necessarily in input order) - caller joins by key.
     """
 
     @property
@@ -77,51 +147,55 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
-    async def compute_token_log_probs(
+    def score_tokens(
         self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for token-based traces.
+        requests: Iterable[TokenScoringRequest],
+    ) -> AsyncIterator[TokenScoringResult]:
+        """Score token sequences, yielding results as they complete.
+
+        Results may arrive in any order. Use request.key to join with input.
 
         Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
+            requests: Token scoring requests with keys.
 
-        Returns:
-            List of log probabilities (sum over completion tokens) in input order.
+        Yields:
+            TokenScoringResult with key and log_prob.
         """
         pass
 
     @abstractmethod
-    async def compute_text_log_probs(
+    def score_text(
         self,
-        text_groups: Sequence[tuple[str, Sequence[str]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with diff-based scoring.
+        requests: Iterable[TextScoringRequest],
+    ) -> AsyncIterator[TextScoringResult]:
+        """Score text continuations (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Use request.key to join with input.
+        Each result contains LogProbResults for all choices in that request.
 
         Args:
-            text_groups: List of (context, choices) tuples where:
-                - context: The shared context/prompt string
-                - choices: List of continuation strings to score against this context
+            requests: Text scoring requests with keys.
 
-        Returns:
-            List of LogProbResult (one per choice, flattened across all groups).
+        Yields:
+            TextScoringResult with key and per-choice results.
         """
         pass
 
     @abstractmethod
-    async def compute_chat_log_probs(
+    def score_chat(
         self,
-        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions with diff-based scoring.
+        requests: Iterable[ChatScoringRequest],
+    ) -> AsyncIterator[ChatScoringResult]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Use request.key to join with input.
+        Each result contains LogProbResults for all choices in that request.
 
         Args:
-            chat_groups: List of (context_messages, completion_messages) tuples where:
-                - context_messages: The shared prompt (system, user, etc.)
-                - completion_messages: Multiple assistant messages, one per choice
+            requests: Chat scoring requests with keys.
 
-        Returns:
-            List of LogProbResult (one per choice, flattened across all groups).
+        Yields:
+            ChatScoringResult with key and per-choice results.
         """
         pass
 
@@ -152,14 +226,9 @@ class SyncBackend(ABC):
     """Base class for sync generation backends (transformers, etc.).
 
     These backends run locally and process requests synchronously.
-    Supports both single-prompt and batched generation.
+    Scoring methods yield results in input order as batches complete.
+    Batching is handled internally - caller just iterates.
     """
-
-    @property
-    @abstractmethod
-    def batch_size(self) -> int:
-        """Number of prompts to batch together for generation."""
-        pass
 
     @abstractmethod
     def __enter__(self) -> Self:
@@ -185,35 +254,55 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
-    def compute_token_log_probs(
+    def score_tokens(
         self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for token-based traces."""
-        pass
+        requests: Iterable[TokenScoringRequest],
+    ) -> Iterator[TokenScoringResult]:
+        """Score token sequences, yielding results as batches complete.
 
-    @abstractmethod
-    def compute_text_log_probs(
-        self,
-        text_groups: Sequence[tuple[str, Sequence[str]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with diff-based scoring."""
-        pass
-
-    @abstractmethod
-    def compute_chat_log_probs(
-        self,
-        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions with diff-based scoring.
+        Results are yielded in input order. Batching is handled internally.
 
         Args:
-            chat_groups: List of (context_messages, completion_messages) tuples where:
-                - context_messages: The shared prompt (system, user, etc.)
-                - completion_messages: Multiple assistant messages, one per choice
+            requests: Token scoring requests with keys.
 
-        Returns:
-            List of LogProbResult (one per choice, flattened across all groups).
+        Yields:
+            TokenScoringResult with key and log_prob.
+        """
+        pass
+
+    @abstractmethod
+    def score_text(
+        self,
+        requests: Iterable[TextScoringRequest],
+    ) -> Iterator[TextScoringResult]:
+        """Score text continuations (multiple-choice), yielding as complete.
+
+        Results are yielded in input order. Each result contains
+        LogProbResults for all choices in that request.
+
+        Args:
+            requests: Text scoring requests with keys.
+
+        Yields:
+            TextScoringResult with key and per-choice results.
+        """
+        pass
+
+    @abstractmethod
+    def score_chat(
+        self,
+        requests: Iterable[ChatScoringRequest],
+    ) -> Iterator[ChatScoringResult]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results are yielded in input order. Each result contains
+        LogProbResults for all choices in that request.
+
+        Args:
+            requests: Chat scoring requests with keys.
+
+        Yields:
+            ChatScoringResult with key and per-choice results.
         """
         pass
 

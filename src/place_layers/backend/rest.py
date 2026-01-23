@@ -15,16 +15,27 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Self, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
 from pydantic import Field, model_validator
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
-from place_layers.backend.base import AsyncBackend, BaseBackendConfig
-from place_layers.backend.types import ChatMessage, LogProbResult, ModelStructure
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
+from place_layers.backend.types import (
+    ChatMessage,
+    ChatScoringRequest,
+    ChatScoringResult,
+    LogProbResult,
+    ModelStructure,
+    TextScoringRequest,
+    TextScoringResult,
+    TokenScoringRequest,
+    TokenScoringResult,
+)
 
 if TYPE_CHECKING:
     from place_layers.clients.types import GenerationResult
@@ -635,267 +646,107 @@ class RESTBackend(AsyncBackend):
         data = await self._call_with_failover("/generate", payload, preferred_server)
         return GenerationResult.model_validate(data)
 
-    async def compute_token_log_probs(
+    async def score_tokens(
         self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for token-based traces.
+        requests: Iterable[TokenScoringRequest],
+    ) -> AsyncIterator[TokenScoringResult]:
+        """Score token sequences, yielding results as they complete.
 
-        Traces are distributed across healthy servers. Each server processes
-        its chunk and results are reassembled.
-
-        Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
-
-        Returns:
-            List of log probabilities in input order.
+        Requests are distributed across healthy servers.
+        Results may arrive in any order.
         """
-        if not traces:
-            return []
 
-        # Get servers to use (healthy + due for recovery check)
-        servers = self._get_available_servers("batch processing")
-
-        # Distribute traces across servers
-        indexed_traces: list[tuple[int, tuple[Sequence[int], Sequence[int]]]] = [
-            (idx, trace) for idx, trace in enumerate(traces)
-        ]
-
-        results = await self._distribute_batch(
-            items=indexed_traces,
-            endpoint="/compute_log_probs",
-            make_payload=lambda items: {
+        async def process_one(req: TokenScoringRequest) -> TokenScoringResult:
+            payload = {
                 "traces": [
                     {
-                        "prompt_tokens": list(trace[0]),
-                        "completion_tokens": list(trace[1]),
+                        "prompt_tokens": list(req.prompt_tokens),
+                        "completion_tokens": list(req.completion_tokens),
                     }
-                    for _, trace in items
                 ],
                 "placement": self._current_placement,
-            },
-            parse_response=lambda items, data: [
-                (idx, lp) for (idx, _), lp in zip(items, data["log_probs"])
-            ],
-        )
-
-        # Sort by original index and extract log probs
-        return self._extract_indexed_results(results)
-
-    async def _distribute_batch[T, R](
-        self,
-        items: list[tuple[int, T]],
-        endpoint: str,
-        make_payload: Callable[[list[tuple[int, T]]], dict[str, Any]],
-        parse_response: Callable[
-            [list[tuple[int, T]], dict[str, Any]], list[tuple[int, R]]
-        ],
-    ) -> list[tuple[int, R]]:
-        """Distribute batch items across servers with failover.
-
-        Args:
-            items: List of (index, item) tuples to process.
-            endpoint: API endpoint to call.
-            make_payload: Function to create request payload from items.
-            parse_response: Function to parse response into (index, result) tuples.
-
-        Returns:
-            List of (index, result) tuples.
-        """
-        servers = self._get_available_servers()
-
-        # Distribute items across servers using round-robin
-        # Counter operates on full server list to maintain consistent ordering
-        # even when servers fail/recover
-        server_items: dict[str, list[tuple[int, Any]]] = {s: [] for s in servers}
-        for item in items:
-            server = self._server_pool.get_next_server_round_robin()
-            server_items[server].append(item)
-
-        # Process each server's chunk
-        async def process_chunk(
-            server: str, chunk_items: list[tuple[int, Any]]
-        ) -> list[tuple[int, Any]]:
-            if not chunk_items:
-                return []
-            logger.debug(f"_distribute_batch: Assigned {len(chunk_items)} items to {server}")
-            payload = make_payload(chunk_items)
-            # Call with failover, preferring the assigned server
-            data = await self._call_with_failover(endpoint, payload, preferred_server=server)
-            return parse_response(chunk_items, data)
-
-        tasks = [
-            process_chunk(server, chunk_items)
-            for server, chunk_items in server_items.items()
-            if chunk_items
-        ]
-
-        chunk_results = await asyncio.gather(*tasks)
-
-        # Flatten results
-        results: list[tuple[int, Any]] = []
-        for chunk in chunk_results:
-            results.extend(chunk)
-        return results
-
-    async def compute_text_log_probs(
-        self,
-        text_groups: Sequence[tuple[str, Sequence[str]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with diff-based scoring.
-
-        Distributes text groups across healthy servers for parallel computation.
-        Each server applies diff-based scoring internally.
-
-        Args:
-            text_groups: List of (context, choices) tuples.
-
-        Returns:
-            List of LogProbResult (flattened across all groups) with diff-based
-            answer_range and total_log_prob.
-        """
-        if not text_groups:
-            return []
-
-        # Create indexed items: (group_idx, (context, choices))
-        # We track group index and choice count to reassemble results
-        items: list[tuple[int, tuple[str, Sequence[str]]]] = [
-            (idx, (context, choices))
-            for idx, (context, choices) in enumerate(text_groups)
-        ]
-
-        # Capture current placement for the closure
-        placement = self._current_placement
-
-        def make_payload(
-            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]],
-        ) -> dict[str, Any]:
-            return {
-                "text_groups": [
-                    (context, list(choices)) for _, (context, choices) in chunk_items
-                ],
-                "placement": placement,
             }
+            data = await self._call_with_failover("/compute_log_probs", payload)
+            return TokenScoringResult(key=req.key, log_prob=data["log_probs"][0])
 
-        def parse_response(
-            chunk_items: list[tuple[int, tuple[str, Sequence[str]]]],
-            data: dict[str, Any],
-        ) -> list[tuple[int, LogProbResult]]:
-            # Server returns flattened results, we need to tag each with group index
-            results: list[tuple[int, LogProbResult]] = []
-            result_idx = 0
-            for group_idx, (_, choices) in chunk_items:
-                for _ in choices:
-                    r = data["results"][result_idx]
-                    results.append(
-                        (
-                            group_idx,
-                            LogProbResult(
-                                token_ids=tuple(r["token_ids"]),
-                                logprobs=tuple(r["logprobs"]),
-                                answer_range=tuple(r["answer_range"]),
-                                total_log_prob=r["total_log_prob"],
-                            ),
-                        )
-                    )
-                    result_idx += 1
-            return results
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
-        indexed_results = await self._distribute_batch(
-            items=items,
-            endpoint="/compute_text_log_probs",
-            make_payload=make_payload,
-            parse_response=parse_response,
-        )
-
-        # Sort by group index then flatten (results already in choice order within groups)
-        return self._extract_indexed_results(indexed_results)
-
-    async def compute_chat_log_probs(
+    async def score_text(
         self,
-        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions with diff-based scoring.
+        requests: Iterable[TextScoringRequest],
+    ) -> AsyncIterator[TextScoringResult]:
+        """Score text continuations (multiple-choice), yielding as complete.
 
-        Distributes chat groups across healthy servers.
-
-        Args:
-            chat_groups: List of (context_messages, completion_messages) tuples where:
-                - context_messages: The shared prompt (system, user, etc.)
-                - completion_messages: Multiple assistant messages, one per choice
-
-        Returns:
-            List of LogProbResult (one per choice, flattened across all groups).
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
         """
-        if not chat_groups:
-            return []
 
-        # Create indexed items: (group_idx, (context, completions))
-        items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]] = [
-            (idx, (context, completions))
-            for idx, (context, completions) in enumerate(chat_groups)
-        ]
+        async def process_one(req: TextScoringRequest) -> TextScoringResult:
+            if not req.choices:
+                return TextScoringResult(key=req.key, results=())
 
-        # Capture current placement for the closure
-        placement = self._current_placement
+            payload = {
+                "text_groups": [(req.context, list(req.choices))],
+                "placement": self._current_placement,
+            }
+            data = await self._call_with_failover("/batch_score_text", payload)
 
-        def make_payload(
-            chunk_items: list[
-                tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]
-            ],
-        ) -> dict[str, Any]:
-            # Convert groups to server-side format
-            # Server expects: chats = [(context_msgs, completion_msgs), ...]
-            # We need to flatten groups back into individual chats for the server
-            all_chats: list[tuple[list[ChatMessage], list[ChatMessage]]] = []
-            for _, (context, completions) in chunk_items:
-                for completion in completions:
-                    all_chats.append((list(context), list(completion)))
+            results = tuple(
+                LogProbResult(
+                    token_ids=tuple(r["token_ids"]),
+                    logprobs=tuple(r["logprobs"]),
+                    answer_range=tuple(r["answer_range"]),
+                    total_log_prob=r["total_log_prob"],
+                )
+                for r in data["results"]
+            )
+            return TextScoringResult(key=req.key, results=results)
 
-            return {
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def score_chat(
+        self,
+        requests: Iterable[ChatScoringRequest],
+    ) -> AsyncIterator[ChatScoringResult]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
+        """
+
+        async def process_one(req: ChatScoringRequest) -> ChatScoringResult:
+            if not req.completion_messages:
+                return ChatScoringResult(key=req.key, results=())
+
+            payload = {
                 "chat_groups": [
-                    (list(context), list(completions))
-                    for _, (context, completions) in chunk_items
+                    (list(req.context_messages), list(req.completion_messages))
                 ],
-                "placement": placement,
+                "placement": self._current_placement,
             }
+            data = await self._call_with_failover("/batch_score_chat", payload)
 
-        def parse_response(
-            chunk_items: list[
-                tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]
-            ],
-            data: dict[str, Any],
-        ) -> list[tuple[int, LogProbResult]]:
-            # Server returns flattened results, we need to tag each with group index
-            results: list[tuple[int, LogProbResult]] = []
-            result_idx = 0
-            for group_idx, (_, completions) in chunk_items:
-                for _ in completions:
-                    r = data["results"][result_idx]
-                    results.append(
-                        (
-                            group_idx,
-                            LogProbResult(
-                                token_ids=tuple(r["token_ids"]),
-                                logprobs=tuple(r["logprobs"]),
-                                answer_range=tuple(r["answer_range"]),
-                                total_log_prob=r["total_log_prob"],
-                            ),
-                        )
-                    )
-                    result_idx += 1
-            return results
+            results = tuple(
+                LogProbResult(
+                    token_ids=tuple(r["token_ids"]),
+                    logprobs=tuple(r["logprobs"]),
+                    answer_range=tuple(r["answer_range"]),
+                    total_log_prob=r["total_log_prob"],
+                )
+                for r in data["results"]
+            )
+            return ChatScoringResult(key=req.key, results=results)
 
-        indexed_results = await self._distribute_batch(
-            items=items,
-            endpoint="/compute_chat_log_probs",
-            make_payload=make_payload,
-            parse_response=parse_response,
-        )
-
-        # Sort by group index then flatten (results already in choice order within groups)
-        indexed_results.sort(key=lambda x: x[0])
-        return [r[1] for r in indexed_results]
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.

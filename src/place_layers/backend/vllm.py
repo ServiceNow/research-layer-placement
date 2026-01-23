@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence
 
 from pydantic import Field
 
-from place_layers.backend.base import AsyncBackend, BaseBackendConfig
-from place_layers.backend.types import ChatMessage, LogProbResult, ModelStructure
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
+from place_layers.backend.types import (
+    ChatMessage,
+    ChatScoringRequest,
+    ChatScoringResult,
+    LogProbResult,
+    ModelStructure,
+    TextScoringRequest,
+    TextScoringResult,
+    TokenScoringRequest,
+    TokenScoringResult,
+)
 from place_layers.clients.local_vllm import LocalVLLMClient, LocalVLLMClientConfig
 from place_layers.clients.remote_vllm import RemoteVLLMClient, RemoteVLLMClientConfig
 
@@ -94,23 +105,30 @@ class VLLMBackend:
             request_id=request_id,
         )
 
-    async def compute_token_log_probs(
-        self, traces: Sequence[tuple[Sequence[int], Sequence[int]]]
-    ) -> list[float]:
-        """Compute log probabilities for token-based traces."""
-        if not traces:
-            return []
+    async def score_tokens(
+        self,
+        requests: Iterable[TokenScoringRequest],
+    ) -> AsyncIterator[TokenScoringResult]:
+        """Score token sequences, yielding results as they complete.
 
-        tasks = [
-            self._client.score_token_completion(list(prompt), list(completion))
-            for prompt, completion in traces
-        ]
-        results = await asyncio.gather(*tasks)
-        return [r.total_logprob for r in results]
+        Results may arrive in any order. Concurrency is managed internally
+        via semaphore based on max_concurrent_requests.
+        """
+
+        async def process_one(req: TokenScoringRequest) -> TokenScoringResult:
+            result = await self._client.score_token_completion(
+                list(req.prompt_tokens), list(req.completion_tokens)
+            )
+            return TokenScoringResult(key=req.key, log_prob=result.total_logprob)
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
     def _build_diff_results(
         self, results: Sequence["SequenceLogProbs"]
-    ) -> list[LogProbResult]:
+    ) -> tuple[LogProbResult, ...]:
         """Build LogProbResults using diff-based scoring.
 
         Finds where token sequences diverge across choices and computes
@@ -136,61 +154,66 @@ class VLLMBackend:
                     total_log_prob=sum(answer_logprobs),
                 )
             )
-        return log_prob_results
+        return tuple(log_prob_results)
 
-    async def compute_text_log_probs(
-        self, text_groups: Sequence[tuple[str, Sequence[str]]]
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with diff-based scoring."""
-        if not text_groups:
-            return []
+    async def score_text(
+        self,
+        requests: Iterable[TextScoringRequest],
+    ) -> AsyncIterator[TextScoringResult]:
+        """Score text continuations (multiple-choice), yielding as complete.
 
-        all_results: list[LogProbResult] = []
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
+        """
 
-        for context, choices in text_groups:
-            if not choices:
-                continue
+        async def process_one(req: TextScoringRequest) -> TextScoringResult:
+            if not req.choices:
+                return TextScoringResult(key=req.key, results=())
 
             tasks = [
-                self._client.score_text_completion(context, choice)
-                for choice in choices
+                self._client.score_text_completion(req.context, choice)
+                for choice in req.choices
             ]
             results = await asyncio.gather(*tasks)
-            all_results.extend(self._build_diff_results(results))
+            return TextScoringResult(
+                key=req.key, results=self._build_diff_results(results)
+            )
 
-        return all_results
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
-    async def compute_chat_log_probs(
+    async def score_chat(
         self,
-        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions with diff-based scoring.
+        requests: Iterable[ChatScoringRequest],
+    ) -> AsyncIterator[ChatScoringResult]:
+        """Score chat completions (multiple-choice), yielding as complete.
 
-        Args:
-            chat_groups: Sequence of (context_messages, completion_messages) tuples.
-                context_messages: The prompt (system, user, etc.)
-                completion_messages: Multiple assistant messages, one per choice.
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
         """
-        if not chat_groups:
-            return []
 
-        all_results: list[LogProbResult] = []
-
-        for context_msgs, completion_msgs in chat_groups:
-            if not completion_msgs:
-                continue
+        async def process_one(req: ChatScoringRequest) -> ChatScoringResult:
+            if not req.completion_messages:
+                return ChatScoringResult(key=req.key, results=())
 
             tasks = [
                 self._client.score_chat_completion(
-                    list(context_msgs),  # type: ignore[arg-type]
+                    list(req.context_messages),  # type: ignore[arg-type]
                     [comp_msg],  # Single message wrapped in list
                 )
-                for comp_msg in completion_msgs
+                for comp_msg in req.completion_messages
             ]
             results = await asyncio.gather(*tasks)
-            all_results.extend(self._build_diff_results(results))
+            return ChatScoringResult(
+                key=req.key, results=self._build_diff_results(results)
+            )
 
-        return all_results
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
     async def set_placement(self, mixer_names: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model.

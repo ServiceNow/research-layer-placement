@@ -13,8 +13,9 @@ their specific evaluation logic in the evaluate() method.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
-from typing import Self, Sequence
+from typing import Self
 
 from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
@@ -22,9 +23,13 @@ from pydantic import Field
 from place_layers.backend import (
     AsyncBackend,
     BackendConfig,
-    ChatMessage,
-    LogProbResult,
+    ChatScoringRequest,
+    ChatScoringResult,
     SyncBackend,
+    TextScoringRequest,
+    TextScoringResult,
+    TokenScoringRequest,
+    TokenScoringResult,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
@@ -193,101 +198,53 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         self._current_placement = mixer_names
 
-    def _get_placement_output_dir(self, placement: tuple[str, ...]) -> Path:
-        """Get placement-specific output directory.
-
-        Creates a subdirectory under the base output directory named by the placement.
-        This prevents result collisions when evaluating multiple placements.
-
-        Args:
-            placement: Tuple of mixer names for each layer.
-
-        Returns:
-            Path to placement-specific output directory.
-        """
-        # Create a compact representation of the placement
-        # For supernets, use a hash to keep directory names manageable
-        import hashlib
-        placement_str = ",".join(placement)
-        placement_hash = hashlib.md5(placement_str.encode()).hexdigest()[:8]
-
-        # Create subdirectory: placements/<hash>
-        placement_dir = self._base_output_dir / "placements" / placement_hash
-        placement_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write a readable placement file for debugging
-        placement_file = placement_dir / "placement.txt"
-        if not placement_file.exists():
-            placement_file.write_text(placement_str)
-
-        return placement_dir
-
-    async def _compute_chat_log_probs(
+    async def score_chat(
         self,
-        chat_groups: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for chat completions with diff-based scoring.
+        requests: Iterable[ChatScoringRequest],
+    ) -> AsyncIterator[ChatScoringResult]:
+        """Score chat completions, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
-
-        Args:
-            chat_groups: List of (context_messages, completion_messages) tuples where:
-                - context_messages: The shared prompt (system, user, etc.)
-                - completion_messages: Multiple assistant messages, one per choice
-
-        Returns:
-            List of LogProbResult (one per choice, flattened across all groups).
+        Results may arrive in any order - use result.key to join with input.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_chat_log_probs(chat_groups)
+            async for result in self._backend.score_chat(requests):
+                yield result
         else:
-            return self._backend.compute_chat_log_probs(chat_groups)
+            for result in self._backend.score_chat(requests):
+                yield result
 
-    async def _compute_token_log_probs(
+    async def score_tokens(
         self,
-        sequences: Sequence[tuple[tuple[int, ...], tuple[int, ...]]],
-    ) -> list[float]:
-        """Compute log probabilities for token-based traces.
+        requests: Iterable[TokenScoringRequest],
+    ) -> AsyncIterator[TokenScoringResult]:
+        """Score token sequences, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
-
-        Args:
-            sequences: List of (prompt_tokens, completion_tokens) tuples.
-
-        Returns:
-            List of total log probabilities for each sequence.
+        Results may arrive in any order - use result.key to join with input.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_token_log_probs(sequences)
+            async for result in self._backend.score_tokens(requests):
+                yield result
         else:
-            return self._backend.compute_token_log_probs(sequences)
+            for result in self._backend.score_tokens(requests):
+                yield result
 
-    async def _compute_text_log_probs(
+    async def score_text(
         self,
-        text_groups: Sequence[tuple[str, Sequence[str]]],
-    ) -> list[LogProbResult]:
-        """Compute log probabilities for text continuations with diff-based scoring.
+        requests: Iterable[TextScoringRequest],
+    ) -> AsyncIterator[TextScoringResult]:
+        """Score text continuations, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
-        This API bypasses chat templates entirely - useful for evaluating
-        models without any chat formatting.
-
-        Like compute_chat_log_probs, inputs are grouped by context for diff-based
-        scoring - we find where token sequences differ across choices.
-
-        Args:
-            text_groups: List of (context, choices) tuples where:
-                - context: The shared context/prompt string
-                - choices: List of continuation strings to score
-
-        Returns:
-            List of LogProbResult (flattened across groups) with diff-based
-            answer_range and total_log_prob.
+        Results may arrive in any order - use result.key to join with input.
         """
         if isinstance(self._backend, AsyncBackend):
-            return await self._backend.compute_text_log_probs(text_groups)
+            async for result in self._backend.score_text(requests):
+                yield result
         else:
-            return self._backend.compute_text_log_probs(text_groups)
+            for result in self._backend.score_text(requests):
+                yield result
 
 
 class BackendEvaluatorConfig(BaseEvaluatorConfig):

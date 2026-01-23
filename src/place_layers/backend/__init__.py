@@ -17,8 +17,14 @@ from place_layers.backend.base import (
 )
 from place_layers.backend.types import (
     ChatMessage,
+    ChatScoringRequest,
+    ChatScoringResult,
     LogProbResult,
     ModelStructure,
+    TextScoringRequest,
+    TextScoringResult,
+    TokenScoringRequest,
+    TokenScoringResult,
 )
 
 # Import backend configs for discriminated union
@@ -37,9 +43,17 @@ __all__ = [
     "SyncBackend",
     "BaseBackendConfig",
     "BackendConfig",
+    # Types
     "ChatMessage",
     "LogProbResult",
     "ModelStructure",
+    # Scoring request/result types
+    "TokenScoringRequest",
+    "TokenScoringResult",
+    "TextScoringRequest",
+    "TextScoringResult",
+    "ChatScoringRequest",
+    "ChatScoringResult",
     # Config classes
     "VLLMBackendConfig",
     "TransformersBackendConfig",

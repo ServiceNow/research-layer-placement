@@ -44,6 +44,7 @@ from typing import ClassVar, Literal, Self, Sequence
 
 from pydantic import Field, model_validator
 
+from place_layers.backend import TokenScoringRequest
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
@@ -369,25 +370,20 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             f"({len(problem_ids) - len(remaining_problems)} already completed)"
         )
 
-        # Collect all traces for batch log-prob computation
-        all_traces: list[Trace] = []
-        problem_trace_ranges: list[tuple[int, int]] = []  # (start, end) for each problem
+        # Track pending traces per problem: problem_id -> (problem, num_traces, [log_prob slots])
+        pending: dict[str, tuple[ProblemTraces, int, list[float | None]]] = {}
 
-        for problem in remaining_problems:
-            start = len(all_traces)
-            all_traces.extend(problem.traces)
-            end = len(all_traces)
-            problem_trace_ranges.append((start, end))
-
-        # Compute all log-probs in batch
-        traces_data: list[tuple[tuple[int, ...], tuple[int, ...]]] = [
-            (trace.prompt_tokens, trace.completion_tokens) for trace in all_traces
-        ]
-
-        all_student_log_probs = await self._compute_token_log_probs(traces_data)
-
-        # Process each problem, create records, and stream to disk
-        records: list[ISProblemRecord] = []
+        def make_requests():
+            for problem in remaining_problems:
+                num_traces = len(problem.traces)
+                pending[problem.problem_id] = (problem, num_traces, [None] * num_traces)
+                for i, trace in enumerate(problem.traces):
+                    key = f"{problem.problem_id}:{i}"
+                    yield TokenScoringRequest(
+                        key=key,
+                        prompt_tokens=trace.prompt_tokens,
+                        completion_tokens=trace.completion_tokens,
+                    )
 
         with create_progress() as progress:
             progress_task = progress.add_task(
@@ -395,14 +391,23 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 total=len(remaining_problems),
             )
 
-            for problem, (start, end) in zip(remaining_problems, problem_trace_ranges):
-                problem_log_probs = all_student_log_probs[start:end]
-                record = self._compute_problem_record(problem, problem_log_probs)
-                records.append(record)
-                progress.advance(progress_task)
+            async for result in self.score_tokens(make_requests()):
+                # Parse key to get problem_id and trace_idx
+                problem_id, trace_idx_str = result.key.rsplit(":", 1)
+                trace_idx = int(trace_idx_str)
 
-        # Stream all records to disk
-        await self._trace_writer.append(records)  # type: ignore[arg-type]
+                # Record result
+                problem, num_traces, log_probs = pending[problem_id]
+                log_probs[trace_idx] = result.log_prob
+
+                # Check if all traces for this problem are complete
+                if all(lp is not None for lp in log_probs):
+                    # Cast to list[float] since we know all are non-None
+                    final_log_probs = [lp for lp in log_probs if lp is not None]
+                    record = self._compute_problem_record(problem, final_log_probs)
+                    self._trace_writer.append([record])  # type: ignore[arg-type]
+                    del pending[problem_id]
+                    progress.advance(progress_task)
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement using stratified importance-weighted accuracy.
