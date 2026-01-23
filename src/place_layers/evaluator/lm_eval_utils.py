@@ -185,6 +185,37 @@ def build_chat_messages(
     return messages
 
 
+def build_text_prompt(
+    task: "Task",
+    doc: dict,
+    num_fewshot: int,
+) -> str:
+    """Build raw text prompt for a problem with few-shot examples.
+
+    This is the text-based counterpart to build_chat_messages. Used when
+    use_chat_template=False for evaluating base models.
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+        num_fewshot: Number of few-shot examples.
+
+    Returns:
+        Raw text prompt string (context + question).
+    """
+    context: str
+    if num_fewshot > 0:
+        # fewshot_context returns few-shot examples AND the current question
+        fewshot_ctx = task.fewshot_context(doc, num_fewshot)
+        context = str(fewshot_ctx) if fewshot_ctx else ""
+    else:
+        # Zero-shot: just the question
+        question_raw = task.doc_to_text(doc)
+        context = str(question_raw) if question_raw is not None else ""
+
+    return context
+
+
 def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
     """Check if completion is correct using task's process_results.
 
