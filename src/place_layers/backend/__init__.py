@@ -54,6 +54,7 @@ __all__ = [
     "batched_map",
     "batched_expand_map",
     "concurrent_map",
+    "concurrent_expand_map",
     # Types
     "ChatMessage",
     "GenerateRequest",

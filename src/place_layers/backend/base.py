@@ -19,7 +19,14 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+)
 from typing import Any, ClassVar, Self, Sequence
 
 from pydantic import BaseModel, Field
@@ -318,38 +325,14 @@ def batched_map_by_key[T, K, R](
     yield from flush()
 
 
-async def concurrent_expand_map[In, K, E, R, Out](
+async def _concurrent_expand_map_sync[In, K, E, R, Out](
     items: Iterable[In],
     expand: Callable[[In], tuple[K, list[E]] | None],
     process_one: Callable[[E], Coroutine[Any, Any, R]],
     combine: Callable[[K, list[R]], Out],
     max_concurrent: int,
 ) -> AsyncIterator[Out]:
-    """Expand items into elements, process concurrently, and recombine.
-
-    Async equivalent of batched_expand_map for fan-out/fan-in patterns.
-    Instead of batching elements for GPU efficiency, processes elements
-    concurrently with a semaphore limit.
-
-    Pattern: fan-out → concurrent process → fan-in
-
-    Example: Multiple-choice scoring where each question has N choices.
-    Questions are expanded to N scoring requests, requests are processed
-    concurrently (up to max_concurrent), then results are recombined
-    per question.
-
-    Args:
-        items: Input items to process.
-        expand: Fan-out function. Returns (key, elements) or None to skip.
-            The key identifies this input for recombining results.
-        process_one: Async function to process a single element.
-        combine: Fan-in function. Takes key and all results for that input,
-            returns the final output.
-        max_concurrent: Maximum concurrent process_one calls.
-
-    Yields:
-        Outputs in input order, as soon as all elements for an input complete.
-    """
+    """Implementation for sync iterables. See concurrent_expand_map for docs."""
     # Track results per key: key -> [(index, result), ...]
     results_by_key: dict[K, list[tuple[int, R]]] = {}
 
@@ -457,8 +440,196 @@ async def concurrent_expand_map[In, K, E, R, Out](
         yield out
 
 
+async def _concurrent_expand_map_async[In, K, E, R, Out](
+    items: AsyncIterable[In | None],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Implementation for async iterables. See concurrent_expand_map for docs."""
+    # Track results per key: key -> [(index, result), ...]
+    results_by_key: dict[K, list[tuple[int, R]]] = {}
+
+    # Track expected element count per key
+    expected_counts: dict[K, int] = {}
+
+    # Track input order for yielding
+    key_order: list[K] = []
+
+    # Pending tasks: set of tasks, each tagged with (key, idx)
+    pending: set[asyncio.Task[tuple[K, int, R]]] = set()
+
+    # Element buffer: elements waiting to be scheduled
+    buffer: list[tuple[K, int, E]] = []
+
+    # Async iterator state
+    items_aiter = items.__aiter__()
+    items_exhausted = False
+    next_item_task: asyncio.Task[In | None] | None = None
+
+    async def process_with_key(key: K, idx: int, element: E) -> tuple[K, int, R]:
+        result = await process_one(element)
+        return (key, idx, result)
+
+    def expand_item(item: In) -> None:
+        """Expand a single item and add elements to buffer."""
+        expanded = expand(item)
+        if expanded is None:
+            return
+
+        key, elements = expanded
+        key_order.append(key)
+        expected_counts[key] = len(elements)
+
+        if not elements:
+            results_by_key[key] = []
+        else:
+            for idx, elem in enumerate(elements):
+                buffer.append((key, idx, elem))
+
+    def schedule_from_buffer() -> None:
+        """Move elements from buffer to pending tasks."""
+        while buffer and len(pending) < max_concurrent:
+            key, idx, elem = buffer.pop(0)
+            task = asyncio.create_task(process_with_key(key, idx, elem))
+            pending.add(task)
+
+    def yield_completed() -> Iterator[Out]:
+        """Yield outputs for keys that have all results, in input order."""
+        while key_order:
+            key = key_order[0]
+
+            if key not in results_by_key:
+                break
+            if len(results_by_key[key]) != expected_counts[key]:
+                break
+
+            results = results_by_key.pop(key)
+            del expected_counts[key]
+            key_order.pop(0)
+
+            results.sort(key=lambda x: x[0])
+            ordered_results = [r for _, r in results]
+            yield combine(key, ordered_results)
+
+    async def start_next_item_fetch() -> None:
+        """Start fetching the next item from async iterator."""
+        nonlocal next_item_task
+        if items_exhausted or next_item_task is not None:
+            return
+        if len(buffer) + len(pending) >= max_concurrent:
+            return
+
+        async def fetch_next() -> In | None:
+            return await items_aiter.__anext__()
+
+        next_item_task = asyncio.create_task(fetch_next())
+
+    # Initial fetch
+    await start_next_item_fetch()
+    schedule_from_buffer()
+
+    # Yield any empty expansions that are already complete
+    for out in yield_completed():
+        yield out
+
+    # Main loop - wait on both processing tasks and next-item fetch
+    while pending or next_item_task is not None:
+        # Build wait set
+        wait_tasks: set[asyncio.Task[Any]] = set(pending)
+        if next_item_task is not None:
+            wait_tasks.add(next_item_task)
+
+        if not wait_tasks:
+            break
+
+        done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+        # Handle completed next-item fetch
+        if next_item_task is not None and next_item_task in done:
+            done.discard(next_item_task)
+            try:
+                item = next_item_task.result()
+                next_item_task = None
+
+                # Skip heartbeats (None values)
+                if item is not None:
+                    expand_item(item)
+            except StopAsyncIteration:
+                items_exhausted = True
+                next_item_task = None
+
+        # Handle completed processing tasks
+        for task in done:
+            pending.discard(task)  # type: ignore[arg-type]
+            key, idx, result = task.result()
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Yield completed outputs
+        for out in yield_completed():
+            yield out
+
+        # Schedule more work
+        schedule_from_buffer()
+        await start_next_item_fetch()
+
+    # Final yield
+    for out in yield_completed():
+        yield out
+
+
+async def concurrent_expand_map[In, K, E, R, Out](
+    items: Iterable[In] | AsyncIterable[In | None],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Expand items into elements, process concurrently, and recombine.
+
+    Async equivalent of batched_expand_map for fan-out/fan-in patterns.
+    Instead of batching elements for GPU efficiency, processes elements
+    concurrently with a semaphore limit.
+
+    Pattern: fan-out → concurrent process → fan-in
+
+    Example: Multiple-choice scoring where each question has N choices.
+    Questions are expanded to N scoring requests, requests are processed
+    concurrently (up to max_concurrent), then results are recombined
+    per question.
+
+    Accepts both sync and async iterables. For async iterables, heartbeats
+    (None values) are skipped automatically.
+
+    Args:
+        items: Input items to process (sync or async iterable).
+        expand: Fan-out function. Returns (key, elements) or None to skip.
+            The key identifies this input for recombining results.
+        process_one: Async function to process a single element.
+        combine: Fan-in function. Takes key and all results for that input,
+            returns the final output.
+        max_concurrent: Maximum concurrent process_one calls.
+
+    Yields:
+        Outputs in input order, as soon as all elements for an input complete.
+    """
+    if hasattr(items, "__aiter__"):
+        async for result in _concurrent_expand_map_async(
+            items, expand, process_one, combine, max_concurrent  # type: ignore[arg-type]
+        ):
+            yield result
+    else:
+        async for result in _concurrent_expand_map_sync(
+            items, expand, process_one, combine, max_concurrent  # type: ignore[arg-type]
+        ):
+            yield result
+
+
 async def concurrent_map[T, R](
-    items: Iterable[T],
+    items: Iterable[T] | AsyncIterable[T | None],
     process: Callable[[T], Coroutine[Any, Any, R]],
     max_concurrent: int,
 ) -> AsyncIterator[R]:
@@ -468,11 +639,14 @@ async def concurrent_map[T, R](
     in input order (waits for earlier items to complete before yielding
     later ones).
 
+    Accepts both sync and async iterables. For async iterables, heartbeats
+    (None values) are skipped automatically.
+
     This is a convenience wrapper around concurrent_expand_map for 1:1
     item-to-result mappings.
 
     Args:
-        items: Items to process.
+        items: Items to process (sync or async iterable).
         process: Async function to apply to each item.
         max_concurrent: Maximum concurrent tasks.
 
@@ -528,7 +702,7 @@ class AsyncBackend(ABC):
     @abstractmethod
     def generate(
         self,
-        requests: Iterable[GenerateRequest],
+        requests: Iterable[GenerateRequest] | AsyncIterable[GenerateRequest | None],
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions, yielding results as they complete.
 
@@ -539,7 +713,9 @@ class AsyncBackend(ABC):
         BackendError instead of killing the stream.
 
         Args:
-            requests: Generation requests with keys and params.
+            requests: Generation requests with keys and params. Can be sync
+                iterable (batch mode) or async iterable (streaming mode with
+                None heartbeats).
 
         Yields:
             GenerationResult with request_id matching request.key, or
@@ -550,7 +726,8 @@ class AsyncBackend(ABC):
     @abstractmethod
     def score_tokens(
         self,
-        requests: Iterable[ScoreTokensRequest],
+        requests: Iterable[ScoreTokensRequest]
+        | AsyncIterable[ScoreTokensRequest | None],
     ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
@@ -559,7 +736,7 @@ class AsyncBackend(ABC):
         On transient errors, yields BackendError instead of killing the stream.
 
         Args:
-            requests: Token scoring requests with keys.
+            requests: Token scoring requests with keys. Can be sync or async.
 
         Yields:
             ScoreTokensResult with key and log_prob, or BackendError.
@@ -569,7 +746,7 @@ class AsyncBackend(ABC):
     @abstractmethod
     def score_text(
         self,
-        requests: Iterable[ScoreTextRequest],
+        requests: Iterable[ScoreTextRequest] | AsyncIterable[ScoreTextRequest | None],
     ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations (multiple-choice), yielding as complete.
 
@@ -579,7 +756,7 @@ class AsyncBackend(ABC):
         On transient errors, yields BackendError instead of killing the stream.
 
         Args:
-            requests: Text scoring requests with keys.
+            requests: Text scoring requests with keys. Can be sync or async.
 
         Yields:
             ScoreTextResult with key and per-choice results, or BackendError.
@@ -589,7 +766,7 @@ class AsyncBackend(ABC):
     @abstractmethod
     def score_chat(
         self,
-        requests: Iterable[ScoreChatRequest],
+        requests: Iterable[ScoreChatRequest] | AsyncIterable[ScoreChatRequest | None],
     ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions (multiple-choice), yielding as complete.
 
@@ -599,7 +776,7 @@ class AsyncBackend(ABC):
         On transient errors, yields BackendError instead of killing the stream.
 
         Args:
-            requests: Chat scoring requests with keys.
+            requests: Chat scoring requests with keys. Can be sync or async.
 
         Yields:
             ScoreChatResult with key and per-choice results, or BackendError.

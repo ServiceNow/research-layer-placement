@@ -14,7 +14,7 @@ import logging
 import queue
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Self
 
 from place_layers.backend.types import BackendError
@@ -89,70 +89,252 @@ class BackendAdapter(ABC):
         pass
 
 
-class AsyncBackendAdapter(BackendAdapter):
-    """Adapter for AsyncBackend - thin wrapper, forwards directly."""
+# =============================================================================
+# Async Streaming Bridge - connects async callers to async backend streams
+# =============================================================================
 
-    def __init__(self, backend: "AsyncBackend") -> None:
+
+class _AsyncStreamingBridge[Req, Res]:
+    """Bridge async single-request calls to an async streaming backend.
+
+    All operations happen in the same event loop (no threads needed):
+    - Request queue: asyncio.Queue for incoming requests
+    - Future queue: asyncio.Queue to track futures in FIFO order
+
+    Flow:
+    1. Async caller submits request via submit(), gets future back
+    2. Background task iterates via __aiter__(), gets requests
+    3. Background task feeds requests to backend, delivers results
+    4. Results are set on futures directly (same event loop)
+
+    Heartbeats (None values) are yielded on timeout to allow the backend's
+    concurrent_map_async to process items even when no requests arrive.
+    """
+
+    _SHUTDOWN = object()
+
+    def __init__(self, heartbeat_interval: float) -> None:
+        self._heartbeat_interval = heartbeat_interval
+        self._request_queue: asyncio.Queue[Req | object] = asyncio.Queue()
+        self._future_queue: asyncio.Queue[asyncio.Future[Res]] = asyncio.Queue()
+        self._shutdown = False
+
+    async def submit(self, request: Req) -> Res:
+        """Submit a request and wait for result."""
+        future: asyncio.Future[Res] = asyncio.get_running_loop().create_future()
+        # Future first, then request - ensures future exists before result arrives
+        await self._future_queue.put(future)
+        await self._request_queue.put(request)
+        return await future
+
+    def shutdown(self) -> None:
+        """Signal the iterator to stop (non-blocking)."""
+        self._shutdown = True
+        # Use put_nowait since we might be called from sync context during cleanup
+        try:
+            self._request_queue.put_nowait(self._SHUTDOWN)
+        except asyncio.QueueFull:
+            pass  # Queue will be drained anyway
+
+    async def __aiter__(self) -> AsyncIterator[Req | None]:
+        """Yield requests to the async consumer, with heartbeats on timeout."""
+        while not self._shutdown:
+            try:
+                item = await asyncio.wait_for(
+                    self._request_queue.get(),
+                    timeout=self._heartbeat_interval,
+                )
+                if item is self._SHUTDOWN:
+                    return
+                yield item  # type: ignore[misc]
+            except asyncio.TimeoutError:
+                yield None  # Heartbeat
+
+    async def deliver_result(self, result: Res) -> None:
+        """Deliver a result to the next pending future."""
+        try:
+            future = self._future_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            logger.error("Result delivered but no pending future")
+            return
+
+        if not future.done():
+            future.set_result(result)
+
+    async def deliver_exception(self, exc: BaseException) -> None:
+        """Deliver exception to all pending futures."""
+        futures: list[asyncio.Future[Res]] = []
+        while True:
+            try:
+                futures.append(self._future_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        for future in futures:
+            if not future.done():
+                future.set_exception(exc)
+
+
+class AsyncBackendAdapter(BackendAdapter):
+    """Adapter for AsyncBackend using async streaming bridges.
+
+    All operations use streaming bridges where requests flow continuously
+    to the backend. The backend handles concurrency internally via
+    concurrent_map_async with max_concurrent limit.
+    """
+
+    def __init__(
+        self,
+        backend: "AsyncBackend",
+        heartbeat_interval: float = 0.01,
+    ) -> None:
         self._backend = backend
+        self._heartbeat_interval = heartbeat_interval
+
+        # Streaming bridges for all operations
+        self._generate_bridge: _AsyncStreamingBridge[
+            "GenerateRequest", "GenerationResult | BackendError"
+        ] | None = None
+        self._score_tokens_bridge: _AsyncStreamingBridge[
+            "ScoreTokensRequest", "ScoreTokensResult | BackendError"
+        ] | None = None
+        self._score_text_bridge: _AsyncStreamingBridge[
+            "ScoreTextRequest", "ScoreTextResult | BackendError"
+        ] | None = None
+        self._score_chat_bridge: _AsyncStreamingBridge[
+            "ScoreChatRequest", "ScoreChatResult | BackendError"
+        ] | None = None
+
+        self._tasks: list[asyncio.Task[None]] = []
 
     async def __aenter__(self) -> Self:
         await self._backend.__aenter__()
+
+        # Create streaming bridges
+        self._generate_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._score_tokens_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._score_text_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._score_chat_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+
+        # Start background tasks
+        self._tasks = [
+            asyncio.create_task(self._run_generate(), name="generate"),
+            asyncio.create_task(self._run_score_tokens(), name="score_tokens"),
+            asyncio.create_task(self._run_score_text(), name="score_text"),
+            asyncio.create_task(self._run_score_chat(), name="score_chat"),
+        ]
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        # Signal all bridges to stop
+        if self._generate_bridge:
+            self._generate_bridge.shutdown()
+        if self._score_tokens_bridge:
+            self._score_tokens_bridge.shutdown()
+        if self._score_text_bridge:
+            self._score_text_bridge.shutdown()
+        if self._score_chat_bridge:
+            self._score_chat_bridge.shutdown()
+
+        # Cancel and wait for tasks
+        for task in self._tasks:
+            task.cancel()
+        for task in self._tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         await self._backend.__aexit__(exc_type, exc_val, exc_tb)
+
+    # =========================================================================
+    # Public API
+    # =========================================================================
 
     async def generate_one(
         self,
         request: "GenerateRequest",
     ) -> "GenerationResult":
-        from place_layers.clients.types import GenerationResult
-
-        async for result in self._backend.generate([request]):
-            if isinstance(result, BackendError):
-                raise BackendRequestError(result)
-            assert isinstance(result, GenerationResult)
-            return result
-        raise RuntimeError("Backend returned no results")
+        assert self._generate_bridge is not None
+        result = await self._generate_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
 
     async def score_tokens_one(
         self,
         request: "ScoreTokensRequest",
     ) -> "ScoreTokensResult":
-        from place_layers.backend.types import ScoreTokensResult
-
-        async for result in self._backend.score_tokens([request]):
-            if isinstance(result, BackendError):
-                raise BackendRequestError(result)
-            assert isinstance(result, ScoreTokensResult)
-            return result
-        raise RuntimeError("Backend returned no results")
+        assert self._score_tokens_bridge is not None
+        result = await self._score_tokens_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
 
     async def score_text_one(
         self,
         request: "ScoreTextRequest",
     ) -> "ScoreTextResult":
-        from place_layers.backend.types import ScoreTextResult
-
-        async for result in self._backend.score_text([request]):
-            if isinstance(result, BackendError):
-                raise BackendRequestError(result)
-            assert isinstance(result, ScoreTextResult)
-            return result
-        raise RuntimeError("Backend returned no results")
+        assert self._score_text_bridge is not None
+        result = await self._score_text_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
 
     async def score_chat_one(
         self,
         request: "ScoreChatRequest",
     ) -> "ScoreChatResult":
-        from place_layers.backend.types import ScoreChatResult
+        assert self._score_chat_bridge is not None
+        result = await self._score_chat_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
 
-        async for result in self._backend.score_chat([request]):
-            if isinstance(result, BackendError):
-                raise BackendRequestError(result)
-            assert isinstance(result, ScoreChatResult)
-            return result
-        raise RuntimeError("Backend returned no results")
+    # =========================================================================
+    # Background Workers
+    # =========================================================================
+
+    async def _run_generate(self) -> None:
+        """Background task: stream requests to backend, deliver results."""
+        assert self._generate_bridge is not None
+        try:
+            async for result in self._backend.generate(self._generate_bridge):
+                await self._generate_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("generate worker failed")
+            await self._generate_bridge.deliver_exception(e)
+
+    async def _run_score_tokens(self) -> None:
+        """Background task: stream requests to backend, deliver results."""
+        assert self._score_tokens_bridge is not None
+        try:
+            async for result in self._backend.score_tokens(self._score_tokens_bridge):
+                await self._score_tokens_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("score_tokens worker failed")
+            await self._score_tokens_bridge.deliver_exception(e)
+
+    async def _run_score_text(self) -> None:
+        """Background task: stream requests to backend, deliver results."""
+        assert self._score_text_bridge is not None
+        try:
+            async for result in self._backend.score_text(self._score_text_bridge):
+                await self._score_text_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("score_text worker failed")
+            await self._score_text_bridge.deliver_exception(e)
+
+    async def _run_score_chat(self) -> None:
+        """Background task: stream requests to backend, deliver results."""
+        assert self._score_chat_bridge is not None
+        try:
+            async for result in self._backend.score_chat(self._score_chat_bridge):
+                await self._score_chat_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("score_chat worker failed")
+            await self._score_chat_bridge.deliver_exception(e)
 
 
 # =============================================================================
@@ -425,6 +607,6 @@ def create_adapter(
     if isinstance(backend, SyncBackend):
         return SyncBackendAdapter(backend, heartbeat_interval)
     elif isinstance(backend, AsyncBackend):
-        return AsyncBackendAdapter(backend)
+        return AsyncBackendAdapter(backend, heartbeat_interval)
     else:
         raise TypeError(f"Unknown backend type: {type(backend)}")

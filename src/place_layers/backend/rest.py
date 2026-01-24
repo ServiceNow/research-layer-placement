@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
@@ -614,7 +614,7 @@ class RESTBackend(AsyncBackend):
 
     def generate(
         self,
-        requests: Iterable[GenerateRequest],
+        requests: Iterable[GenerateRequest] | AsyncIterable[GenerateRequest | None],
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions, yielding results as they complete.
 
@@ -645,7 +645,8 @@ class RESTBackend(AsyncBackend):
 
     async def score_tokens(
         self,
-        requests: Iterable[ScoreTokensRequest],
+        requests: Iterable[ScoreTokensRequest]
+        | AsyncIterable[ScoreTokensRequest | None],
     ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
@@ -676,7 +677,7 @@ class RESTBackend(AsyncBackend):
 
     async def score_text(
         self,
-        requests: Iterable[ScoreTextRequest],
+        requests: Iterable[ScoreTextRequest] | AsyncIterable[ScoreTextRequest | None],
     ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations (multiple-choice), yielding as complete.
 
@@ -720,7 +721,7 @@ class RESTBackend(AsyncBackend):
 
     async def score_chat(
         self,
-        requests: Iterable[ScoreChatRequest],
+        requests: Iterable[ScoreChatRequest] | AsyncIterable[ScoreChatRequest | None],
     ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions (multiple-choice), yielding as complete.
 
