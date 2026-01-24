@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any
 
 import pytest
@@ -38,6 +38,33 @@ def stream[T](items: list[T]) -> Iterator[T]:
     be consumed once, matching production behavior with streaming bridges.
     """
     yield from items
+
+
+async def async_stream[T](items: list[T], heartbeat_every: int = 0) -> AsyncIterator[T | None]:
+    """Convert a list to an async generator.
+
+    Args:
+        items: Items to yield.
+        heartbeat_every: If > 0, yield None heartbeat every N items.
+    """
+    for i, item in enumerate(items):
+        if heartbeat_every > 0 and i > 0 and i % heartbeat_every == 0:
+            yield None  # Heartbeat
+        yield item
+
+
+# Stream factory type for parametrization
+type StreamFactory[T] = Iterator[T] | AsyncIterator[T | None]
+
+
+def make_sync_stream[T](items: list[T]) -> Iterator[T]:
+    """Sync stream factory."""
+    return stream(items)
+
+
+def make_async_stream[T](items: list[T]) -> AsyncIterator[T | None]:
+    """Async stream factory."""
+    return async_stream(items)
 
 
 # =============================================================================
@@ -595,11 +622,16 @@ class TestBatchedExpandMap:
 # =============================================================================
 
 
+@pytest.mark.parametrize("make_stream", [make_sync_stream, make_async_stream])
 class TestConcurrentMap:
-    """Tests for concurrent_map - async concurrent processing."""
+    """Tests for concurrent_map - async concurrent processing.
+
+    All tests are parametrized to run with both sync and async iterables,
+    ensuring both code paths produce identical results.
+    """
 
     @pytest.mark.asyncio
-    async def test_basic_concurrent(self):
+    async def test_basic_concurrent(self, make_stream):
         """Basic concurrent processing of items."""
 
         async def process(x: int) -> int:
@@ -607,14 +639,14 @@ class TestConcurrentMap:
             return x * 2
 
         results: list[int] = []
-        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=3):
+        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=3):
             results.append(result)
 
-        # Results may be in any order, but all should be present
-        assert sorted(results) == [2, 4, 6, 8, 10]
+        # Results should be in input order
+        assert results == [2, 4, 6, 8, 10]
 
     @pytest.mark.asyncio
-    async def test_respects_max_concurrent(self):
+    async def test_respects_max_concurrent(self, make_stream):
         """Never exceeds max_concurrent active tasks."""
         concurrent_count = 0
         max_observed = 0
@@ -628,14 +660,14 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(stream(list(range(10))), process, max_concurrent=3):
+        async for result in concurrent_map(make_stream(list(range(10))), process, max_concurrent=3):
             results.append(result)
 
         assert max_observed <= 3
-        assert sorted(results) == list(range(10))
+        assert results == list(range(10))
 
     @pytest.mark.asyncio
-    async def test_empty_input(self):
+    async def test_empty_input(self, make_stream):
         """Empty input yields no results."""
         call_count = 0
 
@@ -645,27 +677,27 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(stream([]), process, max_concurrent=5):
+        async for result in concurrent_map(make_stream([]), process, max_concurrent=5):
             results.append(result)
 
         assert results == []
         assert call_count == 0
 
     @pytest.mark.asyncio
-    async def test_single_item(self):
+    async def test_single_item(self, make_stream):
         """Single item is processed correctly."""
 
         async def process(x: int) -> int:
             return x * 10
 
         results: list[int] = []
-        async for result in concurrent_map(stream([42]), process, max_concurrent=5):
+        async for result in concurrent_map(make_stream([42]), process, max_concurrent=5):
             results.append(result)
 
         assert results == [420]
 
     @pytest.mark.asyncio
-    async def test_max_concurrent_one(self):
+    async def test_max_concurrent_one(self, make_stream):
         """max_concurrent=1 processes items sequentially."""
         execution_order: list[int] = []
 
@@ -675,7 +707,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=1):
+        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=1):
             results.append(result)
 
         # With max_concurrent=1, should process in order
@@ -683,7 +715,7 @@ class TestConcurrentMap:
         assert results == [1, 2, 3, 4, 5]
 
     @pytest.mark.asyncio
-    async def test_max_concurrent_exceeds_items(self):
+    async def test_max_concurrent_exceeds_items(self, make_stream):
         """max_concurrent > len(items) processes all concurrently."""
         start_times: dict[int, float] = {}
         loop = asyncio.get_event_loop()
@@ -694,7 +726,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(stream([1, 2, 3]), process, max_concurrent=10):
+        async for result in concurrent_map(make_stream([1, 2, 3]), process, max_concurrent=10):
             results.append(result)
 
         # All items should start at nearly the same time
@@ -703,7 +735,7 @@ class TestConcurrentMap:
         assert sorted(results) == [1, 2, 3]
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self):
+    async def test_exception_propagates(self, make_stream):
         """Exceptions from process function propagate correctly."""
 
         async def process(x: int) -> int:
@@ -712,11 +744,11 @@ class TestConcurrentMap:
             return x
 
         with pytest.raises(ValueError, match="Bad value"):
-            async for _ in concurrent_map(stream([1, 2, 3, 4]), process, max_concurrent=2):
+            async for _ in concurrent_map(make_stream([1, 2, 3, 4]), process, max_concurrent=2):
                 pass
 
     @pytest.mark.asyncio
-    async def test_results_yielded_in_input_order(self):
+    async def test_results_yielded_in_input_order(self, make_stream):
         """Results are yielded in input order, not completion order."""
         completion_order: list[int] = []
 
@@ -727,7 +759,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=5):
+        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=5):
             results.append(result)
 
         # Even though items complete in reverse order (5, 4, 3, 2, 1),
@@ -1296,11 +1328,16 @@ class TestSyncBackendAdapterIntegration:
 # =============================================================================
 
 
+@pytest.mark.parametrize("make_stream", [make_sync_stream, make_async_stream])
 class TestConcurrentExpandMap:
-    """Tests for concurrent_expand_map - async fan-out/fan-in with concurrency control."""
+    """Tests for concurrent_expand_map - async fan-out/fan-in with concurrency control.
+
+    All tests are parametrized to run with both sync and async iterables,
+    ensuring both code paths produce identical results.
+    """
 
     @pytest.mark.asyncio
-    async def test_basic_expand_and_combine(self):
+    async def test_basic_expand_and_combine(self, make_stream):
         """Basic fan-out, concurrent processing, and fan-in."""
         # Input: requests with multiple choices each
         requests = [
@@ -1321,7 +1358,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[str]]] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=10
+            make_stream(requests), expand, process_one, combine, max_concurrent=10
         ):
             results.append(result)
 
@@ -1332,7 +1369,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_respects_max_concurrent(self):
+    async def test_respects_max_concurrent(self, make_stream):
         """Never exceeds max_concurrent active process_one calls."""
         concurrent_count = 0
         max_observed = 0
@@ -1358,7 +1395,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=3
+            make_stream(requests), expand, process_one, combine, max_concurrent=3
         ):
             results.append(result)
 
@@ -1369,7 +1406,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_empty_expansion_yields_immediately(self):
+    async def test_empty_expansion_yields_immediately(self, make_stream):
         """Empty expansion yields combined result immediately."""
         requests = [
             ("req1", [1, 2]),
@@ -1388,7 +1425,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=5
+            make_stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1400,7 +1437,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_preserves_input_order(self):
+    async def test_preserves_input_order(self, make_stream):
         """Results are yielded in input order even if elements complete out of order."""
         requests = [
             ("slow", [1]),  # Will take longer
@@ -1420,7 +1457,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=5
+            make_stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1428,7 +1465,7 @@ class TestConcurrentExpandMap:
         assert results == [("slow", [1]), ("fast", [2])]
 
     @pytest.mark.asyncio
-    async def test_skip_none_expansion(self):
+    async def test_skip_none_expansion(self, make_stream):
         """expand returning None skips that input."""
         requests = [
             ("req1", [1]),
@@ -1449,14 +1486,14 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=5
+            make_stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
         assert results == [("req1", [10]), ("req3", [30])]
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self):
+    async def test_exception_propagates(self, make_stream):
         """Exception in process_one propagates correctly."""
         requests = [
             ("req1", [1, 2, 3]),
@@ -1475,12 +1512,12 @@ class TestConcurrentExpandMap:
 
         with pytest.raises(ValueError, match="Bad element"):
             async for _ in concurrent_expand_map(
-                stream(requests), expand, process_one, combine, max_concurrent=5
+                make_stream(requests), expand, process_one, combine, max_concurrent=5
             ):
                 pass
 
     @pytest.mark.asyncio
-    async def test_empty_input(self):
+    async def test_empty_input(self, make_stream):
         """Empty input yields no results."""
         call_count = 0
 
@@ -1497,7 +1534,7 @@ class TestConcurrentExpandMap:
 
         results: list[str] = []
         async for result in concurrent_expand_map(
-            stream([]), expand, process_one, combine, max_concurrent=5
+            make_stream([]), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1505,7 +1542,7 @@ class TestConcurrentExpandMap:
         assert call_count == 0
 
     @pytest.mark.asyncio
-    async def test_single_element_expansion(self):
+    async def test_single_element_expansion(self, make_stream):
         """Single element per request works correctly."""
         requests = ["a", "b", "c"]
 
@@ -1520,7 +1557,7 @@ class TestConcurrentExpandMap:
 
         results: list[str] = []
         async for result in concurrent_expand_map(
-            stream(requests), expand, process_one, combine, max_concurrent=5
+            make_stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
