@@ -44,7 +44,7 @@ from typing import ClassVar, Literal, Self, Sequence
 
 from pydantic import Field, model_validator
 
-from place_layers.backend import TokenScoringRequest
+from place_layers.backend import ScoreTokensRequest
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
@@ -379,7 +379,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 pending[problem.problem_id] = (problem, num_traces, [None] * num_traces)
                 for i, trace in enumerate(problem.traces):
                     key = f"{problem.problem_id}:{i}"
-                    yield TokenScoringRequest(
+                    yield ScoreTokensRequest(
                         key=key,
                         prompt_tokens=trace.prompt_tokens,
                         completion_tokens=trace.completion_tokens,

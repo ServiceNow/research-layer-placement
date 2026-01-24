@@ -20,15 +20,15 @@ from place_layers.backend.base import (
 )
 from place_layers.backend.types import (
     ChatMessage,
-    ChatScoringRequest,
-    ChatScoringResult,
-    GenerationRequest,
+    GenerateRequest,
     LogProbResult,
     ModelStructure,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
 )
 
 # Import backend configs for discriminated union
@@ -53,16 +53,16 @@ __all__ = [
     "concurrent_map",
     # Types
     "ChatMessage",
-    "GenerationRequest",
+    "GenerateRequest",
     "LogProbResult",
     "ModelStructure",
     # Scoring request/result types
-    "TokenScoringRequest",
-    "TokenScoringResult",
-    "TextScoringRequest",
-    "TextScoringResult",
-    "ChatScoringRequest",
-    "ChatScoringResult",
+    "ScoreTokensRequest",
+    "ScoreTokensResult",
+    "ScoreTextRequest",
+    "ScoreTextResult",
+    "ScoreChatRequest",
+    "ScoreChatResult",
     # Config classes
     "VLLMBackendConfig",
     "TransformersBackendConfig",

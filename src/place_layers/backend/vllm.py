@@ -11,15 +11,15 @@ from pydantic import Field
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
 from place_layers.backend.types import (
     ChatMessage,
-    ChatScoringRequest,
-    ChatScoringResult,
-    GenerationRequest,
+    GenerateRequest,
     LogProbResult,
     ModelStructure,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
 )
 from place_layers.clients.local_vllm import LocalVLLMClient, LocalVLLMClientConfig
 from place_layers.clients.remote_vllm import RemoteVLLMClient, RemoteVLLMClientConfig
@@ -88,7 +88,7 @@ class VLLMBackend:
 
     def generate(
         self,
-        requests: Iterable[GenerationRequest],
+        requests: Iterable[GenerateRequest],
         *,
         n: int,
         max_tokens: int,
@@ -101,7 +101,7 @@ class VLLMBackend:
         Concurrency is managed internally via semaphore.
         """
 
-        async def process_one(req: GenerationRequest) -> "GenerationResult":
+        async def process_one(req: GenerateRequest) -> "GenerationResult":
             return await self._client.chat_generate(
                 messages=list(req.messages),  # type: ignore[arg-type]
                 n=n,
@@ -115,19 +115,19 @@ class VLLMBackend:
 
     async def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> AsyncIterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> AsyncIterator[ScoreTokensResult]:
         """Score token sequences, yielding results as they complete.
 
         Results may arrive in any order. Concurrency is managed internally
         via semaphore based on max_concurrent_requests.
         """
 
-        async def process_one(req: TokenScoringRequest) -> TokenScoringResult:
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult:
             result = await self._client.score_token_completion(
                 list(req.prompt_tokens), list(req.completion_tokens)
             )
-            return TokenScoringResult(key=req.key, log_prob=result.total_logprob)
+            return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -166,24 +166,24 @@ class VLLMBackend:
 
     async def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> AsyncIterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> AsyncIterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: TextScoringRequest) -> TextScoringResult:
+        async def process_one(req: ScoreTextRequest) -> ScoreTextResult:
             if not req.choices:
-                return TextScoringResult(key=req.key, results=())
+                return ScoreTextResult(key=req.key, results=())
 
             tasks = [
                 self._client.score_text_completion(req.context, choice)
                 for choice in req.choices
             ]
             results = await asyncio.gather(*tasks)
-            return TextScoringResult(
+            return ScoreTextResult(
                 key=req.key, results=self._build_diff_results(results)
             )
 
@@ -194,17 +194,17 @@ class VLLMBackend:
 
     async def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> AsyncIterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> AsyncIterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: ChatScoringRequest) -> ChatScoringResult:
+        async def process_one(req: ScoreChatRequest) -> ScoreChatResult:
             if not req.completion_messages:
-                return ChatScoringResult(key=req.key, results=())
+                return ScoreChatResult(key=req.key, results=())
 
             tasks = [
                 self._client.score_chat_completion(
@@ -214,7 +214,7 @@ class VLLMBackend:
                 for comp_msg in req.completion_messages
             ]
             results = await asyncio.gather(*tasks)
-            return ChatScoringResult(
+            return ScoreChatResult(
                 key=req.key, results=self._build_diff_results(results)
             )
 

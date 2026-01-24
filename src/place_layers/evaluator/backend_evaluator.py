@@ -23,13 +23,13 @@ from pydantic import Field
 from place_layers.backend import (
     AsyncBackend,
     BackendConfig,
-    ChatScoringRequest,
-    ChatScoringResult,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
     SyncBackend,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
@@ -200,8 +200,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     async def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> AsyncIterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> AsyncIterator[ScoreChatResult]:
         """Score chat completions, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
@@ -216,8 +216,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     async def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> AsyncIterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> AsyncIterator[ScoreTokensResult]:
         """Score token sequences, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
@@ -232,8 +232,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     async def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> AsyncIterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> AsyncIterator[ScoreTextResult]:
         """Score text continuations, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.

@@ -1,30 +1,37 @@
 """Backend types and data classes.
 
 Shared types used by all backend implementations.
+
+Request/result types use Pydantic BaseModel for serialization compatibility.
+Server schemas can subclass these to add placement fields.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
-class ChatMessage(TypedDict):
+class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
-    role: Literal["system", "user", "assistant"]
-    content: str
+    model_config = {"frozen": True}
+
+    role: Literal["system", "user", "assistant"] = Field(
+        description="Role of the message sender"
+    )
+    content: str = Field(description="Message content")
 
 
-@dataclass(frozen=True)
-class GenerationRequest:
+class GenerateRequest(BaseModel):
     """Request to generate completions for a chat conversation."""
 
-    key: str
-    """Unique identifier for this request (returned with result)."""
+    model_config = {"frozen": True}
 
-    messages: tuple[ChatMessage, ...]
-    """Chat messages for the conversation."""
+    key: str = Field(description="Unique identifier for this request")
+    messages: list[ChatMessage] = Field(description="Chat messages")
 
 
 @dataclass(frozen=True)
@@ -59,8 +66,7 @@ class SequenceScoringRequest:
     """(start, end) indices for tokens that contribute to total_log_prob."""
 
 
-@dataclass(frozen=True)
-class LogProbResult:
+class LogProbResult(BaseModel):
     """Detailed result from log-prob computation.
 
     Contains all token-level information needed for observability:
@@ -72,17 +78,16 @@ class LogProbResult:
     Used by score_text and score_chat.
     """
 
-    token_ids: tuple[int, ...]
-    """Full token sequence (context + completion)."""
+    model_config = {"frozen": True}
 
-    logprobs: tuple[float | None, ...]
-    """Per-token logprobs (None for first token which has no prior context)."""
-
-    answer_range: tuple[int, int]
-    """(start, end) indices identifying answer tokens in token_ids."""
-
-    total_log_prob: float
-    """Sum of logprobs for answer tokens (used for prediction)."""
+    token_ids: list[int] = Field(description="Full token sequence")
+    logprobs: list[float | None] = Field(
+        description="Per-token logprobs (None for first token)"
+    )
+    answer_range: tuple[int, int] = Field(
+        description="(start, end) indices for answer tokens"
+    )
+    total_log_prob: float = Field(description="Sum of logprobs for answer tokens")
 
 
 # =============================================================================
@@ -94,76 +99,66 @@ class LogProbResult:
 # =============================================================================
 
 
-@dataclass(frozen=True)
-class TokenScoringRequest:
+class ScoreTokensRequest(BaseModel):
     """Request to score a single token sequence (prompt + completion)."""
 
-    key: str
-    """Unique identifier for this request (returned with result)."""
+    model_config = {"frozen": True}
 
-    prompt_tokens: tuple[int, ...]
-    """Token IDs for the prompt/context."""
-
-    completion_tokens: tuple[int, ...]
-    """Token IDs for the completion to score."""
+    key: str = Field(description="Unique identifier for this request")
+    prompt_tokens: list[int] = Field(description="Token IDs for the prompt")
+    completion_tokens: list[int] = Field(description="Token IDs to score")
 
 
-@dataclass(frozen=True)
-class TokenScoringResult:
+class ScoreTokensResult(BaseModel):
     """Result of scoring a token sequence."""
 
-    key: str
-    """Identifier matching the request."""
+    model_config = {"frozen": True}
 
-    log_prob: float
-    """Total log probability of completion tokens."""
+    key: str = Field(description="Identifier matching the request")
+    log_prob: float = Field(description="Total log probability of completion tokens")
 
 
-@dataclass(frozen=True)
-class TextScoringRequest:
+class ScoreTextRequest(BaseModel):
     """Request to score text continuations (multiple-choice)."""
 
-    key: str
-    """Unique identifier for this request (returned with result)."""
+    model_config = {"frozen": True}
 
-    context: str
-    """Shared context/prompt string."""
-
-    choices: tuple[str, ...]
-    """Continuation strings to score (one per choice)."""
+    key: str = Field(description="Unique identifier for this request")
+    context: str = Field(description="Shared context/prompt string")
+    choices: list[str] = Field(description="Continuation strings to score")
 
 
-@dataclass(frozen=True)
-class TextScoringResult:
+class ScoreTextResult(BaseModel):
     """Result of scoring text continuations."""
 
-    key: str
-    """Identifier matching the request."""
+    model_config = {"frozen": True}
 
-    results: tuple[LogProbResult, ...]
-    """Scoring results, one per choice in request order."""
+    key: str = Field(description="Identifier matching the request")
+    results: list[LogProbResult] = Field(
+        description="Scoring results, one per choice"
+    )
 
 
-@dataclass(frozen=True)
-class ChatScoringRequest:
+class ScoreChatRequest(BaseModel):
     """Request to score chat completions (multiple-choice)."""
 
-    key: str
-    """Unique identifier for this request (returned with result)."""
+    model_config = {"frozen": True}
 
-    context_messages: tuple[ChatMessage, ...]
-    """Shared context messages (system, user, etc.)."""
+    key: str = Field(description="Unique identifier for this request")
+    context_messages: list[ChatMessage] = Field(
+        description="Shared context messages"
+    )
+    completion_messages: list[ChatMessage] = Field(
+        description="Assistant messages to score"
+    )
 
-    completion_messages: tuple[ChatMessage, ...]
-    """Assistant messages to score (one per choice)."""
 
-
-@dataclass(frozen=True)
-class ChatScoringResult:
+class ScoreChatResult(BaseModel):
     """Result of scoring chat completions."""
 
-    key: str
-    """Identifier matching the request."""
+    model_config = {"frozen": True}
 
-    results: tuple[LogProbResult, ...]
-    """Scoring results, one per choice in request order."""
+    key: str = Field(description="Identifier matching the request")
+    results: list[LogProbResult] = Field(
+        description="Scoring results, one per choice"
+    )

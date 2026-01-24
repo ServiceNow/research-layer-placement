@@ -19,16 +19,16 @@ from place_layers.backend.base import (
 )
 from place_layers.backend.types import (
     ChatMessage,
-    ChatScoringRequest,
-    ChatScoringResult,
-    GenerationRequest,
+    GenerateRequest,
     LogProbResult,
     ModelStructure,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
     SequenceScoringRequest,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
 )
 from place_layers.clients.types import GeneratedSample, GenerationResult
 from place_layers.core.memory_logging import (
@@ -232,7 +232,7 @@ class TransformersBackend:
 
     def generate(
         self,
-        requests: Iterable[GenerationRequest],
+        requests: Iterable[GenerateRequest],
         *,
         n: int,
         max_tokens: int,
@@ -245,14 +245,14 @@ class TransformersBackend:
         Results are yielded in input order.
         """
 
-        def process_batch(batch: list[GenerationRequest]) -> list[GenerationResult]:
+        def process_batch(batch: list[GenerateRequest]) -> list[GenerationResult]:
             return self._generate_batch(batch, n, max_tokens, temperature, top_p)
 
         yield from batched_map(requests, process_batch, self._config.batch_size)
 
     def _generate_batch(
         self,
-        batch: list[GenerationRequest],
+        batch: list[GenerateRequest],
         n: int,
         max_tokens: int,
         temperature: float,
@@ -625,8 +625,8 @@ class TransformersBackend:
             if seq_len == 0:
                 results.append(
                     LogProbResult(
-                        token_ids=(),
-                        logprobs=(),
+                        token_ids=[],
+                        logprobs=[],
                         answer_range=(start, end),
                         total_log_prob=0.0,
                     )
@@ -651,8 +651,8 @@ class TransformersBackend:
 
             results.append(
                 LogProbResult(
-                    token_ids=tuple(tokens),
-                    logprobs=tuple(all_logprobs),
+                    token_ids=tokens,
+                    logprobs=all_logprobs,
                     answer_range=(start, end),
                     total_log_prob=total_log_prob,
                 )
@@ -666,15 +666,15 @@ class TransformersBackend:
 
     def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> Iterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> Iterator[ScoreTokensResult]:
         """Score token sequences, yielding results as batches complete.
 
         Chunks requests internally based on batch_size config.
         Results are yielded in input order.
         """
 
-        def process_batch(batch: list[TokenScoringRequest]) -> list[TokenScoringResult]:
+        def process_batch(batch: list[ScoreTokensRequest]) -> list[ScoreTokensResult]:
             score_requests = [
                 SequenceScoringRequest(
                     tokens=tuple(req.prompt_tokens) + tuple(req.completion_tokens),
@@ -689,7 +689,7 @@ class TransformersBackend:
             torch.cuda.empty_cache()
 
             return [
-                TokenScoringResult(key=req.key, log_prob=result.total_log_prob)
+                ScoreTokensResult(key=req.key, log_prob=result.total_log_prob)
                 for req, result in zip(batch, results)
             ]
 
@@ -697,8 +697,8 @@ class TransformersBackend:
 
     def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> Iterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> Iterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Sequences are batched at fixed batch_size for GPU efficiency.
@@ -708,7 +708,7 @@ class TransformersBackend:
         from place_layers.core.token_utils import find_differing_ranges
 
         def expand(
-            req: TextScoringRequest,
+            req: ScoreTextRequest,
         ) -> tuple[str, list[SequenceScoringRequest]]:
             if not req.choices:
                 # Empty list triggers immediate yield of combine(key, [])
@@ -738,8 +738,8 @@ class TransformersBackend:
         ) -> list[LogProbResult]:
             return self._score_sequences(elements)
 
-        def combine(key: str, results: list[LogProbResult]) -> TextScoringResult:
-            return TextScoringResult(key=key, results=tuple(results))
+        def combine(key: str, results: list[LogProbResult]) -> ScoreTextResult:
+            return ScoreTextResult(key=key, results=results)
 
         yield from batched_expand_map(
             requests,
@@ -751,8 +751,8 @@ class TransformersBackend:
 
     def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> Iterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> Iterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Sequences are batched at fixed batch_size for GPU efficiency.
@@ -762,7 +762,7 @@ class TransformersBackend:
         from place_layers.core.token_utils import find_differing_ranges
 
         def expand(
-            req: ChatScoringRequest,
+            req: ScoreChatRequest,
         ) -> tuple[str, list[SequenceScoringRequest]]:
             if not req.completion_messages:
                 # Empty list triggers immediate yield of combine(key, [])
@@ -799,8 +799,8 @@ class TransformersBackend:
         ) -> list[LogProbResult]:
             return self._score_sequences(elements)
 
-        def combine(key: str, results: list[LogProbResult]) -> ChatScoringResult:
-            return ChatScoringResult(key=key, results=tuple(results))
+        def combine(key: str, results: list[LogProbResult]) -> ScoreChatResult:
+            return ScoreChatResult(key=key, results=results)
 
         yield from batched_expand_map(
             requests,

@@ -26,7 +26,7 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.types import GenerationRequest
+from place_layers.backend.types import GenerateRequest
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
@@ -168,7 +168,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         # Build generation requests
         requests = [
-            GenerationRequest(
+            GenerateRequest(
                 key=f"{task_name}:{idx}",
                 messages=tuple(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
             )
@@ -257,7 +257,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         # Build generation requests
         requests = [
-            GenerationRequest(
+            GenerateRequest(
                 key=f"{task_name}:{idx}",
                 messages=tuple(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
             )

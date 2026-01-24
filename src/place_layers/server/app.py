@@ -1,167 +1,171 @@
-"""FastAPI application factory for TransformersBackend REST server.
+"""FastAPI application factory for backend REST server.
 
-This module creates a FastAPI app that exposes the TransformersBackend
-interface over HTTP. The backend is initialized on startup and cleaned
-up on shutdown.
+This module creates a FastAPI app that exposes any backend (sync or async)
+over HTTP. The backend is wrapped in an adapter that provides:
+- For AsyncBackend: thin wrapper, forwards directly
+- For SyncBackend: queue-based batching for GPU efficiency
 
-Usage:
-    from place_layers.server.app import create_app
-    from place_layers.backend.base import (
-        TransformersBackendConfig,
-    )
-
-    config = TransformersBackendConfig(model_path="/path/to/model", ...)
-    app = create_app(config)
-
-    # Run with uvicorn
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+Endpoints mirror backend methods with single-request semantics.
+Server-side batching is transparent to clients.
 """
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 
-from place_layers.backend.types import GenerationRequest
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
+from place_layers.backend.types import (
+    GenerateRequest as BackendGenerateRequest,
+    ScoreChatRequest as BackendScoreChatRequest,
+    ScoreTextRequest as BackendScoreTextRequest,
+    ScoreTokensRequest as BackendScoreTokensRequest,
+)
+from place_layers.server.adapter import (
+    BackendAdapter,
+    GenerationParams,
+    create_adapter,
+)
 from place_layers.server.schemas import (
-    BatchGenerateRequest,
-    LogProbResultSchema,
-    ComputeChatLogProbsRequest,
-    ComputeChatLogProbsResponse,
-    ComputeLogProbsRequest,
-    ComputeLogProbsResponse,
-    ComputeTextLogProbsRequest,
-    ComputeTextLogProbsResponse,
-    ErrorResponse,
     GenerateRequest,
     HealthResponse,
     InfoResponse,
+    ScoreChatRequest,
+    ScoreChatResponse,
+    ScoreTextRequest,
+    ScoreTextResponse,
+    ScoreTokensRequest,
+    ScoreTokensResponse,
 )
-
-if TYPE_CHECKING:
-    from place_layers.backend.transformers import (
-        TransformersBackend,
-        TransformersBackendConfig,
-    )
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
-    """Create a FastAPI app wrapping a TransformersBackend.
+def create_app(
+    backend_config: BaseBackendConfig,
+    batch_size: int = 32,
+    batch_timeout: float = 0.01,
+) -> FastAPI:
+    """Create a FastAPI app wrapping any backend.
 
-    The backend is initialized when the server starts and cleaned up
-    when it shuts down. All endpoints are synchronous since the
-    TransformersBackend is synchronous.
+    The backend is wrapped in an adapter that handles:
+    - AsyncBackend: forwards requests directly (backend handles concurrency)
+    - SyncBackend: queues requests and batches them for GPU efficiency
 
     Args:
-        backend_config: Configuration for the TransformersBackend.
+        backend_config: Configuration for the backend.
+        batch_size: Max batch size for SyncBackend adapter.
+        batch_timeout: Max wait time (seconds) for batch to fill.
 
     Returns:
         FastAPI application ready to be served.
     """
-    # Backend instance - initialized in lifespan
-    backend: "TransformersBackend | None" = None
+    # Adapter instance - initialized in lifespan
+    adapter: BackendAdapter | None = None
+    backend: AsyncBackend | SyncBackend | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        nonlocal backend
-        logger.info(f"Loading model from {backend_config.model_path}")
-        logger.info(f"  torch_dtype: {backend_config.torch_dtype}")
-        logger.info(f"  device_map: {backend_config.device_map}")
-        logger.info(f"  batch_size: {backend_config.batch_size}")
+        nonlocal adapter, backend
+        logger.info(f"Initializing backend: {backend_config.backend_type}")
 
-        # Create and initialize backend
+        # Create backend and adapter
         backend = backend_config.create_backend()
-        backend.__enter__()
+        adapter = create_adapter(backend, batch_size, batch_timeout)
 
-        logger.info("Model loaded successfully, server ready")
+        # Initialize
+        await adapter.__aenter__()
+        logger.info("Backend initialized, server ready")
+
         yield
 
         # Cleanup
-        logger.info("Shutting down, unloading model...")
-        if backend is not None:
-            backend.__exit__(None, None, None)
-        logger.info("Model unloaded")
+        logger.info("Shutting down...")
+        if adapter is not None:
+            await adapter.__aexit__(None, None, None)
+        logger.info("Backend shutdown complete")
 
     app = FastAPI(
-        title="Transformers Backend Server",
-        description="REST API for TransformersBackend with mixer placement support",
+        title="Backend REST Server",
+        description="REST API for generation backends with batching support",
         version="0.1.0",
         lifespan=lifespan,
     )
 
+    # =========================================================================
+    # Health & Info
+    # =========================================================================
+
     @app.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
+    async def health() -> HealthResponse:
         """Health check endpoint."""
         return HealthResponse(status="ok")
 
     @app.get("/info", response_model=InfoResponse)
-    def info() -> InfoResponse:
+    async def info() -> InfoResponse:
         """Get server and model information."""
         if backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
-        current_placement = None
-        if backend._current_placement is not None:
-            current_placement = list(backend._current_placement)
-
-        # Get model structure if available (Apriel2 supernet)
+        # Get model structure if available
         num_layers = None
         mixer_names = None
-        if backend._apriel_structure is not None:
-            num_layers = backend._apriel_structure.num_layers
-            mixer_names = list(backend._apriel_structure.mixer_names)
+        supports_placement = False
+
+        try:
+            structure = backend.model_structure
+            num_layers = structure.num_layers
+            mixer_names = list(structure.mixer_names)
+            supports_placement = True
+        except NotImplementedError:
+            pass
 
         return InfoResponse(
-            model_path=backend_config.model_path,
-            batch_size=backend_config.batch_size,
-            supports_placement=backend._apriel_structure is not None,
-            current_placement=current_placement,
+            model_path=getattr(backend_config, "model_path", "unknown"),
+            batch_size=batch_size,
+            supports_placement=supports_placement,
+            current_placement=None,  # TODO: track current placement
             num_layers=num_layers,
             mixer_names=mixer_names,
         )
 
-    @app.post("/generate")
-    def generate(req: GenerateRequest) -> dict:
-        """Generate completions for a single prompt.
+    # =========================================================================
+    # Generation
+    # =========================================================================
 
-        If placement is provided, sets the mixer configuration before generation.
-        The placement setting is a no-op if already set to the same value.
+    @app.post("/generate")
+    async def generate(req: GenerateRequest) -> dict:
+        """Generate completions for a single request.
+
+        Mirrors backend.generate() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert messages to tuple format expected by backend
-            messages = tuple(
-                {"role": m.role, "content": m.content} for m in req.messages
+            # Convert to backend request
+            gen_request = BackendGenerateRequest(
+                key=req.key,
+                messages=req.messages,
             )
-
-            # Create generation request
-            gen_request = GenerationRequest(
-                key=req.request_id,
-                messages=messages,  # type: ignore[arg-type]
-            )
-
-            # Generate (single request)
-            results = list(backend.generate(
-                [gen_request],
+            params = GenerationParams(
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
-            ))
-            result = results[0]
+            )
 
+            # Generate via adapter
+            result = await adapter.generate_one(gen_request, params)
             return result.model_dump()
 
         except ValueError as e:
@@ -170,151 +174,116 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             logger.exception("Generation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/batch_generate")
-    def batch_generate(req: BatchGenerateRequest) -> list[dict]:
-        """Generate completions for multiple prompts.
+    # =========================================================================
+    # Scoring
+    # =========================================================================
 
-        If placement is provided, sets the mixer configuration before generation.
+    @app.post("/score_tokens", response_model=ScoreTokensResponse)
+    async def score_tokens(req: ScoreTokensRequest) -> ScoreTokensResponse:
+        """Score a token sequence.
+
+        Mirrors backend.score_tokens() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Create generation requests
-            requests = [
-                GenerationRequest(
-                    key=str(i),
-                    messages=tuple(
-                        {"role": m.role, "content": m.content} for m in messages
-                    ),  # type: ignore[arg-type]
-                )
-                for i, messages in enumerate(req.messages_batch)
-            ]
-
-            # Generate
-            results = list(backend.generate(
-                requests,
-                n=req.n,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-                top_p=req.top_p,
-            ))
-
-            return [r.model_dump() for r in results]
-
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.exception("Batch generation failed")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/compute_log_probs", response_model=ComputeLogProbsResponse)
-    def compute_log_probs(req: ComputeLogProbsRequest) -> ComputeLogProbsResponse:
-        """Compute log probabilities for a batch of traces.
-
-        If placement is provided, sets the mixer configuration before scoring.
-        """
-        if backend is None:
-            raise HTTPException(status_code=503, detail="Backend not initialized")
-
-        try:
-            # Set placement if provided
-            if req.placement is not None:
-                backend.set_placement(req.placement)
-
-            # Convert traces to tuple format expected by backend
-            traces = [
-                (tuple(t.prompt_tokens), tuple(t.completion_tokens)) for t in req.traces
-            ]
-
-            # Compute log probs
-            log_probs = backend.compute_token_log_probs(traces)
-
-            return ComputeLogProbsResponse(log_probs=log_probs)
-
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.exception("Log prob computation failed")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/compute_text_log_probs", response_model=ComputeTextLogProbsResponse)
-    def compute_text_log_probs(
-        req: ComputeTextLogProbsRequest,
-    ) -> ComputeTextLogProbsResponse:
-        """Compute log probabilities for text continuations with diff-based scoring.
-
-        Uses grouped API where each group is a (context, choices) tuple.
-        The backend applies diff-based scoring to find answer token positions.
-        If placement is provided, sets the mixer configuration before scoring.
-        """
-        if backend is None:
-            raise HTTPException(status_code=503, detail="Backend not initialized")
-        try:
-            # Set placement if provided
-            if req.placement is not None:
-                backend.set_placement(req.placement)
-
-            results = backend.compute_text_log_probs(req.text_groups)
-            return ComputeTextLogProbsResponse(
-                results=[
-                    LogProbResultSchema(
-                        token_ids=list(r.token_ids),
-                        logprobs=list(r.logprobs),
-                        answer_range=r.answer_range,
-                        total_log_prob=r.total_log_prob,
-                    )
-                    for r in results
-                ]
+            # Convert to backend request
+            score_request = BackendScoreTokensRequest(
+                key=req.key,
+                prompt_tokens=req.prompt_tokens,
+                completion_tokens=req.completion_tokens,
             )
+
+            # Score via adapter
+            result = await adapter.score_tokens_one(score_request)
+            return ScoreTokensResponse(key=result.key, log_prob=result.log_prob)
+
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.exception("Text log prob computation failed")
+            logger.exception("Token scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/compute_chat_log_probs", response_model=ComputeChatLogProbsResponse)
-    def compute_chat_log_probs(
-        req: ComputeChatLogProbsRequest,
-    ) -> ComputeChatLogProbsResponse:
-        """Compute log probabilities for chat completions.
+    @app.post("/score_text", response_model=ScoreTextResponse)
+    async def score_text(req: ScoreTextRequest) -> ScoreTextResponse:
+        """Score text continuations with diff-based scoring.
 
-        If placement is provided, sets the mixer configuration before scoring.
+        Mirrors backend.score_text() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
+
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert chat messages to dict format expected by backend
-            chats = [
-                (
-                    [m.model_dump() for m in context_msgs],
-                    [m.model_dump() for m in completion_msgs],
-                )
-                for context_msgs, completion_msgs in req.chats
-            ]
-            results = backend.compute_chat_log_probs(chats)
-            response_results = [
-                LogProbResultSchema(
-                    token_ids=list(r.token_ids),
-                    logprobs=list(r.logprobs),
-                    answer_range=r.answer_range,
-                    total_log_prob=r.total_log_prob,
-                )
-                for r in results
-            ]
-            return ComputeChatLogProbsResponse(results=response_results)
+            # Convert to backend request
+            score_request = BackendScoreTextRequest(
+                key=req.key,
+                context=req.context,
+                choices=req.choices,
+            )
+
+            # Score via adapter
+            result = await adapter.score_text_one(score_request)
+            return ScoreTextResponse(
+                key=result.key,
+                results=result.results,
+            )
+
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.exception("Chat log prob computation failed")
+            logger.exception("Text scoring failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/score_chat", response_model=ScoreChatResponse)
+    async def score_chat(req: ScoreChatRequest) -> ScoreChatResponse:
+        """Score chat completions.
+
+        Mirrors backend.score_chat() with single-request semantics.
+        """
+        if adapter is None or backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+
+        try:
+            # Set placement if provided
+            if req.placement is not None:
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
+
+            # Convert to backend request
+            score_request = BackendScoreChatRequest(
+                key=req.key,
+                context_messages=req.context_messages,
+                completion_messages=req.completion_messages,
+            )
+
+            # Score via adapter
+            result = await adapter.score_chat_one(score_request)
+            return ScoreChatResponse(
+                key=result.key,
+                results=result.results,
+            )
+
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Chat scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

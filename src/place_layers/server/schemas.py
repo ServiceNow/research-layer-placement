@@ -1,36 +1,45 @@
-"""API request/response schemas for TransformersBackend REST server.
+"""API request/response schemas for backend REST server.
 
-These schemas define the wire format for communication between the REST client
-and server. They are designed to be compatible with the existing backend
-interface while supporting the placement-in-request pattern.
+These schemas extend the backend request/result types, adding optional
+placement fields for requests. Single-request endpoints enable
+server-side batching via the adapter.
+
+Scoring requests subclass backend types and add placement.
+Scoring responses are just aliases to backend result types.
 """
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
+from place_layers.backend.types import (
+    ChatMessage,
+    GenerateRequest as BackendGenerateRequest,
+    LogProbResult,
+    ScoreChatRequest as BackendScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest as BackendScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest as BackendScoreTokensRequest,
+    ScoreTokensResult,
+)
 
-class ChatMessageSchema(BaseModel):
-    """A single message in a chat conversation."""
+# =============================================================================
+# Shared Types - Re-export from backend
+# =============================================================================
 
-    model_config = {"frozen": True}
+# Use backend ChatMessage directly (identical to old ChatMessageSchema)
+ChatMessageSchema = ChatMessage
 
-    role: Literal["system", "user", "assistant"] = Field(
-        description="Role of the message sender"
-    )
-    content: str = Field(description="Message content")
+# =============================================================================
+# Generation
+# =============================================================================
 
 
-class GenerateRequest(BaseModel):
-    """Request for single-prompt generation."""
+class GenerateRequest(BackendGenerateRequest):
+    """Request for generation (extends backend type with params + placement)."""
 
-    model_config = {"frozen": True}
-
-    messages: list[ChatMessageSchema] = Field(
-        description="Chat messages (conversation history)"
-    )
+    # Generation params (batch-level in backend, but per-request over REST)
     n: int = Field(default=1, description="Number of completions to generate", ge=1)
     max_tokens: int = Field(
         default=512, description="Maximum tokens per completion", ge=1
@@ -41,73 +50,77 @@ class GenerateRequest(BaseModel):
     top_p: float = Field(
         default=1.0, description="Nucleus sampling parameter", ge=0.0, le=1.0
     )
+
+    # Optional placement
     placement: list[str] | None = Field(
         default=None,
-        description="Mixer placement for each layer (e.g., ['attention', 'mamba', ...]). "
-        "If provided, server will set this placement before generation.",
+        description="Mixer placement for each layer.",
     )
-    request_id: str = Field(default="", description="Optional request identifier")
 
 
-class BatchGenerateRequest(BaseModel):
-    """Request for batch generation (multiple prompts)."""
+# GenerationResult is returned directly from backend (model_dump())
 
-    model_config = {"frozen": True}
 
-    messages_batch: list[list[ChatMessageSchema]] = Field(
-        description="List of conversation histories, one per prompt"
-    )
-    n: int = Field(
-        default=1, description="Number of completions per prompt", ge=1
-    )
-    max_tokens: int = Field(
-        default=512, description="Maximum tokens per completion", ge=1
-    )
-    temperature: float = Field(
-        default=0.0, description="Sampling temperature", ge=0.0, le=2.0
-    )
-    top_p: float = Field(
-        default=1.0, description="Nucleus sampling parameter", ge=0.0, le=1.0
-    )
+# =============================================================================
+# Token Scoring
+# =============================================================================
+
+
+class ScoreTokensRequest(BackendScoreTokensRequest):
+    """Request for token scoring (extends backend type with placement)."""
+
     placement: list[str] | None = Field(
         default=None,
-        description="Mixer placement for each layer. "
-        "If provided, server will set this placement before generation.",
+        description="Mixer placement for each layer.",
     )
 
 
-class TraceSchema(BaseModel):
-    """A single trace for log probability computation."""
-
-    model_config = {"frozen": True}
-
-    prompt_tokens: list[int] = Field(description="Token IDs of the prompt")
-    completion_tokens: list[int] = Field(description="Token IDs of the completion")
+# Response is identical to backend result type
+ScoreTokensResponse = ScoreTokensResult
 
 
-class ComputeLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of traces."""
+# =============================================================================
+# Text Scoring
+# =============================================================================
 
-    model_config = {"frozen": True}
 
-    traces: list[TraceSchema] = Field(
-        description="List of (prompt_tokens, completion_tokens) traces to score"
-    )
+class ScoreTextRequest(BackendScoreTextRequest):
+    """Request for text scoring (extends backend type with placement)."""
+
     placement: list[str] | None = Field(
         default=None,
-        description="Mixer placement for each layer. "
-        "If provided, server will set this placement before scoring.",
+        description="Mixer placement for each layer.",
     )
 
 
-class ComputeLogProbsResponse(BaseModel):
-    """Response from log probability computation."""
+# Re-export LogProbResult for use in response types
+LogProbResultSchema = LogProbResult
 
-    model_config = {"frozen": True}
+# Response is identical to backend result type
+ScoreTextResponse = ScoreTextResult
 
-    log_probs: list[float] = Field(
-        description="Log probabilities for each trace (sum over completion tokens)"
+
+# =============================================================================
+# Chat Scoring
+# =============================================================================
+
+
+class ScoreChatRequest(BackendScoreChatRequest):
+    """Request for chat scoring (extends backend type with placement)."""
+
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer.",
     )
+
+
+# Response is identical to backend result type
+ScoreChatResponse = ScoreChatResult
+
+
+# =============================================================================
+# Server Info
+# =============================================================================
 
 
 class InfoResponse(BaseModel):
@@ -139,83 +152,3 @@ class HealthResponse(BaseModel):
     model_config = {"frozen": True}
 
     status: str = Field(description="Server status")
-
-
-class ErrorResponse(BaseModel):
-    """Error response."""
-
-    model_config = {"frozen": True}
-
-    error: str = Field(description="Error message")
-    detail: str | None = Field(default=None, description="Additional error details")
-
-
-class ComputeTextLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of text continuations.
-
-    Uses grouped API where each group is a (context, choices) tuple.
-    The server applies diff-based scoring to find answer token positions.
-    """
-
-    model_config = {"frozen": True}
-
-    text_groups: list[tuple[str, list[str]]] = Field(
-        description="List of (context, choices) tuples. Each group contains "
-        "a shared context string and a list of choice strings to score."
-    )
-    placement: list[str] | None = Field(
-        default=None,
-        description="Mixer placement for each layer. "
-        "If provided, server will set this placement before scoring.",
-    )
-
-
-class LogProbResultSchema(BaseModel):
-    """Result of log probability computation with full observability."""
-
-    model_config = {"frozen": True}
-
-    token_ids: list[int] = Field(description="Full token sequence")
-    logprobs: list[float | None] = Field(
-        description="Per-token logprobs (None for first token)"
-    )
-    answer_range: tuple[int, int] = Field(
-        description="(start, end) indices for answer tokens"
-    )
-    total_log_prob: float = Field(description="Sum of logprobs for answer tokens")
-
-
-class ComputeTextLogProbsResponse(BaseModel):
-    """Response from text log probability computation."""
-
-    model_config = {"frozen": True}
-
-    results: list[LogProbResultSchema] = Field(
-        description="Log probability results (flattened across all groups). "
-        "Results are ordered by group, then by choice within each group."
-    )
-
-
-class ComputeChatLogProbsRequest(BaseModel):
-    """Request for computing log probabilities of chat completions."""
-
-    model_config = {"frozen": True}
-
-    chats: list[tuple[list[ChatMessageSchema], list[ChatMessageSchema]]] = Field(
-        description="List of (context_messages, completion_messages) tuples"
-    )
-    placement: list[str] | None = Field(
-        default=None,
-        description="Mixer placement for each layer. "
-        "If provided, server will set this placement before scoring.",
-    )
-
-
-class ComputeChatLogProbsResponse(BaseModel):
-    """Response from chat log probability computation."""
-
-    model_config = {"frozen": True}
-
-    results: list[LogProbResultSchema] = Field(
-        description="Log probability results for each chat"
-    )

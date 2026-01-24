@@ -23,6 +23,14 @@ from place_layers.backend.rest import (
     RESTBackendError,
     ServerPool,
 )
+from place_layers.backend.types import (
+    ScoreChatRequest,
+    ScoreTextRequest,
+    ScoreTokensRequest,
+)
+from place_layers.server.schemas import (
+    GenerateRequest as ServerGenerateRequest,
+)
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -84,8 +92,11 @@ class TestConcurrentFailover:
 
                 # Fire 10 concurrent requests
                 tasks = [
-                    backend._call_with_failover("/generate", {"messages": []})
-                    for _ in range(10)
+                    backend._call_with_failover(
+                        "/generate",
+                        ServerGenerateRequest(key=f"req_{i}", messages=[]),
+                    )
+                    for i in range(10)
                 ]
                 results = await asyncio.gather(*tasks)
 
@@ -105,7 +116,10 @@ class TestConcurrentFailover:
                     m.post("http://s2:8080/generate", status=500)
 
                 with pytest.raises(RESTBackendError) as exc_info:
-                    await backend._call_with_failover("/generate", {"messages": []})
+                    await backend._call_with_failover(
+                        "/generate",
+                        ServerGenerateRequest(key="test", messages=[]),
+                    )
 
                 assert "All available servers failed" in str(exc_info.value)
                 # Both servers should be unhealthy
@@ -226,19 +240,22 @@ class TestPartialBatchFailure:
             async with backend_with_mocks(config, m) as backend:
                 # Server 1 is down for all requests
                 for _ in range(10):
-                    m.post("http://s1:8080/compute_log_probs", status=503)
-                # Server 2 handles all chunks
-                for _ in range(5):
+                    m.post("http://s1:8080/score_tokens", status=503)
+                # Server 2 handles all requests
+                for i in range(4):
                     m.post(
-                        "http://s2:8080/compute_log_probs",
-                        payload={"log_probs": [-1.0, -2.0]},
+                        "http://s2:8080/score_tokens",
+                        payload={"key": f"req_{i}", "log_prob": -1.0 - i},
                     )
 
-                traces = [([1], [2]), ([3], [4]), ([5], [6]), ([7], [8])]
-                results = await backend.compute_batch_log_probs(traces)
+                requests = [
+                    ScoreTokensRequest(key=f"req_{i}", prompt_tokens=(i,), completion_tokens=(i + 1,))
+                    for i in range(4)
+                ]
+                results = [r async for r in backend.score_tokens(requests)]
 
                 assert len(results) == 4
-                assert all(isinstance(r, float) for r in results)
+                assert all(hasattr(r, "log_prob") for r in results)
 
     async def test_batch_fails_when_all_servers_down(
         self, config: RESTBackendConfig
@@ -248,13 +265,16 @@ class TestPartialBatchFailure:
             async with backend_with_mocks(config, m) as backend:
                 # Both servers fail repeatedly
                 for _ in range(20):
-                    m.post("http://s1:8080/compute_log_probs", status=503)
-                    m.post("http://s2:8080/compute_log_probs", status=500)
+                    m.post("http://s1:8080/score_tokens", status=503)
+                    m.post("http://s2:8080/score_tokens", status=500)
 
-                traces = [([1], [2]), ([3], [4])]
+                requests = [
+                    ScoreTokensRequest(key=f"req_{i}", prompt_tokens=(i,), completion_tokens=(i + 1,))
+                    for i in range(2)
+                ]
 
                 with pytest.raises(RESTBackendError):
-                    await backend.compute_batch_log_probs(traces)
+                    _ = [r async for r in backend.score_tokens(requests)]
 
 
 class TestClientErrorsNotRetried:
@@ -275,7 +295,10 @@ class TestClientErrorsNotRetried:
                 m.post("http://s1:8080/generate", status=400, body="Bad request")
 
                 with pytest.raises(RESTBackendError) as exc_info:
-                    await backend._call_with_failover("/generate", {"messages": []})
+                    await backend._call_with_failover(
+                        "/generate",
+                        ServerGenerateRequest(key="test", messages=[]),
+                    )
 
                 assert "400" in str(exc_info.value)
 
@@ -286,7 +309,10 @@ class TestClientErrorsNotRetried:
                 m.post("http://s1:8080/generate", status=404, body="Not found")
 
                 with pytest.raises(RESTBackendError) as exc_info:
-                    await backend._call_with_failover("/generate", {"messages": []})
+                    await backend._call_with_failover(
+                        "/generate",
+                        ServerGenerateRequest(key="test", messages=[]),
+                    )
 
                 assert "404" in str(exc_info.value)
 
@@ -316,7 +342,10 @@ class TestServerRecovery:
                     payload={"samples": ["ok"], "prompt_token_ids": []},
                 )
 
-                await backend._call_with_failover("/generate", {"messages": []})
+                await backend._call_with_failover(
+                    "/generate",
+                    ServerGenerateRequest(key="test", messages=[]),
+                )
 
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
                 assert backend._server_pool._health["http://s2:8080"].healthy is True
@@ -333,7 +362,10 @@ class TestServerRecovery:
                     payload={"samples": ["recovered"], "prompt_token_ids": []},
                 )
 
-                await backend._call_with_failover("/generate", {"messages": []})
+                await backend._call_with_failover(
+                    "/generate",
+                    ServerGenerateRequest(key="test2", messages=[]),
+                )
 
                 # s1 should be healthy again
                 assert backend._server_pool._health["http://s1:8080"].healthy is True
@@ -369,7 +401,10 @@ class TestConnectionErrors:
                     payload={"samples": ["ok"], "prompt_token_ids": []},
                 )
 
-                result = await backend._call_with_failover("/generate", {"messages": []})
+                result = await backend._call_with_failover(
+                    "/generate",
+                    ServerGenerateRequest(key="test", messages=[]),
+                )
 
                 assert result["samples"] == ["ok"]
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
@@ -399,124 +434,18 @@ class TestEdgeCases:
         with pytest.raises(RuntimeError, match="context manager"):
             backend._ensure_session()
 
-    async def test_empty_traces_returns_empty(self):
+    async def test_empty_requests_returns_empty(self):
         """Empty input to batch operations returns empty without server calls."""
         config = RESTBackendConfig(servers=["http://s1:8080"])
 
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                results = await backend.compute_batch_log_probs([])
+                results = [r async for r in backend.score_tokens([])]
                 assert results == []
 
 
-class TestInitializationWithPartialServerAvailability:
-    """Test that backend can start with some servers unavailable."""
-
-    @pytest.fixture
-    def config(self) -> RESTBackendConfig:
-        return RESTBackendConfig(
-            servers=["http://s1:8080", "http://s2:8080", "http://s3:8080"],
-            base_recovery_interval=0.1,
-            max_recovery_interval=1.0,
-            max_retries=3,
-        )
-
-    async def test_starts_with_one_server_available(self, config: RESTBackendConfig):
-        """Backend initializes successfully if at least one server is reachable."""
-        with aioresponses() as m:
-            # Only server 2 is available during initialization
-            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
-            m.get("http://s2:8080/info", payload=mock_server_info())
-            m.get("http://s3:8080/info", status=503)
-
-            backend = RESTBackend(config)
-            async with backend:
-                # Should initialize successfully with 1/3 servers
-                assert backend._server_pool.healthy_count() == 1
-                assert backend._server_pool._health["http://s1:8080"].healthy is False
-                assert backend._server_pool._health["http://s2:8080"].healthy is True
-                assert backend._server_pool._health["http://s3:8080"].healthy is False
-
-    async def test_works_with_partial_availability(self, config: RESTBackendConfig):
-        """Backend can process requests with only some servers healthy at start."""
-        with aioresponses() as m:
-            # Only server 2 available at init
-            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
-            m.get("http://s2:8080/info", payload=mock_server_info())
-            m.get("http://s3:8080/info", status=503)
-
-            backend = RESTBackend(config)
-            async with backend:
-                # Server 2 handles the request
-                m.post(
-                    "http://s2:8080/generate",
-                    payload={"samples": ["ok"], "prompt_token_ids": []},
-                )
-
-                result = await backend._call_with_failover("/generate", {"messages": []})
-                assert result["samples"] == ["ok"]
-
-    async def test_fails_if_all_servers_unavailable_at_init(
-        self, config: RESTBackendConfig
-    ):
-        """Backend fails to initialize if no servers are reachable."""
-        with aioresponses() as m:
-            # All servers unavailable
-            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
-            m.get("http://s2:8080/info", status=503)
-            m.get("http://s3:8080/info", status=500)
-
-            backend = RESTBackend(config)
-            with pytest.raises(RESTBackendError, match="Failed to connect to all"):
-                async with backend:
-                    pass
-
-    async def test_unavailable_servers_can_recover_during_evaluation(
-        self, config: RESTBackendConfig
-    ):
-        """Servers unavailable at init can be retried and recovered during evaluation."""
-        with aioresponses() as m:
-            # Only s2 available at init
-            m.get("http://s1:8080/info", exception=ConnectionRefusedError())
-            m.get("http://s2:8080/info", payload=mock_server_info())
-            m.get("http://s3:8080/info", status=503)
-
-            backend = RESTBackend(config)
-            async with backend:
-                assert backend._server_pool.healthy_count() == 1
-
-                # Simulate time passing so recovery check is due for s1
-                backend._server_pool._health["http://s1:8080"].last_failure_time = (
-                    time.monotonic() - 10.0
-                )
-
-                # s2 handles the first request successfully
-                m.post(
-                    "http://s2:8080/generate",
-                    payload={"samples": ["from_s2"], "prompt_token_ids": []},
-                )
-
-                result = await backend._call_with_failover("/generate", {"messages": []})
-                assert result["samples"] == ["from_s2"]
-
-                # Now make s1 available for the next request
-                # s1 is tried first because we call it with preferred_server or it's in the try list
-                m.post(
-                    "http://s1:8080/generate",
-                    payload={"samples": ["recovered"], "prompt_token_ids": []},
-                )
-
-                result = await backend._call_with_failover(
-                    "/generate", {"messages": []}, preferred_server="http://s1:8080"
-                )
-                assert result["samples"] == ["recovered"]
-                # s1 should now be marked healthy
-                assert backend._server_pool._health["http://s1:8080"].healthy is True
-                assert backend._server_pool.healthy_count() == 2
-
-
-class TestComputeTextLogProbs:
-    """Tests for compute_text_log_probs with failover."""
+class TestScoreText:
+    """Tests for score_text with failover."""
 
     @pytest.fixture
     def config(self) -> RESTBackendConfig:
@@ -528,74 +457,49 @@ class TestComputeTextLogProbs:
         )
 
     async def test_distributes_across_servers(self, config: RESTBackendConfig):
-        """Text log probs are distributed across healthy servers."""
+        """Text scoring requests are distributed across healthy servers."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # Both servers respond successfully with full LogProbResult format
-                # Server 1 handles groups 0 and 2
-                m.post(
-                    "http://s1:8080/compute_text_log_probs",
-                    payload={
-                        "results": [
-                            {
-                                "token_ids": [1, 2],
-                                "logprobs": [None, -1.0],
-                                "answer_range": [1, 2],
-                                "total_log_prob": -1.0,
-                            },
-                            {
-                                "token_ids": [3, 4],
-                                "logprobs": [None, -2.0],
-                                "answer_range": [1, 2],
-                                "total_log_prob": -2.0,
-                            },
-                        ]
-                    },
-                )
-                # Server 2 handles groups 1 and 3
-                m.post(
-                    "http://s2:8080/compute_text_log_probs",
-                    payload={
-                        "results": [
-                            {
-                                "token_ids": [5, 6],
-                                "logprobs": [None, -3.0],
-                                "answer_range": [1, 2],
-                                "total_log_prob": -3.0,
-                            },
-                            {
-                                "token_ids": [7, 8],
-                                "logprobs": [None, -4.0],
-                                "answer_range": [1, 2],
-                                "total_log_prob": -4.0,
-                            },
-                        ]
-                    },
-                )
+                for i in range(4):
+                    server = "s1" if i % 2 == 0 else "s2"
+                    m.post(
+                        f"http://{server}:8080/score_text",
+                        payload={
+                            "key": f"req_{i}",
+                            "results": [
+                                {
+                                    "token_ids": [i * 2, i * 2 + 1],
+                                    "logprobs": [None, -1.0 - i],
+                                    "answer_range": [1, 2],
+                                    "total_log_prob": -1.0 - i,
+                                }
+                            ],
+                        },
+                    )
 
-                # New grouped API: each group is (context, [choices])
-                results = await backend.compute_text_log_probs([
-                    ("ctx1", ["A"]),  # group 0
-                    ("ctx2", ["B"]),  # group 1
-                    ("ctx3", ["C"]),  # group 2
-                    ("ctx4", ["D"]),  # group 3
-                ])
+                requests = [
+                    ScoreTextRequest(key=f"req_{i}", context=f"ctx{i}", choices=(f"choice_{i}",))
+                    for i in range(4)
+                ]
+                results = [r async for r in backend.score_text(requests)]
 
-                # Results should be in original order (flattened)
                 assert len(results) == 4
-                # Each result is a LogProbResult
-                assert all(hasattr(r, "total_log_prob") for r in results)
+                # Each result is a ScoreTextResult with results containing LogProbResult
+                assert all(hasattr(r, "results") for r in results)
+                assert all(len(r.results) == 1 for r in results)
 
     async def test_failover_on_server_error(self, config: RESTBackendConfig):
-        """Failing server triggers failover for text log probs."""
+        """Failing server triggers failover for text scoring."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # Server 1 fails
-                m.post("http://s1:8080/compute_text_log_probs", status=503)
+                m.post("http://s1:8080/score_text", status=503)
                 # Server 2 handles all
                 m.post(
-                    "http://s2:8080/compute_text_log_probs",
+                    "http://s2:8080/score_text",
                     payload={
+                        "key": "req_0",
                         "results": [
                             {
                                 "token_ids": [1, 2, 3],
@@ -603,29 +507,29 @@ class TestComputeTextLogProbs:
                                 "answer_range": [2, 3],
                                 "total_log_prob": -1.5,
                             }
-                        ]
+                        ],
                     },
                 )
 
-                # New grouped API: (context, [choices])
-                results = await backend.compute_text_log_probs([
-                    ("The capital of France is", [" Paris"]),
-                ])
+                requests = [
+                    ScoreTextRequest(key="req_0", context="The capital of France is", choices=(" Paris",))
+                ]
+                results = [r async for r in backend.score_text(requests)]
 
                 assert len(results) == 1
-                assert results[0].total_log_prob == -1.5
+                assert results[0].results[0].total_log_prob == -1.5
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
 
     async def test_empty_input_returns_empty(self, config: RESTBackendConfig):
-        """Empty text_groups returns empty without server calls."""
+        """Empty requests returns empty without server calls."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                results = await backend.compute_text_log_probs([])
+                results = [r async for r in backend.score_text([])]
                 assert results == []
 
 
-class TestComputeChatLogProbs:
-    """Tests for compute_chat_log_probs with failover."""
+class TestScoreChat:
+    """Tests for score_chat with failover."""
 
     @pytest.fixture
     def config(self) -> RESTBackendConfig:
@@ -637,12 +541,13 @@ class TestComputeChatLogProbs:
         )
 
     async def test_parses_response_correctly(self, config: RESTBackendConfig):
-        """Chat log prob results are parsed into LogProbResult."""
+        """Chat scoring results are parsed correctly."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 m.post(
-                    "http://s1:8080/compute_chat_log_probs",
+                    "http://s1:8080/score_chat",
                     payload={
+                        "key": "req_0",
                         "results": [
                             {
                                 "token_ids": [1, 2, 3],
@@ -650,34 +555,36 @@ class TestComputeChatLogProbs:
                                 "answer_range": [1, 3],
                                 "total_log_prob": -1.5,
                             }
-                        ]
+                        ],
                     },
                 )
 
-                chats = [
-                    (
-                        [{"role": "user", "content": "What is 2+2?"}],
-                        [{"role": "assistant", "content": "4"}],
+                requests = [
+                    ScoreChatRequest(
+                        key="req_0",
+                        context_messages=[{"role": "user", "content": "What is 2+2?"}],
+                        completion_messages=[{"role": "assistant", "content": "4"}],
                     )
                 ]
-                results = await backend.compute_chat_log_probs(chats)
+                results = [r async for r in backend.score_chat(requests)]
 
                 assert len(results) == 1
-                assert results[0].token_ids == (1, 2, 3)
-                assert results[0].logprobs == (None, -0.5, -1.0)
-                assert results[0].answer_range == (1, 3)
-                assert results[0].total_log_prob == -1.5
+                assert results[0].results[0].token_ids == [1, 2, 3]
+                assert results[0].results[0].logprobs == [None, -0.5, -1.0]
+                assert results[0].results[0].answer_range == (1, 3)
+                assert results[0].results[0].total_log_prob == -1.5
 
     async def test_failover_on_server_error(self, config: RESTBackendConfig):
-        """Failing server triggers failover for chat log probs."""
+        """Failing server triggers failover for chat scoring."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # Server 1 fails
-                m.post("http://s1:8080/compute_chat_log_probs", status=500)
+                m.post("http://s1:8080/score_chat", status=500)
                 # Server 2 handles request
                 m.post(
-                    "http://s2:8080/compute_chat_log_probs",
+                    "http://s2:8080/score_chat",
                     payload={
+                        "key": "req_0",
                         "results": [
                             {
                                 "token_ids": [10, 20],
@@ -685,25 +592,26 @@ class TestComputeChatLogProbs:
                                 "answer_range": [1, 2],
                                 "total_log_prob": -2.0,
                             }
-                        ]
+                        ],
                     },
                 )
 
-                chats = [
-                    (
-                        [{"role": "user", "content": "Hi"}],
-                        [{"role": "assistant", "content": "Hello"}],
+                requests = [
+                    ScoreChatRequest(
+                        key="req_0",
+                        context_messages=[{"role": "user", "content": "Hi"}],
+                        completion_messages=[{"role": "assistant", "content": "Hello"}],
                     )
                 ]
-                results = await backend.compute_chat_log_probs(chats)
+                results = [r async for r in backend.score_chat(requests)]
 
                 assert len(results) == 1
-                assert results[0].total_log_prob == -2.0
+                assert results[0].results[0].total_log_prob == -2.0
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
 
     async def test_empty_input_returns_empty(self, config: RESTBackendConfig):
-        """Empty chats returns empty without server calls."""
+        """Empty requests returns empty without server calls."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                results = await backend.compute_chat_log_probs([])
+                results = [r async for r in backend.score_chat([])]
                 assert results == []

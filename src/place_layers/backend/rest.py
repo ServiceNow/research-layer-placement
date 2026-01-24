@@ -20,22 +20,27 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
 from place_layers.backend.types import (
-    ChatMessage,
-    ChatScoringRequest,
-    ChatScoringResult,
-    GenerationRequest,
+    GenerateRequest,
     LogProbResult,
     ModelStructure,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
+)
+from place_layers.server.schemas import (
+    GenerateRequest as ServerGenerateRequest,
+    ScoreChatRequest as ServerScoreChatRequest,
+    ScoreTextRequest as ServerScoreTextRequest,
+    ScoreTokensRequest as ServerScoreTokensRequest,
 )
 
 if TYPE_CHECKING:
@@ -361,8 +366,7 @@ class RESTBackend(AsyncBackend):
     async def _call_with_failover(
         self,
         endpoint: str,
-        payload: dict[str, Any],
-        preferred_server: str | None = None,
+        request: BaseModel,
     ) -> dict[str, Any]:
         """Call an endpoint with failover across servers.
 
@@ -372,8 +376,7 @@ class RESTBackend(AsyncBackend):
 
         Args:
             endpoint: API endpoint (e.g., "/generate").
-            payload: JSON payload to send.
-            preferred_server: Optional server to try first before others.
+            request: Typed request model to serialize and send.
 
         Returns:
             JSON response from the server.
@@ -381,6 +384,9 @@ class RESTBackend(AsyncBackend):
         Raises:
             RESTBackendError: If all servers fail after retries.
         """
+        session = self._ensure_session()
+        payload = request.model_dump(mode="json")
+
         @retry(
             retry=retry_if_exception_type(AllServersFailedError),
             wait=WaitForServerRecovery(self._server_pool),
@@ -609,7 +615,7 @@ class RESTBackend(AsyncBackend):
 
     def generate(
         self,
-        requests: Iterable[GenerationRequest],
+        requests: Iterable[GenerateRequest],
         *,
         n: int,
         max_tokens: int,
@@ -623,43 +629,40 @@ class RESTBackend(AsyncBackend):
         """
         from place_layers.clients.types import GenerationResult
 
-        async def process_one(req: GenerationRequest) -> "GenerationResult":
-            payload = {
-                "messages": [{"role": m["role"], "content": m["content"]} for m in req.messages],
-                "n": n,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "request_id": req.key,
-                "placement": self._current_placement,
-            }
-            data = await self._call_with_failover("/generate", payload)
+        async def process_one(req: GenerateRequest) -> "GenerationResult":
+            server_request = ServerGenerateRequest(
+                key=req.key,
+                messages=req.messages,
+                n=n,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                placement=self._current_placement,
+            )
+            data = await self._call_with_failover("/generate", server_request)
             return GenerationResult.model_validate(data)
 
         return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
     async def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> AsyncIterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> AsyncIterator[ScoreTokensResult]:
         """Score token sequences, yielding results as they complete.
 
         Requests are distributed across healthy servers.
         Results may arrive in any order.
         """
 
-        async def process_one(req: TokenScoringRequest) -> TokenScoringResult:
-            payload = {
-                "traces": [
-                    {
-                        "prompt_tokens": list(req.prompt_tokens),
-                        "completion_tokens": list(req.completion_tokens),
-                    }
-                ],
-                "placement": self._current_placement,
-            }
-            data = await self._call_with_failover("/compute_log_probs", payload)
-            return TokenScoringResult(key=req.key, log_prob=data["log_probs"][0])
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult:
+            server_request = ServerScoreTokensRequest(
+                key=req.key,
+                prompt_tokens=req.prompt_tokens,
+                completion_tokens=req.completion_tokens,
+                placement=self._current_placement,
+            )
+            data = await self._call_with_failover("/score_tokens", server_request)
+            return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -668,34 +671,36 @@ class RESTBackend(AsyncBackend):
 
     async def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> AsyncIterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> AsyncIterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: TextScoringRequest) -> TextScoringResult:
+        async def process_one(req: ScoreTextRequest) -> ScoreTextResult:
             if not req.choices:
-                return TextScoringResult(key=req.key, results=())
+                return ScoreTextResult(key=req.key, results=[])
 
-            payload = {
-                "text_groups": [(req.context, list(req.choices))],
-                "placement": self._current_placement,
-            }
-            data = await self._call_with_failover("/batch_score_text", payload)
+            server_request = ServerScoreTextRequest(
+                key=req.key,
+                context=req.context,
+                choices=req.choices,
+                placement=self._current_placement,
+            )
+            data = await self._call_with_failover("/score_text", server_request)
 
-            results = tuple(
+            results = [
                 LogProbResult(
-                    token_ids=tuple(r["token_ids"]),
-                    logprobs=tuple(r["logprobs"]),
+                    token_ids=r["token_ids"],
+                    logprobs=r["logprobs"],
                     answer_range=tuple(r["answer_range"]),
                     total_log_prob=r["total_log_prob"],
                 )
                 for r in data["results"]
-            )
-            return TextScoringResult(key=req.key, results=results)
+            ]
+            return ScoreTextResult(key=req.key, results=results)
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -704,36 +709,36 @@ class RESTBackend(AsyncBackend):
 
     async def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> AsyncIterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> AsyncIterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: ChatScoringRequest) -> ChatScoringResult:
+        async def process_one(req: ScoreChatRequest) -> ScoreChatResult:
             if not req.completion_messages:
-                return ChatScoringResult(key=req.key, results=())
+                return ScoreChatResult(key=req.key, results=[])
 
-            payload = {
-                "chat_groups": [
-                    (list(req.context_messages), list(req.completion_messages))
-                ],
-                "placement": self._current_placement,
-            }
-            data = await self._call_with_failover("/batch_score_chat", payload)
+            server_request = ServerScoreChatRequest(
+                key=req.key,
+                context_messages=req.context_messages,
+                completion_messages=req.completion_messages,
+                placement=self._current_placement,
+            )
+            data = await self._call_with_failover("/score_chat", server_request)
 
-            results = tuple(
+            results = [
                 LogProbResult(
-                    token_ids=tuple(r["token_ids"]),
-                    logprobs=tuple(r["logprobs"]),
+                    token_ids=r["token_ids"],
+                    logprobs=r["logprobs"],
                     answer_range=tuple(r["answer_range"]),
                     total_log_prob=r["total_log_prob"],
                 )
                 for r in data["results"]
-            )
-            return ChatScoringResult(key=req.key, results=results)
+            ]
+            return ScoreChatResult(key=req.key, results=results)
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests

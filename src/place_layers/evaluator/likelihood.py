@@ -83,9 +83,9 @@ from pydantic import Field
 
 from place_layers.backend import (
     ChatMessage,
-    ChatScoringRequest,
     LogProbResult,
-    TextScoringRequest,
+    ScoreChatRequest,
+    ScoreTextRequest,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
@@ -269,7 +269,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                     tuple(context_msgs),
                     tuple(completion_msgs),
                 )
-                yield ChatScoringRequest(
+                yield ScoreChatRequest(
                     key=key,
                     context_messages=tuple(context_msgs),
                     completion_messages=tuple(completion_msgs),
@@ -330,7 +330,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
                 context, choices, metadata = self._build_choice_texts(task, doc)
                 key = f"{task_name}:{problem_idx}"
                 problems[key] = (problem_idx, metadata, context)
-                yield TextScoringRequest(
+                yield ScoreTextRequest(
                     key=key,
                     context=context,
                     choices=tuple(choices),

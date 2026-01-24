@@ -25,14 +25,14 @@ from pydantic import BaseModel, Field
 
 from place_layers.backend.types import (
     ChatMessage,
-    ChatScoringRequest,
-    ChatScoringResult,
-    GenerationRequest,
+    GenerateRequest,
     ModelStructure,
-    TextScoringRequest,
-    TextScoringResult,
-    TokenScoringRequest,
-    TokenScoringResult,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
 )
 
 if TYPE_CHECKING:
@@ -291,7 +291,7 @@ class AsyncBackend(ABC):
     @abstractmethod
     def generate(
         self,
-        requests: Iterable[GenerationRequest],
+        requests: Iterable[GenerateRequest],
         *,
         n: int,
         max_tokens: int,
@@ -317,8 +317,8 @@ class AsyncBackend(ABC):
     @abstractmethod
     def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> AsyncIterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> AsyncIterator[ScoreTokensResult]:
         """Score token sequences, yielding results as they complete.
 
         Results may arrive in any order. Use request.key to join with input.
@@ -327,15 +327,15 @@ class AsyncBackend(ABC):
             requests: Token scoring requests with keys.
 
         Yields:
-            TokenScoringResult with key and log_prob.
+            ScoreTokensResult with key and log_prob.
         """
         pass
 
     @abstractmethod
     def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> AsyncIterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> AsyncIterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Use request.key to join with input.
@@ -345,15 +345,15 @@ class AsyncBackend(ABC):
             requests: Text scoring requests with keys.
 
         Yields:
-            TextScoringResult with key and per-choice results.
+            ScoreTextResult with key and per-choice results.
         """
         pass
 
     @abstractmethod
     def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> AsyncIterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> AsyncIterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Use request.key to join with input.
@@ -363,7 +363,7 @@ class AsyncBackend(ABC):
             requests: Chat scoring requests with keys.
 
         Yields:
-            ChatScoringResult with key and per-choice results.
+            ScoreChatResult with key and per-choice results.
         """
         pass
 
@@ -411,7 +411,7 @@ class SyncBackend(ABC):
     @abstractmethod
     def generate(
         self,
-        requests: Iterable[GenerationRequest],
+        requests: Iterable[GenerateRequest],
         *,
         n: int,
         max_tokens: int,
@@ -437,8 +437,8 @@ class SyncBackend(ABC):
     @abstractmethod
     def score_tokens(
         self,
-        requests: Iterable[TokenScoringRequest],
-    ) -> Iterator[TokenScoringResult]:
+        requests: Iterable[ScoreTokensRequest],
+    ) -> Iterator[ScoreTokensResult]:
         """Score token sequences, yielding results as batches complete.
 
         Results are yielded in input order. Batching is handled internally.
@@ -447,15 +447,15 @@ class SyncBackend(ABC):
             requests: Token scoring requests with keys.
 
         Yields:
-            TokenScoringResult with key and log_prob.
+            ScoreTokensResult with key and log_prob.
         """
         pass
 
     @abstractmethod
     def score_text(
         self,
-        requests: Iterable[TextScoringRequest],
-    ) -> Iterator[TextScoringResult]:
+        requests: Iterable[ScoreTextRequest],
+    ) -> Iterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results are yielded in input order. Each result contains
@@ -465,15 +465,15 @@ class SyncBackend(ABC):
             requests: Text scoring requests with keys.
 
         Yields:
-            TextScoringResult with key and per-choice results.
+            ScoreTextResult with key and per-choice results.
         """
         pass
 
     @abstractmethod
     def score_chat(
         self,
-        requests: Iterable[ChatScoringRequest],
-    ) -> Iterator[ChatScoringResult]:
+        requests: Iterable[ScoreChatRequest],
+    ) -> Iterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results are yielded in input order. Each result contains
@@ -483,7 +483,7 @@ class SyncBackend(ABC):
             requests: Chat scoring requests with keys.
 
         Yields:
-            ChatScoringResult with key and per-choice results.
+            ScoreChatResult with key and per-choice results.
         """
         pass
 
