@@ -17,6 +17,7 @@ This design hides batching/concurrency from callers:
 from __future__ import annotations
 
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator
 from typing import TYPE_CHECKING, Any, ClassVar, Self, Sequence
@@ -45,9 +46,10 @@ if TYPE_CHECKING:
 
 
 def batched_map[T, R](
-    items: Iterable[T],
+    items: Iterable[T | None],
     process: Callable[[list[T]], Iterable[R]],
     batch_size: int,
+    flush_timeout: float | None = None,
 ) -> Iterator[R]:
     """Process items in batches, yielding results as batches complete.
 
@@ -58,9 +60,12 @@ def batched_map[T, R](
     to exactly one element.
 
     Args:
-        items: Items to process.
+        items: Items to process. If flush_timeout is set, None values are
+            treated as heartbeats for timeout checking.
         process: Function that takes a batch and returns results (1:1 with input).
         batch_size: Maximum items per batch.
+        flush_timeout: If set, flush partial batches after this many seconds
+            of no new items. Requires items to yield None as heartbeats.
 
     Yields:
         Results in input order.
@@ -80,15 +85,18 @@ def batched_map[T, R](
     def combine(key: int, results: list[R]) -> R:
         return results[0]
 
-    yield from batched_expand_map(items, expand, process_batch, combine, batch_size)
+    yield from batched_expand_map(
+        items, expand, process_batch, combine, batch_size, flush_timeout
+    )
 
 
 def batched_expand_map[In, K, E, R, Out](
-    items: Iterable[In],
+    items: Iterable[In | None],
     expand: Callable[[In], tuple[K, list[E]] | None],
     process_batch: Callable[[list[E]], list[R]],
     combine: Callable[[K, list[R]], Out],
     batch_size: int,
+    flush_timeout: float | None = None,
 ) -> Iterator[Out]:
     """Expand items into elements, batch elements, process, and recombine.
 
@@ -102,14 +110,21 @@ def batched_expand_map[In, K, E, R, Out](
     Questions are expanded to N sequences, sequences are batched for GPU
     efficiency, then results are recombined per question.
 
+    Streaming mode: When flush_timeout is set, the items iterator should
+    yield None as heartbeats. This allows timeout-based flushing even when
+    no new items are arriving, enabling true streaming from async sources.
+
     Args:
-        items: Input items to process.
+        items: Input items to process. If flush_timeout is set, None values
+            are treated as heartbeats for timeout checking.
         expand: Fan-out function. Returns (key, elements) or None to skip.
             The key identifies this input for recombining results.
         process_batch: Processes a batch of elements, returns results 1:1.
         combine: Fan-in function. Takes key and all results for that input,
             returns the final output.
         batch_size: Fixed batch size for element processing.
+        flush_timeout: If set, flush partial batches after this many seconds.
+            Requires items to yield None as heartbeats for timeout checks.
 
     Yields:
         Outputs in input order, as soon as all elements for an input complete.
@@ -126,27 +141,53 @@ def batched_expand_map[In, K, E, R, Out](
     # Track input order for yielding
     key_order: list[K] = []
 
-    def flush_batches() -> Iterator[Out]:
-        """Process complete batches and yield any completed outputs."""
+    # Track last flush time for timeout-based flushing
+    last_flush_time = time.monotonic() if flush_timeout else 0.0
+
+    def process_pending_batch(batch: list[tuple[K, int, E]]) -> Iterator[Out]:
+        """Process a batch of pending elements and yield completed outputs."""
+        nonlocal last_flush_time
+
+        # Process elements
+        elements = [elem for _, _, elem in batch]
+        batch_results = process_batch(elements)
+
+        # Store results by key
+        for (key, idx, _), result in zip(batch, batch_results):
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Update flush time
+        if flush_timeout:
+            last_flush_time = time.monotonic()
+
+        # Yield any completed outputs (in order)
+        yield from yield_completed()
+
+    def flush_full_batches() -> Iterator[Out]:
+        """Process complete batches (batch_size) and yield completed outputs."""
         nonlocal pending
 
         while len(pending) >= batch_size:
-            # Extract batch
             batch = pending[:batch_size]
             pending = pending[batch_size:]
+            yield from process_pending_batch(batch)
 
-            # Process elements
-            elements = [elem for _, _, elem in batch]
-            batch_results = process_batch(elements)
+    def flush_partial_batch() -> Iterator[Out]:
+        """Process any remaining pending elements as a partial batch."""
+        nonlocal pending
 
-            # Store results by key
-            for (key, idx, _), result in zip(batch, batch_results):
-                if key not in results_by_key:
-                    results_by_key[key] = []
-                results_by_key[key].append((idx, result))
+        if pending:
+            batch = pending
+            pending = []
+            yield from process_pending_batch(batch)
 
-            # Yield any completed outputs (in order)
-            yield from yield_completed()
+    def should_timeout_flush() -> bool:
+        """Check if we should flush due to timeout."""
+        if not flush_timeout or not pending:
+            return False
+        return time.monotonic() - last_flush_time >= flush_timeout
 
     def yield_completed() -> Iterator[Out]:
         """Yield outputs that have all their elements processed."""
@@ -170,6 +211,12 @@ def batched_expand_map[In, K, E, R, Out](
 
     # Process inputs
     for item in items:
+        # Handle heartbeats (None) for timeout checking
+        if item is None:
+            if should_timeout_flush():
+                yield from flush_partial_batch()
+            continue
+
         expanded = expand(item)
 
         if expanded is None:
@@ -193,19 +240,14 @@ def batched_expand_map[In, K, E, R, Out](
             pending.append((key, idx, elem))
 
         # Process any complete batches
-        yield from flush_batches()
+        yield from flush_full_batches()
+
+        # Also check timeout flush after adding new items
+        if should_timeout_flush():
+            yield from flush_partial_batch()
 
     # Drain remaining elements (final partial batch)
-    if pending:
-        elements = [elem for _, _, elem in pending]
-        batch_results = process_batch(elements)
-
-        for (key, idx, _), result in zip(pending, batch_results):
-            if key not in results_by_key:
-                results_by_key[key] = []
-            results_by_key[key].append((idx, result))
-
-        pending = []
+    yield from flush_partial_batch()
 
     # Yield any remaining completed outputs
     yield from yield_completed()
@@ -437,14 +479,18 @@ class SyncBackend(ABC):
     @abstractmethod
     def score_tokens(
         self,
-        requests: Iterable[ScoreTokensRequest],
+        requests: Iterable[ScoreTokensRequest | None],
     ) -> Iterator[ScoreTokensResult]:
         """Score token sequences, yielding results as batches complete.
 
         Results are yielded in input order. Batching is handled internally.
 
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
+
         Args:
-            requests: Token scoring requests with keys.
+            requests: Token scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
         Yields:
             ScoreTokensResult with key and log_prob.
@@ -454,15 +500,19 @@ class SyncBackend(ABC):
     @abstractmethod
     def score_text(
         self,
-        requests: Iterable[ScoreTextRequest],
+        requests: Iterable[ScoreTextRequest | None],
     ) -> Iterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results are yielded in input order. Each result contains
         LogProbResults for all choices in that request.
 
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
+
         Args:
-            requests: Text scoring requests with keys.
+            requests: Text scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
         Yields:
             ScoreTextResult with key and per-choice results.
@@ -472,15 +522,19 @@ class SyncBackend(ABC):
     @abstractmethod
     def score_chat(
         self,
-        requests: Iterable[ScoreChatRequest],
+        requests: Iterable[ScoreChatRequest | None],
     ) -> Iterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results are yielded in input order. Each result contains
         LogProbResults for all choices in that request.
 
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
+
         Args:
-            requests: Chat scoring requests with keys.
+            requests: Chat scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
         Yields:
             ScoreChatResult with key and per-choice results.

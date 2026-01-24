@@ -666,12 +666,13 @@ class TransformersBackend:
 
     def score_tokens(
         self,
-        requests: Iterable[ScoreTokensRequest],
+        requests: Iterable[ScoreTokensRequest | None],
     ) -> Iterator[ScoreTokensResult]:
         """Score token sequences, yielding results as batches complete.
 
         Chunks requests internally based on batch_size config.
-        Results are yielded in input order.
+        Results are yielded in input order. None values are heartbeats
+        for timeout-based flushing in streaming mode.
         """
 
         def process_batch(batch: list[ScoreTokensRequest]) -> list[ScoreTokensResult]:
@@ -693,17 +694,20 @@ class TransformersBackend:
                 for req, result in zip(batch, results)
             ]
 
-        yield from batched_map(requests, process_batch, self._config.batch_size)
+        yield from batched_map(
+            requests, process_batch, self._config.batch_size, self._config.flush_timeout
+        )
 
     def score_text(
         self,
-        requests: Iterable[ScoreTextRequest],
+        requests: Iterable[ScoreTextRequest | None],
     ) -> Iterator[ScoreTextResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Sequences are batched at fixed batch_size for GPU efficiency.
         A single request may span multiple batches if it has many choices.
-        Results are yielded in input order.
+        Results are yielded in input order. None values are heartbeats
+        for timeout-based flushing in streaming mode.
         """
         from place_layers.core.token_utils import find_differing_ranges
 
@@ -747,17 +751,19 @@ class TransformersBackend:
             process_batch,
             combine,
             self._config.batch_size,
+            self._config.flush_timeout,
         )
 
     def score_chat(
         self,
-        requests: Iterable[ScoreChatRequest],
+        requests: Iterable[ScoreChatRequest | None],
     ) -> Iterator[ScoreChatResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Sequences are batched at fixed batch_size for GPU efficiency.
         A single request may span multiple batches if it has many choices.
-        Results are yielded in input order.
+        Results are yielded in input order. None values are heartbeats
+        for timeout-based flushing in streaming mode.
         """
         from place_layers.core.token_utils import find_differing_ranges
 
@@ -808,6 +814,7 @@ class TransformersBackend:
             process_batch,
             combine,
             self._config.batch_size,
+            self._config.flush_timeout,
         )
 
     # =========================================================================
@@ -877,6 +884,10 @@ class TransformersBackendConfig(BaseBackendConfig):
         default=1,
         description="Number of prompts to batch together",
         gt=0,
+    )
+    flush_timeout: float | None = Field(
+        default=None,
+        description="Flush partial batches after this many seconds (for streaming)",
     )
     revision: str | None = Field(
         default=None,
