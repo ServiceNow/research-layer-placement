@@ -27,6 +27,7 @@ from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
     ChatScoringResult,
+    GenerationRequest,
     ModelStructure,
     TextScoringRequest,
     TextScoringResult,
@@ -288,28 +289,28 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
-    async def agenerate(
+    def generate(
         self,
-        messages: list[ChatMessage],
+        requests: Iterable[GenerationRequest],
         *,
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate n completions asynchronously.
+    ) -> AsyncIterator["GenerationResult"]:
+        """Generate completions, yielding results as they complete.
+
+        Results may arrive in any order. Use request_id to join with input.
 
         Args:
-            messages: Chat messages (list of role/content dicts).
-            n: Number of completions to generate.
+            requests: Generation requests with keys.
+            n: Number of completions per request.
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
             top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
 
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        Yields:
+            GenerationResult with request_id matching request.key.
         """
         pass
 
@@ -408,16 +409,29 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
-    def batch_generate(
+    def generate(
         self,
-        messages_batch: Sequence[list[ChatMessage]],
+        requests: Iterable[GenerationRequest],
         *,
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
-    ) -> list["GenerationResult"]:
-        """Generate n completions for each message sequence in batch."""
+    ) -> Iterator["GenerationResult"]:
+        """Generate completions, yielding results as batches complete.
+
+        Results are yielded in input order. Batching is handled internally.
+
+        Args:
+            requests: Generation requests with keys.
+            n: Number of completions per request.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+
+        Yields:
+            GenerationResult with request_id matching request.key.
+        """
         pass
 
     @abstractmethod

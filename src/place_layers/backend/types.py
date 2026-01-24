@@ -17,6 +17,17 @@ class ChatMessage(TypedDict):
 
 
 @dataclass(frozen=True)
+class GenerationRequest:
+    """Request to generate completions for a chat conversation."""
+
+    key: str
+    """Unique identifier for this request (returned with result)."""
+
+    messages: tuple[ChatMessage, ...]
+    """Chat messages for the conversation."""
+
+
+@dataclass(frozen=True)
 class ModelStructure:
     """Model structure for placement optimization.
 
@@ -29,6 +40,23 @@ class ModelStructure:
 
     mixer_names: tuple[str, ...]
     """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
+
+
+@dataclass(frozen=True)
+class SequenceScoringRequest:
+    """Request to score a single token sequence with specified answer range.
+
+    This is the internal/low-level scoring request used by _score_sequences.
+    Unlike TokenScoringRequest (which has separate prompt/completion),
+    this has pre-concatenated tokens with an explicit answer range
+    (determined by diff-based scoring for multiple-choice).
+    """
+
+    tokens: tuple[int, ...]
+    """Full token sequence to score."""
+
+    answer_range: tuple[int, int]
+    """(start, end) indices for tokens that contribute to total_log_prob."""
 
 
 @dataclass(frozen=True)

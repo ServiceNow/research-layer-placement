@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 
+from place_layers.backend.types import GenerationRequest
 from place_layers.server.schemas import (
     BatchGenerateRequest,
     LogProbResultSchema,
@@ -140,23 +141,28 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             if req.placement is not None:
                 backend.set_placement(req.placement)
 
-            # Convert messages to dict format expected by backend
-            messages = [m.model_dump() for m in req.messages]
+            # Convert messages to tuple format expected by backend
+            messages = tuple(
+                {"role": m.role, "content": m.content} for m in req.messages
+            )
 
-            # Generate (single prompt via batch API)
-            results = backend.batch_generate(
-                messages_batch=[messages],
+            # Create generation request
+            gen_request = GenerationRequest(
+                key=req.request_id,
+                messages=messages,  # type: ignore[arg-type]
+            )
+
+            # Generate (single request)
+            results = list(backend.generate(
+                [gen_request],
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
-            )
+            ))
             result = results[0]
 
-            # Add request_id to response
-            response = result.model_dump()
-            response["request_id"] = req.request_id
-            return response
+            return result.model_dump()
 
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -178,19 +184,25 @@ def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
             if req.placement is not None:
                 backend.set_placement(req.placement)
 
-            # Convert messages to dict format
-            messages_batch = [
-                [m.model_dump() for m in messages] for messages in req.messages_batch
+            # Create generation requests
+            requests = [
+                GenerationRequest(
+                    key=str(i),
+                    messages=tuple(
+                        {"role": m.role, "content": m.content} for m in messages
+                    ),  # type: ignore[arg-type]
+                )
+                for i, messages in enumerate(req.messages_batch)
             ]
 
             # Generate
-            results = backend.batch_generate(
-                messages_batch=messages_batch,
+            results = list(backend.generate(
+                requests,
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
-            )
+            ))
 
             return [r.model_dump() for r in results]
 

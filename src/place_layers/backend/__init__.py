@@ -22,6 +22,7 @@ from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
     ChatScoringResult,
+    GenerationRequest,
     LogProbResult,
     ModelStructure,
     TextScoringRequest,
@@ -52,6 +53,7 @@ __all__ = [
     "concurrent_map",
     # Types
     "ChatMessage",
+    "GenerationRequest",
     "LogProbResult",
     "ModelStructure",
     # Scoring request/result types

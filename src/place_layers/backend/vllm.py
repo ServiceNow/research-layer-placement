@@ -13,6 +13,7 @@ from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
     ChatScoringResult,
+    GenerationRequest,
     LogProbResult,
     ModelStructure,
     TextScoringRequest,
@@ -85,25 +86,32 @@ class VLLMBackend:
             mixer_names=self._client.mixer_names or (),
         )
 
-    async def agenerate(
+    def generate(
         self,
-        messages: list[ChatMessage],
+        requests: Iterable[GenerationRequest],
         *,
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate completions for a conversation."""
-        return await self._client.chat_generate(
-            messages=messages,  # type: ignore[arg-type]
-            n=n,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            request_id=request_id,
-        )
+    ) -> AsyncIterator["GenerationResult"]:
+        """Generate completions, yielding results as they complete.
+
+        Results may arrive in any order. Use request_id to join with input.
+        Concurrency is managed internally via semaphore.
+        """
+
+        async def process_one(req: GenerationRequest) -> "GenerationResult":
+            return await self._client.chat_generate(
+                messages=list(req.messages),  # type: ignore[arg-type]
+                n=n,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                request_id=req.key,
+            )
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
     async def score_tokens(
         self,

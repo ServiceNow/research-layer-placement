@@ -29,6 +29,7 @@ from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
     ChatScoringResult,
+    GenerationRequest,
     LogProbResult,
     ModelStructure,
     TextScoringRequest,
@@ -606,45 +607,36 @@ class RESTBackend(AsyncBackend):
             )
         return self._model_structure
 
-    async def agenerate(
+    def generate(
         self,
-        messages: list[ChatMessage],
+        requests: Iterable[GenerationRequest],
         *,
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate completions via REST server.
+    ) -> AsyncIterator["GenerationResult"]:
+        """Generate completions, yielding results as they complete.
 
-        Args:
-            messages: Chat messages for generation.
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional request identifier.
-
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        Results may arrive in any order. Use request_id to join with input.
+        Requests are distributed across healthy servers.
         """
         from place_layers.clients.types import GenerationResult
 
-        payload = {
-            "messages": messages,
-            "n": n,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "request_id": request_id,
-            "placement": self._current_placement,
-        }
+        async def process_one(req: GenerationRequest) -> "GenerationResult":
+            payload = {
+                "messages": [{"role": m["role"], "content": m["content"]} for m in req.messages],
+                "n": n,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "request_id": req.key,
+                "placement": self._current_placement,
+            }
+            data = await self._call_with_failover("/generate", payload)
+            return GenerationResult.model_validate(data)
 
-        # Use round-robin to select the preferred server for load balancing
-        preferred_server = self._server_pool.get_next_server_round_robin()
-        data = await self._call_with_failover("/generate", payload, preferred_server)
-        return GenerationResult.model_validate(data)
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
     async def score_tokens(
         self,

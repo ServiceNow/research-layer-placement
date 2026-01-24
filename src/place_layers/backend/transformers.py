@@ -21,8 +21,10 @@ from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
     ChatScoringResult,
+    GenerationRequest,
     LogProbResult,
     ModelStructure,
+    SequenceScoringRequest,
     TextScoringRequest,
     TextScoringResult,
     TokenScoringRequest,
@@ -228,35 +230,54 @@ class TransformersBackend:
     # Generation
     # =========================================================================
 
-    def batch_generate(
+    def generate(
         self,
-        messages_batch: Sequence[list[ChatMessage]],
+        requests: Iterable[GenerationRequest],
         *,
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
+    ) -> Iterator[GenerationResult]:
+        """Generate completions, yielding results as batches complete.
+
+        Batching is handled internally based on batch_size config.
+        Results are yielded in input order.
+        """
+
+        def process_batch(batch: list[GenerationRequest]) -> list[GenerationResult]:
+            return self._generate_batch(batch, n, max_tokens, temperature, top_p)
+
+        yield from batched_map(requests, process_batch, self._config.batch_size)
+
+    def _generate_batch(
+        self,
+        batch: list[GenerationRequest],
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
     ) -> list[GenerationResult]:
-        """Generate n completions for each message sequence (truly batched).
+        """Generate n completions for a batch of requests (internal).
 
         Tokenizes all message sequences together, runs a single batched generate call,
         and extracts log probabilities from generation scores.
         """
-        if not messages_batch:
+        if not batch:
             return []
 
-        batch_size = len(messages_batch)
+        batch_size = len(batch)
         mem_before = get_memory_stats()
         logger.debug(
-            f"batch_generate: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
+            f"_generate_batch: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
             f"GPU alloc={mem_before.gpu_allocated_gb:.2f}GB"
         )
 
         # Apply chat template to all message sequences
         prompt_texts = []
-        for messages in messages_batch:
+        for req in batch:
             prompt_text = self.tokenizer.apply_chat_template(
-                messages,  # type: ignore[arg-type]
+                list(req.messages),  # type: ignore[arg-type]
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -308,7 +329,7 @@ class TransformersBackend:
         results: list[GenerationResult] = []
         padded_prompt_len = input_ids.shape[1]
 
-        for prompt_idx in range(batch_size):
+        for prompt_idx, req in enumerate(batch):
             prompt_start = padded_prompt_len - prompt_lengths[prompt_idx]
             prompt_tokens = input_ids[prompt_idx, prompt_start:].tolist()
 
@@ -356,7 +377,7 @@ class TransformersBackend:
 
             results.append(
                 GenerationResult(
-                    request_id="",
+                    request_id=req.key,
                     samples=samples,
                     prompt_token_ids=prompt_tokens,
                 )
@@ -552,37 +573,34 @@ class TransformersBackend:
     @torch.inference_mode()
     def _score_sequences(
         self,
-        sequences: Sequence[Sequence[int]],
-        answer_ranges: Sequence[tuple[int, int]],
+        requests: Sequence[SequenceScoringRequest],
     ) -> list[LogProbResult]:
         """Score token sequences and compute log probs for specified ranges.
 
         This is the core batched scoring method used by all scoring APIs.
 
         Args:
-            sequences: Token sequences to score.
-            answer_ranges: (start, end) ranges for each sequence indicating which
-                tokens contribute to total_log_prob. Range is [start, end).
+            requests: Sequence scoring requests (tokens + answer_range).
 
         Returns:
-            LogProbResult for each sequence with full token_ids, per-token logprobs,
+            LogProbResult for each request with full token_ids, per-token logprobs,
             answer_range, and total_log_prob.
         """
-        if not sequences:
+        if not requests:
             return []
 
         # Prepare batched input with padding
-        max_len = max(len(seq) for seq in sequences)
+        max_len = max(len(req.tokens) for req in requests)
         pad_token_id = getattr(self.model.config, "pad_token_id", 0) or 0
 
         batch_input_ids = []
         attention_masks = []
 
-        for seq in sequences:
-            seq_list = list(seq)
-            padding_needed = max_len - len(seq_list)
-            padded = seq_list + [pad_token_id] * padding_needed
-            mask = [1] * len(seq_list) + [0] * padding_needed
+        for req in requests:
+            tokens = list(req.tokens)
+            padding_needed = max_len - len(tokens)
+            padded = tokens + [pad_token_id] * padding_needed
+            mask = [1] * len(tokens) + [0] * padding_needed
             batch_input_ids.append(padded)
             attention_masks.append(mask)
 
@@ -599,9 +617,10 @@ class TransformersBackend:
         # Build results
         results: list[LogProbResult] = []
 
-        for batch_idx, (seq, (start, end)) in enumerate(zip(sequences, answer_ranges)):
-            seq_list = list(seq)
-            seq_len = len(seq_list)
+        for batch_idx, req in enumerate(requests):
+            tokens = list(req.tokens)
+            seq_len = len(tokens)
+            start, end = req.answer_range
 
             if seq_len == 0:
                 results.append(
@@ -617,7 +636,7 @@ class TransformersBackend:
             # Build per-token logprobs (first token has no context, so None)
             all_logprobs: list[float | None] = [None]
             for pos in range(1, seq_len):
-                token_id = seq_list[pos]
+                token_id = tokens[pos]
                 # logits at position pos-1 predict token at position pos
                 lp = log_probs_tensor[batch_idx, pos - 1, token_id].item()
                 all_logprobs.append(lp)
@@ -632,7 +651,7 @@ class TransformersBackend:
 
             results.append(
                 LogProbResult(
-                    token_ids=tuple(seq_list),
+                    token_ids=tuple(tokens),
                     logprobs=tuple(all_logprobs),
                     answer_range=(start, end),
                     total_log_prob=total_log_prob,
@@ -655,26 +674,26 @@ class TransformersBackend:
         Results are yielded in input order.
         """
 
-        def process_batch(batch: list[TokenScoringRequest]) -> Iterator[TokenScoringResult]:
-            yield from self._process_token_batch(batch)
+        def process_batch(batch: list[TokenScoringRequest]) -> list[TokenScoringResult]:
+            score_requests = [
+                SequenceScoringRequest(
+                    tokens=tuple(req.prompt_tokens) + tuple(req.completion_tokens),
+                    answer_range=(
+                        len(req.prompt_tokens),
+                        len(req.prompt_tokens) + len(req.completion_tokens),
+                    ),
+                )
+                for req in batch
+            ]
+            results = self._score_sequences(score_requests)
             torch.cuda.empty_cache()
 
+            return [
+                TokenScoringResult(key=req.key, log_prob=result.total_log_prob)
+                for req, result in zip(batch, results)
+            ]
+
         yield from batched_map(requests, process_batch, self._config.batch_size)
-
-    def _process_token_batch(
-        self, batch: list[TokenScoringRequest]
-    ) -> Iterator[TokenScoringResult]:
-        """Process a batch of token scoring requests."""
-        sequences = [
-            list(req.prompt_tokens) + list(req.completion_tokens) for req in batch
-        ]
-        ranges = [
-            (len(req.prompt_tokens), len(sequences[i])) for i, req in enumerate(batch)
-        ]
-        results = self._score_sequences(sequences, ranges)
-
-        for req, result in zip(batch, results):
-            yield TokenScoringResult(key=req.key, log_prob=result.total_log_prob)
 
     def score_text(
         self,
@@ -690,7 +709,7 @@ class TransformersBackend:
 
         def expand(
             req: TextScoringRequest,
-        ) -> tuple[str, list[tuple[list[int], tuple[int, int]]]]:
+        ) -> tuple[str, list[SequenceScoringRequest]]:
             if not req.choices:
                 # Empty list triggers immediate yield of combine(key, [])
                 return (req.key, [])
@@ -705,18 +724,19 @@ class TransformersBackend:
             # Find answer token ranges using diff-based approach
             answer_ranges = find_differing_ranges(token_sequences)
 
-            # Return key and elements (sequence, range) pairs
-            elements: list[tuple[list[int], tuple[int, int]]] = list(
-                zip(token_sequences, answer_ranges)
+            # Return key and SequenceScoringRequest elements
+            return (
+                req.key,
+                [
+                    SequenceScoringRequest(tokens=tuple(seq), answer_range=rng)
+                    for seq, rng in zip(token_sequences, answer_ranges)
+                ],
             )
-            return (req.key, elements)
 
         def process_batch(
-            elements: list[tuple[list[int], tuple[int, int]]],
+            elements: list[SequenceScoringRequest],
         ) -> list[LogProbResult]:
-            sequences = [seq for seq, _ in elements]
-            ranges = [rng for _, rng in elements]
-            return self._score_sequences(sequences, ranges)
+            return self._score_sequences(elements)
 
         def combine(key: str, results: list[LogProbResult]) -> TextScoringResult:
             return TextScoringResult(key=key, results=tuple(results))
@@ -743,7 +763,7 @@ class TransformersBackend:
 
         def expand(
             req: ChatScoringRequest,
-        ) -> tuple[str, list[tuple[list[int], tuple[int, int]]]]:
+        ) -> tuple[str, list[SequenceScoringRequest]]:
             if not req.completion_messages:
                 # Empty list triggers immediate yield of combine(key, [])
                 return (req.key, [])
@@ -765,18 +785,19 @@ class TransformersBackend:
             # Find answer token ranges using diff-based approach
             answer_ranges = find_differing_ranges(token_sequences)
 
-            # Return key and elements (sequence, range) pairs
-            elements: list[tuple[list[int], tuple[int, int]]] = list(
-                zip(token_sequences, answer_ranges)
+            # Return key and SequenceScoringRequest elements
+            return (
+                req.key,
+                [
+                    SequenceScoringRequest(tokens=tuple(seq), answer_range=rng)
+                    for seq, rng in zip(token_sequences, answer_ranges)
+                ],
             )
-            return (req.key, elements)
 
         def process_batch(
-            elements: list[tuple[list[int], tuple[int, int]]],
+            elements: list[SequenceScoringRequest],
         ) -> list[LogProbResult]:
-            sequences = [seq for seq, _ in elements]
-            ranges = [rng for _, rng in elements]
-            return self._score_sequences(sequences, ranges)
+            return self._score_sequences(elements)
 
         def combine(key: str, results: list[LogProbResult]) -> ChatScoringResult:
             return ChatScoringResult(key=key, results=tuple(results))
