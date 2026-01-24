@@ -616,11 +616,6 @@ class RESTBackend(AsyncBackend):
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
     ) -> AsyncIterator["GenerationResult"]:
         """Generate completions, yielding results as they complete.
 
@@ -633,10 +628,10 @@ class RESTBackend(AsyncBackend):
             server_request = ServerGenerateRequest(
                 key=req.key,
                 messages=req.messages,
-                n=n,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
+                n=req.n,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
                 placement=self._current_placement,
             )
             data = await self._call_with_failover("/generate", server_request)

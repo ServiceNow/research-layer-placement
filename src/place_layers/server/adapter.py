@@ -2,7 +2,7 @@
 
 Provides a common interface for both sync and async backends:
 - AsyncBackendAdapter: Thin wrapper, forwards to backend directly
-- SyncBackendAdapter: Streaming bridge - converts async requests to sync iterator
+- SyncBackendAdapter: Streaming bridge - async requests flow to sync iterator
 
 The server uses these adapters transparently without knowing the backend type.
 """
@@ -13,10 +13,8 @@ import asyncio
 import logging
 import queue
 import threading
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
@@ -33,16 +31,6 @@ if TYPE_CHECKING:
     from place_layers.clients.types import GenerationResult
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class GenerationParams:
-    """Generation parameters (batch-level, not per-request)."""
-
-    n: int
-    max_tokens: int
-    temperature: float
-    top_p: float
 
 
 class BackendAdapter(ABC):
@@ -62,7 +50,6 @@ class BackendAdapter(ABC):
     async def generate_one(
         self,
         request: "GenerateRequest",
-        params: GenerationParams,
     ) -> "GenerationResult":
         """Generate completions for a single request."""
         pass
@@ -108,15 +95,8 @@ class AsyncBackendAdapter(BackendAdapter):
     async def generate_one(
         self,
         request: "GenerateRequest",
-        params: GenerationParams,
     ) -> "GenerationResult":
-        async for result in self._backend.generate(
-            [request],
-            n=params.n,
-            max_tokens=params.max_tokens,
-            temperature=params.temperature,
-            top_p=params.top_p,
-        ):
+        async for result in self._backend.generate([request]):
             return result
         raise RuntimeError("Backend returned no results")
 
@@ -146,135 +126,113 @@ class AsyncBackendAdapter(BackendAdapter):
 
 
 # =============================================================================
-# SyncBackendAdapter - Streaming bridge from async to sync
+# Streaming Bridge - connects async callers to sync iterator consumers
 # =============================================================================
 
 
 class _StreamingBridge[Req, Res]:
-    """Bridge async requests to a sync iterator with heartbeat-based flushing.
+    """Bridge async requests to a sync iterator.
 
-    Converts an infinite stream of async requests into a sync iterator that
-    the backend can consume. The backend handles batching internally with
-    timeout-based flushing triggered by None heartbeats.
+    Thread-safe bridge using two queues (no locks in async context):
+    - Request queue: carries requests from async to sync worker
+    - Future queue: tracks futures in FIFO order for result delivery
 
-    Pattern:
-    1. Async side submits requests via submit()
-    2. Worker thread runs backend method on the iterator from __iter__()
-    3. Results stream back via result_queue
-    4. Async side reads results and resolves futures
+    Flow:
+    1. Async caller submits (request, future) via submit()
+    2. Worker thread iterates via __iter__(), gets requests
+    3. Worker processes requests, calls deliver_result() with results
+    4. Results are dispatched to futures via call_soon_threadsafe()
+
+    Heartbeats (None values) are yielded on timeout to allow the backend's
+    batched_map to flush partial batches even when no requests arrive.
     """
 
-    # Sentinel to signal shutdown
     _SHUTDOWN = object()
 
-    def __init__(self, heartbeat_interval: float = 0.01) -> None:
+    def __init__(self, heartbeat_interval: float) -> None:
         self._heartbeat_interval = heartbeat_interval
-
-        # Request queue: (request, future) or _SHUTDOWN sentinel
-        self._request_queue: queue.Queue[
-            tuple[Req, asyncio.Future[Res]] | object
-        ] = queue.Queue()
-
-        # Result queue: (future, result | exception)
-        self._result_queue: queue.Queue[
-            tuple[asyncio.Future[Res], Res | BaseException]
-        ] = queue.Queue()
-
-        # Track pending futures in order
-        self._pending_futures: list[asyncio.Future[Res]] = []
-        self._lock = threading.Lock()
-
-        # Event loop for resolving futures from worker thread
+        self._request_queue: queue.Queue[Req | object] = queue.Queue()
+        self._future_queue: queue.Queue[asyncio.Future[Res]] = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Set the event loop for resolving futures."""
         self._loop = loop
 
     def submit(self, request: Req, future: asyncio.Future[Res]) -> None:
-        """Submit a request from the async side."""
-        with self._lock:
-            self._pending_futures.append(future)
-        self._request_queue.put((request, future))
+        """Submit a request from async context (non-blocking)."""
+        # Future first, then request - ensures future exists before result arrives
+        self._future_queue.put(future)
+        self._request_queue.put(request)
 
     def shutdown(self) -> None:
         """Signal the worker to stop."""
         self._request_queue.put(self._SHUTDOWN)
 
     def __iter__(self) -> Iterator[Req | None]:
-        """Iterate over requests, yielding None as heartbeats on timeout."""
+        """Yield requests to the sync consumer, with heartbeats on timeout."""
         while True:
             try:
                 item = self._request_queue.get(timeout=self._heartbeat_interval)
-
                 if item is self._SHUTDOWN:
                     return
-
-                request, _ = item  # type: ignore[misc]
-                yield request
-
+                yield item  # type: ignore[misc]
             except queue.Empty:
-                # Timeout - yield heartbeat for flush checking
-                yield None
+                yield None  # Heartbeat for timeout-based batch flushing
 
     def deliver_result(self, result: Res) -> None:
-        """Deliver a result from the worker thread (in input order)."""
-        with self._lock:
-            if not self._pending_futures:
-                logger.error("Result delivered but no pending futures")
-                return
-            future = self._pending_futures.pop(0)
+        """Deliver a result to the next pending future (called from worker)."""
+        try:
+            future = self._future_queue.get_nowait()
+        except queue.Empty:
+            logger.error("Result delivered but no pending future")
+            return
 
-        # Resolve future from worker thread via event loop
         if self._loop is not None:
             self._loop.call_soon_threadsafe(
-                lambda f=future, r=result: (
-                    f.set_result(r) if not f.done() else None
-                )
+                lambda f=future, r=result: f.set_result(r) if not f.done() else None
             )
 
     def deliver_exception(self, exc: BaseException) -> None:
-        """Deliver an exception to all pending futures."""
-        with self._lock:
-            futures = list(self._pending_futures)
-            self._pending_futures.clear()
+        """Deliver exception to all pending futures (called on worker failure)."""
+        futures: list[asyncio.Future[Res]] = []
+        while True:
+            try:
+                futures.append(self._future_queue.get_nowait())
+            except queue.Empty:
+                break
 
         if self._loop is not None:
             for future in futures:
                 self._loop.call_soon_threadsafe(
-                    lambda f=future, e=exc: (
-                        f.set_exception(e) if not f.done() else None
-                    )
+                    lambda f=future, e=exc: f.set_exception(e) if not f.done() else None
                 )
 
 
-@dataclass
-class _GenerateItem:
-    """Queued generation request."""
-
-    request: "GenerateRequest"
-    params: GenerationParams
-    future: asyncio.Future["GenerationResult"]
+# =============================================================================
+# SyncBackendAdapter - streaming bridge from async to sync
+# =============================================================================
 
 
 class SyncBackendAdapter(BackendAdapter):
-    """Adapter for SyncBackend - streaming bridge from async to sync.
+    """Adapter for SyncBackend using streaming bridges.
 
-    Uses _StreamingBridge to convert async requests into a sync iterator.
-    The backend handles all batching internally with timeout-based flushing.
-    No redundant batching in the adapter.
+    All operations use streaming bridges where requests flow continuously
+    to the backend. The backend handles batching internally via batched_map
+    (for scoring) or batched_map_by_key (for generation).
     """
 
     def __init__(
         self,
         backend: "SyncBackend",
-        batch_size: int = 32,  # Unused - backend handles batching
-        batch_timeout: float = 0.01,
+        heartbeat_interval: float = 0.01,
     ) -> None:
         self._backend = backend
-        self._batch_timeout = batch_timeout
+        self._heartbeat_interval = heartbeat_interval
 
-        # Streaming bridges for each scoring operation
+        # Streaming bridges for all operations
+        self._generate_bridge: _StreamingBridge[
+            "GenerateRequest", "GenerationResult"
+        ] | None = None
         self._score_tokens_bridge: _StreamingBridge[
             "ScoreTokensRequest", "ScoreTokensResult"
         ] | None = None
@@ -285,58 +243,50 @@ class SyncBackendAdapter(BackendAdapter):
             "ScoreChatRequest", "ScoreChatResult"
         ] | None = None
 
-        # Generate still uses queue-based approach (needs param grouping)
-        self._generate_queue: asyncio.Queue[_GenerateItem | None] = asyncio.Queue()
-
-        # Worker threads
         self._workers: list[threading.Thread] = []
-        self._generate_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def __aenter__(self) -> Self:
-        # Enter sync backend in thread pool
         await asyncio.to_thread(self._backend.__enter__)
-
         self._loop = asyncio.get_running_loop()
 
         # Create streaming bridges
-        self._score_tokens_bridge = _StreamingBridge(self._batch_timeout)
+        self._generate_bridge = _StreamingBridge(self._heartbeat_interval)
+        self._generate_bridge.set_loop(self._loop)
+
+        self._score_tokens_bridge = _StreamingBridge(self._heartbeat_interval)
         self._score_tokens_bridge.set_loop(self._loop)
 
-        self._score_text_bridge = _StreamingBridge(self._batch_timeout)
+        self._score_text_bridge = _StreamingBridge(self._heartbeat_interval)
         self._score_text_bridge.set_loop(self._loop)
 
-        self._score_chat_bridge = _StreamingBridge(self._batch_timeout)
+        self._score_chat_bridge = _StreamingBridge(self._heartbeat_interval)
         self._score_chat_bridge.set_loop(self._loop)
 
-        # Start worker threads for scoring (streaming)
+        # Start worker threads
         self._workers = [
             threading.Thread(
-                target=self._score_tokens_worker,
-                daemon=True,
-                name="score_tokens_worker",
+                target=self._run_generate, daemon=True, name="generate"
             ),
             threading.Thread(
-                target=self._score_text_worker,
-                daemon=True,
-                name="score_text_worker",
+                target=self._run_score_tokens, daemon=True, name="score_tokens"
             ),
             threading.Thread(
-                target=self._score_chat_worker,
-                daemon=True,
-                name="score_chat_worker",
+                target=self._run_score_text, daemon=True, name="score_text"
+            ),
+            threading.Thread(
+                target=self._run_score_chat, daemon=True, name="score_chat"
             ),
         ]
         for worker in self._workers:
             worker.start()
 
-        # Start generate worker as async task (still uses queue-based approach)
-        self._generate_task = asyncio.create_task(self._generate_worker())
-
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        # Signal workers to stop
+        # Signal all workers to stop
+        if self._generate_bridge:
+            self._generate_bridge.shutdown()
         if self._score_tokens_bridge:
             self._score_tokens_bridge.shutdown()
         if self._score_text_bridge:
@@ -344,30 +294,23 @@ class SyncBackendAdapter(BackendAdapter):
         if self._score_chat_bridge:
             self._score_chat_bridge.shutdown()
 
-        await self._generate_queue.put(None)
-
-        # Wait for workers to finish
+        # Wait for workers
         for worker in self._workers:
             worker.join(timeout=5.0)
 
-        if self._generate_task:
-            await self._generate_task
-
-        # Exit sync backend in thread pool
         await asyncio.to_thread(self._backend.__exit__, None, None, None)
 
     # =========================================================================
-    # Public methods
+    # Public API
     # =========================================================================
 
     async def generate_one(
         self,
         request: "GenerateRequest",
-        params: GenerationParams,
     ) -> "GenerationResult":
-        assert self._loop is not None
+        assert self._loop is not None and self._generate_bridge is not None
         future: asyncio.Future["GenerationResult"] = self._loop.create_future()
-        await self._generate_queue.put(_GenerateItem(request, params, future))
+        self._generate_bridge.submit(request, future)
         return await future
 
     async def score_tokens_one(
@@ -401,120 +344,56 @@ class SyncBackendAdapter(BackendAdapter):
     # Workers
     # =========================================================================
 
-    def _score_tokens_worker(self) -> None:
-        """Worker thread: consume requests from bridge, deliver results."""
+    def _run_generate(self) -> None:
+        """Worker thread: stream requests to backend, deliver results."""
+        assert self._generate_bridge is not None
+        try:
+            for result in self._backend.generate(self._generate_bridge):
+                self._generate_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("generate worker failed")
+            self._generate_bridge.deliver_exception(e)
+
+    def _run_score_tokens(self) -> None:
+        """Worker thread: stream requests to backend, deliver results."""
         assert self._score_tokens_bridge is not None
         try:
             for result in self._backend.score_tokens(self._score_tokens_bridge):
                 self._score_tokens_bridge.deliver_result(result)
         except Exception as e:
-            logger.exception("Token scoring worker failed")
+            logger.exception("score_tokens worker failed")
             self._score_tokens_bridge.deliver_exception(e)
 
-    def _score_text_worker(self) -> None:
-        """Worker thread: consume requests from bridge, deliver results."""
+    def _run_score_text(self) -> None:
+        """Worker thread: stream requests to backend, deliver results."""
         assert self._score_text_bridge is not None
         try:
             for result in self._backend.score_text(self._score_text_bridge):
                 self._score_text_bridge.deliver_result(result)
         except Exception as e:
-            logger.exception("Text scoring worker failed")
+            logger.exception("score_text worker failed")
             self._score_text_bridge.deliver_exception(e)
 
-    def _score_chat_worker(self) -> None:
-        """Worker thread: consume requests from bridge, deliver results."""
+    def _run_score_chat(self) -> None:
+        """Worker thread: stream requests to backend, deliver results."""
         assert self._score_chat_bridge is not None
         try:
             for result in self._backend.score_chat(self._score_chat_bridge):
                 self._score_chat_bridge.deliver_result(result)
         except Exception as e:
-            logger.exception("Chat scoring worker failed")
+            logger.exception("score_chat worker failed")
             self._score_chat_bridge.deliver_exception(e)
-
-    async def _generate_worker(self) -> None:
-        """Process generation requests with param grouping.
-
-        Generation still uses queue-based batching because requests need
-        to be grouped by params before being sent to the backend.
-        """
-        while True:
-            batch = await self._collect_generate_batch()
-            if batch is None:
-                break
-
-            # Group by params
-            by_params: dict[GenerationParams, list[_GenerateItem]] = {}
-            for item in batch:
-                by_params.setdefault(item.params, []).append(item)
-
-            # Process each param group
-            for params, group in by_params.items():
-                requests = [item.request for item in group]
-                futures = [item.future for item in group]
-
-                try:
-                    results = await asyncio.to_thread(
-                        lambda r=requests, p=params: list(
-                            self._backend.generate(
-                                r,
-                                n=p.n,
-                                max_tokens=p.max_tokens,
-                                temperature=p.temperature,
-                                top_p=p.top_p,
-                            )
-                        )
-                    )
-
-                    for future, result in zip(futures, results):
-                        if not future.done():
-                            future.set_result(result)
-
-                except Exception as e:
-                    logger.exception("Generation batch failed")
-                    for future in futures:
-                        if not future.done():
-                            future.set_exception(e)
-
-    async def _collect_generate_batch(self) -> list[_GenerateItem] | None:
-        """Collect generation requests with timeout."""
-        batch: list[_GenerateItem] = []
-
-        # Wait for first item
-        item = await self._generate_queue.get()
-        if item is None:
-            return None
-        batch.append(item)
-
-        # Collect more with timeout
-        deadline = time.monotonic() + self._batch_timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                item = await asyncio.wait_for(
-                    self._generate_queue.get(), timeout=remaining
-                )
-                if item is None:
-                    await self._generate_queue.put(None)
-                    break
-                batch.append(item)
-            except asyncio.TimeoutError:
-                break
-
-        return batch
 
 
 def create_adapter(
     backend: "AsyncBackend | SyncBackend",
-    batch_size: int = 32,
-    batch_timeout: float = 0.01,
+    heartbeat_interval: float = 0.01,
 ) -> BackendAdapter:
     """Create appropriate adapter for backend type."""
     from place_layers.backend.base import AsyncBackend, SyncBackend
 
     if isinstance(backend, SyncBackend):
-        return SyncBackendAdapter(backend, batch_size, batch_timeout)
+        return SyncBackendAdapter(backend, heartbeat_interval)
     elif isinstance(backend, AsyncBackend):
         return AsyncBackendAdapter(backend)
     else:

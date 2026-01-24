@@ -25,7 +25,6 @@ from place_layers.backend.types import (
 )
 from place_layers.server.adapter import (
     BackendAdapter,
-    GenerationParams,
     create_adapter,
 )
 from place_layers.server.schemas import (
@@ -152,12 +151,10 @@ def create_app(
                 else:
                     await backend.set_placement(req.placement)
 
-            # Convert to backend request
+            # Convert to backend request (includes key, messages, and generation params)
             gen_request = BackendGenerateRequest(
                 key=req.key,
                 messages=req.messages,
-            )
-            params = GenerationParams(
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
@@ -165,7 +162,7 @@ def create_app(
             )
 
             # Generate via adapter
-            result = await adapter.generate_one(gen_request, params)
+            result = await adapter.generate_one(gen_request)
             return result.model_dump()
 
         except ValueError as e:

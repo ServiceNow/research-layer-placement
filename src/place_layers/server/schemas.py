@@ -37,19 +37,7 @@ ChatMessageSchema = ChatMessage
 
 
 class GenerateRequest(BackendGenerateRequest):
-    """Request for generation (extends backend type with params + placement)."""
-
-    # Generation params (batch-level in backend, but per-request over REST)
-    n: int = Field(default=1, description="Number of completions to generate", ge=1)
-    max_tokens: int = Field(
-        default=512, description="Maximum tokens per completion", ge=1
-    )
-    temperature: float = Field(
-        default=0.0, description="Sampling temperature", ge=0.0, le=2.0
-    )
-    top_p: float = Field(
-        default=1.0, description="Nucleus sampling parameter", ge=0.0, le=1.0
-    )
+    """Request for generation (extends backend type with placement)."""
 
     # Optional placement
     placement: list[str] | None = Field(

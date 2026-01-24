@@ -3,7 +3,6 @@
 from place_layers.server.adapter import (
     AsyncBackendAdapter,
     BackendAdapter,
-    GenerationParams,
     SyncBackendAdapter,
     create_adapter,
 )

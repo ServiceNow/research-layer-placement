@@ -253,6 +253,72 @@ def batched_expand_map[In, K, E, R, Out](
     yield from yield_completed()
 
 
+def batched_map_by_key[T, K, R](
+    items: Iterable[T | None],
+    get_key: Callable[[T], K],
+    process: Callable[[K, list[T]], Iterable[R]],
+    batch_size: int,
+    flush_timeout: float | None = None,
+) -> Iterator[R]:
+    """Process items in batches, flushing when key changes.
+
+    Like batched_map, but groups consecutive items by key. A batch is flushed
+    when: (1) batch reaches batch_size, (2) key changes, or (3) timeout expires.
+
+    Use case: Generation requests where all items in a batch must share the
+    same parameters. When a request arrives with different params, flush the
+    current batch before starting a new one.
+
+    Args:
+        items: Items to process. None values are heartbeats for timeout checking.
+        get_key: Extract grouping key from item (e.g., generation params).
+        process: Function that takes (key, batch) and returns results 1:1.
+        batch_size: Maximum items per batch.
+        flush_timeout: Flush partial batches after this many seconds.
+
+    Yields:
+        Results in input order.
+    """
+    pending: list[T] = []
+    current_key: K | None = None
+    last_flush_time = time.monotonic() if flush_timeout else 0.0
+
+    def flush() -> Iterator[R]:
+        nonlocal pending, last_flush_time
+        if pending and current_key is not None:
+            yield from process(current_key, pending)
+            pending = []
+            if flush_timeout:
+                last_flush_time = time.monotonic()
+
+    def should_timeout_flush() -> bool:
+        if not flush_timeout or not pending:
+            return False
+        return time.monotonic() - last_flush_time >= flush_timeout
+
+    for item in items:
+        if item is None:  # Heartbeat
+            if should_timeout_flush():
+                yield from flush()
+            continue
+
+        item_key = get_key(item)
+
+        if current_key is not None and item_key != current_key:
+            yield from flush()
+
+        current_key = item_key
+        pending.append(item)
+
+        if len(pending) >= batch_size:
+            yield from flush()
+
+        if should_timeout_flush():
+            yield from flush()
+
+    yield from flush()
+
+
 async def concurrent_map[T, R](
     items: Iterable[T],
     process: Callable[[T], Coroutine[Any, Any, R]],
@@ -334,22 +400,14 @@ class AsyncBackend(ABC):
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
     ) -> AsyncIterator["GenerationResult"]:
         """Generate completions, yielding results as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
 
         Args:
-            requests: Generation requests with keys.
-            n: Number of completions per request.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
+            requests: Generation requests with keys and params.
 
         Yields:
             GenerationResult with request_id matching request.key.
@@ -453,23 +511,20 @@ class SyncBackend(ABC):
     @abstractmethod
     def generate(
         self,
-        requests: Iterable[GenerateRequest],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
+        requests: Iterable[GenerateRequest | None],
     ) -> Iterator["GenerationResult"]:
         """Generate completions, yielding results as batches complete.
 
         Results are yielded in input order. Batching is handled internally.
+        Requests with different generation params (n, max_tokens, temperature,
+        top_p) trigger a batch flush - only requests with identical params
+        are batched together.
+
+        Streaming mode: None values are heartbeats for timeout-based flushing.
 
         Args:
-            requests: Generation requests with keys.
-            n: Number of completions per request.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
+            requests: Generation requests with keys and params. None values
+                are heartbeats for timeout checking in streaming mode.
 
         Yields:
             GenerationResult with request_id matching request.key.

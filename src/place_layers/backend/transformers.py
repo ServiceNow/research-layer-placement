@@ -16,6 +16,7 @@ from place_layers.backend.base import (
     SyncBackend,
     batched_expand_map,
     batched_map,
+    batched_map_by_key,
 )
 from place_layers.backend.types import (
     ChatMessage,
@@ -230,25 +231,36 @@ class TransformersBackend:
     # Generation
     # =========================================================================
 
+    # Key type for generation batching (all params that must match within a batch)
+    _GenerateKey = tuple[int, int, float, float]  # (n, max_tokens, temperature, top_p)
+
     def generate(
         self,
-        requests: Iterable[GenerateRequest],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
+        requests: Iterable[GenerateRequest | None],
     ) -> Iterator[GenerationResult]:
         """Generate completions, yielding results as batches complete.
 
         Batching is handled internally based on batch_size config.
-        Results are yielded in input order.
+        Results are yielded in input order. Requests with different params
+        trigger a batch flush.
         """
 
-        def process_batch(batch: list[GenerateRequest]) -> list[GenerationResult]:
+        def get_key(req: GenerateRequest) -> TransformersBackend._GenerateKey:
+            return (req.n, req.max_tokens, req.temperature, req.top_p)
+
+        def process_batch(
+            key: TransformersBackend._GenerateKey, batch: list[GenerateRequest]
+        ) -> list[GenerationResult]:
+            n, max_tokens, temperature, top_p = key
             return self._generate_batch(batch, n, max_tokens, temperature, top_p)
 
-        yield from batched_map(requests, process_batch, self._config.batch_size)
+        yield from batched_map_by_key(
+            requests,
+            get_key,
+            process_batch,
+            self._config.batch_size,
+            self._config.flush_timeout,
+        )
 
     def _generate_batch(
         self,

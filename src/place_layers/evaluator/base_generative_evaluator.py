@@ -166,11 +166,15 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         logger.info(f"Processing {total} problems")
         log_memory(f"TASK {task_name} START")
 
-        # Build generation requests
+        # Build generation requests (params included in each request)
         requests = [
             GenerateRequest(
                 key=f"{task_name}:{idx}",
-                messages=tuple(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
             )
             for idx in remaining_indices
         ]
@@ -179,13 +183,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (yielded in input order)
-            results_iter = self._backend.generate(
-                requests,
-                n=self.config.samples_per_problem,
-                max_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-            )
+            results_iter = self._backend.generate(requests)
 
             for idx, result in zip(remaining_indices, results_iter):
                 doc = docs[idx]
@@ -255,11 +253,15 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         total = len(remaining_indices)
         processed_count = 0
 
-        # Build generation requests
+        # Build generation requests (params included in each request)
         requests = [
             GenerateRequest(
                 key=f"{task_name}:{idx}",
-                messages=tuple(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
             )
             for idx in remaining_indices
         ]
@@ -274,13 +276,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (may arrive in any order)
-            async for result in self._backend.generate(
-                requests,
-                n=self.config.samples_per_problem,
-                max_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-            ):
+            async for result in self._backend.generate(requests):
                 idx, doc = key_to_doc[result.request_id]
 
                 # Create records
