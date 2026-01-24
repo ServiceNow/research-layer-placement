@@ -11,7 +11,12 @@ import torch
 import torch.nn.functional as F
 from pydantic import Field
 
-from place_layers.backend.base import BaseBackendConfig, SyncBackend
+from place_layers.backend.base import (
+    BaseBackendConfig,
+    SyncBackend,
+    batched_expand_map,
+    batched_map,
+)
 from place_layers.backend.types import (
     ChatMessage,
     ChatScoringRequest,
@@ -552,8 +557,7 @@ class TransformersBackend:
     ) -> list[LogProbResult]:
         """Score token sequences and compute log probs for specified ranges.
 
-        This is the core batched scoring method. All compute_*_log_probs methods
-        call this with appropriate sequences and ranges.
+        This is the core batched scoring method used by all scoring APIs.
 
         Args:
             sequences: Token sequences to score.
@@ -637,6 +641,10 @@ class TransformersBackend:
 
         return results
 
+    # =========================================================================
+    # Scoring Methods (use batched_map / batched_expand_map)
+    # =========================================================================
+
     def score_tokens(
         self,
         requests: Iterable[TokenScoringRequest],
@@ -646,18 +654,12 @@ class TransformersBackend:
         Chunks requests internally based on batch_size config.
         Results are yielded in input order.
         """
-        batch: list[TokenScoringRequest] = []
 
-        for req in requests:
-            batch.append(req)
-            if len(batch) >= self._config.batch_size:
-                yield from self._process_token_batch(batch)
-                batch = []
-                torch.cuda.empty_cache()
-
-        if batch:
+        def process_batch(batch: list[TokenScoringRequest]) -> Iterator[TokenScoringResult]:
             yield from self._process_token_batch(batch)
             torch.cuda.empty_cache()
+
+        yield from batched_map(requests, process_batch, self._config.batch_size)
 
     def _process_token_batch(
         self, batch: list[TokenScoringRequest]
@@ -680,17 +682,20 @@ class TransformersBackend:
     ) -> Iterator[TextScoringResult]:
         """Score text continuations (multiple-choice), yielding as complete.
 
-        Each request is processed individually (diff-based scoring requires
-        all choices together). Results are yielded in input order.
+        Sequences are batched at fixed batch_size for GPU efficiency.
+        A single request may span multiple batches if it has many choices.
+        Results are yielded in input order.
         """
         from place_layers.core.token_utils import find_differing_ranges
 
-        for req in requests:
+        def expand(
+            req: TextScoringRequest,
+        ) -> tuple[str, list[tuple[list[int], tuple[int, int]]]]:
             if not req.choices:
-                yield TextScoringResult(key=req.key, results=())
-                continue
+                # Empty list triggers immediate yield of combine(key, [])
+                return (req.key, [])
 
-            # Tokenize all (context + choice) sequences for this group
+            # Tokenize all (context + choice) sequences
             token_sequences: list[list[int]] = []
             for choice in req.choices:
                 ctx_tokens = self.tokenizer.encode(req.context, add_special_tokens=True)
@@ -700,11 +705,29 @@ class TransformersBackend:
             # Find answer token ranges using diff-based approach
             answer_ranges = find_differing_ranges(token_sequences)
 
-            # Score sequences
-            results = self._score_sequences(token_sequences, answer_ranges)
+            # Return key and elements (sequence, range) pairs
+            elements: list[tuple[list[int], tuple[int, int]]] = list(
+                zip(token_sequences, answer_ranges)
+            )
+            return (req.key, elements)
 
-            yield TextScoringResult(key=req.key, results=tuple(results))
-            torch.cuda.empty_cache()
+        def process_batch(
+            elements: list[tuple[list[int], tuple[int, int]]],
+        ) -> list[LogProbResult]:
+            sequences = [seq for seq, _ in elements]
+            ranges = [rng for _, rng in elements]
+            return self._score_sequences(sequences, ranges)
+
+        def combine(key: str, results: list[LogProbResult]) -> TextScoringResult:
+            return TextScoringResult(key=key, results=tuple(results))
+
+        yield from batched_expand_map(
+            requests,
+            expand,
+            process_batch,
+            combine,
+            self._config.batch_size,
+        )
 
     def score_chat(
         self,
@@ -712,17 +735,20 @@ class TransformersBackend:
     ) -> Iterator[ChatScoringResult]:
         """Score chat completions (multiple-choice), yielding as complete.
 
-        Each request is processed individually (diff-based scoring requires
-        all choices together). Results are yielded in input order.
+        Sequences are batched at fixed batch_size for GPU efficiency.
+        A single request may span multiple batches if it has many choices.
+        Results are yielded in input order.
         """
         from place_layers.core.token_utils import find_differing_ranges
 
-        for req in requests:
+        def expand(
+            req: ChatScoringRequest,
+        ) -> tuple[str, list[tuple[list[int], tuple[int, int]]]]:
             if not req.completion_messages:
-                yield ChatScoringResult(key=req.key, results=())
-                continue
+                # Empty list triggers immediate yield of combine(key, [])
+                return (req.key, [])
 
-            # Tokenize all (context + choice) sequences for this group
+            # Tokenize all (context + completion) sequences
             token_sequences: list[list[int]] = []
             for comp_msg in req.completion_messages:
                 full_msgs = list(req.context_messages) + [comp_msg]
@@ -739,11 +765,29 @@ class TransformersBackend:
             # Find answer token ranges using diff-based approach
             answer_ranges = find_differing_ranges(token_sequences)
 
-            # Score sequences
-            results = self._score_sequences(token_sequences, answer_ranges)
+            # Return key and elements (sequence, range) pairs
+            elements: list[tuple[list[int], tuple[int, int]]] = list(
+                zip(token_sequences, answer_ranges)
+            )
+            return (req.key, elements)
 
-            yield ChatScoringResult(key=req.key, results=tuple(results))
-            torch.cuda.empty_cache()
+        def process_batch(
+            elements: list[tuple[list[int], tuple[int, int]]],
+        ) -> list[LogProbResult]:
+            sequences = [seq for seq, _ in elements]
+            ranges = [rng for _, rng in elements]
+            return self._score_sequences(sequences, ranges)
+
+        def combine(key: str, results: list[LogProbResult]) -> ChatScoringResult:
+            return ChatScoringResult(key=key, results=tuple(results))
+
+        yield from batched_expand_map(
+            requests,
+            expand,
+            process_batch,
+            combine,
+            self._config.batch_size,
+        )
 
     # =========================================================================
     # Placement

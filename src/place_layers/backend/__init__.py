@@ -14,6 +14,9 @@ from place_layers.backend.base import (
     AsyncBackend,
     BaseBackendConfig,
     SyncBackend,
+    batched_expand_map,
+    batched_map,
+    concurrent_map,
 )
 from place_layers.backend.types import (
     ChatMessage,
@@ -43,6 +46,10 @@ __all__ = [
     "SyncBackend",
     "BaseBackendConfig",
     "BackendConfig",
+    # Helper functions
+    "batched_map",
+    "batched_expand_map",
+    "concurrent_map",
     # Types
     "ChatMessage",
     "LogProbResult",
