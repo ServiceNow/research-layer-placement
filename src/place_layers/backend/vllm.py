@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Iterable
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence
+from typing import Annotated, ClassVar, Literal, Self, Sequence
 
 from pydantic import Field
 
-from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
+from place_layers.backend.base import (
+    AsyncBackend,
+    BaseBackendConfig,
+    concurrent_expand_map,
+    concurrent_map,
+)
 from place_layers.backend.types import (
     ChatMessage,
+    ChatScoringElement,
     GenerateRequest,
     LogProbResult,
     ModelStructure,
@@ -20,12 +25,12 @@ from place_layers.backend.types import (
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    TextScoringElement,
 )
+from place_layers.clients.base_vllm import BaseVLLMClient
 from place_layers.clients.local_vllm import LocalVLLMClient, LocalVLLMClientConfig
 from place_layers.clients.remote_vllm import RemoteVLLMClient, RemoteVLLMClientConfig
-
-if TYPE_CHECKING:
-    from place_layers.clients.types import GenerationResult, SequenceLogProbs
+from place_layers.clients.types import GenerationResult, SequenceLogProbs
 
 
 VLLMClientConfig = Annotated[
@@ -34,7 +39,7 @@ VLLMClientConfig = Annotated[
 ]
 
 
-class VLLMBackend:
+class VLLMBackend(AsyncBackend):
     """Async generation backend using vLLM (local in-process or remote HTTP).
 
     Supports both:
@@ -46,7 +51,7 @@ class VLLMBackend:
 
     def __init__(self, config: "VLLMBackendConfig") -> None:
         self._config = config
-        self._client: LocalVLLMClient | RemoteVLLMClient
+        self._client: BaseVLLMClient
 
         if isinstance(config.client, LocalVLLMClientConfig):
             self._client = LocalVLLMClient(config.client)
@@ -89,25 +94,21 @@ class VLLMBackend:
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-    ) -> AsyncIterator["GenerationResult"]:
+    ) -> AsyncIterator[GenerationResult]:
         """Generate completions, yielding results as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
         Concurrency is managed internally via semaphore.
         """
 
-        async def process_one(req: GenerateRequest) -> "GenerationResult":
+        async def process_one(req: GenerateRequest) -> GenerationResult:
             return await self._client.chat_generate(
-                messages=list(req.messages),  # type: ignore[arg-type]
-                n=n,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
+                messages=req.messages,
+                n=req.n,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
                 request_id=req.key,
             )
 
@@ -125,7 +126,7 @@ class VLLMBackend:
 
         async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult:
             result = await self._client.score_token_completion(
-                list(req.prompt_tokens), list(req.completion_tokens)
+                req.prompt_tokens, req.completion_tokens
             )
             return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
 
@@ -135,8 +136,8 @@ class VLLMBackend:
             yield result
 
     def _build_diff_results(
-        self, results: Sequence["SequenceLogProbs"]
-    ) -> tuple[LogProbResult, ...]:
+        self, results: Sequence[SequenceLogProbs]
+    ) -> list[LogProbResult]:
         """Build LogProbResults using diff-based scoring.
 
         Finds where token sequences diverge across choices and computes
@@ -162,7 +163,7 @@ class VLLMBackend:
                     total_log_prob=sum(answer_logprobs),
                 )
             )
-        return tuple(log_prob_results)
+        return log_prob_results
 
     async def score_text(
         self,
@@ -174,21 +175,30 @@ class VLLMBackend:
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: ScoreTextRequest) -> ScoreTextResult:
-            if not req.choices:
-                return ScoreTextResult(key=req.key, results=())
-
-            tasks = [
-                self._client.score_text_completion(req.context, choice)
-                for choice in req.choices
-            ]
-            results = await asyncio.gather(*tasks)
-            return ScoreTextResult(
-                key=req.key, results=self._build_diff_results(results)
+        def expand(
+            req: ScoreTextRequest,
+        ) -> tuple[str, list[TextScoringElement]]:
+            # Fan-out: one request -> list of text scoring elements
+            return (
+                req.key,
+                [
+                    TextScoringElement(context=req.context, continuation=choice)
+                    for choice in req.choices
+                ],
             )
 
-        async for result in concurrent_map(
-            requests, process_one, self.max_concurrent_requests
+        async def process_one(element: TextScoringElement) -> SequenceLogProbs:
+            return await self._client.score_text_completion(
+                element.context, element.continuation
+            )
+
+        def combine(key: str, results: list[SequenceLogProbs]) -> ScoreTextResult:
+            if not results:
+                return ScoreTextResult(key=key, results=[])
+            return ScoreTextResult(key=key, results=self._build_diff_results(results))
+
+        async for result in concurrent_expand_map(
+            requests, expand, process_one, combine, self.max_concurrent_requests
         ):
             yield result
 
@@ -202,24 +212,33 @@ class VLLMBackend:
         for that request (diff-based scoring requires all choices together).
         """
 
-        async def process_one(req: ScoreChatRequest) -> ScoreChatResult:
-            if not req.completion_messages:
-                return ScoreChatResult(key=req.key, results=())
-
-            tasks = [
-                self._client.score_chat_completion(
-                    list(req.context_messages),  # type: ignore[arg-type]
-                    [comp_msg],  # Single message wrapped in list
-                )
-                for comp_msg in req.completion_messages
-            ]
-            results = await asyncio.gather(*tasks)
-            return ScoreChatResult(
-                key=req.key, results=self._build_diff_results(results)
+        def expand(
+            req: ScoreChatRequest,
+        ) -> tuple[str, list[ChatScoringElement]]:
+            # Fan-out: one request -> list of chat scoring elements
+            return (
+                req.key,
+                [
+                    ChatScoringElement(
+                        context_messages=list(req.context_messages),
+                        completion_message=comp_msg,
+                    )
+                    for comp_msg in req.completion_messages
+                ],
             )
 
-        async for result in concurrent_map(
-            requests, process_one, self.max_concurrent_requests
+        async def process_one(element: ChatScoringElement) -> SequenceLogProbs:
+            return await self._client.score_chat_completion(
+                element.context_messages, [element.completion_message]
+            )
+
+        def combine(key: str, results: list[SequenceLogProbs]) -> ScoreChatResult:
+            if not results:
+                return ScoreChatResult(key=key, results=[])
+            return ScoreChatResult(key=key, results=self._build_diff_results(results))
+
+        async for result in concurrent_expand_map(
+            requests, expand, process_one, combine, self.max_concurrent_requests
         ):
             yield result
 

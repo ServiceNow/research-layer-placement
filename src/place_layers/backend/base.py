@@ -319,16 +319,158 @@ def batched_map_by_key[T, K, R](
     yield from flush()
 
 
+async def concurrent_expand_map[In, K, E, R, Out](
+    items: Iterable[In],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Expand items into elements, process concurrently, and recombine.
+
+    Async equivalent of batched_expand_map for fan-out/fan-in patterns.
+    Instead of batching elements for GPU efficiency, processes elements
+    concurrently with a semaphore limit.
+
+    Pattern: fan-out → concurrent process → fan-in
+
+    Example: Multiple-choice scoring where each question has N choices.
+    Questions are expanded to N scoring requests, requests are processed
+    concurrently (up to max_concurrent), then results are recombined
+    per question.
+
+    Args:
+        items: Input items to process.
+        expand: Fan-out function. Returns (key, elements) or None to skip.
+            The key identifies this input for recombining results.
+        process_one: Async function to process a single element.
+        combine: Fan-in function. Takes key and all results for that input,
+            returns the final output.
+        max_concurrent: Maximum concurrent process_one calls.
+
+    Yields:
+        Outputs in input order, as soon as all elements for an input complete.
+    """
+    # Track results per key: key -> [(index, result), ...]
+    results_by_key: dict[K, list[tuple[int, R]]] = {}
+
+    # Track expected element count per key
+    expected_counts: dict[K, int] = {}
+
+    # Track input order for yielding
+    key_order: list[K] = []
+
+    # Pending tasks: set of tasks, each tagged with (key, idx)
+    pending: set[asyncio.Task[tuple[K, int, R]]] = set()
+
+    # Element buffer: elements waiting to be scheduled
+    buffer: list[tuple[K, int, E]] = []
+
+    # Item iterator
+    items_iter = iter(items)
+    items_exhausted = False
+
+    async def process_with_key(key: K, idx: int, element: E) -> tuple[K, int, R]:
+        result = await process_one(element)
+        return (key, idx, result)
+
+    def expand_more_items() -> None:
+        """Expand items to fill the buffer."""
+        nonlocal items_exhausted
+
+        while len(buffer) + len(pending) < max_concurrent and not items_exhausted:
+            try:
+                item = next(items_iter)
+            except StopIteration:
+                items_exhausted = True
+                break
+
+            expanded = expand(item)
+            if expanded is None:
+                continue
+
+            key, elements = expanded
+            key_order.append(key)
+            expected_counts[key] = len(elements)
+
+            if not elements:
+                # Empty expansion - immediately ready
+                results_by_key[key] = []
+            else:
+                for idx, elem in enumerate(elements):
+                    buffer.append((key, idx, elem))
+
+    def schedule_from_buffer() -> None:
+        """Move elements from buffer to pending tasks."""
+        while buffer and len(pending) < max_concurrent:
+            key, idx, elem = buffer.pop(0)
+            task = asyncio.create_task(process_with_key(key, idx, elem))
+            pending.add(task)
+
+    def yield_completed() -> Iterator[Out]:
+        """Yield outputs for keys that have all results, in input order."""
+        while key_order:
+            key = key_order[0]
+
+            if key not in results_by_key:
+                break
+            if len(results_by_key[key]) != expected_counts[key]:
+                break
+
+            # All results for this key - combine and yield
+            results = results_by_key.pop(key)
+            del expected_counts[key]
+            key_order.pop(0)
+
+            results.sort(key=lambda x: x[0])
+            ordered_results = [r for _, r in results]
+            yield combine(key, ordered_results)
+
+    # Initial setup
+    expand_more_items()
+    schedule_from_buffer()
+
+    # Yield any empty expansions that are already complete
+    for out in yield_completed():
+        yield out
+
+    # Main loop
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        # Collect results
+        for task in done:
+            key, idx, result = task.result()
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Yield completed outputs
+        for out in yield_completed():
+            yield out
+
+        # Refill
+        expand_more_items()
+        schedule_from_buffer()
+
+    # Final yield (for any remaining completed outputs)
+    for out in yield_completed():
+        yield out
+
+
 async def concurrent_map[T, R](
     items: Iterable[T],
     process: Callable[[T], Coroutine[Any, Any, R]],
     max_concurrent: int,
 ) -> AsyncIterator[R]:
-    """Process items concurrently, yielding results as they complete.
+    """Process items concurrently, yielding results in input order.
 
-    Maintains up to max_concurrent tasks in flight. As each completes,
-    yields its result and schedules the next item. Results are yielded
-    in completion order, not input order.
+    Maintains up to max_concurrent tasks in flight. Results are yielded
+    in input order (waits for earlier items to complete before yielding
+    later ones).
+
+    This is a convenience wrapper around concurrent_expand_map for 1:1
+    item-to-result mappings.
 
     Args:
         items: Items to process.
@@ -336,35 +478,23 @@ async def concurrent_map[T, R](
         max_concurrent: Maximum concurrent tasks.
 
     Yields:
-        Results in completion order.
+        Results in input order.
     """
-    pending: set[asyncio.Task[R]] = set()
-    items_iter = iter(items)
-    done_iterating = False
+    item_id = 0
 
-    # Fill up to max_concurrent
-    for item in items_iter:
-        pending.add(asyncio.create_task(process(item)))
-        if len(pending) >= max_concurrent:
-            break
-    else:
-        done_iterating = True
+    def expand(item: T) -> tuple[int, list[T]]:
+        nonlocal item_id
+        key = item_id
+        item_id += 1
+        return (key, [item])
 
-    # Process until all done
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+    def combine(key: int, results: list[R]) -> R:
+        return results[0]
 
-        for task in done:
-            yield task.result()
-
-        # Refill from remaining items
-        if not done_iterating:
-            for item in items_iter:
-                pending.add(asyncio.create_task(process(item)))
-                if len(pending) >= max_concurrent:
-                    break
-            else:
-                done_iterating = True
+    async for result in concurrent_expand_map(
+        items, expand, process, combine, max_concurrent
+    ):
+        yield result
 
 
 # =============================================================================

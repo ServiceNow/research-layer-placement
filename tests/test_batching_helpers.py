@@ -26,6 +26,7 @@ from place_layers.backend.base import (
     batched_expand_map,
     batched_map,
     batched_map_by_key,
+    concurrent_expand_map,
     concurrent_map,
 )
 
@@ -715,12 +716,12 @@ class TestConcurrentMap:
                 pass
 
     @pytest.mark.asyncio
-    async def test_results_yielded_as_completed(self):
-        """Results are yielded as they complete, not in input order."""
+    async def test_results_yielded_in_input_order(self):
+        """Results are yielded in input order, not completion order."""
         completion_order: list[int] = []
 
         async def process(x: int) -> int:
-            # Items complete in reverse order
+            # Items complete in reverse order (5 finishes first, 1 finishes last)
             await asyncio.sleep((5 - x) * 0.01)
             completion_order.append(x)
             return x
@@ -729,10 +730,11 @@ class TestConcurrentMap:
         async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=5):
             results.append(result)
 
-        # With varying delays, higher numbers complete first
-        # (5 has 0 delay, 1 has 0.04 delay)
-        assert results[0] == 5  # Fastest completes first
-        assert sorted(results) == [1, 2, 3, 4, 5]
+        # Even though items complete in reverse order (5, 4, 3, 2, 1),
+        # results are yielded in input order
+        assert results == [1, 2, 3, 4, 5]
+        # But internally they completed in reverse order
+        assert completion_order == [5, 4, 3, 2, 1]
 
 
 # =============================================================================
@@ -1287,3 +1289,239 @@ class TestSyncBackendAdapterIntegration:
 
             with pytest.raises(RuntimeError, match="GPU exploded"):
                 await adapter.generate_one(request)
+
+
+# =============================================================================
+# concurrent_expand_map tests
+# =============================================================================
+
+
+class TestConcurrentExpandMap:
+    """Tests for concurrent_expand_map - async fan-out/fan-in with concurrency control."""
+
+    @pytest.mark.asyncio
+    async def test_basic_expand_and_combine(self):
+        """Basic fan-out, concurrent processing, and fan-in."""
+        # Input: requests with multiple choices each
+        requests = [
+            ("req1", ["a", "b", "c"]),
+            ("req2", ["x", "y"]),
+        ]
+
+        def expand(req: tuple[str, list[str]]) -> tuple[str, list[str]]:
+            key, choices = req
+            return (key, choices)
+
+        async def process_one(choice: str) -> str:
+            await asyncio.sleep(0.01)
+            return choice.upper()
+
+        def combine(key: str, results: list[str]) -> tuple[str, list[str]]:
+            return (key, results)
+
+        results: list[tuple[str, list[str]]] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=10
+        ):
+            results.append(result)
+
+        # Results should be in input order
+        assert results == [
+            ("req1", ["A", "B", "C"]),
+            ("req2", ["X", "Y"]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_respects_max_concurrent(self):
+        """Never exceeds max_concurrent active process_one calls."""
+        concurrent_count = 0
+        max_observed = 0
+
+        requests = [
+            ("req1", [1, 2, 3, 4]),
+            ("req2", [5, 6, 7, 8]),
+        ]
+
+        def expand(req: tuple[str, list[int]]) -> tuple[str, list[int]]:
+            return req
+
+        async def process_one(x: int) -> int:
+            nonlocal concurrent_count, max_observed
+            concurrent_count += 1
+            max_observed = max(max_observed, concurrent_count)
+            await asyncio.sleep(0.02)
+            concurrent_count -= 1
+            return x * 10
+
+        def combine(key: str, results: list[int]) -> tuple[str, list[int]]:
+            return (key, results)
+
+        results: list[tuple[str, list[int]]] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=3
+        ):
+            results.append(result)
+
+        assert max_observed <= 3
+        assert results == [
+            ("req1", [10, 20, 30, 40]),
+            ("req2", [50, 60, 70, 80]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_empty_expansion_yields_immediately(self):
+        """Empty expansion yields combined result immediately."""
+        requests = [
+            ("req1", [1, 2]),
+            ("req2", []),  # Empty
+            ("req3", [3]),
+        ]
+
+        def expand(req: tuple[str, list[int]]) -> tuple[str, list[int]]:
+            return req
+
+        async def process_one(x: int) -> int:
+            return x * 10
+
+        def combine(key: str, results: list[int]) -> tuple[str, list[int]]:
+            return (key, results)
+
+        results: list[tuple[str, list[int]]] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=5
+        ):
+            results.append(result)
+
+        # All results in order, including empty one
+        assert results == [
+            ("req1", [10, 20]),
+            ("req2", []),
+            ("req3", [30]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_preserves_input_order(self):
+        """Results are yielded in input order even if elements complete out of order."""
+        requests = [
+            ("slow", [1]),  # Will take longer
+            ("fast", [2]),  # Will complete first
+        ]
+
+        def expand(req: tuple[str, list[int]]) -> tuple[str, list[int]]:
+            return req
+
+        async def process_one(x: int) -> int:
+            # Item 1 is slow, item 2 is fast
+            await asyncio.sleep(0.05 if x == 1 else 0.01)
+            return x
+
+        def combine(key: str, results: list[int]) -> tuple[str, list[int]]:
+            return (key, results)
+
+        results: list[tuple[str, list[int]]] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=5
+        ):
+            results.append(result)
+
+        # "slow" comes first even though "fast" element completed first
+        assert results == [("slow", [1]), ("fast", [2])]
+
+    @pytest.mark.asyncio
+    async def test_skip_none_expansion(self):
+        """expand returning None skips that input."""
+        requests = [
+            ("req1", [1]),
+            ("skip", [2]),  # Will be skipped
+            ("req3", [3]),
+        ]
+
+        def expand(req: tuple[str, list[int]]) -> tuple[str, list[int]] | None:
+            if req[0] == "skip":
+                return None
+            return req
+
+        async def process_one(x: int) -> int:
+            return x * 10
+
+        def combine(key: str, results: list[int]) -> tuple[str, list[int]]:
+            return (key, results)
+
+        results: list[tuple[str, list[int]]] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=5
+        ):
+            results.append(result)
+
+        assert results == [("req1", [10]), ("req3", [30])]
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates(self):
+        """Exception in process_one propagates correctly."""
+        requests = [
+            ("req1", [1, 2, 3]),
+        ]
+
+        def expand(req: tuple[str, list[int]]) -> tuple[str, list[int]]:
+            return req
+
+        async def process_one(x: int) -> int:
+            if x == 2:
+                raise ValueError("Bad element")
+            return x
+
+        def combine(key: str, results: list[int]) -> tuple[str, list[int]]:
+            return (key, results)
+
+        with pytest.raises(ValueError, match="Bad element"):
+            async for _ in concurrent_expand_map(
+                stream(requests), expand, process_one, combine, max_concurrent=5
+            ):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_empty_input(self):
+        """Empty input yields no results."""
+        call_count = 0
+
+        def expand(req: str) -> tuple[str, list[int]]:
+            return (req, [1])
+
+        async def process_one(x: int) -> int:
+            nonlocal call_count
+            call_count += 1
+            return x
+
+        def combine(key: str, results: list[int]) -> str:
+            return key
+
+        results: list[str] = []
+        async for result in concurrent_expand_map(
+            stream([]), expand, process_one, combine, max_concurrent=5
+        ):
+            results.append(result)
+
+        assert results == []
+        assert call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_single_element_expansion(self):
+        """Single element per request works correctly."""
+        requests = ["a", "b", "c"]
+
+        def expand(req: str) -> tuple[str, list[str]]:
+            return (req, [req])
+
+        async def process_one(x: str) -> str:
+            return x.upper()
+
+        def combine(key: str, results: list[str]) -> str:
+            return f"{key}:{results[0]}"
+
+        results: list[str] = []
+        async for result in concurrent_expand_map(
+            stream(requests), expand, process_one, combine, max_concurrent=5
+        ):
+            results.append(result)
+
+        assert results == ["a:A", "b:B", "c:C"]

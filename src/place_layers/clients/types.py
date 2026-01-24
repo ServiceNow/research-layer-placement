@@ -57,8 +57,8 @@ class SequenceLogProbs(BaseModel):
 
     model_config = {"frozen": True}
 
-    token_ids: tuple[int, ...] = Field(description="Full token sequence")
-    logprobs: tuple[float | None, ...] = Field(
+    token_ids: list[int] = Field(description="Full token sequence")
+    logprobs: list[float | None] = Field(
         description="Per-token logprobs (None for first token which has no context)"
     )
     request_id: str = Field(description="Request identifier", default="")

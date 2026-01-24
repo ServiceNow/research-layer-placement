@@ -5,7 +5,6 @@ Uses vLLM's OpenAI-compatible API endpoints.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Literal, Self
@@ -13,6 +12,8 @@ from typing import Literal, Self
 import aiohttp
 from pydantic import BaseModel, Field
 
+from place_layers.core.types import ChatMessage
+from place_layers.clients.base_vllm import BaseVLLMClient
 from place_layers.clients.types import (
     GeneratedSample,
     GenerationResult,
@@ -42,7 +43,7 @@ class RemoteVLLMClientConfig(BaseModel):
     max_concurrent_requests: int = Field(default=32, description="Max concurrent requests")
 
 
-class RemoteVLLMClient:
+class RemoteVLLMClient(BaseVLLMClient):
     """Async client for remote vLLM server via HTTP.
 
     Communicates with vLLM's OpenAI-compatible API. The server handles
@@ -56,7 +57,6 @@ class RemoteVLLMClient:
 
     def __init__(self, config: RemoteVLLMClientConfig) -> None:
         self.config = config
-        self._semaphore = asyncio.Semaphore(config.max_concurrent_requests)
         self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> Self:
@@ -92,7 +92,7 @@ class RemoteVLLMClient:
 
     async def chat_generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         n: int,
         max_tokens: int,
@@ -105,7 +105,7 @@ class RemoteVLLMClient:
         Uses /v1/chat/completions - the server applies the chat template.
 
         Args:
-            messages: Chat messages (list of role/content dicts).
+            messages: Chat messages.
             n: Number of completions to generate.
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
@@ -119,7 +119,7 @@ class RemoteVLLMClient:
         url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
         payload = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": [m.model_dump() for m in messages],
             "n": n,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -128,17 +128,16 @@ class RemoteVLLMClient:
             "return_token_ids": True,
         }
 
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM chat request failed with status {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 400:
+                error_text = await resp.text()
+                raise VLLMBadRequestError(error_text)
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise RuntimeError(
+                    f"vLLM chat request failed with status {resp.status}: {error_text}"
+                )
+            data = await resp.json()
 
         prompt_token_ids: list[int] = data.get("prompt_token_ids") or []
 
@@ -199,17 +198,16 @@ class RemoteVLLMClient:
             "logprobs": 1,
         }
 
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM score request failed: {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 400:
+                error_text = await resp.text()
+                raise VLLMBadRequestError(error_text)
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise RuntimeError(
+                    f"vLLM score request failed: {resp.status}: {error_text}"
+                )
+            data = await resp.json()
 
         choice = data["choices"][0]
         logprobs_data = choice.get("logprobs", {})
@@ -259,17 +257,16 @@ class RemoteVLLMClient:
             "logprobs": 1,
         }
 
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM score request failed: {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 400:
+                error_text = await resp.text()
+                raise VLLMBadRequestError(error_text)
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise RuntimeError(
+                    f"vLLM score request failed: {resp.status}: {error_text}"
+                )
+            data = await resp.json()
 
         choice = data["choices"][0]
         logprobs_data = choice.get("logprobs", {})
@@ -291,15 +288,15 @@ class RemoteVLLMClient:
                 token_ids.append(-1)
 
         return SequenceLogProbs(
-            token_ids=tuple(token_ids),
-            logprobs=tuple(token_logprobs),
+            token_ids=token_ids,
+            logprobs=token_logprobs,
             request_id=request_id,
         )
 
     async def score_chat_completion(
         self,
-        context_messages: list[dict[str, str]],
-        completion_messages: list[dict[str, str]],
+        context_messages: list[ChatMessage],
+        completion_messages: list[ChatMessage],
         request_id: str = "",
     ) -> SequenceLogProbs:
         """Score chat completion messages.
@@ -325,23 +322,22 @@ class RemoteVLLMClient:
         # max_tokens=1 is the minimum vLLM accepts; generated token is discarded
         payload = {
             "model": self.config.model,
-            "messages": full_messages,
+            "messages": [m.model_dump() for m in full_messages],
             "max_tokens": 1,
             "prompt_logprobs": 1,
             "temperature": 0,
         }
 
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM chat score request failed: {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 400:
+                error_text = await resp.text()
+                raise VLLMBadRequestError(error_text)
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise RuntimeError(
+                    f"vLLM chat score request failed: {resp.status}: {error_text}"
+                )
+            data = await resp.json()
 
         # Extract token IDs and logprobs from prompt_logprobs
         prompt_logprobs = data.get("prompt_logprobs", [])
@@ -360,8 +356,8 @@ class RemoteVLLMClient:
                 logprobs.append(token_logprob)
 
         return SequenceLogProbs(
-            token_ids=tuple(token_ids),
-            logprobs=tuple(logprobs),
+            token_ids=token_ids,
+            logprobs=logprobs,
             request_id=request_id,
         )
 

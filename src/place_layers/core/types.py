@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+class ChatMessage(BaseModel):
+    """A single message in a chat conversation."""
+
+    model_config = {"frozen": True}
+
+    role: Literal["system", "user", "assistant"] = Field(
+        description="Role of the message sender"
+    )
+    content: str = Field(description="Message content")
 
 
 class LayerPlacement(BaseModel):

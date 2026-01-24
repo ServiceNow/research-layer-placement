@@ -7,7 +7,6 @@ Supports Apriel2 models with runtime mixer placement switching.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Literal
 
@@ -15,6 +14,8 @@ import torch
 import triton
 from pydantic import BaseModel, Field
 
+from place_layers.core.types import ChatMessage
+from place_layers.clients.base_vllm import BaseVLLMClient
 from place_layers.clients.types import (
     GeneratedSample,
     GenerationResult,
@@ -63,7 +64,7 @@ class LocalVLLMClientConfig(BaseModel):
     max_concurrent_requests: int = Field(description="Maximum concurrent requests")
 
 
-class LocalVLLMClient:
+class LocalVLLMClient(BaseVLLMClient):
     """Async client using in-process vLLM with OpenAI-compatible serving layer.
 
     Uses vLLM's OpenAIServingChat and OpenAIServingCompletion internally,
@@ -88,7 +89,6 @@ class LocalVLLMClient:
         self._num_layers: int | None = None
         self._mixer_names: tuple[str, ...] | None = None
         self._current_placement: list[str] | None = None
-        self._semaphore: asyncio.Semaphore | None = None
 
     async def __aenter__(self) -> "Self":
         from vllm.engine.arg_utils import AsyncEngineArgs
@@ -144,8 +144,6 @@ class LocalVLLMClient:
             request_logger=None,
             return_tokens_as_token_ids=True,
         )
-
-        self._semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
 
         # Check if model supports placement switching (Apriel2 stochastic)
         try:
@@ -206,7 +204,7 @@ class LocalVLLMClient:
 
     async def chat_generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         n: int,
         max_tokens: int,
@@ -219,7 +217,7 @@ class LocalVLLMClient:
         Uses vLLM's OpenAIServingChat internally.
 
         Args:
-            messages: Chat messages (list of role/content dicts).
+            messages: Chat messages.
             n: Number of completions to generate.
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
@@ -236,7 +234,7 @@ class LocalVLLMClient:
 
         request = ChatCompletionRequest(
             model=self._model_name,
-            messages=messages,  # type: ignore[arg-type]
+            messages=[m.model_dump() for m in messages],  # type: ignore[arg-type]
             n=n,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -245,8 +243,7 @@ class LocalVLLMClient:
             top_logprobs=1,
         )
 
-        async with self._semaphore:  # type: ignore[union-attr]
-            response = await self._chat_serving.create_chat_completion(request)
+        response = await self._chat_serving.create_chat_completion(request)
 
         # Handle error response
         if hasattr(response, "error"):
@@ -330,8 +327,7 @@ class LocalVLLMClient:
             logprobs=1,
         )
 
-        async with self._semaphore:  # type: ignore[union-attr]
-            response = await self._completion_serving.create_completion(request)
+        response = await self._completion_serving.create_completion(request)
 
         if hasattr(response, "error"):
             raise RuntimeError(f"Completion failed: {response}")
@@ -388,8 +384,7 @@ class LocalVLLMClient:
             logprobs=1,
         )
 
-        async with self._semaphore:  # type: ignore[union-attr]
-            response = await self._completion_serving.create_completion(request)
+        response = await self._completion_serving.create_completion(request)
 
         if hasattr(response, "error"):
             raise RuntimeError(f"Completion failed: {response}")
@@ -410,15 +405,15 @@ class LocalVLLMClient:
                     token_ids = [-1] * len(logprobs_data.tokens)
 
         return SequenceLogProbs(
-            token_ids=tuple(token_ids),
-            logprobs=tuple(token_logprobs),
+            token_ids=token_ids,
+            logprobs=token_logprobs,
             request_id=request_id or str(response.id),
         )
 
     async def score_chat_completion(
         self,
-        context_messages: list[dict[str, str]],
-        completion_messages: list[dict[str, str]],
+        context_messages: list[ChatMessage],
+        completion_messages: list[ChatMessage],
         request_id: str = "",
     ) -> SequenceLogProbs:
         """Score chat completion messages.
@@ -446,14 +441,13 @@ class LocalVLLMClient:
         # max_tokens=1 is the minimum vLLM accepts; generated token is discarded
         request = ChatCompletionRequest(
             model=self._model_name,
-            messages=full_messages,  # type: ignore[arg-type]
+            messages=[m.model_dump() for m in full_messages],  # type: ignore[arg-type]
             max_tokens=1,
             prompt_logprobs=1,
             temperature=0,
         )
 
-        async with self._semaphore:  # type: ignore[union-attr]
-            response = await self._chat_serving.create_chat_completion(request)
+        response = await self._chat_serving.create_chat_completion(request)
 
         if hasattr(response, "error"):
             raise RuntimeError(f"Chat completion failed: {response}")
@@ -475,7 +469,7 @@ class LocalVLLMClient:
                 logprobs.append(token_logprob)
 
         return SequenceLogProbs(
-            token_ids=tuple(token_ids),
-            logprobs=tuple(logprobs),
+            token_ids=token_ids,
+            logprobs=logprobs,
             request_id=request_id or str(response.id),
         )

@@ -9,20 +9,10 @@ Server schemas can subclass these to add placement fields.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
-class ChatMessage(BaseModel):
-    """A single message in a chat conversation."""
-
-    model_config = {"frozen": True}
-
-    role: Literal["system", "user", "assistant"] = Field(
-        description="Role of the message sender"
-    )
-    content: str = Field(description="Message content")
+from place_layers.core.types import ChatMessage
 
 
 class GenerateRequest(BaseModel):
@@ -70,6 +60,32 @@ class SequenceScoringRequest:
 
     answer_range: tuple[int, int]
     """(start, end) indices for tokens that contribute to total_log_prob."""
+
+
+class TextScoringElement(BaseModel):
+    """Element for scoring a text continuation.
+
+    Used internally by VLLMBackend for the expand/process_one pattern.
+    Text-level (pre-tokenization) - vLLM handles tokenization server-side.
+    """
+
+    model_config = {"frozen": True}
+
+    context: str = Field(description="Context/prompt text")
+    continuation: str = Field(description="Continuation text to score")
+
+
+class ChatScoringElement(BaseModel):
+    """Element for scoring a chat completion.
+
+    Used internally by VLLMBackend for the expand/process_one pattern.
+    Message-level (pre-tokenization) - vLLM handles tokenization server-side.
+    """
+
+    model_config = {"frozen": True}
+
+    context_messages: list[ChatMessage] = Field(description="Context messages")
+    completion_message: ChatMessage = Field(description="Completion message to score")
 
 
 class LogProbResult(BaseModel):

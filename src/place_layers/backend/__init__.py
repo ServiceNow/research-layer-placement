@@ -16,6 +16,7 @@ from place_layers.backend.base import (
     SyncBackend,
     batched_expand_map,
     batched_map,
+    concurrent_expand_map,
     concurrent_map,
 )
 from place_layers.backend.types import (
