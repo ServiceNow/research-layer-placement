@@ -31,8 +31,8 @@ from place_layers.backend.base import (
 )
 
 
-def stream[T](items: list[T]) -> Iterator[T]:
-    """Convert a list to a single-pass generator.
+def sync_stream[T](items: list[T]) -> Iterator[T]:
+    """Convert a list to a single-pass sync generator.
 
     This ensures tests verify that helpers work with iterators that can only
     be consumed once, matching production behavior with streaming bridges.
@@ -53,20 +53,6 @@ async def async_stream[T](items: list[T], heartbeat_every: int = 0) -> AsyncIter
         yield item
 
 
-# Stream factory type for parametrization
-type StreamFactory[T] = Iterator[T] | AsyncIterator[T | None]
-
-
-def make_sync_stream[T](items: list[T]) -> Iterator[T]:
-    """Sync stream factory."""
-    return stream(items)
-
-
-def make_async_stream[T](items: list[T]) -> AsyncIterator[T | None]:
-    """Async stream factory."""
-    return async_stream(items)
-
-
 # =============================================================================
 # batched_map tests
 # =============================================================================
@@ -83,7 +69,7 @@ class TestBatchedMap:
             batches_seen.append(list(batch))
             return [x * 2 for x in batch]
 
-        result = list(batched_map(stream(list(range(10))), process, batch_size=3))
+        result = list(batched_map(sync_stream(list(range(10))), process, batch_size=3))
 
         assert batches_seen == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
         assert result == [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
@@ -96,7 +82,7 @@ class TestBatchedMap:
             batches_seen.append(list(batch))
             return batch
 
-        result = list(batched_map(stream(list(range(6))), process, batch_size=2))
+        result = list(batched_map(sync_stream(list(range(6))), process, batch_size=2))
 
         assert batches_seen == [[0, 1], [2, 3], [4, 5]]
         assert result == [0, 1, 2, 3, 4, 5]
@@ -110,7 +96,7 @@ class TestBatchedMap:
             call_count += 1
             return batch
 
-        result = list(batched_map(stream([]), process, batch_size=3))
+        result = list(batched_map(sync_stream([]), process, batch_size=3))
 
         assert result == []
         assert call_count == 0
@@ -123,7 +109,7 @@ class TestBatchedMap:
             batches_seen.append(list(batch))
             return [x + 100 for x in batch]
 
-        result = list(batched_map(stream([42]), process, batch_size=10))
+        result = list(batched_map(sync_stream([42]), process, batch_size=10))
 
         assert batches_seen == [[42]]
         assert result == [142]
@@ -136,7 +122,7 @@ class TestBatchedMap:
             batches_seen.append(list(batch))
             return batch
 
-        result = list(batched_map(stream([1, 2, 3]), process, batch_size=100))
+        result = list(batched_map(sync_stream([1, 2, 3]), process, batch_size=100))
 
         assert batches_seen == [[1, 2, 3]]
         assert result == [1, 2, 3]
@@ -149,7 +135,7 @@ class TestBatchedMap:
             batches_seen.append(list(batch))
             return [x + 1 for x in batch]
 
-        result = list(batched_map(stream([10, 20, 30]), process, batch_size=1))
+        result = list(batched_map(sync_stream([10, 20, 30]), process, batch_size=1))
 
         assert batches_seen == [[10], [20], [30]]
         assert result == [11, 21, 31]
@@ -160,7 +146,7 @@ class TestBatchedMap:
         def process(batch: list[str]) -> list[str]:
             return [s.upper() for s in batch]
 
-        result = list(batched_map(stream(["a", "b", "c", "d", "e"]), process, batch_size=2))
+        result = list(batched_map(sync_stream(["a", "b", "c", "d", "e"]), process, batch_size=2))
 
         assert result == ["A", "B", "C", "D", "E"]
 
@@ -171,7 +157,7 @@ class TestBatchedMap:
             for x in batch:
                 yield x * 2
 
-        result = list(batched_map(stream([1, 2, 3, 4]), process, batch_size=2))
+        result = list(batched_map(sync_stream([1, 2, 3, 4]), process, batch_size=2))
 
         assert result == [2, 4, 6, 8]
 
@@ -196,7 +182,7 @@ class TestBatchedMapByKey:
             return [x[1] * 2 for x in batch]
 
         items = [("a", 1), ("a", 2), ("a", 3), ("a", 4), ("a", 5)]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=3))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=3))
 
         # Two batches: [1,2,3] and [4,5]
         assert batches_seen == [
@@ -217,7 +203,7 @@ class TestBatchedMapByKey:
             return [x[1] for x in batch]
 
         items = [("a", 1), ("a", 2), ("b", 3), ("b", 4)]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=10))
 
         # Key change forces flush even though batch not full
         assert batches_seen == [
@@ -238,7 +224,7 @@ class TestBatchedMapByKey:
             return [x[1] for x in batch]
 
         items = [("a", 1), ("b", 2), ("a", 3), ("b", 4)]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=10))
 
         # Each item triggers a flush due to key change
         assert batches_seen == [
@@ -261,7 +247,7 @@ class TestBatchedMapByKey:
             return [x[1] for x in batch]
 
         items = [("a", 1), ("a", 2), ("a", 3), ("a", 4), ("b", 5)]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=2))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=2))
 
         # batch_size=2 flushes [1,2], [3,4], then key change, then [5]
         assert batches_seen == [
@@ -283,7 +269,7 @@ class TestBatchedMapByKey:
             call_count += 1
             return batch
 
-        result = list(batched_map_by_key(stream([]), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream([]), get_key, process, batch_size=10))
 
         assert result == []
         assert call_count == 0
@@ -299,7 +285,7 @@ class TestBatchedMapByKey:
             batches_seen.append((key, list(batch)))
             return [x * 10 for x in batch]
 
-        result = list(batched_map_by_key(stream([42]), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream([42]), get_key, process, batch_size=10))
 
         assert batches_seen == [("k", [42])]
         assert result == [420]
@@ -322,7 +308,7 @@ class TestBatchedMapByKey:
             ((2, 200, 0.7, 0.9), "req3"),  # different params
             ((2, 200, 0.7, 0.9), "req4"),  # same as req3
         ]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=10))
 
         assert batches_seen == [
             ((1, 100, 0.0, 1.0), ["req1", "req2"]),
@@ -340,7 +326,7 @@ class TestBatchedMapByKey:
             return [x[1] for x in batch]
 
         items = [(k, i) for i, k in enumerate(["a", "a", "b", "b", "a", "a"])]
-        result = list(batched_map_by_key(stream(items), get_key, process, batch_size=10))
+        result = list(batched_map_by_key(sync_stream(items), get_key, process, batch_size=10))
 
         assert result == [0, 1, 2, 3, 4, 5]
 
@@ -427,7 +413,7 @@ class TestBatchedExpandMap:
 
         inputs = [("req0", ["a", "b"]), ("req1", ["c", "d", "e"])]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=4)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=4)
         )
 
         assert batches_seen == [["a", "b", "c", "d"], ["e"]]
@@ -447,7 +433,7 @@ class TestBatchedExpandMap:
 
         inputs = [("req0", ["a", "b"]), ("req1", []), ("req2", ["c"])]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=10)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=10)
         )
 
         # Order must be preserved: req0, req1, req2
@@ -469,7 +455,7 @@ class TestBatchedExpandMap:
 
         inputs = [("req0", list(range(10)))]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=4)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=4)
         )
 
         # Elements split across batches
@@ -498,7 +484,7 @@ class TestBatchedExpandMap:
             ("d", ["z"]),  # 1 element
         ]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=4)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=4)
         )
 
         # Batches: [x,y,1,2], [3,4,5,6], [z]
@@ -523,7 +509,7 @@ class TestBatchedExpandMap:
 
         inputs = [("keep1", [1]), ("skip", [2]), ("keep2", [3])]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=10)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=10)
         )
 
         assert result == ["keep1", "keep2"]
@@ -543,7 +529,7 @@ class TestBatchedExpandMap:
 
         inputs = [("a", []), ("b", []), ("c", [])]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=10)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=10)
         )
 
         assert result == ["a", "b", "c"]
@@ -564,7 +550,7 @@ class TestBatchedExpandMap:
             return key
 
         result = list(
-            batched_expand_map(stream([]), expand, process_batch, combine, batch_size=10)
+            batched_expand_map(sync_stream([]), expand, process_batch, combine, batch_size=10)
         )
 
         assert result == []
@@ -586,7 +572,7 @@ class TestBatchedExpandMap:
 
         inputs = [("a", [1, 2, 3, 4]), ("b", [5, 6, 7, 8])]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=4)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=4)
         )
 
         assert batches_seen == [[1, 2, 3, 4], [5, 6, 7, 8]]
@@ -609,7 +595,7 @@ class TestBatchedExpandMap:
 
         inputs = [("req", list(range(7)))]
         result = list(
-            batched_expand_map(stream(inputs), expand, process_batch, combine, batch_size=3)
+            batched_expand_map(sync_stream(inputs), expand, process_batch, combine, batch_size=3)
         )
 
         assert batches_seen == [[0, 1, 2], [3, 4, 5], [6]]
@@ -622,7 +608,68 @@ class TestBatchedExpandMap:
 # =============================================================================
 
 
-@pytest.mark.parametrize("make_stream", [make_sync_stream, make_async_stream])
+class TestSyncAsyncDispatch:
+    """Tests verifying sync/async dispatch works correctly in concurrent helpers."""
+
+    def test_sync_stream_has_no_aiter(self):
+        """Sync streams don't have __aiter__, so dispatch goes to sync path."""
+        s = sync_stream([1, 2, 3])
+        assert not hasattr(s, "__aiter__")
+        assert hasattr(s, "__iter__")
+
+    def test_async_stream_has_aiter(self):
+        """Async streams have __aiter__, so dispatch goes to async path."""
+        s = async_stream([1, 2, 3])
+        assert hasattr(s, "__aiter__")
+        # Async iterators don't have __iter__
+        assert not hasattr(s, "__iter__")
+
+    @pytest.mark.asyncio
+    async def test_async_path_handles_heartbeats(self):
+        """Async path correctly skips None heartbeats."""
+
+        async def process(x: int) -> int:
+            return x * 2
+
+        # Use async_stream with heartbeats
+        results: list[int] = []
+        async for result in concurrent_map(
+            async_stream([1, 2, 3], heartbeat_every=1), process, max_concurrent=2
+        ):
+            results.append(result)
+
+        # Heartbeats (None values) should be skipped, only real items processed
+        assert results == [2, 4, 6]
+
+    @pytest.mark.asyncio
+    async def test_sync_and_async_produce_same_results(self):
+        """Sync and async paths produce identical results for same input."""
+
+        async def process(x: int) -> int:
+            await asyncio.sleep(0.001)
+            return x * 2
+
+        items = [1, 2, 3, 4, 5]
+
+        # Run with sync stream
+        sync_results: list[int] = []
+        async for result in concurrent_map(
+            sync_stream(items), process, max_concurrent=2
+        ):
+            sync_results.append(result)
+
+        # Run with async stream
+        async_results: list[int] = []
+        async for result in concurrent_map(
+            async_stream(items), process, max_concurrent=2
+        ):
+            async_results.append(result)
+
+        # Both should produce identical results
+        assert sync_results == async_results == [2, 4, 6, 8, 10]
+
+
+@pytest.mark.parametrize("stream", [sync_stream, async_stream])
 class TestConcurrentMap:
     """Tests for concurrent_map - async concurrent processing.
 
@@ -631,7 +678,7 @@ class TestConcurrentMap:
     """
 
     @pytest.mark.asyncio
-    async def test_basic_concurrent(self, make_stream):
+    async def test_basic_concurrent(self, stream):
         """Basic concurrent processing of items."""
 
         async def process(x: int) -> int:
@@ -639,14 +686,14 @@ class TestConcurrentMap:
             return x * 2
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=3):
+        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=3):
             results.append(result)
 
         # Results should be in input order
         assert results == [2, 4, 6, 8, 10]
 
     @pytest.mark.asyncio
-    async def test_respects_max_concurrent(self, make_stream):
+    async def test_respects_max_concurrent(self, stream):
         """Never exceeds max_concurrent active tasks."""
         concurrent_count = 0
         max_observed = 0
@@ -660,14 +707,14 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream(list(range(10))), process, max_concurrent=3):
+        async for result in concurrent_map(stream(list(range(10))), process, max_concurrent=3):
             results.append(result)
 
         assert max_observed <= 3
         assert results == list(range(10))
 
     @pytest.mark.asyncio
-    async def test_empty_input(self, make_stream):
+    async def test_empty_input(self, stream):
         """Empty input yields no results."""
         call_count = 0
 
@@ -677,27 +724,27 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([]), process, max_concurrent=5):
+        async for result in concurrent_map(stream([]), process, max_concurrent=5):
             results.append(result)
 
         assert results == []
         assert call_count == 0
 
     @pytest.mark.asyncio
-    async def test_single_item(self, make_stream):
+    async def test_single_item(self, stream):
         """Single item is processed correctly."""
 
         async def process(x: int) -> int:
             return x * 10
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([42]), process, max_concurrent=5):
+        async for result in concurrent_map(stream([42]), process, max_concurrent=5):
             results.append(result)
 
         assert results == [420]
 
     @pytest.mark.asyncio
-    async def test_max_concurrent_one(self, make_stream):
+    async def test_max_concurrent_one(self, stream):
         """max_concurrent=1 processes items sequentially."""
         execution_order: list[int] = []
 
@@ -707,7 +754,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=1):
+        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=1):
             results.append(result)
 
         # With max_concurrent=1, should process in order
@@ -715,7 +762,7 @@ class TestConcurrentMap:
         assert results == [1, 2, 3, 4, 5]
 
     @pytest.mark.asyncio
-    async def test_max_concurrent_exceeds_items(self, make_stream):
+    async def test_max_concurrent_exceeds_items(self, stream):
         """max_concurrent > len(items) processes all concurrently."""
         start_times: dict[int, float] = {}
         loop = asyncio.get_event_loop()
@@ -726,7 +773,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([1, 2, 3]), process, max_concurrent=10):
+        async for result in concurrent_map(stream([1, 2, 3]), process, max_concurrent=10):
             results.append(result)
 
         # All items should start at nearly the same time
@@ -735,7 +782,7 @@ class TestConcurrentMap:
         assert sorted(results) == [1, 2, 3]
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self, make_stream):
+    async def test_exception_propagates(self, stream):
         """Exceptions from process function propagate correctly."""
 
         async def process(x: int) -> int:
@@ -744,11 +791,11 @@ class TestConcurrentMap:
             return x
 
         with pytest.raises(ValueError, match="Bad value"):
-            async for _ in concurrent_map(make_stream([1, 2, 3, 4]), process, max_concurrent=2):
+            async for _ in concurrent_map(stream([1, 2, 3, 4]), process, max_concurrent=2):
                 pass
 
     @pytest.mark.asyncio
-    async def test_results_yielded_in_input_order(self, make_stream):
+    async def test_results_yielded_in_input_order(self, stream):
         """Results are yielded in input order, not completion order."""
         completion_order: list[int] = []
 
@@ -759,7 +806,7 @@ class TestConcurrentMap:
             return x
 
         results: list[int] = []
-        async for result in concurrent_map(make_stream([1, 2, 3, 4, 5]), process, max_concurrent=5):
+        async for result in concurrent_map(stream([1, 2, 3, 4, 5]), process, max_concurrent=5):
             results.append(result)
 
         # Even though items complete in reverse order (5, 4, 3, 2, 1),
@@ -1328,7 +1375,7 @@ class TestSyncBackendAdapterIntegration:
 # =============================================================================
 
 
-@pytest.mark.parametrize("make_stream", [make_sync_stream, make_async_stream])
+@pytest.mark.parametrize("stream", [sync_stream, async_stream])
 class TestConcurrentExpandMap:
     """Tests for concurrent_expand_map - async fan-out/fan-in with concurrency control.
 
@@ -1337,7 +1384,7 @@ class TestConcurrentExpandMap:
     """
 
     @pytest.mark.asyncio
-    async def test_basic_expand_and_combine(self, make_stream):
+    async def test_basic_expand_and_combine(self, stream):
         """Basic fan-out, concurrent processing, and fan-in."""
         # Input: requests with multiple choices each
         requests = [
@@ -1358,7 +1405,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[str]]] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=10
+            stream(requests), expand, process_one, combine, max_concurrent=10
         ):
             results.append(result)
 
@@ -1369,7 +1416,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_respects_max_concurrent(self, make_stream):
+    async def test_respects_max_concurrent(self, stream):
         """Never exceeds max_concurrent active process_one calls."""
         concurrent_count = 0
         max_observed = 0
@@ -1395,7 +1442,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=3
+            stream(requests), expand, process_one, combine, max_concurrent=3
         ):
             results.append(result)
 
@@ -1406,7 +1453,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_empty_expansion_yields_immediately(self, make_stream):
+    async def test_empty_expansion_yields_immediately(self, stream):
         """Empty expansion yields combined result immediately."""
         requests = [
             ("req1", [1, 2]),
@@ -1425,7 +1472,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=5
+            stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1437,7 +1484,7 @@ class TestConcurrentExpandMap:
         ]
 
     @pytest.mark.asyncio
-    async def test_preserves_input_order(self, make_stream):
+    async def test_preserves_input_order(self, stream):
         """Results are yielded in input order even if elements complete out of order."""
         requests = [
             ("slow", [1]),  # Will take longer
@@ -1457,7 +1504,7 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=5
+            stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1465,7 +1512,7 @@ class TestConcurrentExpandMap:
         assert results == [("slow", [1]), ("fast", [2])]
 
     @pytest.mark.asyncio
-    async def test_skip_none_expansion(self, make_stream):
+    async def test_skip_none_expansion(self, stream):
         """expand returning None skips that input."""
         requests = [
             ("req1", [1]),
@@ -1486,14 +1533,14 @@ class TestConcurrentExpandMap:
 
         results: list[tuple[str, list[int]]] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=5
+            stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
         assert results == [("req1", [10]), ("req3", [30])]
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self, make_stream):
+    async def test_exception_propagates(self, stream):
         """Exception in process_one propagates correctly."""
         requests = [
             ("req1", [1, 2, 3]),
@@ -1512,12 +1559,12 @@ class TestConcurrentExpandMap:
 
         with pytest.raises(ValueError, match="Bad element"):
             async for _ in concurrent_expand_map(
-                make_stream(requests), expand, process_one, combine, max_concurrent=5
+                stream(requests), expand, process_one, combine, max_concurrent=5
             ):
                 pass
 
     @pytest.mark.asyncio
-    async def test_empty_input(self, make_stream):
+    async def test_empty_input(self, stream):
         """Empty input yields no results."""
         call_count = 0
 
@@ -1534,7 +1581,7 @@ class TestConcurrentExpandMap:
 
         results: list[str] = []
         async for result in concurrent_expand_map(
-            make_stream([]), expand, process_one, combine, max_concurrent=5
+            stream([]), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
@@ -1542,7 +1589,7 @@ class TestConcurrentExpandMap:
         assert call_count == 0
 
     @pytest.mark.asyncio
-    async def test_single_element_expansion(self, make_stream):
+    async def test_single_element_expansion(self, stream):
         """Single element per request works correctly."""
         requests = ["a", "b", "c"]
 
@@ -1557,7 +1604,7 @@ class TestConcurrentExpandMap:
 
         results: list[str] = []
         async for result in concurrent_expand_map(
-            make_stream(requests), expand, process_one, combine, max_concurrent=5
+            stream(requests), expand, process_one, combine, max_concurrent=5
         ):
             results.append(result)
 
