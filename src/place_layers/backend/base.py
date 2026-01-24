@@ -20,11 +20,12 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator
-from typing import TYPE_CHECKING, Any, ClassVar, Self, Sequence
+from typing import Any, ClassVar, Self, Sequence
 
 from pydantic import BaseModel, Field
 
 from place_layers.backend.types import (
+    BackendError,
     ChatMessage,
     GenerateRequest,
     ModelStructure,
@@ -35,9 +36,7 @@ from place_layers.backend.types import (
     ScoreTokensRequest,
     ScoreTokensResult,
 )
-
-if TYPE_CHECKING:
-    from place_layers.clients.types import GenerationResult
+from place_layers.clients.types import GenerationResult
 
 
 # =============================================================================
@@ -530,17 +529,21 @@ class AsyncBackend(ABC):
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-    ) -> AsyncIterator["GenerationResult"]:
+    ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions, yielding results as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
 
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
+
         Args:
             requests: Generation requests with keys and params.
 
         Yields:
-            GenerationResult with request_id matching request.key.
+            GenerationResult with request_id matching request.key, or
+            BackendError if the request failed.
         """
         pass
 
@@ -548,16 +551,18 @@ class AsyncBackend(ABC):
     def score_tokens(
         self,
         requests: Iterable[ScoreTokensRequest],
-    ) -> AsyncIterator[ScoreTokensResult]:
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
         Results may arrive in any order. Use request.key to join with input.
+
+        On transient errors, yields BackendError instead of killing the stream.
 
         Args:
             requests: Token scoring requests with keys.
 
         Yields:
-            ScoreTokensResult with key and log_prob.
+            ScoreTokensResult with key and log_prob, or BackendError.
         """
         pass
 
@@ -565,17 +570,19 @@ class AsyncBackend(ABC):
     def score_text(
         self,
         requests: Iterable[ScoreTextRequest],
-    ) -> AsyncIterator[ScoreTextResult]:
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Use request.key to join with input.
         Each result contains LogProbResults for all choices in that request.
 
+        On transient errors, yields BackendError instead of killing the stream.
+
         Args:
             requests: Text scoring requests with keys.
 
         Yields:
-            ScoreTextResult with key and per-choice results.
+            ScoreTextResult with key and per-choice results, or BackendError.
         """
         pass
 
@@ -583,17 +590,19 @@ class AsyncBackend(ABC):
     def score_chat(
         self,
         requests: Iterable[ScoreChatRequest],
-    ) -> AsyncIterator[ScoreChatResult]:
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Use request.key to join with input.
         Each result contains LogProbResults for all choices in that request.
 
+        On transient errors, yields BackendError instead of killing the stream.
+
         Args:
             requests: Chat scoring requests with keys.
 
         Yields:
-            ScoreChatResult with key and per-choice results.
+            ScoreChatResult with key and per-choice results, or BackendError.
         """
         pass
 

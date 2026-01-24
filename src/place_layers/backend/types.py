@@ -9,10 +9,31 @@ Server schemas can subclass these to add placement fields.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from place_layers.core.types import ChatMessage
+
+
+class BackendError(BaseModel):
+    """Error from a backend operation.
+
+    Used as a union member with result types to enable graceful error handling
+    in streaming APIs. When a request fails (e.g., prompt too long, server error),
+    the backend yields a BackendError instead of killing the stream.
+
+    Callers can check `isinstance(result, BackendError)` and handle accordingly
+    (e.g., log as SkippedProblem).
+    """
+
+    model_config = {"frozen": True}
+
+    key: str = Field(description="Request key for joining with input")
+    error_type: Literal["bad_request", "timeout", "server_error"] = Field(
+        description="Category of error"
+    )
+    message: str = Field(description="Human-readable error message")
 
 
 class GenerateRequest(BaseModel):

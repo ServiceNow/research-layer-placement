@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from typing import Annotated, ClassVar, Literal, Self, Sequence
 
+import aiohttp
 from pydantic import Field
 
 from place_layers.backend.base import (
@@ -14,6 +17,7 @@ from place_layers.backend.base import (
     concurrent_map,
 )
 from place_layers.backend.types import (
+    BackendError,
     ChatMessage,
     ChatScoringElement,
     GenerateRequest,
@@ -29,8 +33,14 @@ from place_layers.backend.types import (
 )
 from place_layers.clients.base_vllm import BaseVLLMClient
 from place_layers.clients.local_vllm import LocalVLLMClient, LocalVLLMClientConfig
-from place_layers.clients.remote_vllm import RemoteVLLMClient, RemoteVLLMClientConfig
+from place_layers.clients.remote_vllm import (
+    RemoteVLLMClient,
+    RemoteVLLMClientConfig,
+    VLLMBadRequestError,
+)
 from place_layers.clients.types import GenerationResult, SequenceLogProbs
+
+logger = logging.getLogger(__name__)
 
 
 VLLMClientConfig = Annotated[
@@ -94,41 +104,66 @@ class VLLMBackend(AsyncBackend):
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-    ) -> AsyncIterator[GenerationResult]:
+    ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions, yielding results as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
         Concurrency is managed internally via semaphore.
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
         """
 
-        async def process_one(req: GenerateRequest) -> GenerationResult:
-            return await self._client.chat_generate(
-                messages=req.messages,
-                n=req.n,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-                top_p=req.top_p,
-                request_id=req.key,
-            )
+        async def process_one(req: GenerateRequest) -> GenerationResult | BackendError:
+            try:
+                return await self._client.chat_generate(
+                    messages=req.messages,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    request_id=req.key,
+                )
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
     async def score_tokens(
         self,
         requests: Iterable[ScoreTokensRequest],
-    ) -> AsyncIterator[ScoreTokensResult]:
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
         Results may arrive in any order. Concurrency is managed internally
         via semaphore based on max_concurrent_requests.
+
+        On transient errors, yields BackendError instead of killing the stream.
         """
 
-        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult:
-            result = await self._client.score_token_completion(
-                req.prompt_tokens, req.completion_tokens
-            )
-            return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
+            try:
+                result = await self._client.score_token_completion(
+                    req.prompt_tokens, req.completion_tokens
+                )
+                return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -168,11 +203,15 @@ class VLLMBackend(AsyncBackend):
     async def score_text(
         self,
         requests: Iterable[ScoreTextRequest],
-    ) -> AsyncIterator[ScoreTextResult]:
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
+        If any choice fails, the entire request fails (diff-based scoring
+        requires all choices).
         """
 
         def expand(
@@ -187,15 +226,37 @@ class VLLMBackend(AsyncBackend):
                 ],
             )
 
-        async def process_one(element: TextScoringElement) -> SequenceLogProbs:
-            return await self._client.score_text_completion(
-                element.context, element.continuation
-            )
+        async def process_one(
+            element: TextScoringElement,
+        ) -> SequenceLogProbs | BackendError:
+            try:
+                return await self._client.score_text_completion(
+                    element.context, element.continuation
+                )
+            except VLLMBadRequestError as e:
+                # Return error with empty key - combine will fill in the real key
+                return BackendError(key="", error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                return BackendError(key="", error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                return BackendError(key="", error_type="server_error", message=str(e))
 
-        def combine(key: str, results: list[SequenceLogProbs]) -> ScoreTextResult:
-            if not results:
+        def combine(
+            key: str, results: list[SequenceLogProbs | BackendError]
+        ) -> ScoreTextResult | BackendError:
+            # Check for any errors - if any choice failed, fail the whole request
+            for r in results:
+                if isinstance(r, BackendError):
+                    logger.warning(f"Error scoring {key}: {r.message}")
+                    return BackendError(
+                        key=key, error_type=r.error_type, message=r.message
+                    )
+
+            # All succeeded - build diff results
+            success_results = [r for r in results if isinstance(r, SequenceLogProbs)]
+            if not success_results:
                 return ScoreTextResult(key=key, results=[])
-            return ScoreTextResult(key=key, results=self._build_diff_results(results))
+            return ScoreTextResult(key=key, results=self._build_diff_results(success_results))
 
         async for result in concurrent_expand_map(
             requests, expand, process_one, combine, self.max_concurrent_requests
@@ -205,11 +266,15 @@ class VLLMBackend(AsyncBackend):
     async def score_chat(
         self,
         requests: Iterable[ScoreChatRequest],
-    ) -> AsyncIterator[ScoreChatResult]:
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
+        If any choice fails, the entire request fails (diff-based scoring
+        requires all choices).
         """
 
         def expand(
@@ -227,15 +292,36 @@ class VLLMBackend(AsyncBackend):
                 ],
             )
 
-        async def process_one(element: ChatScoringElement) -> SequenceLogProbs:
-            return await self._client.score_chat_completion(
-                element.context_messages, [element.completion_message]
-            )
+        async def process_one(
+            element: ChatScoringElement,
+        ) -> SequenceLogProbs | BackendError:
+            try:
+                return await self._client.score_chat_completion(
+                    element.context_messages, [element.completion_message]
+                )
+            except VLLMBadRequestError as e:
+                return BackendError(key="", error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                return BackendError(key="", error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                return BackendError(key="", error_type="server_error", message=str(e))
 
-        def combine(key: str, results: list[SequenceLogProbs]) -> ScoreChatResult:
-            if not results:
+        def combine(
+            key: str, results: list[SequenceLogProbs | BackendError]
+        ) -> ScoreChatResult | BackendError:
+            # Check for any errors - if any choice failed, fail the whole request
+            for r in results:
+                if isinstance(r, BackendError):
+                    logger.warning(f"Error scoring {key}: {r.message}")
+                    return BackendError(
+                        key=key, error_type=r.error_type, message=r.message
+                    )
+
+            # All succeeded - build diff results
+            success_results = [r for r in results if isinstance(r, SequenceLogProbs)]
+            if not success_results:
                 return ScoreChatResult(key=key, results=[])
-            return ScoreChatResult(key=key, results=self._build_diff_results(results))
+            return ScoreChatResult(key=key, results=self._build_diff_results(success_results))
 
         async for result in concurrent_expand_map(
             requests, expand, process_one, combine, self.max_concurrent_requests

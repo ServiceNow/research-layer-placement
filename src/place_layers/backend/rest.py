@@ -17,7 +17,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, Sequence
+from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
 from pydantic import BaseModel, Field
@@ -26,6 +26,7 @@ from tenacity.wait import wait_base
 
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
 from place_layers.backend.types import (
+    BackendError,
     GenerateRequest,
     LogProbResult,
     ModelStructure,
@@ -36,15 +37,13 @@ from place_layers.backend.types import (
     ScoreTokensRequest,
     ScoreTokensResult,
 )
+from place_layers.clients.types import GenerationResult
 from place_layers.server.schemas import (
     GenerateRequest as ServerGenerateRequest,
     ScoreChatRequest as ServerScoreChatRequest,
     ScoreTextRequest as ServerScoreTextRequest,
     ScoreTokensRequest as ServerScoreTokensRequest,
 )
-
-if TYPE_CHECKING:
-    from place_layers.clients.types import GenerationResult
 
 logger = logging.getLogger(__name__)
 
@@ -616,48 +615,59 @@ class RESTBackend(AsyncBackend):
     def generate(
         self,
         requests: Iterable[GenerateRequest],
-    ) -> AsyncIterator["GenerationResult"]:
+    ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions, yielding results as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Requests are distributed across healthy servers.
-        """
-        from place_layers.clients.types import GenerationResult
 
-        async def process_one(req: GenerateRequest) -> "GenerationResult":
-            server_request = ServerGenerateRequest(
-                key=req.key,
-                messages=req.messages,
-                n=req.n,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-                top_p=req.top_p,
-                placement=self._current_placement,
-            )
-            data = await self._call_with_failover("/generate", server_request)
-            return GenerationResult.model_validate(data)
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(req: GenerateRequest) -> GenerationResult | BackendError:
+            try:
+                server_request = ServerGenerateRequest(
+                    key=req.key,
+                    messages=req.messages,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover("/generate", server_request)
+                return GenerationResult.model_validate(data)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
     async def score_tokens(
         self,
         requests: Iterable[ScoreTokensRequest],
-    ) -> AsyncIterator[ScoreTokensResult]:
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
         Requests are distributed across healthy servers.
         Results may arrive in any order.
+
+        On transient errors, yields BackendError instead of killing the stream.
         """
 
-        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult:
-            server_request = ServerScoreTokensRequest(
-                key=req.key,
-                prompt_tokens=req.prompt_tokens,
-                completion_tokens=req.completion_tokens,
-                placement=self._current_placement,
-            )
-            data = await self._call_with_failover("/score_tokens", server_request)
-            return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
+            try:
+                server_request = ServerScoreTokensRequest(
+                    key=req.key,
+                    prompt_tokens=req.prompt_tokens,
+                    completion_tokens=req.completion_tokens,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover("/score_tokens", server_request)
+                return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -667,35 +677,41 @@ class RESTBackend(AsyncBackend):
     async def score_text(
         self,
         requests: Iterable[ScoreTextRequest],
-    ) -> AsyncIterator[ScoreTextResult]:
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
         """
 
-        async def process_one(req: ScoreTextRequest) -> ScoreTextResult:
-            if not req.choices:
-                return ScoreTextResult(key=req.key, results=[])
+        async def process_one(req: ScoreTextRequest) -> ScoreTextResult | BackendError:
+            try:
+                if not req.choices:
+                    return ScoreTextResult(key=req.key, results=[])
 
-            server_request = ServerScoreTextRequest(
-                key=req.key,
-                context=req.context,
-                choices=req.choices,
-                placement=self._current_placement,
-            )
-            data = await self._call_with_failover("/score_text", server_request)
-
-            results = [
-                LogProbResult(
-                    token_ids=r["token_ids"],
-                    logprobs=r["logprobs"],
-                    answer_range=tuple(r["answer_range"]),
-                    total_log_prob=r["total_log_prob"],
+                server_request = ServerScoreTextRequest(
+                    key=req.key,
+                    context=req.context,
+                    choices=req.choices,
+                    placement=self._current_placement,
                 )
-                for r in data["results"]
-            ]
-            return ScoreTextResult(key=req.key, results=results)
+                data = await self._call_with_failover("/score_text", server_request)
+
+                results = [
+                    LogProbResult(
+                        token_ids=r["token_ids"],
+                        logprobs=r["logprobs"],
+                        answer_range=tuple(r["answer_range"]),
+                        total_log_prob=r["total_log_prob"],
+                    )
+                    for r in data["results"]
+                ]
+                return ScoreTextResult(key=req.key, results=results)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -705,35 +721,41 @@ class RESTBackend(AsyncBackend):
     async def score_chat(
         self,
         requests: Iterable[ScoreChatRequest],
-    ) -> AsyncIterator[ScoreChatResult]:
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions (multiple-choice), yielding as complete.
 
         Results may arrive in any order. Each result contains all choices
         for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
         """
 
-        async def process_one(req: ScoreChatRequest) -> ScoreChatResult:
-            if not req.completion_messages:
-                return ScoreChatResult(key=req.key, results=[])
+        async def process_one(req: ScoreChatRequest) -> ScoreChatResult | BackendError:
+            try:
+                if not req.completion_messages:
+                    return ScoreChatResult(key=req.key, results=[])
 
-            server_request = ServerScoreChatRequest(
-                key=req.key,
-                context_messages=req.context_messages,
-                completion_messages=req.completion_messages,
-                placement=self._current_placement,
-            )
-            data = await self._call_with_failover("/score_chat", server_request)
-
-            results = [
-                LogProbResult(
-                    token_ids=r["token_ids"],
-                    logprobs=r["logprobs"],
-                    answer_range=tuple(r["answer_range"]),
-                    total_log_prob=r["total_log_prob"],
+                server_request = ServerScoreChatRequest(
+                    key=req.key,
+                    context_messages=req.context_messages,
+                    completion_messages=req.completion_messages,
+                    placement=self._current_placement,
                 )
-                for r in data["results"]
-            ]
-            return ScoreChatResult(key=req.key, results=results)
+                data = await self._call_with_failover("/score_chat", server_request)
+
+                results = [
+                    LogProbResult(
+                        token_ids=r["token_ids"],
+                        logprobs=r["logprobs"],
+                        answer_range=tuple(r["answer_range"]),
+                        total_log_prob=r["total_log_prob"],
+                    )
+                    for r in data["results"]
+                ]
+                return ScoreChatResult(key=req.key, results=results)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests

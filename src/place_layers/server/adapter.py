@@ -17,6 +17,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Self
 
+from place_layers.backend.types import BackendError
+
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
     from place_layers.backend.types import (
@@ -29,6 +31,14 @@ if TYPE_CHECKING:
         ScoreTokensResult,
     )
     from place_layers.clients.types import GenerationResult
+
+
+class BackendRequestError(Exception):
+    """Raised when a backend request fails with a BackendError."""
+
+    def __init__(self, error: BackendError) -> None:
+        self.error = error
+        super().__init__(f"{error.error_type}: {error.message}")
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +106,12 @@ class AsyncBackendAdapter(BackendAdapter):
         self,
         request: "GenerateRequest",
     ) -> "GenerationResult":
+        from place_layers.clients.types import GenerationResult
+
         async for result in self._backend.generate([request]):
+            if isinstance(result, BackendError):
+                raise BackendRequestError(result)
+            assert isinstance(result, GenerationResult)
             return result
         raise RuntimeError("Backend returned no results")
 
@@ -104,7 +119,12 @@ class AsyncBackendAdapter(BackendAdapter):
         self,
         request: "ScoreTokensRequest",
     ) -> "ScoreTokensResult":
+        from place_layers.backend.types import ScoreTokensResult
+
         async for result in self._backend.score_tokens([request]):
+            if isinstance(result, BackendError):
+                raise BackendRequestError(result)
+            assert isinstance(result, ScoreTokensResult)
             return result
         raise RuntimeError("Backend returned no results")
 
@@ -112,7 +132,12 @@ class AsyncBackendAdapter(BackendAdapter):
         self,
         request: "ScoreTextRequest",
     ) -> "ScoreTextResult":
+        from place_layers.backend.types import ScoreTextResult
+
         async for result in self._backend.score_text([request]):
+            if isinstance(result, BackendError):
+                raise BackendRequestError(result)
+            assert isinstance(result, ScoreTextResult)
             return result
         raise RuntimeError("Backend returned no results")
 
@@ -120,7 +145,12 @@ class AsyncBackendAdapter(BackendAdapter):
         self,
         request: "ScoreChatRequest",
     ) -> "ScoreChatResult":
+        from place_layers.backend.types import ScoreChatResult
+
         async for result in self._backend.score_chat([request]):
+            if isinstance(result, BackendError):
+                raise BackendRequestError(result)
+            assert isinstance(result, ScoreChatResult)
             return result
         raise RuntimeError("Backend returned no results")
 

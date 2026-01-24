@@ -20,6 +20,7 @@ from place_layers.backend.base import (
     concurrent_map,
 )
 from place_layers.backend.types import (
+    BackendError,
     ChatMessage,
     GenerateRequest,
     LogProbResult,
@@ -48,6 +49,7 @@ __all__ = [
     "SyncBackend",
     "BaseBackendConfig",
     "BackendConfig",
+    "BackendError",
     # Helper functions
     "batched_map",
     "batched_expand_map",

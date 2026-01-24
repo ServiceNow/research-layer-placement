@@ -26,7 +26,7 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.types import GenerateRequest
+from place_layers.backend.types import BackendError, GenerateRequest
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
@@ -277,6 +277,18 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
             # Generate and process results (may arrive in any order)
             async for result in self._backend.generate(requests):
+                # Handle backend errors gracefully
+                if isinstance(result, BackendError):
+                    skipped = SkippedProblem(
+                        problem_id=result.key,
+                        task_name=task_name,
+                        reason=f"{result.error_type}: {result.message}",
+                    )
+                    self._trace_writer.append([skipped])
+                    processed_count += 1
+                    progress.advance(progress_task)
+                    continue
+
                 idx, doc = key_to_doc[result.request_id]
 
                 # Create records

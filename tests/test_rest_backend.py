@@ -24,6 +24,7 @@ from place_layers.backend.rest import (
     ServerPool,
 )
 from place_layers.backend.types import (
+    BackendError,
     ScoreChatRequest,
     ScoreTextRequest,
     ScoreTokensRequest,
@@ -260,7 +261,7 @@ class TestPartialBatchFailure:
     async def test_batch_fails_when_all_servers_down(
         self, config: RESTBackendConfig
     ):
-        """Batch fails properly when all servers are unreachable."""
+        """Batch returns BackendError when all servers are unreachable."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # Both servers fail repeatedly
@@ -273,8 +274,11 @@ class TestPartialBatchFailure:
                     for i in range(2)
                 ]
 
-                with pytest.raises(RESTBackendError):
-                    _ = [r async for r in backend.score_tokens(requests)]
+                # Now returns BackendError in stream instead of raising
+                results = [r async for r in backend.score_tokens(requests)]
+                assert len(results) == 2
+                assert all(isinstance(r, BackendError) for r in results)
+                assert all(r.error_type == "server_error" for r in results)
 
 
 class TestClientErrorsNotRetried:
