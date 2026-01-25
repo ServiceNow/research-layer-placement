@@ -459,7 +459,9 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             )
             await self._set_placement(parameters)
         else:
-            logger.info("No placement specified, using default configuration")
+            # Non-supernet: use empty placement
+            self._current_placement = ()
+            self._init_trace_writer()
 
         # Evaluate each task
         start = time.perf_counter()

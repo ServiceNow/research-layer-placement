@@ -159,9 +159,6 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
     def __init__(self, config: "LikelihoodEvaluatorConfig") -> None:
         super().__init__(config)
-        logger.info(
-            f"Saving likelihood results to: {self._output_dir}/validation.jsonl"
-        )
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement configuration using likelihood-based accuracy.
@@ -177,7 +174,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         if parameters is not None:
             await self._set_placement(parameters)
         else:
-            logger.debug("No placement specified, using default configuration")
+            # Non-supernet: use empty placement
+            self._current_placement = ()
+            self._init_trace_writer()
 
         # Run evaluation (streams records to disk)
         await self._run_evaluation()

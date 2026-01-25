@@ -46,7 +46,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     - Backend lifecycle management (__aenter__, __aexit__)
     - Model structure discovery (num_layers, mixer_names)
     - Placement validation and setting
-    - TraceWriter for streaming results to disk
+    - TraceWriter for streaming results to disk (placement-indexed subdirectories)
     - Output directory from Hydra config
 
     Subclasses must implement:
@@ -56,6 +56,13 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         async with config.create_evaluator() as evaluator:
             score = await evaluator.evaluate(placement)
+
+    Output Directory Structure:
+        All traces are written to placement-indexed subdirectories:
+        - placements/empty/     - For non-supernet or default runs (placement=())
+        - placements/a2g3/      - For specific placements (run-length encoded)
+
+        This ensures that different placements never mix results during optimization.
     """
 
     config: "BackendEvaluatorConfig"
@@ -77,11 +84,9 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         hydra_cfg = HydraConfig.get()
         self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
 
-        # Build metadata from config
-        metadata = self._build_metadata()
-
-        # Initialize trace writer with base directory (updated per-placement in _set_placement)
-        self._trace_writer = TraceWriter(self._base_output_dir, metadata=metadata)
+        # TraceWriter is created lazily when placement is known
+        # (in _init_trace_writer or _set_placement)
+        self._trace_writer: TraceWriter | None = None
 
     async def __aenter__(self) -> Self:
         """Enter context: initialize backend and get model structure."""
@@ -148,46 +153,61 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     def _output_dir(self) -> Path:
         """Current output directory for traces.
 
-        During optimization, this returns a placement-specific subdirectory.
-        For single evaluations, it returns the base output directory.
+        Raises:
+            RuntimeError: If trace_writer not initialized.
         """
+        if self._trace_writer is None:
+            raise RuntimeError(
+                "_output_dir accessed before trace_writer initialized. "
+                "Call _init_trace_writer() first."
+            )
         return self._trace_writer.output_dir
 
-    def _build_metadata(self, placement: tuple[str, ...] | None = None) -> OutputMetadata:
-        """Build output metadata from evaluator config.
+    def _get_model_name(self) -> str:
+        """Get model name from backend config.
 
-        Assembles model info, config hash, and optional placement.
-        Subclasses can override to add evaluator-specific fields.
+        Raises:
+            ValueError: If model name cannot be determined.
         """
-        from place_layers.evaluator.traces.writer import compute_config_hash
-
-        # Get model name from backend config
         model_name = getattr(self.config.backend, "model_path", None)
         if model_name is None:
             model_name = getattr(self.config.backend, "model", None)
+        if model_name is None:
+            raise ValueError(
+                "Cannot determine model_name from backend config. "
+                "Backend must have 'model_path' or 'model' attribute."
+            )
+        return str(model_name)
 
-        # Compute config hash for resumption validation
-        config_hash = compute_config_hash(self.config.model_dump(mode="json"))
+    def _build_metadata(self) -> OutputMetadata:
+        """Build output metadata from current placement.
+
+        Reads from _current_placement. Must be set before calling.
+        """
+        from place_layers.evaluator.traces.writer import compute_config_hash
+
+        if self._current_placement is None:
+            raise RuntimeError("_current_placement must be set before building metadata")
 
         return OutputMetadata(
-            model_name=str(model_name) if model_name else None,
-            config_hash=config_hash,
-            placement=placement,
+            model_name=self._get_model_name(),
+            config_hash=compute_config_hash(self.config.model_dump(mode="json")),
+            placement=self._current_placement,
         )
 
-    def _get_placement_output_dir(self, placement: tuple[str, ...]) -> Path:
-        """Get placement-specific output directory.
+    def _get_placement_output_dir(self) -> Path:
+        """Get output directory for current placement.
 
-        Creates a subdirectory under the base output directory named by a
-        run-length encoded representation of the placement. This prevents
-        result collisions when evaluating multiple placements.
+        Creates a subdirectory under base output directory named by a
+        run-length encoded representation of the placement.
 
-        Args:
-            placement: Tuple of mixer names for each layer.
-
-        Returns:
-            Path to placement-specific output directory.
+        Reads from _current_placement. Must be set before calling.
         """
+        if self._current_placement is None:
+            raise RuntimeError("_current_placement must be set before getting output dir")
+
+        placement = self._current_placement
+
         # Build abbreviation map: first unique letter of each mixer name
         # e.g., {"attention": "a", "gdn": "g", "kda": "k", "mamba": "m"}
         abbrev_map: dict[str, str] = {}
@@ -230,8 +250,20 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         return placement_dir
 
+    def _init_trace_writer(self) -> None:
+        """Initialize trace writer for current placement.
+
+        Reads from _current_placement. Must be set before calling.
+        """
+        output_dir = self._get_placement_output_dir()
+        metadata = self._build_metadata()
+        self._trace_writer = TraceWriter(output_dir, metadata=metadata)
+        logger.debug(f"Initialized TraceWriter: {output_dir.name}")
+
     async def _set_placement(self, parameters: LayerPlacement) -> None:
         """Validate and set the mixer placement on the backend.
+
+        Also initializes trace writer for the new placement.
 
         Args:
             parameters: Layer placement to set.
@@ -253,22 +285,19 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         if mixer_names == self._current_placement:
             return
 
-        # Create placement-specific output directory and TraceWriter
-        # This ensures results from different placements don't get mixed during optimization
-        placement_dir = self._get_placement_output_dir(mixer_names)
-        metadata = self._build_metadata(placement=mixer_names)
-        self._trace_writer = TraceWriter(placement_dir, metadata=metadata)
-        logger.debug(f"Created TraceWriter for placement: {placement_dir.name}")
+        # Set placement state first (before _init_trace_writer reads it)
+        self._current_placement = mixer_names
 
-        # Skip backend call for single-mixer models (no dynamic switching needed)
+        # Initialize trace writer for this placement
+        self._init_trace_writer()
+
+        # Set placement on backend (skip for single-mixer models)
         if len(set(self.mixer_names)) > 1:
             if isinstance(self._backend, AsyncBackend):
                 await self._backend.set_placement(mixer_names)
             else:
                 self._backend.set_placement(mixer_names)
-            logger.debug(f"Set placement: {mixer_names[:4]}...")
-
-        self._current_placement = mixer_names
+            logger.debug(f"Set backend placement: {mixer_names[:4]}...")
 
     async def score_chat(
         self,

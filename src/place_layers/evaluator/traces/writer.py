@@ -40,12 +40,12 @@ logger = logging.getLogger(__name__)
 class OutputMetadata(BaseModel):
     """Metadata for trace output directories.
 
-    Different commands populate different fields based on their needs.
-    All fields except created_at are optional to support various use cases.
+    Required fields ensure proper provenance tracking and resumption support.
+    TraceWriter validates that required fields are provided.
 
     Used for:
-    1. Validating config hash on resumption
-    2. Providing provenance (model, revision) when loading traces
+    1. Validating config hash on resumption (prevents mixing incompatible runs)
+    2. Providing provenance (model, placement) when loading traces
     3. Recording placement for supernet optimization
     """
 
@@ -57,29 +57,27 @@ class OutputMetadata(BaseModel):
         description="When this output directory was created",
     )
 
-    # Model identification
-    model_name: str | None = Field(
-        default=None,
-        description="Model name or path",
+    # Model identification (required)
+    model_name: str = Field(
+        description="Model name or path (required for provenance)",
     )
     model_revision: str | None = Field(
         default=None,
         description="Model revision (git commit, HF revision, etc.)",
     )
 
-    # Placement (supernet evaluation)
-    placement: tuple[str, ...] | None = Field(
-        default=None,
-        description="Layer placement (mixer name per layer)",
+    # Placement (required - empty tuple for non-supernet)
+    placement: tuple[str, ...] = Field(
+        description="Layer placement (mixer name per layer). "
+        "Empty tuple for non-supernet models.",
     )
 
-    # Resumption
-    config_hash: str | None = Field(
-        default=None,
+    # Resumption (required)
+    config_hash: str = Field(
         description="Hash of config for resumption validation",
     )
 
-    # Precomputation specific
+    # Precomputation specific (optional)
     samples_per_problem: int | None = Field(
         default=None,
         description="Number of samples generated per problem",
@@ -105,9 +103,18 @@ class TraceWriter:
     def __init__(
         self,
         output_dir: Path,
-        metadata: OutputMetadata | None = None,
-        validate_config_hash: bool = True,
+        metadata: OutputMetadata,
     ) -> None:
+        """Initialize TraceWriter with required metadata.
+
+        Args:
+            output_dir: Directory for trace files (will be created if needed).
+            metadata: Required metadata for this output directory. Must include
+                model_name, placement, and config_hash.
+
+        Raises:
+            ValueError: If resuming with different config_hash.
+        """
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
@@ -115,33 +122,17 @@ class TraceWriter:
         # Load existing metadata (if resuming)
         existing = self._load_metadata()
 
-        # Validate config hash if both exist
-        if (
-            validate_config_hash
-            and existing is not None
-            and metadata is not None
-            and existing.config_hash is not None
-            and metadata.config_hash is not None
-            and existing.config_hash != metadata.config_hash
-        ):
+        # Validate config hash on resumption
+        if existing is not None and existing.config_hash != metadata.config_hash:
             raise ValueError(
                 f"Config hash mismatch: existing={existing.config_hash}, "
                 f"current={metadata.config_hash}. Cannot resume with different config."
             )
 
-        # Merge: provided metadata fields override existing
-        if metadata is not None:
-            if existing is not None:
-                merged_data = existing.model_dump()
-                for key, value in metadata.model_dump().items():
-                    if value is not None:
-                        merged_data[key] = value
-                self._metadata = OutputMetadata.model_validate(merged_data)
-            else:
-                self._metadata = metadata
-            self._save_metadata()
-        else:
-            self._metadata = existing
+        # Always use provided metadata (it's from current config)
+        # For resumption, we've validated config_hash matches
+        self._metadata = metadata
+        self._save_metadata()
 
         self._is_resuming = existing is not None
 
