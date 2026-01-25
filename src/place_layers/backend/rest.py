@@ -122,8 +122,8 @@ class ServerPool:
     """
 
     servers: list[str]
-    base_recovery_interval: float = 10.0  # Initial wait before retry
-    max_recovery_interval: float = 300.0  # Cap at 5 minutes
+    base_recovery_interval: float
+    max_recovery_interval: float
     _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
     _round_robin_counter: int = field(default=0, repr=False)
 
@@ -193,12 +193,12 @@ class ServerPool:
             if was_unhealthy:
                 logger.info(f"Server {server} recovered and marked healthy")
 
-    def mark_failure(self, server: str, reason: str = "") -> None:
+    def mark_failure(self, server: str, reason: str = "unknown") -> None:
         """Mark a server as unhealthy after a failed request.
 
         Args:
-            server: Server URL that failed.
-            reason: Optional reason for the failure (for logging).
+            server: The server URL that failed.
+            reason: Human-readable reason for the failure.
         """
         if server in self._health:
             self._health[server].mark_unhealthy()
@@ -209,7 +209,7 @@ class ServerPool:
             wait_time = next_check - time.monotonic()
             reason_str = f": {reason}" if reason else ""
             logger.warning(
-                f"Server {server} marked unhealthy "
+                f"Server {server} marked unhealthy: {reason} "
                 f"(failures: {health.consecutive_failures}, "
                 f"next check in {wait_time:.1f}s){reason_str}"
             )
@@ -410,12 +410,43 @@ class RESTBackend(AsyncBackend):
             errors: list[tuple[str, str]] = []
             for server in servers_to_try:
                 try:
-                    # Use common HTTP request logic
-                    return await self._do_http_request(server, endpoint, payload)
-                except RESTBackendError as e:
-                    # Server failed - try next server
-                    logger.debug(f"Server {server} failed for {endpoint}: {e}")
-                    errors.append((server, str(e)))
+                    async with self._get_semaphore(server):
+                        async with session.post(
+                            f"{server}{endpoint}", json=payload
+                        ) as resp:
+                            if resp.status == 503:
+                                # Server unavailable - mark unhealthy, try next
+                                reason = "503 Service Unavailable"
+                                self._server_pool.mark_failure(server, reason)
+                                errors.append((server, reason))
+                                continue
+                            if resp.status >= 500:
+                                # Server error - mark unhealthy, try next
+                                error_text = await resp.text()
+                                reason = f"{resp.status}: {error_text[:200]}"
+                                self._server_pool.mark_failure(server, reason)
+                                errors.append((server, reason))
+                                continue
+                            if resp.status >= 400:
+                                # Client error - don't retry, raise immediately
+                                error_text = await resp.text()
+                                raise RESTBackendError(
+                                    f"Request failed (status {resp.status}): {error_text}"
+                                )
+                            # Success - parse response (errors here are not connection issues)
+                            self._server_pool.mark_success(server)
+                            return await resp.json()
+                except aiohttp.ClientConnectionError as e:
+                    # Connection error - mark unhealthy, try next server
+                    reason = f"Connection error: {e}"
+                    self._server_pool.mark_failure(server, reason)
+                    errors.append((server, reason))
+                    continue
+                except asyncio.TimeoutError:
+                    # Timeout - mark unhealthy, try next server
+                    reason = f"Timeout after {self._config.timeout_seconds}s"
+                    self._server_pool.mark_failure(server, reason)
+                    errors.append((server, reason))
                     continue
 
             # All servers we tried failed
@@ -792,27 +823,22 @@ class RESTBackendConfig(BaseBackendConfig):
         description="List of server URLs (e.g., ['http://localhost:8080', 'http://localhost:8081'])"
     )
     max_concurrent_per_server: int = Field(
-        default=8,
         description="Maximum concurrent requests per server",
         ge=1,
     )
     timeout_seconds: int = Field(
-        default=300,
         description="Request timeout in seconds",
         ge=1,
     )
     base_recovery_interval: float = Field(
-        default=10.0,
         description="Initial wait time before retrying an unhealthy server (seconds)",
         ge=0.1,
     )
     max_recovery_interval: float = Field(
-        default=300.0,
         description="Maximum wait time between recovery checks (seconds)",
         ge=1.0,
     )
     max_retries: int = Field(
-        default=10,
         description="Maximum number of retry attempts when all servers fail",
         ge=1,
     )

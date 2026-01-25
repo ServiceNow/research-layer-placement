@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from place_layers.core.types import ChatMessage
 from place_layers.clients.base_vllm import BaseVLLMClient
+from place_layers.clients.remote_vllm import VLLMBadRequestError
 from place_layers.clients.types import (
     GeneratedSample,
     GenerationResult,
@@ -26,6 +27,7 @@ from place_layers.clients.types import (
 if TYPE_CHECKING:
     from typing import Self
 
+    from vllm.entrypoints.openai.protocol import ErrorResponse
     from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
     from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
     from vllm.v1.engine.async_llm import AsyncLLM
@@ -33,12 +35,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Set a triton allocator to avoid "no allocator was set" errors
-def _triton_allocator(size: int, alignment: int, stream: int | None):  # type: ignore[return]
-    return torch.empty(size, dtype=torch.int8, device="cuda").data_ptr()
+# Triton allocator setup - must be done lazily to avoid initializing CUDA
+# before vLLM can spawn its engine process
+_triton_allocator_set = False
 
 
-triton.set_allocator(_triton_allocator)
+def _ensure_triton_allocator() -> None:
+    """Set triton allocator lazily to avoid early CUDA init."""
+    global _triton_allocator_set
+    if _triton_allocator_set:
+        return
+
+    def _triton_allocator(size: int, alignment: int, stream: int | None):  # type: ignore[return]
+        return torch.empty(size, dtype=torch.int8, device="cuda").data_ptr()
+
+    triton.set_allocator(_triton_allocator)
+    _triton_allocator_set = True
 
 
 class LocalVLLMClientConfig(BaseModel):
@@ -118,13 +130,14 @@ class LocalVLLMClient(BaseVLLMClient):
         self._engine = AsyncLLM.from_engine_args(engine_args)
         self._model_name = self.config.model_path
 
+        # Set triton allocator after engine spawns to avoid CUDA init in parent
+        _ensure_triton_allocator()
+
         # Create OpenAI serving layer
-        model_config = await self._engine.get_model_config()
         base_model_paths = [BaseModelPath(name=self._model_name, model_path=self.config.model_path)]
 
         serving_models = OpenAIServingModels(
             engine_client=self._engine,
-            model_config=model_config,
             base_model_paths=base_model_paths,
         )
 
@@ -246,8 +259,9 @@ class LocalVLLMClient(BaseVLLMClient):
         response = await self._chat_serving.create_chat_completion(request)
 
         # Handle error response
-        if hasattr(response, "error"):
-            raise RuntimeError(f"Chat completion failed: {response}")
+        from vllm.entrypoints.openai.protocol import ErrorResponse
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Chat completion failed: {response.error}")
 
         # Extract samples from response
         samples: list[GeneratedSample] = []
@@ -329,8 +343,9 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._completion_serving.create_completion(request)
 
-        if hasattr(response, "error"):
-            raise RuntimeError(f"Completion failed: {response}")
+        from vllm.entrypoints.openai.protocol import ErrorResponse
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Completion failed: {response.error}")
 
         # Extract logprobs for completion tokens
         choice = response.choices[0]
@@ -386,8 +401,9 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._completion_serving.create_completion(request)
 
-        if hasattr(response, "error"):
-            raise RuntimeError(f"Completion failed: {response}")
+        from vllm.entrypoints.openai.protocol import ErrorResponse
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Completion failed: {response.error}")
 
         choice = response.choices[0]
         logprobs_data = choice.logprobs
@@ -449,8 +465,9 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._chat_serving.create_chat_completion(request)
 
-        if hasattr(response, "error"):
-            raise RuntimeError(f"Chat completion failed: {response}")
+        from vllm.entrypoints.openai.protocol import ErrorResponse
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Chat completion failed: {response.error}")
 
         # Extract prompt_logprobs from response
         prompt_logprobs_data = getattr(response, "prompt_logprobs", None) or []
@@ -463,10 +480,10 @@ class LocalVLLMClient(BaseVLLMClient):
                 token_ids.append(-1)
                 logprobs.append(None)
             else:
+                # lp is {token_id: Logprob} where Logprob has .logprob attribute
                 token_id = int(list(lp.keys())[0])
-                token_logprob = lp[list(lp.keys())[0]]["logprob"]
                 token_ids.append(token_id)
-                logprobs.append(token_logprob)
+                logprobs.append(lp[token_id].logprob)
 
         return SequenceLogProbs(
             token_ids=token_ids,

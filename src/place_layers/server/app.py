@@ -25,6 +25,7 @@ from place_layers.backend.types import (
 )
 from place_layers.server.adapter import (
     BackendAdapter,
+    BackendRequestError,
     create_adapter,
 )
 from place_layers.server.schemas import (
@@ -44,8 +45,7 @@ logger = logging.getLogger(__name__)
 
 def create_app(
     backend_config: BaseBackendConfig,
-    batch_size: int = 32,
-    batch_timeout: float = 0.01,
+    heartbeat_interval: float = 0.01,
 ) -> FastAPI:
     """Create a FastAPI app wrapping any backend.
 
@@ -55,8 +55,7 @@ def create_app(
 
     Args:
         backend_config: Configuration for the backend.
-        batch_size: Max batch size for SyncBackend adapter.
-        batch_timeout: Max wait time (seconds) for batch to fill.
+        heartbeat_interval: Heartbeat interval for streaming bridge.
 
     Returns:
         FastAPI application ready to be served.
@@ -72,7 +71,7 @@ def create_app(
 
         # Create backend and adapter
         backend = backend_config.create_backend()
-        adapter = create_adapter(backend, batch_size, batch_timeout)
+        adapter = create_adapter(backend, heartbeat_interval)
 
         # Initialize
         await adapter.__aenter__()
@@ -123,7 +122,6 @@ def create_app(
 
         return InfoResponse(
             model_path=getattr(backend_config, "model_path", "unknown"),
-            batch_size=batch_size,
             supports_placement=supports_placement,
             current_placement=None,  # TODO: track current placement
             num_layers=num_layers,
@@ -165,8 +163,8 @@ def create_app(
             result = await adapter.generate_one(gen_request)
             return result.model_dump()
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
             logger.exception("Generation failed")
             raise HTTPException(status_code=500, detail=str(e))
@@ -203,8 +201,8 @@ def create_app(
             result = await adapter.score_tokens_one(score_request)
             return ScoreTokensResponse(key=result.key, log_prob=result.log_prob)
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
             logger.exception("Token scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
@@ -240,8 +238,8 @@ def create_app(
                 results=result.results,
             )
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
             logger.exception("Text scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
@@ -277,8 +275,8 @@ def create_app(
                 results=result.results,
             )
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
             logger.exception("Chat scoring failed")
             raise HTTPException(status_code=500, detail=str(e))

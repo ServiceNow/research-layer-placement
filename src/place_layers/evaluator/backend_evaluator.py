@@ -23,6 +23,7 @@ from pydantic import Field
 from place_layers.backend import (
     AsyncBackend,
     BackendConfig,
+    BackendError,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
@@ -201,11 +202,15 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def score_chat(
         self,
         requests: Iterable[ScoreChatRequest],
-    ) -> AsyncIterator[ScoreChatResult]:
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
         """Score chat completions, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
         Results may arrive in any order - use result.key to join with input.
+
+        May yield BackendError for failed requests (e.g., prompt too long).
+        Callers must check isinstance(result, BackendError) and write a
+        SkippedProblem record to ensure the problem is marked complete.
         """
         if isinstance(self._backend, AsyncBackend):
             async for result in self._backend.score_chat(requests):
@@ -217,11 +222,15 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def score_tokens(
         self,
         requests: Iterable[ScoreTokensRequest],
-    ) -> AsyncIterator[ScoreTokensResult]:
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
         """Score token sequences, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
         Results may arrive in any order - use result.key to join with input.
+
+        May yield BackendError for failed requests.
+        Callers must check isinstance(result, BackendError) and write a
+        SkippedProblem record to ensure the problem is marked complete.
         """
         if isinstance(self._backend, AsyncBackend):
             async for result in self._backend.score_tokens(requests):
@@ -233,11 +242,15 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def score_text(
         self,
         requests: Iterable[ScoreTextRequest],
-    ) -> AsyncIterator[ScoreTextResult]:
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
         """Score text continuations, yielding results as they complete.
 
         Handles sync/async dispatch based on backend type.
         Results may arrive in any order - use result.key to join with input.
+
+        May yield BackendError for failed requests.
+        Callers must check isinstance(result, BackendError) and write a
+        SkippedProblem record to ensure the problem is marked complete.
         """
         if isinstance(self._backend, AsyncBackend):
             async for result in self._backend.score_text(requests):

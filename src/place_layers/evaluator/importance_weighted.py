@@ -44,7 +44,7 @@ from typing import ClassVar, Literal, Self, Sequence
 
 from pydantic import Field, model_validator
 
-from place_layers.backend import ScoreTokensRequest
+from place_layers.backend import BackendError, ScoreTokensRequest
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
@@ -54,6 +54,7 @@ from place_layers.evaluator.traces.writer import (
 )
 from place_layers.evaluator.traces.types import (
     ISProblemRecord,
+    SkippedProblem,
     Trace,
     TraceDataset,
 )
@@ -390,14 +391,40 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 f"[cyan]{task_name}",
                 total=len(remaining_problems),
             )
+            # Track problems that had errors (skip entire problem if any trace fails)
+            failed_problems: set[str] = set()
 
             async for result in self.score_tokens(make_requests()):
                 # Parse key to get problem_id and trace_idx
                 problem_id, trace_idx_str = result.key.rsplit(":", 1)
+
+                # Handle backend errors - skip entire problem if any trace fails
+                if isinstance(result, BackendError):
+                    if problem_id not in failed_problems:
+                        failed_problems.add(problem_id)
+                        logger.warning(
+                            f"Skipping {problem_id}: {result.error_type} - {result.message}"
+                        )
+                        self._trace_writer.append([
+                            SkippedProblem(
+                                problem_id=problem_id,
+                                task_name=task_name,
+                                reason=f"{result.error_type}: {result.message}",
+                            )
+                        ])
+                        if problem_id in pending:
+                            del pending[problem_id]
+                        progress.advance(progress_task)
+                    continue
+
+                # Skip if this problem already failed on another trace
+                if problem_id in failed_problems:
+                    continue
+
                 trace_idx = int(trace_idx_str)
 
                 # Record result
-                problem, num_traces, log_probs = pending[problem_id]
+                problem, _, log_probs = pending[problem_id]
                 log_probs[trace_idx] = result.log_prob
 
                 # Check if all traces for this problem are complete

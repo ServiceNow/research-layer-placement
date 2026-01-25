@@ -24,3 +24,8 @@ max_concurrent_per_server: 8
 
 # Request timeout in seconds
 timeout_seconds: 300
+
+# Server health recovery settings
+base_recovery_interval: 10.0  # Initial wait before retrying unhealthy server (seconds)
+max_recovery_interval: 30.0   # Cap on exponential backoff (seconds)
+max_retries: 10               # Max retry attempts when all servers fail

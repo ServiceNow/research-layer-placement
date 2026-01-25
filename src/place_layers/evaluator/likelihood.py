@@ -82,6 +82,7 @@ import numpy as np
 from pydantic import Field
 
 from place_layers.backend import (
+    BackendError,
     ChatMessage,
     LogProbResult,
     ScoreChatRequest,
@@ -95,7 +96,7 @@ from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
     TaskBasedEvaluatorConfig,
 )
-from place_layers.evaluator.traces.types import LikelihoodRecord
+from place_layers.evaluator.traces.types import LikelihoodRecord, SkippedProblem
 from place_layers.evaluator.traces.writer import summarize_likelihood
 
 if TYPE_CHECKING:
@@ -279,7 +280,22 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
 
             async for result in self.score_chat(make_requests()):
-                problem_idx, metadata, context_msgs, choice_msgs = problems[result.key]
+                # Handle backend errors (e.g., prompt too long)
+                if isinstance(result, BackendError):
+                    logger.warning(
+                        f"Skipping {result.key}: {result.error_type} - {result.message}"
+                    )
+                    self._trace_writer.append([
+                        SkippedProblem(
+                            problem_id=result.key,
+                            task_name=task_name,
+                            reason=f"{result.error_type}: {result.message}",
+                        )
+                    ])
+                    progress.advance(progress_task, 1)
+                    continue
+
+                _, metadata, context_msgs, choice_msgs = problems[result.key]
 
                 pred = self._compute_prediction(
                     list(result.results), metadata.gold_idx, metadata.lengths
@@ -340,7 +356,22 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
 
             async for result in self.score_text(make_requests()):
-                problem_idx, metadata, context_str = problems[result.key]
+                # Handle backend errors (e.g., prompt too long)
+                if isinstance(result, BackendError):
+                    logger.warning(
+                        f"Skipping {result.key}: {result.error_type} - {result.message}"
+                    )
+                    self._trace_writer.append([
+                        SkippedProblem(
+                            problem_id=result.key,
+                            task_name=task_name,
+                            reason=f"{result.error_type}: {result.message}",
+                        )
+                    ])
+                    progress.advance(progress_task, 1)
+                    continue
+
+                _, metadata, context_str = problems[result.key]
 
                 pred = self._compute_prediction(
                     list(result.results), metadata.gold_idx, metadata.lengths

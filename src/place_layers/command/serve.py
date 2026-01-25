@@ -53,11 +53,10 @@ class ServeCommand(BaseCommand):
         logger.info(f"Backend type: {self.config.backend.backend_type}")
 
         # Create FastAPI app based on backend type
-        if isinstance(self.config.backend, TransformersBackendConfig):
-            from place_layers.server.app import create_app
+        from place_layers.server.app import create_app
 
+        if isinstance(self.config.backend, TransformersBackendConfig):
             logger.info(f"Model: {self.config.backend.model_path}")
-            app = create_app(self.config.backend)
         elif isinstance(self.config.backend, VLLMBackendConfig):
             # VLLMBackend can be local or remote - only local makes sense for serve
             if not isinstance(self.config.backend.client, LocalVLLMClientConfig):
@@ -65,14 +64,14 @@ class ServeCommand(BaseCommand):
                     "serve command requires local vLLM client, not remote. "
                     "Use +backend=local_vllm instead of +backend=vllm"
                 )
-            from place_layers.server.app_vllm import create_vllm_app
-
             logger.info(f"Model: {self.config.backend.client.model_path}")
-            app = create_vllm_app(self.config.backend.client)
         else:
             raise ValueError(
                 f"Unknown backend type: {self.config.backend.backend_type}"
             )
+
+        # Both TransformersBackend and VLLMBackend work with create_app
+        app = create_app(self.config.backend)
 
         # Configure uvicorn
         config = uvicorn.Config(

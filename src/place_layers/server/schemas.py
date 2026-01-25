@@ -117,7 +117,6 @@ class InfoResponse(BaseModel):
     model_config = {"frozen": True}
 
     model_path: str = Field(description="Path to the loaded model")
-    batch_size: int = Field(description="Configured batch size for generation")
     supports_placement: bool = Field(
         description="Whether this server supports dynamic mixer placement"
     )

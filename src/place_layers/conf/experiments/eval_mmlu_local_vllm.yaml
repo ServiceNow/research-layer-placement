@@ -1,0 +1,26 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on MMLU with local vLLM backend (likelihood)
+#
+# Usage:
+#   python -m place_layers +experiments=eval_mmlu_local_vllm
+
+defaults:
+  - /command: evaluate
+  - /evaluator: likelihood
+  - /backend: local_vllm
+  - /model: apriel2_0_5b_dev
+  - /task: mmlu_quick
+  # Skip placement for now - model structure discovery not working
+  # - /placement: all_attention
+  - _self_
+
+model:
+  model_path: /tmp/apriel2-0.5b-dev
+
+backend:
+  client:
+    gpu_memory_utilization: 0.7
+
+evaluator:
+  use_chat_template: true
+  batch_size: 8

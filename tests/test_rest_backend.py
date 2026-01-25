@@ -69,10 +69,11 @@ class TestConcurrentFailover:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
             max_recovery_interval=1.0,
             max_retries=3,
-            timeout_seconds=5,
         )
 
     async def test_concurrent_requests_failover_to_healthy_server(
@@ -227,10 +228,11 @@ class TestPartialBatchFailure:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
             max_recovery_interval=1.0,
             max_retries=3,
-            timeout_seconds=5,
         )
 
     async def test_batch_succeeds_with_one_server_down(
@@ -288,7 +290,10 @@ class TestClientErrorsNotRetried:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
+            max_recovery_interval=1.0,
             max_retries=3,
         )
 
@@ -328,6 +333,8 @@ class TestServerRecovery:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
             max_recovery_interval=1.0,
             max_retries=5,
@@ -382,7 +389,10 @@ class TestConnectionErrors:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
+            max_recovery_interval=1.0,
             max_retries=3,
         )
 
@@ -422,6 +432,7 @@ class TestEdgeCases:
         pool = ServerPool(
             servers=["http://s1:8080"],
             base_recovery_interval=10.0,
+            max_recovery_interval=30.0,
         )
 
         assert pool.get_servers_to_try() == ["http://s1:8080"]
@@ -432,7 +443,14 @@ class TestEdgeCases:
 
     async def test_backend_requires_context_manager(self):
         """Backend raises if used without async context manager."""
-        config = RESTBackendConfig(servers=["http://s1:8080"])
+        config = RESTBackendConfig(
+            servers=["http://s1:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
+            base_recovery_interval=10.0,
+            max_recovery_interval=30.0,
+            max_retries=3,
+        )
         backend = RESTBackend(config)
 
         with pytest.raises(RuntimeError, match="context manager"):
@@ -440,7 +458,14 @@ class TestEdgeCases:
 
     async def test_empty_requests_returns_empty(self):
         """Empty input to batch operations returns empty without server calls."""
-        config = RESTBackendConfig(servers=["http://s1:8080"])
+        config = RESTBackendConfig(
+            servers=["http://s1:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
+            base_recovery_interval=10.0,
+            max_recovery_interval=30.0,
+            max_retries=3,
+        )
 
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
@@ -455,6 +480,8 @@ class TestScoreText:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
             max_recovery_interval=1.0,
             max_retries=3,
@@ -539,6 +566,8 @@ class TestScoreChat:
     def config(self) -> RESTBackendConfig:
         return RESTBackendConfig(
             servers=["http://s1:8080", "http://s2:8080"],
+            max_concurrent_per_server=8,
+            timeout_seconds=5,
             base_recovery_interval=0.1,
             max_recovery_interval=1.0,
             max_retries=3,
