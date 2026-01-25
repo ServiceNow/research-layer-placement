@@ -98,27 +98,14 @@ Our approach is better:
 
 ---
 
-## 3. Config Files to Copy
+## 3. Config Files (Copied)
 
-These are simple YAML configs that can be copied directly:
+All config files from main have been copied:
 
-```bash
-# Task configs for extraction evaluation
-git show origin/main:src/place_layers/conf/task/fda.yaml > src/place_layers/conf/task/fda.yaml
-git show origin/main:src/place_layers/conf/task/swde.yaml > src/place_layers/conf/task/swde.yaml
-
-# Generation config for extraction tasks
-git show origin/main:src/place_layers/conf/generation/extraction.yaml > src/place_layers/conf/generation/extraction.yaml
-
-# Model configs (if needed for specific experiments)
-git show origin/main:src/place_layers/conf/model/apriel2_1p6_0112.yaml > src/place_layers/conf/model/apriel2_1p6_0112.yaml
-git show origin/main:src/place_layers/conf/model/apriel2_1p6_annealed_0113.yaml > src/place_layers/conf/model/apriel2_1p6_annealed_0113.yaml
-
-# Placement configs (if needed)
-git show origin/main:src/place_layers/conf/placement/9_outof_10_gdn.yaml > src/place_layers/conf/placement/9_outof_10_gdn.yaml
-git show origin/main:src/place_layers/conf/placement/9_outof_10_kda.yaml > src/place_layers/conf/placement/9_outof_10_kda.yaml
-git show origin/main:src/place_layers/conf/placement/9_outof_10_swa.yaml > src/place_layers/conf/placement/9_outof_10_swa.yaml
-```
+- `conf/task/fda.yaml`, `conf/task/swde.yaml` - extraction tasks
+- `conf/generation/extraction.yaml` - added `use_chat_template` and `evaluate_truncated_samples`
+- `conf/model/apriel2_1p6_0112.yaml`, `conf/model/apriel2_1p6_annealed_0113.yaml` - experiment models
+- `conf/placement/9_outof_10_gdn.yaml`, `9_outof_10_kda.yaml`, `9_outof_10_swa.yaml` - placement patterns
 
 ---
 
@@ -187,17 +174,15 @@ The fan-in happens at the **evaluator level** (`_build_choice_chats` bundles cho
 
 ## 6. Test Files Added on Main
 
-These tests may be useful to review but likely need adaptation for our architecture:
+**Not ported** - our architecture is different:
 
-```
-tests/benchmark_likelihood_rest.py
-tests/debug_fixture.py
-tests/start_test_server.py
-tests/test_likelihood_rest_integration.py
-tests/test_likelihood_rest_unit.py
-tests/test_rest_distribution.py
-tests/test_server_startup.py
-```
+- `test_rest_distribution.py` - tests `_distribute_batch` (we use streaming)
+- `test_likelihood_rest_unit.py` - tests `compute_chat_log_probs` (old API)
+- `benchmark_likelihood_rest.py` - benchmarks old batch API
+- `start_test_server.py` - redundant with `+command=serve`
+- `test_server_startup.py` - uses above helper
+
+Our `tests/test_rest_backend.py` covers the streaming interface with 650 lines of failover/health tests.
 
 ---
 
@@ -236,8 +221,7 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 
 ### To Do 📋
 
-- [ ] Copy task configs (fda.yaml, swde.yaml) - extraction evaluation support
-- [ ] Copy extraction.yaml generation config - extraction evaluation support
+*(All items complete)*
 
 ---
 
