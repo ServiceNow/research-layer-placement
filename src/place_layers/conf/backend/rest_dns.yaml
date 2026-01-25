@@ -1,42 +1,38 @@
 # @package backend
-# REST backend configuration with automatic DNS-based server list generation
+# REST backend with automatic DNS-based server list generation
 #
-# Automatically generates server URLs based on DNS pattern and server count.
-# Useful for distributed deployments with predictable DNS naming schemes.
+# Generates server URLs from DNS pattern and server count.
+# Useful for Kubernetes deployments with predictable DNS naming.
 #
-# Example: With dns_prefix="dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f", num_servers=4, port=8080
+# Example: dns_prefix="my-service", num_servers=4, port=8080
 # Generates:
-#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-0:8080
-#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-1:8080
-#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-2:8080
-#   - http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-3:8080
+#   - http://my-service-id-0:8080
+#   - http://my-service-id-1:8080
+#   - http://my-service-id-2:8080
+#   - http://my-service-id-3:8080
 #
-# Usage:
-#   # Using environment variables (recommended for deployment)
+# Usage with environment variables:
 #   DNS_PREFIX=my-cluster NUM_SERVERS=4 python -m place_layers \
-#       +command=evaluate +backend=rest_dns \
-#       +evaluator=generative +task=gsm8k +generation=greedy
+#       +command=evaluate +backend=rest_dns ...
 #
-#   # Using CLI overrides
+# Usage with CLI overrides:
 #   python -m place_layers +command=evaluate +backend=rest_dns \
-#       backend.dns_prefix=my-cluster backend.num_servers=4 \
-#       +evaluator=generative +task=gsm8k +generation=greedy
+#       backend.dns_prefix=my-cluster backend.num_servers=4 ...
 
 backend_type: rest_dns
 
 # DNS prefix for server hostnames
-# Servers will be named: {dns_prefix}-id-{0..num_servers-1}
-dns_prefix: ${oc.env:DNS_PREFIX,dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f}
+dns_prefix: ${oc.env:DNS_PREFIX}
 
-# Number of servers to generate
-num_servers: ${oc.env:NUM_SERVERS,4}
+# Number of servers
+num_servers: ${oc.env:NUM_SERVERS}
 
-# Port for all servers (assumes uniform port across servers)
+# Port (uniform across all servers)
 port: 8080
 
-# Maximum concurrent requests per server
-# Total concurrent = max_concurrent_per_server * len(servers)
+# Concurrency and timeout settings
 max_concurrent_per_server: 8
-
-# Request timeout in seconds
 timeout_seconds: 300
+base_recovery_interval: 1.0
+max_recovery_interval: 30.0
+max_retries: 3

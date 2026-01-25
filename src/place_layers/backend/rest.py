@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -316,17 +316,13 @@ class WaitForServerRecovery(wait_base):
 class RESTBackend(AsyncBackend):
     """Async backend that distributes requests across multiple REST servers.
 
-    Each server runs a TransformersBackend via the serve command. Requests
-    are distributed using round-robin load balancing. The placement is
-    included in every request, allowing servers to set it lazily.
-
-    Usage:
-        async with RESTBackend(config) as backend:
-            await backend.set_placement(["attention", "mamba", ...])
-            result = await backend.agenerate(messages, n=8, ...)
+    Servers run TransformersBackend via the serve command. Requests are
+    distributed using round-robin load balancing with automatic failover.
+    Each request includes the current placement, allowing servers to
+    update their state lazily on receipt.
     """
 
-    def __init__(self, config: "RESTBackendConfig") -> None:
+    def __init__(self, config: "RESTBackendConfig | RESTDNSBackendConfig") -> None:
         self._config = config
         self._session: aiohttp.ClientSession | None = None
         # Per-server semaphores for concurrency control
@@ -921,16 +917,14 @@ class RESTBackend(AsyncBackend):
         logger.debug(f"Placement set locally: {self._current_placement}")
 
 
-class RESTBackendConfig(BaseBackendConfig):
-    """Configuration for REST backend."""
+class BaseRESTBackendConfig(BaseBackendConfig):
+    """Base configuration for REST backends.
+
+    Subclasses must provide the `servers` property (either as a field or computed).
+    """
 
     _backend_class: ClassVar[type[AsyncBackend]] = RESTBackend
 
-    backend_type: Literal["rest"] = "rest"
-
-    servers: list[str] = Field(
-        description="List of server URLs (e.g., ['http://localhost:8080', 'http://localhost:8081'])"
-    )
     max_concurrent_per_server: int = Field(
         description="Maximum concurrent requests per server",
         ge=1,
@@ -953,61 +947,54 @@ class RESTBackendConfig(BaseBackendConfig):
     )
 
 
-class RESTDNSBackendConfig(RESTBackendConfig):
-    """Configuration for REST backend with automatic DNS-based server list generation.
+class RESTBackendConfig(BaseRESTBackendConfig):
+    """REST backend with explicit server list."""
+
+    backend_type: Literal["rest"] = "rest"
+
+    servers: list[str] = Field(
+        description="List of server URLs (e.g., ['http://localhost:8080', 'http://localhost:8081'])"
+    )
+
+
+class RESTDNSBackendConfig(BaseRESTBackendConfig):
+    """REST backend with auto-generated server list from DNS pattern.
 
     Generates server URLs automatically based on a DNS prefix and server count.
-    Useful for distributed deployments with predictable DNS naming schemes.
+    Useful for Kubernetes deployments with predictable DNS naming schemes.
 
     Example:
-        dns_prefix = "dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f"
+        dns_prefix = "my-service"
         num_servers = 4
         port = 8080
 
         Generates:
-        [
-            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-0:8080",
-            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-1:8080",
-            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-2:8080",
-            "http://dns-b680aca4-03a8-4fe6-bbc1-3a659786fd8f-id-3:8080"
-        ]
+        - http://my-service-id-0:8080
+        - http://my-service-id-1:8080
+        - http://my-service-id-2:8080
+        - http://my-service-id-3:8080
     """
 
     backend_type: Literal["rest_dns"] = "rest_dns"
 
     dns_prefix: str = Field(
-        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..num_servers-1})"
+        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..n-1})"
     )
     num_servers: int = Field(
         description="Number of servers to generate",
         ge=1,
     )
     port: int = Field(
-        default=8080,
-        description="Port for all servers (uniform across servers)",
+        description="Port for all servers",
         ge=1,
         le=65535,
     )
 
-    # Override servers to make it optional with a default
-    servers: list[str] = Field(
-        default_factory=list,
-        description="Auto-generated server URLs (do not set manually)",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def generate_servers(cls, data: dict) -> dict:
-        """Auto-generate server list from DNS prefix and server count."""
-        # Only generate if servers not already provided
-        if not data.get("servers"):
-            dns_prefix = data.get("dns_prefix")
-            num_servers = data.get("num_servers")
-            port = data.get("port", 8080)
-
-            if dns_prefix is not None and num_servers is not None:
-                data["servers"] = [
-                    f"http://{dns_prefix}-id-{i}:{port}"
-                    for i in range(int(num_servers))
-                ]
-        return data
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def servers(self) -> list[str]:
+        """Auto-generate server URLs from DNS prefix and server count."""
+        return [
+            f"http://{self.dns_prefix}-id-{i}:{self.port}"
+            for i in range(self.num_servers)
+        ]

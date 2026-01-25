@@ -92,55 +92,9 @@ Our approach is better:
 
 ---
 
-## 2. Features To Port (High Priority)
+## 2. Features Ported (Completed)
 
-### 2.1 REST DNS Backend Config
-
-**Commit:** `71574c6`
-**Priority:** Medium
-**Complexity:** Low
-
-**What it does:**
-- Auto-generates server URLs from DNS prefix pattern
-- Example: `dns_prefix=my-cluster`, `num_servers=4` generates:
-  - `http://my-cluster-id-0:8080`
-  - `http://my-cluster-id-1:8080`
-  - `http://my-cluster-id-2:8080`
-  - `http://my-cluster-id-3:8080`
-
-**Files to add/modify:**
-```
-src/place_layers/backend/rest.py              # Add RESTDNSBackendConfig class
-src/place_layers/conf/backend/rest_dns.yaml   # Add config file
-```
-
-**Implementation:**
-```python
-class RESTDNSBackendConfig(RESTBackendConfig):
-    backend_type: Literal["rest_dns"] = "rest_dns"
-
-    dns_prefix: str = Field(description="DNS prefix for server hostnames")
-    num_servers: int = Field(description="Number of servers", ge=1)
-    port: int = Field(default=8080, ge=1, le=65535)
-
-    # Override servers with empty default
-    servers: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def generate_servers(cls, data: dict) -> dict:
-        if not data.get("servers"):
-            dns_prefix = data.get("dns_prefix")
-            num_servers = data.get("num_servers")
-            port = data.get("port", 8080)
-
-            if dns_prefix and num_servers:
-                data["servers"] = [
-                    f"http://{dns_prefix}-id-{i}:{port}"
-                    for i in range(num_servers)
-                ]
-        return data
-```
+*(All high-priority features have been ported - see checklist in Section 8)*
 
 ---
 
@@ -278,10 +232,10 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] Batch task loading + docs caching (ported 2026-01-25) - `load_tasks()` in `__aenter__`, async prefetching
 - [x] Streaming evaluation across tasks (added 2026-01-25) - requests across all tasks in single stream, not task-by-task
 - [x] Command refactoring (added 2026-01-25) - `resolve_placement()` utility, generic result handlers
+- [x] REST DNS backend config (ported 2026-01-25) - `BaseRESTBackendConfig` base class, `@computed_field` for auto-generated servers
 
 ### To Do 📋
 
-- [ ] REST DNS backend config - convenience for Kubernetes deployments
 - [ ] Copy task configs (fda.yaml, swde.yaml) - extraction evaluation support
 - [ ] Copy extraction.yaml generation config - extraction evaluation support
 
