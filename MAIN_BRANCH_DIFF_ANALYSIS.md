@@ -239,11 +239,7 @@ The fan-in happens at the **evaluator level** (`_build_choice_chats` bundles cho
 
 ## 5. Low Priority / Nice to Have
 
-### 5.1 Separate Output Dirs per Placement
-
-**Commit:** `255fe65`
-
-Uses separate trace-writer output directories for different placements. May be useful for organization when running evaluations across many placements.
+*(No remaining items - all useful features ported)*
 
 ---
 
@@ -290,6 +286,7 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] `build_text_prompt()` function in lm_eval_utils.py (ported 2026-01-25)
 - [x] REST round-robin distribution fix (ported 2026-01-25) - ServerPool.select_server() + preferred_server
 - [x] Problem-to-server affinity (analyzed 2026-01-25) - **not needed**: our request types bundle all choices together
+- [x] Separate output dirs per placement (ported 2026-01-25) - run-length encoded dir names (e.g., `a2g3a2`)
 
 ### To Do 📋
 

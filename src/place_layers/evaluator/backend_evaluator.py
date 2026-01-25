@@ -73,21 +73,11 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # Track current placement to avoid redundant set_placement calls
         self._current_placement: tuple[str, ...] | None = None
 
-        # Set up output directory for saving results
-        # Always use Hydra's output directory as base
-        try:
-            hydra_cfg = HydraConfig.get()
-            self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
-        except ValueError:
-            # HydraConfig not available (e.g., in tests)
-            # Use a default temp directory
-            import tempfile
-            self._base_output_dir = Path(tempfile.mkdtemp(prefix="place_layers_"))
-            logger.warning(
-                f"HydraConfig not available, using temp output directory: {self._base_output_dir}"
-            )
+        # Set up output directory for saving results (from Hydra)
+        hydra_cfg = HydraConfig.get()
+        self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
 
-        # Initialize trace writer with base directory (will be updated per-placement)
+        # Initialize trace writer with base directory (updated per-placement in _set_placement)
         self._trace_writer = TraceWriter(self._base_output_dir)
 
     async def __aenter__(self) -> Self:
@@ -160,6 +150,61 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         """
         return self._trace_writer.output_dir
 
+    def _get_placement_output_dir(self, placement: tuple[str, ...]) -> Path:
+        """Get placement-specific output directory.
+
+        Creates a subdirectory under the base output directory named by a
+        run-length encoded representation of the placement. This prevents
+        result collisions when evaluating multiple placements.
+
+        Args:
+            placement: Tuple of mixer names for each layer.
+
+        Returns:
+            Path to placement-specific output directory.
+        """
+        # Build abbreviation map: first unique letter of each mixer name
+        # e.g., {"attention": "a", "gdn": "g", "kda": "k", "mamba": "m"}
+        abbrev_map: dict[str, str] = {}
+        used_abbrevs: set[str] = set()
+        for mixer in sorted(set(placement)):
+            # Find first unused character from the mixer name
+            for char in mixer.lower():
+                if char not in used_abbrevs:
+                    abbrev_map[mixer] = char
+                    used_abbrevs.add(char)
+                    break
+            else:
+                # Fallback: use first char + number
+                base = mixer[0].lower()
+                i = 1
+                while f"{base}{i}" in used_abbrevs:
+                    i += 1
+                abbrev_map[mixer] = f"{base}{i}"
+                used_abbrevs.add(f"{base}{i}")
+
+        # Run-length encode: (attention, attention, gdn, gdn, gdn) -> "a2g3"
+        parts: list[str] = []
+        if placement:
+            current = placement[0]
+            count = 1
+            for mixer in placement[1:]:
+                if mixer == current:
+                    count += 1
+                else:
+                    parts.append(f"{abbrev_map[current]}{count}")
+                    current = mixer
+                    count = 1
+            parts.append(f"{abbrev_map[current]}{count}")
+
+        placement_code = "".join(parts) if parts else "empty"
+
+        # Create subdirectory: placements/<run-length-code>
+        placement_dir = self._base_output_dir / "placements" / placement_code
+        placement_dir.mkdir(parents=True, exist_ok=True)
+
+        return placement_dir
+
     async def _set_placement(self, parameters: LayerPlacement) -> None:
         """Validate and set the mixer placement on the backend.
 
@@ -184,12 +229,12 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             return
 
         # Create placement-specific output directory and TraceWriter
-        # This ensures results from different placements don't get mixed up during optimization
+        # This ensures results from different placements don't get mixed during optimization
         placement_dir = self._get_placement_output_dir(mixer_names)
         self._trace_writer = TraceWriter(placement_dir)
-        logger.debug(f"Created TraceWriter for placement subdirectory: {placement_dir.name}")
+        logger.debug(f"Created TraceWriter for placement: {placement_dir.name}")
 
-        # Skip for single-mixer models (no dynamic switching needed)
+        # Skip backend call for single-mixer models (no dynamic switching needed)
         if len(set(self.mixer_names)) > 1:
             if isinstance(self._backend, AsyncBackend):
                 await self._backend.set_placement(mixer_names)
