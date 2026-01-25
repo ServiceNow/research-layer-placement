@@ -33,3 +33,8 @@ evaluator:
 
   # Trace-specific configuration
   seed: 42
+  use_chat_template: ${generation.use_chat_template}
+  evaluate_truncated_samples: ${generation.evaluate_truncated_samples}
+
+# Placement (null for non-supernet models or to use model's default)
+placement: null

@@ -97,6 +97,5 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
     )
 
     placement: list[str] | None = Field(
-        default=None,
-        description="Mixer names per layer. If None, uses model's default placement.",
+        description="Mixer names per layer. If null, uses model's default placement.",
     )

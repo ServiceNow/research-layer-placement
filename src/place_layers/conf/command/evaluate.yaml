@@ -2,25 +2,24 @@
 # Evaluate command - run evaluation on a single placement
 #
 # Required config groups:
-#   - evaluator: generative, importance_weighted, etc.
-#   - backend: transformers, rest, vllm (for generative)
-#   - task: gsm8k, etc. (for generative)
-#   - generation: greedy, sampling (for generative)
+#   - evaluator: generative, likelihood, etc.
+#   - backend: transformers, rest, vllm
+#   - task: gsm8k, mmlu, etc.
+#   - generation: greedy, sampling (for generative evaluator)
 #
 # Required for TransformersBackend only:
-#   - model: apriel2_0_5b_dev, qwen2_0_5b, etc. (provides model_path, torch_dtype)
+#   - model: apriel2_0_5b_dev, qwen2_0_5b, etc.
 #
 # Optional:
 #   - placement: all_attention, every_4th_gdn, etc. (null for non-supernets)
 #
-# Note: Model structure (num_layers, mixer_names) is discovered from the
-# backend at runtime. REST backend discovers via /info endpoint.
-#
 # Use Hydra --multirun for sweeps:
 #   python -m place_layers ... placement=all_attention,every_4th_gdn --multirun
+
+defaults:
+  - /result_handler: json
 
 command: evaluate
 
 # Single placement (null for non-supernet models)
-# Use placement config group or set directly
 placement: null

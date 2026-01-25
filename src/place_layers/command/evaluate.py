@@ -33,7 +33,6 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.result_handler import ResultHandlerConfig
-from place_layers.result_handler.json_result_handler import JSONResultHandlerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +100,10 @@ class EvaluateCommandConfig(BaseCommandConfig):
     evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
 
     placement: list[str] | None = Field(
-        default=None,
         description="Layer placement as list of mixer names. Extended cyclically "
         "if shorter than num_layers. Use null for non-supernet models.",
     )
 
     result_handler: ResultHandlerConfig = Field(
-        default_factory=lambda: JSONResultHandlerConfig(indent=2),
         description="Result handler configuration",
     )
