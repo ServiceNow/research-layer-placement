@@ -165,8 +165,13 @@ class LocalVLLMClient(BaseVLLMClient):
                 self._supports_placement = True
                 self._num_layers = len(placements[0])
                 self._current_placement = list(placements[0].values())
+                # Get available mixer names
+                mixer_names = await self._engine.collective_rpc("get_mixer_names")
+                if mixer_names and mixer_names[0]:
+                    self._mixer_names = mixer_names[0]
                 logger.info(
-                    f"Model supports placement switching: {self._num_layers} layers"
+                    f"Model supports placement switching: {self._num_layers} layers, "
+                    f"mixers: {self._mixer_names}"
                 )
         except Exception as e:
             logger.debug(f"Model does not support placement switching: {e}")
