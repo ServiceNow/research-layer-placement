@@ -118,15 +118,32 @@ class ServerHealth:
 
 @dataclass
 class ServerPool:
-    """Manages a pool of servers with health tracking and recovery scheduling.
+    """Manages server health tracking and load-balanced server selection.
 
-    Tracks which servers are healthy and schedules recovery checks for
-    unhealthy servers using exponential backoff with a cap.
+    This class has two responsibilities:
 
-    Usage:
-        pool = ServerPool(["http://server1:8080", "http://server2:8080"])
+    1. **Health Tracking**: Tracks which servers are healthy and schedules
+       recovery checks for unhealthy servers using exponential backoff.
 
-        # Get servers to try (healthy first, then unhealthy due for check)
+    2. **Server Selection**: Provides load-balanced server selection via
+       round-robin distribution across healthy servers.
+
+    Thread Safety
+    -------------
+    The `select_server()` method is safe to call from concurrent async tasks.
+    While `_round_robin_counter` is modified without locking, this is safe because:
+    - Python's GIL ensures integer increment is atomic
+    - There are no `await` points between read and write of the counter
+    - Worst case of a "race" is slightly uneven distribution, not incorrectness
+
+    Usage
+    -----
+        pool = ServerPool(["http://server1:8080", "http://server2:8080"], ...)
+
+        # Select a server for load balancing
+        preferred = pool.select_server()
+
+        # Use with failover (tries preferred first, then others)
         for server in pool.get_servers_to_try():
             try:
                 result = await call_server(server, ...)
@@ -134,8 +151,6 @@ class ServerPool:
                 return result
             except TransientError:
                 pool.mark_failure(server)
-
-        raise AllServersFailedError("No servers available")
     """
 
     servers: list[str]
@@ -149,11 +164,49 @@ class ServerPool:
         self._health = {server: ServerHealth() for server in self.servers}
         self._round_robin_counter = 0
 
-    def get_servers_to_try(self) -> list[str]:
-        """Get servers in priority order for trying a request.
+    # -------------------------------------------------------------------------
+    # Server Selection (Load Balancing)
+    # -------------------------------------------------------------------------
 
-        Returns healthy servers first (in original order), then unhealthy
-        servers that are due for a recovery check.
+    def select_server(self) -> str | None:
+        """Select the next server using round-robin load balancing.
+
+        Distributes requests evenly across healthy servers. The round-robin
+        counter operates on the full server list but skips unhealthy servers,
+        ensuring consistent ordering even when servers fail and recover.
+
+        Returns:
+            The selected server URL, or None if no servers are available.
+
+        Note:
+            When None is returned, the caller should proceed with failover
+            logic (via `get_servers_to_try()`) which will wait for server
+            recovery if all servers are unhealthy.
+        """
+        available = self.get_servers_to_try()
+        if not available:
+            return None
+
+        # Round-robin over the FULL server list, skipping unavailable servers.
+        # This maintains stable ordering even when servers fail/recover.
+        for _ in range(len(self.servers)):
+            candidate = self.servers[self._round_robin_counter % len(self.servers)]
+            self._round_robin_counter += 1
+            if candidate in available:
+                return candidate
+
+        # Should never reach here if get_servers_to_try() returned non-empty
+        return None
+
+    def get_servers_to_try(self) -> list[str]:
+        """Get all available servers in priority order for failover.
+
+        Returns healthy servers first (preserving original order), followed by
+        unhealthy servers that are due for a recovery check.
+
+        This method is used by failover logic to determine which servers to
+        try when a request fails. For initial server selection, use
+        `select_server()` instead.
         """
         healthy: list[str] = []
         due_for_check: list[str] = []
@@ -169,37 +222,9 @@ class ServerPool:
 
         return healthy + due_for_check
 
-    def get_next_server_round_robin(self) -> str | None:
-        """Get the next healthy server in round-robin order.
-
-        Maintains a counter across calls to ensure even distribution of requests.
-        The counter operates on the full server list, but skips unhealthy servers.
-        This ensures consistent round-robin ordering even when servers fail/recover.
-
-        Returns:
-            The selected server, or None if no healthy servers are available.
-            When None is returned, callers should fall back to _call_with_failover
-            without a preferred server, which will wait for server recovery.
-        """
-        servers_to_try = self.get_servers_to_try()
-        if not servers_to_try:
-            return None  # Let _call_with_failover handle retry/recovery
-
-        # Round-robin over the FULL server list, but skip unhealthy ones
-        # This maintains consistent ordering even when servers fail/recover
-        attempts = 0
-        while attempts < len(self.servers):
-            candidate = self.servers[self._round_robin_counter % len(self.servers)]
-            self._round_robin_counter += 1
-
-            # Check if this server is in the healthy list
-            if candidate in servers_to_try:
-                return candidate
-
-            attempts += 1
-
-        # Should never reach here if get_servers_to_try() returned non-empty list
-        return None
+    # -------------------------------------------------------------------------
+    # Health Tracking
+    # -------------------------------------------------------------------------
 
     def mark_success(self, server: str) -> None:
         """Mark a server as healthy after a successful request."""
@@ -229,6 +254,10 @@ class ServerPool:
                 f"(failures: {health.consecutive_failures}, "
                 f"next check in {wait_time:.1f}s){reason_str}"
             )
+
+    # -------------------------------------------------------------------------
+    # Status Queries
+    # -------------------------------------------------------------------------
 
     def next_recovery_check_time(self) -> float | None:
         """Get the earliest time when an unhealthy server should be rechecked.
@@ -679,7 +708,7 @@ class RESTBackend(AsyncBackend):
         ) -> GenerationResult | BackendError:
             try:
                 # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.get_next_server_round_robin()
+                preferred_server = self._server_pool.select_server()
                 server_request = ServerGenerateChatRequest(
                     key=req.key,
                     messages=req.messages,
@@ -717,7 +746,7 @@ class RESTBackend(AsyncBackend):
         ) -> GenerationResult | BackendError:
             try:
                 # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.get_next_server_round_robin()
+                preferred_server = self._server_pool.select_server()
                 server_request = ServerGenerateTextRequest(
                     key=req.key,
                     prompt=req.prompt,
@@ -753,7 +782,7 @@ class RESTBackend(AsyncBackend):
         async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
             try:
                 # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.get_next_server_round_robin()
+                preferred_server = self._server_pool.select_server()
                 server_request = ServerScoreTokensRequest(
                     key=req.key,
                     prompt_tokens=req.prompt_tokens,
@@ -791,7 +820,7 @@ class RESTBackend(AsyncBackend):
                     return ScoreTextResult(key=req.key, results=[])
 
                 # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.get_next_server_round_robin()
+                preferred_server = self._server_pool.select_server()
                 server_request = ServerScoreTextRequest(
                     key=req.key,
                     context=req.context,
@@ -839,7 +868,7 @@ class RESTBackend(AsyncBackend):
                     return ScoreChatResult(key=req.key, results=[])
 
                 # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.get_next_server_round_robin()
+                preferred_server = self._server_pool.select_server()
                 server_request = ServerScoreChatRequest(
                     key=req.key,
                     context_messages=req.context_messages,
