@@ -22,7 +22,9 @@ from place_layers.backend.base import (
 from place_layers.backend.types import (
     BackendError,
     ChatMessage,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateRequestBase,
+    GenerateTextRequest,
     LogProbResult,
     ModelStructure,
     ScoreChatRequest,
@@ -57,7 +59,9 @@ __all__ = [
     "concurrent_expand_map",
     # Types
     "ChatMessage",
-    "GenerateRequest",
+    "GenerateChatRequest",
+    "GenerateRequestBase",
+    "GenerateTextRequest",
     "LogProbResult",
     "ModelStructure",
     # Scoring request/result types

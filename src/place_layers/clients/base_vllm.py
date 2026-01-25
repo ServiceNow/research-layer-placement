@@ -55,6 +55,32 @@ class BaseVLLMClient(ABC):
         ...
 
     @abstractmethod
+    async def text_generate(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> GenerationResult:
+        """Generate completions from a text prompt.
+
+        Args:
+            prompt: Text prompt.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        ...
+
+    @abstractmethod
     async def score_token_completion(
         self,
         prompt_tokens: Sequence[int],

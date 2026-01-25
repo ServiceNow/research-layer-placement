@@ -30,7 +30,7 @@ from place_layers.backend.types import (
     ScoreTokensRequest,
 )
 from place_layers.server.schemas import (
-    GenerateRequest as ServerGenerateRequest,
+    GenerateChatRequest as ServerGenerateChatRequest,
 )
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -84,19 +84,19 @@ class TestConcurrentFailover:
             async with backend_with_mocks(config, m) as backend:
                 # Server 1 returns 503 for all requests
                 for _ in range(10):
-                    m.post("http://s1:8080/generate", status=503)
+                    m.post("http://s1:8080/generate_chat", status=503)
                 # Server 2 handles all requests
                 for i in range(10):
                     m.post(
-                        "http://s2:8080/generate",
+                        "http://s2:8080/generate_chat",
                         payload={"samples": [f"response_{i}"], "prompt_token_ids": []},
                     )
 
                 # Fire 10 concurrent requests
                 tasks = [
                     backend._call_with_failover(
-                        "/generate",
-                        ServerGenerateRequest(key=f"req_{i}", messages=[]),
+                        "/generate_chat",
+                        ServerGenerateChatRequest(key=f"req_{i}", messages=[]),
                     )
                     for i in range(10)
                 ]
@@ -114,13 +114,13 @@ class TestConcurrentFailover:
             async with backend_with_mocks(config, m) as backend:
                 # Both servers fail repeatedly
                 for _ in range(20):
-                    m.post("http://s1:8080/generate", status=503)
-                    m.post("http://s2:8080/generate", status=500)
+                    m.post("http://s1:8080/generate_chat", status=503)
+                    m.post("http://s2:8080/generate_chat", status=500)
 
                 with pytest.raises(RESTBackendError) as exc_info:
                     await backend._call_with_failover(
-                        "/generate",
-                        ServerGenerateRequest(key="test", messages=[]),
+                        "/generate_chat",
+                        ServerGenerateChatRequest(key="test", messages=[]),
                     )
 
                 assert "All available servers failed" in str(exc_info.value)
@@ -301,12 +301,12 @@ class TestClientErrorsNotRetried:
         """400 Bad Request fails immediately, no failover attempted."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                m.post("http://s1:8080/generate", status=400, body="Bad request")
+                m.post("http://s1:8080/generate_chat", status=400, body="Bad request")
 
                 with pytest.raises(RESTBackendError) as exc_info:
                     await backend._call_with_failover(
-                        "/generate",
-                        ServerGenerateRequest(key="test", messages=[]),
+                        "/generate_chat",
+                        ServerGenerateChatRequest(key="test", messages=[]),
                     )
 
                 assert "400" in str(exc_info.value)
@@ -315,12 +315,12 @@ class TestClientErrorsNotRetried:
         """404 Not Found fails immediately."""
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
-                m.post("http://s1:8080/generate", status=404, body="Not found")
+                m.post("http://s1:8080/generate_chat", status=404, body="Not found")
 
                 with pytest.raises(RESTBackendError) as exc_info:
                     await backend._call_with_failover(
-                        "/generate",
-                        ServerGenerateRequest(key="test", messages=[]),
+                        "/generate_chat",
+                        ServerGenerateChatRequest(key="test", messages=[]),
                     )
 
                 assert "404" in str(exc_info.value)
@@ -347,15 +347,15 @@ class TestServerRecovery:
         with aioresponses() as m:
             async with backend_with_mocks(config, m) as backend:
                 # First request: s1 fails, s2 succeeds
-                m.post("http://s1:8080/generate", status=503)
+                m.post("http://s1:8080/generate_chat", status=503)
                 m.post(
-                    "http://s2:8080/generate",
+                    "http://s2:8080/generate_chat",
                     payload={"samples": ["ok"], "prompt_token_ids": []},
                 )
 
                 await backend._call_with_failover(
-                    "/generate",
-                    ServerGenerateRequest(key="test", messages=[]),
+                    "/generate_chat",
+                    ServerGenerateChatRequest(key="test", messages=[]),
                 )
 
                 assert backend._server_pool._health["http://s1:8080"].healthy is False
@@ -367,15 +367,15 @@ class TestServerRecovery:
                 )
 
                 # Next request: s2 fails, s1 recovers
-                m.post("http://s2:8080/generate", status=503)
+                m.post("http://s2:8080/generate_chat", status=503)
                 m.post(
-                    "http://s1:8080/generate",
+                    "http://s1:8080/generate_chat",
                     payload={"samples": ["recovered"], "prompt_token_ids": []},
                 )
 
                 await backend._call_with_failover(
-                    "/generate",
-                    ServerGenerateRequest(key="test2", messages=[]),
+                    "/generate_chat",
+                    ServerGenerateChatRequest(key="test2", messages=[]),
                 )
 
                 # s1 should be healthy again
@@ -406,18 +406,18 @@ class TestConnectionErrors:
             async with backend_with_mocks(config, m) as backend:
                 # Server 1 raises connection error
                 m.post(
-                    "http://s1:8080/generate",
+                    "http://s1:8080/generate_chat",
                     exception=aiohttp.ClientConnectionError("Connection refused"),
                 )
                 # Server 2 works
                 m.post(
-                    "http://s2:8080/generate",
+                    "http://s2:8080/generate_chat",
                     payload={"samples": ["ok"], "prompt_token_ids": []},
                 )
 
                 result = await backend._call_with_failover(
-                    "/generate",
-                    ServerGenerateRequest(key="test", messages=[]),
+                    "/generate_chat",
+                    ServerGenerateChatRequest(key="test", messages=[]),
                 )
 
                 assert result["samples"] == ["ok"]

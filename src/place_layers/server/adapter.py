@@ -22,7 +22,8 @@ from place_layers.backend.types import BackendError
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
     from place_layers.backend.types import (
-        GenerateRequest,
+        GenerateChatRequest,
+        GenerateTextRequest,
         ScoreChatRequest,
         ScoreChatResult,
         ScoreTextRequest,
@@ -57,11 +58,19 @@ class BackendAdapter(ABC):
         pass
 
     @abstractmethod
-    async def generate_one(
+    async def generate_chat_one(
         self,
-        request: "GenerateRequest",
+        request: "GenerateChatRequest",
     ) -> "GenerationResult":
-        """Generate completions for a single request."""
+        """Generate completions for a single chat request."""
+        pass
+
+    @abstractmethod
+    async def generate_text_one(
+        self,
+        request: "GenerateTextRequest",
+    ) -> "GenerationResult":
+        """Generate completions for a single text request."""
         pass
 
     @abstractmethod
@@ -192,8 +201,11 @@ class AsyncBackendAdapter(BackendAdapter):
         self._heartbeat_interval = heartbeat_interval
 
         # Streaming bridges for all operations
-        self._generate_bridge: _AsyncStreamingBridge[
-            "GenerateRequest", "GenerationResult | BackendError"
+        self._generate_chat_bridge: _AsyncStreamingBridge[
+            "GenerateChatRequest", "GenerationResult | BackendError"
+        ] | None = None
+        self._generate_text_bridge: _AsyncStreamingBridge[
+            "GenerateTextRequest", "GenerationResult | BackendError"
         ] | None = None
         self._score_tokens_bridge: _AsyncStreamingBridge[
             "ScoreTokensRequest", "ScoreTokensResult | BackendError"
@@ -211,14 +223,16 @@ class AsyncBackendAdapter(BackendAdapter):
         await self._backend.__aenter__()
 
         # Create streaming bridges
-        self._generate_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._generate_chat_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._generate_text_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
         self._score_tokens_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
         self._score_text_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
         self._score_chat_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
 
         # Start background tasks
         self._tasks = [
-            asyncio.create_task(self._run_generate(), name="generate"),
+            asyncio.create_task(self._run_generate_chat(), name="generate_chat"),
+            asyncio.create_task(self._run_generate_text(), name="generate_text"),
             asyncio.create_task(self._run_score_tokens(), name="score_tokens"),
             asyncio.create_task(self._run_score_text(), name="score_text"),
             asyncio.create_task(self._run_score_chat(), name="score_chat"),
@@ -228,8 +242,10 @@ class AsyncBackendAdapter(BackendAdapter):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         # Signal all bridges to stop
-        if self._generate_bridge:
-            self._generate_bridge.shutdown()
+        if self._generate_chat_bridge:
+            self._generate_chat_bridge.shutdown()
+        if self._generate_text_bridge:
+            self._generate_text_bridge.shutdown()
         if self._score_tokens_bridge:
             self._score_tokens_bridge.shutdown()
         if self._score_text_bridge:
@@ -252,12 +268,22 @@ class AsyncBackendAdapter(BackendAdapter):
     # Public API
     # =========================================================================
 
-    async def generate_one(
+    async def generate_chat_one(
         self,
-        request: "GenerateRequest",
+        request: "GenerateChatRequest",
     ) -> "GenerationResult":
-        assert self._generate_bridge is not None
-        result = await self._generate_bridge.submit(request)
+        assert self._generate_chat_bridge is not None
+        result = await self._generate_chat_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
+
+    async def generate_text_one(
+        self,
+        request: "GenerateTextRequest",
+    ) -> "GenerationResult":
+        assert self._generate_text_bridge is not None
+        result = await self._generate_text_bridge.submit(request)
         if isinstance(result, BackendError):
             raise BackendRequestError(result)
         return result
@@ -296,15 +322,25 @@ class AsyncBackendAdapter(BackendAdapter):
     # Background Workers
     # =========================================================================
 
-    async def _run_generate(self) -> None:
-        """Background task: stream requests to backend, deliver results."""
-        assert self._generate_bridge is not None
+    async def _run_generate_chat(self) -> None:
+        """Background task: stream chat requests to backend, deliver results."""
+        assert self._generate_chat_bridge is not None
         try:
-            async for result in self._backend.generate(self._generate_bridge):
-                await self._generate_bridge.deliver_result(result)
+            async for result in self._backend.generate_chat(self._generate_chat_bridge):
+                await self._generate_chat_bridge.deliver_result(result)
         except Exception as e:
-            logger.exception("generate worker failed")
-            await self._generate_bridge.deliver_exception(e)
+            logger.exception("generate_chat worker failed")
+            await self._generate_chat_bridge.deliver_exception(e)
+
+    async def _run_generate_text(self) -> None:
+        """Background task: stream text requests to backend, deliver results."""
+        assert self._generate_text_bridge is not None
+        try:
+            async for result in self._backend.generate_text(self._generate_text_bridge):
+                await self._generate_text_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("generate_text worker failed")
+            await self._generate_text_bridge.deliver_exception(e)
 
     async def _run_score_tokens(self) -> None:
         """Background task: stream requests to backend, deliver results."""
@@ -442,8 +478,11 @@ class SyncBackendAdapter(BackendAdapter):
         self._heartbeat_interval = heartbeat_interval
 
         # Streaming bridges for all operations
-        self._generate_bridge: _StreamingBridge[
-            "GenerateRequest", "GenerationResult"
+        self._generate_chat_bridge: _StreamingBridge[
+            "GenerateChatRequest", "GenerationResult"
+        ] | None = None
+        self._generate_text_bridge: _StreamingBridge[
+            "GenerateTextRequest", "GenerationResult"
         ] | None = None
         self._score_tokens_bridge: _StreamingBridge[
             "ScoreTokensRequest", "ScoreTokensResult"
@@ -463,8 +502,11 @@ class SyncBackendAdapter(BackendAdapter):
         self._loop = asyncio.get_running_loop()
 
         # Create streaming bridges
-        self._generate_bridge = _StreamingBridge(self._heartbeat_interval)
-        self._generate_bridge.set_loop(self._loop)
+        self._generate_chat_bridge = _StreamingBridge(self._heartbeat_interval)
+        self._generate_chat_bridge.set_loop(self._loop)
+
+        self._generate_text_bridge = _StreamingBridge(self._heartbeat_interval)
+        self._generate_text_bridge.set_loop(self._loop)
 
         self._score_tokens_bridge = _StreamingBridge(self._heartbeat_interval)
         self._score_tokens_bridge.set_loop(self._loop)
@@ -478,7 +520,10 @@ class SyncBackendAdapter(BackendAdapter):
         # Start worker threads
         self._workers = [
             threading.Thread(
-                target=self._run_generate, daemon=True, name="generate"
+                target=self._run_generate_chat, daemon=True, name="generate_chat"
+            ),
+            threading.Thread(
+                target=self._run_generate_text, daemon=True, name="generate_text"
             ),
             threading.Thread(
                 target=self._run_score_tokens, daemon=True, name="score_tokens"
@@ -497,8 +542,10 @@ class SyncBackendAdapter(BackendAdapter):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         # Signal all workers to stop
-        if self._generate_bridge:
-            self._generate_bridge.shutdown()
+        if self._generate_chat_bridge:
+            self._generate_chat_bridge.shutdown()
+        if self._generate_text_bridge:
+            self._generate_text_bridge.shutdown()
         if self._score_tokens_bridge:
             self._score_tokens_bridge.shutdown()
         if self._score_text_bridge:
@@ -516,13 +563,22 @@ class SyncBackendAdapter(BackendAdapter):
     # Public API
     # =========================================================================
 
-    async def generate_one(
+    async def generate_chat_one(
         self,
-        request: "GenerateRequest",
+        request: "GenerateChatRequest",
     ) -> "GenerationResult":
-        assert self._loop is not None and self._generate_bridge is not None
+        assert self._loop is not None and self._generate_chat_bridge is not None
         future: asyncio.Future["GenerationResult"] = self._loop.create_future()
-        self._generate_bridge.submit(request, future)
+        self._generate_chat_bridge.submit(request, future)
+        return await future
+
+    async def generate_text_one(
+        self,
+        request: "GenerateTextRequest",
+    ) -> "GenerationResult":
+        assert self._loop is not None and self._generate_text_bridge is not None
+        future: asyncio.Future["GenerationResult"] = self._loop.create_future()
+        self._generate_text_bridge.submit(request, future)
         return await future
 
     async def score_tokens_one(
@@ -556,15 +612,25 @@ class SyncBackendAdapter(BackendAdapter):
     # Workers
     # =========================================================================
 
-    def _run_generate(self) -> None:
-        """Worker thread: stream requests to backend, deliver results."""
-        assert self._generate_bridge is not None
+    def _run_generate_chat(self) -> None:
+        """Worker thread: stream chat requests to backend, deliver results."""
+        assert self._generate_chat_bridge is not None
         try:
-            for result in self._backend.generate(self._generate_bridge):
-                self._generate_bridge.deliver_result(result)
+            for result in self._backend.generate_chat(self._generate_chat_bridge):
+                self._generate_chat_bridge.deliver_result(result)
         except Exception as e:
-            logger.exception("generate worker failed")
-            self._generate_bridge.deliver_exception(e)
+            logger.exception("generate_chat worker failed")
+            self._generate_chat_bridge.deliver_exception(e)
+
+    def _run_generate_text(self) -> None:
+        """Worker thread: stream text requests to backend, deliver results."""
+        assert self._generate_text_bridge is not None
+        try:
+            for result in self._backend.generate_text(self._generate_text_bridge):
+                self._generate_text_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("generate_text worker failed")
+            self._generate_text_bridge.deliver_exception(e)
 
     def _run_score_tokens(self) -> None:
         """Worker thread: stream requests to backend, deliver results."""

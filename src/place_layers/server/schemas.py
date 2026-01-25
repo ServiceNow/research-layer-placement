@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 from place_layers.backend.types import (
     ChatMessage,
-    GenerateRequest as BackendGenerateRequest,
+    GenerateChatRequest as BackendGenerateChatRequest,
+    GenerateTextRequest as BackendGenerateTextRequest,
     LogProbResult,
     ScoreChatRequest as BackendScoreChatRequest,
     ScoreChatResult,
@@ -36,10 +37,18 @@ ChatMessageSchema = ChatMessage
 # =============================================================================
 
 
-class GenerateRequest(BackendGenerateRequest):
-    """Request for generation (extends backend type with placement)."""
+class GenerateChatRequest(BackendGenerateChatRequest):
+    """Request for chat generation (extends backend type with placement)."""
 
-    # Optional placement
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer.",
+    )
+
+
+class GenerateTextRequest(BackendGenerateTextRequest):
+    """Request for text generation (extends backend type with placement)."""
+
     placement: list[str] | None = Field(
         default=None,
         description="Mixer placement for each layer.",

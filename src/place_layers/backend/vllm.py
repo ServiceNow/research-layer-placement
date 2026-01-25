@@ -20,7 +20,8 @@ from place_layers.backend.types import (
     BackendError,
     ChatMessage,
     ChatScoringElement,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     LogProbResult,
     ModelStructure,
     ScoreChatRequest,
@@ -101,11 +102,12 @@ class VLLMBackend(AsyncBackend):
             mixer_names=self._client.mixer_names or (),
         )
 
-    def generate(
+    def generate_chat(
         self,
-        requests: Iterable[GenerateRequest] | AsyncIterable[GenerateRequest | None],
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
     ) -> AsyncIterator[GenerationResult | BackendError]:
-        """Generate completions, yielding results as they complete.
+        """Generate completions from chat messages, yielding as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
@@ -115,10 +117,51 @@ class VLLMBackend(AsyncBackend):
         BackendError instead of killing the stream.
         """
 
-        async def process_one(req: GenerateRequest) -> GenerationResult | BackendError:
+        async def process_one(
+            req: GenerateChatRequest,
+        ) -> GenerationResult | BackendError:
             try:
                 return await self._client.chat_generate(
                     messages=req.messages,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    request_id=req.key,
+                )
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
+
+        Results may arrive in any order. Use request_id to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+        Concurrency is managed internally via semaphore.
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
+        """
+
+        async def process_one(
+            req: GenerateTextRequest,
+        ) -> GenerationResult | BackendError:
+            try:
+                return await self._client.text_generate(
+                    prompt=req.prompt,
                     n=req.n,
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,

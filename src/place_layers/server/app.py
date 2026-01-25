@@ -20,7 +20,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
 from place_layers.backend.types import (
-    GenerateRequest as BackendGenerateRequest,
+    GenerateChatRequest as BackendGenerateChatRequest,
+    GenerateTextRequest as BackendGenerateTextRequest,
     ScoreChatRequest as BackendScoreChatRequest,
     ScoreTextRequest as BackendScoreTextRequest,
     ScoreTokensRequest as BackendScoreTokensRequest,
@@ -31,7 +32,8 @@ from place_layers.server.adapter import (
     create_adapter,
 )
 from place_layers.server.schemas import (
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     HealthResponse,
     InfoResponse,
     ScoreChatRequest,
@@ -194,11 +196,11 @@ def create_app(
     # Generation
     # =========================================================================
 
-    @app.post("/generate")
-    async def generate(req: GenerateRequest) -> dict:
-        """Generate completions for a single request.
+    @app.post("/generate_chat")
+    async def generate_chat(req: GenerateChatRequest) -> dict:
+        """Generate completions from chat messages.
 
-        Mirrors backend.generate() with single-request semantics.
+        Mirrors backend.generate_chat() with single-request semantics.
         """
         if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
@@ -211,8 +213,8 @@ def create_app(
                 else:
                     await backend.set_placement(req.placement)
 
-            # Convert to backend request (includes key, messages, and generation params)
-            gen_request = BackendGenerateRequest(
+            # Convert to backend request
+            gen_request = BackendGenerateChatRequest(
                 key=req.key,
                 messages=req.messages,
                 n=req.n,
@@ -222,13 +224,50 @@ def create_app(
             )
 
             # Generate via adapter
-            result = await adapter.generate_one(gen_request)
+            result = await adapter.generate_chat_one(gen_request)
             return result.model_dump()
 
         except (ValueError, BackendRequestError) as e:
             raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
-            logger.exception("Generation failed")
+            logger.exception("Chat generation failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/generate_text")
+    async def generate_text(req: GenerateTextRequest) -> dict:
+        """Generate completions from a text prompt.
+
+        Mirrors backend.generate_text() with single-request semantics.
+        """
+        if adapter is None or backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+
+        try:
+            # Set placement if provided
+            if req.placement is not None:
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
+
+            # Convert to backend request
+            gen_request = BackendGenerateTextRequest(
+                key=req.key,
+                prompt=req.prompt,
+                n=req.n,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
+            )
+
+            # Generate via adapter
+            result = await adapter.generate_text_one(gen_request)
+            return result.model_dump()
+
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
+        except Exception as e:
+            logger.exception("Text generation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     # =========================================================================

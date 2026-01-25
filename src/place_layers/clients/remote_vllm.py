@@ -166,6 +166,84 @@ class RemoteVLLMClient(BaseVLLMClient):
             prompt_token_ids=prompt_token_ids,
         )
 
+    async def text_generate(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> GenerationResult:
+        """Generate completions from a text prompt.
+
+        Uses /v1/completions endpoint.
+
+        Args:
+            prompt: Text prompt.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        session = self._ensure_session()
+        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
+        payload = {
+            "model": self.config.model,
+            "prompt": prompt,
+            "n": n,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "logprobs": 1,
+        }
+
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 400:
+                error_text = await resp.text()
+                raise VLLMBadRequestError(error_text)
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise RuntimeError(
+                    f"vLLM completion request failed with status {resp.status}: {error_text}"
+                )
+            data = await resp.json()
+
+        samples: list[GeneratedSample] = []
+        for choice in data["choices"]:
+            text: str = choice["text"]
+            token_ids: list[int] = choice.get("token_ids") or []
+            truncated = choice.get("finish_reason") == "length"
+
+            logprobs_data = choice.get("logprobs") or {}
+            token_logprobs_raw = logprobs_data.get("token_logprobs") or []
+            token_logprobs = [lp for lp in token_logprobs_raw if lp is not None]
+
+            samples.append(
+                GeneratedSample(
+                    text=text,
+                    token_ids=token_ids,
+                    token_logprobs=token_logprobs,
+                    truncated=truncated,
+                )
+            )
+
+        # Get prompt token IDs from first choice if available
+        prompt_token_ids: list[int] = []
+        if data["choices"]:
+            prompt_token_ids = data["choices"][0].get("prompt_token_ids") or []
+
+        return GenerationResult(
+            request_id=request_id,
+            samples=samples,
+            prompt_token_ids=prompt_token_ids,
+        )
+
     # =========================================================================
     # Scoring
     # =========================================================================

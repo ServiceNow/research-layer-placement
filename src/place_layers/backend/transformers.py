@@ -20,7 +20,8 @@ from place_layers.backend.base import (
 )
 from place_layers.backend.types import (
     ChatMessage,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     LogProbResult,
     ModelStructure,
     ScoreChatRequest,
@@ -234,25 +235,37 @@ class TransformersBackend:
     # Key type for generation batching (all params that must match within a batch)
     _GenerateKey = tuple[int, int, float, float]  # (n, max_tokens, temperature, top_p)
 
-    def generate(
+    def generate_chat(
         self,
-        requests: Iterable[GenerateRequest | None],
+        requests: Iterable[GenerateChatRequest | None],
     ) -> Iterator[GenerationResult]:
-        """Generate completions, yielding results as batches complete.
+        """Generate completions from chat messages, yielding as batches complete.
 
         Batching is handled internally based on batch_size config.
         Results are yielded in input order. Requests with different params
         trigger a batch flush.
         """
 
-        def get_key(req: GenerateRequest) -> TransformersBackend._GenerateKey:
+        def get_key(req: GenerateChatRequest) -> TransformersBackend._GenerateKey:
             return (req.n, req.max_tokens, req.temperature, req.top_p)
 
         def process_batch(
-            key: TransformersBackend._GenerateKey, batch: list[GenerateRequest]
+            key: TransformersBackend._GenerateKey, batch: list[GenerateChatRequest]
         ) -> list[GenerationResult]:
             n, max_tokens, temperature, top_p = key
-            return self._generate_batch(batch, n, max_tokens, temperature, top_p)
+            # Apply chat template to get prompt texts
+            prompt_texts = []
+            for req in batch:
+                prompt_text = self.tokenizer.apply_chat_template(
+                    list(req.messages),  # type: ignore[arg-type]
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                prompt_texts.append(prompt_text)
+            keys = [req.key for req in batch]
+            return self._generate_from_texts(
+                keys, prompt_texts, n, max_tokens, temperature, top_p
+            )
 
         yield from batched_map_by_key(
             requests,
@@ -262,38 +275,61 @@ class TransformersBackend:
             self._config.flush_timeout,
         )
 
-    def _generate_batch(
+    def generate_text(
         self,
-        batch: list[GenerateRequest],
+        requests: Iterable[GenerateTextRequest | None],
+    ) -> Iterator[GenerationResult]:
+        """Generate completions from text prompts, yielding as batches complete.
+
+        Batching is handled internally based on batch_size config.
+        Results are yielded in input order. Requests with different params
+        trigger a batch flush.
+        """
+
+        def get_key(req: GenerateTextRequest) -> TransformersBackend._GenerateKey:
+            return (req.n, req.max_tokens, req.temperature, req.top_p)
+
+        def process_batch(
+            key: TransformersBackend._GenerateKey, batch: list[GenerateTextRequest]
+        ) -> list[GenerationResult]:
+            n, max_tokens, temperature, top_p = key
+            prompt_texts = [req.prompt for req in batch]
+            keys = [req.key for req in batch]
+            return self._generate_from_texts(
+                keys, prompt_texts, n, max_tokens, temperature, top_p
+            )
+
+        yield from batched_map_by_key(
+            requests,
+            get_key,
+            process_batch,
+            self._config.batch_size,
+            self._config.flush_timeout,
+        )
+
+    def _generate_from_texts(
+        self,
+        keys: list[str],
+        prompt_texts: list[str],
         n: int,
         max_tokens: int,
         temperature: float,
         top_p: float,
     ) -> list[GenerationResult]:
-        """Generate n completions for a batch of requests (internal).
+        """Generate n completions for a batch of text prompts (internal).
 
-        Tokenizes all message sequences together, runs a single batched generate call,
+        Tokenizes all prompts together, runs a single batched generate call,
         and extracts log probabilities from generation scores.
         """
-        if not batch:
+        if not prompt_texts:
             return []
 
-        batch_size = len(batch)
+        batch_size = len(prompt_texts)
         mem_before = get_memory_stats()
         logger.debug(
-            f"_generate_batch: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
+            f"_generate_from_texts: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
             f"GPU alloc={mem_before.gpu_allocated_gb:.2f}GB"
         )
-
-        # Apply chat template to all message sequences
-        prompt_texts = []
-        for req in batch:
-            prompt_text = self.tokenizer.apply_chat_template(
-                list(req.messages),  # type: ignore[arg-type]
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            prompt_texts.append(prompt_text)
 
         # Tokenize all prompts with left padding (required for batched generation)
         original_padding_side = self.tokenizer.padding_side
@@ -341,7 +377,7 @@ class TransformersBackend:
         results: list[GenerationResult] = []
         padded_prompt_len = input_ids.shape[1]
 
-        for prompt_idx, req in enumerate(batch):
+        for prompt_idx, key in enumerate(keys):
             prompt_start = padded_prompt_len - prompt_lengths[prompt_idx]
             prompt_tokens = input_ids[prompt_idx, prompt_start:].tolist()
 
@@ -389,7 +425,7 @@ class TransformersBackend:
 
             results.append(
                 GenerationResult(
-                    request_id=req.key,
+                    request_id=key,
                     samples=samples,
                     prompt_token_ids=prompt_tokens,
                 )

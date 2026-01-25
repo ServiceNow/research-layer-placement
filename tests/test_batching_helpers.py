@@ -1222,7 +1222,7 @@ class TestSyncBackendAdapterIntegration:
         """Basic generate_one call through adapter."""
         from unittest.mock import MagicMock
 
-        from place_layers.backend.types import GenerateRequest
+        from place_layers.backend.types import GenerateChatRequest
         from place_layers.clients.types import GeneratedSample, GenerationResult
         from place_layers.server.adapter import SyncBackendAdapter
 
@@ -1249,7 +1249,8 @@ class TestSyncBackendAdapterIntegration:
                     prompt_token_ids=[100, 101],
                 )
 
-        mock_backend.generate = mock_generate
+        mock_backend.generate_chat = mock_generate
+        mock_backend.generate_text = MagicMock(return_value=iter([]))
         mock_backend.score_tokens = MagicMock(return_value=iter([]))
         mock_backend.score_text = MagicMock(return_value=iter([]))
         mock_backend.score_chat = MagicMock(return_value=iter([]))
@@ -1258,7 +1259,7 @@ class TestSyncBackendAdapterIntegration:
         adapter = SyncBackendAdapter(mock_backend, heartbeat_interval=0.01)
 
         async with adapter:
-            request = GenerateRequest(
+            request = GenerateChatRequest(
                 key="test-1",
                 messages=[],
                 n=1,
@@ -1266,7 +1267,7 @@ class TestSyncBackendAdapterIntegration:
                 temperature=0.0,
                 top_p=1.0,
             )
-            result = await adapter.generate_one(request)
+            result = await adapter.generate_chat_one(request)
 
             assert result.request_id == "test-1"
             assert len(result.samples) == 1
@@ -1277,7 +1278,7 @@ class TestSyncBackendAdapterIntegration:
         """Multiple concurrent generate_one calls."""
         from unittest.mock import MagicMock
 
-        from place_layers.backend.types import GenerateRequest
+        from place_layers.backend.types import GenerateChatRequest
         from place_layers.clients.types import GeneratedSample, GenerationResult
         from place_layers.server.adapter import SyncBackendAdapter
 
@@ -1302,7 +1303,8 @@ class TestSyncBackendAdapterIntegration:
                     prompt_token_ids=[100],
                 )
 
-        mock_backend.generate = mock_generate
+        mock_backend.generate_chat = mock_generate
+        mock_backend.generate_text = MagicMock(return_value=iter([]))
         mock_backend.score_tokens = MagicMock(return_value=iter([]))
         mock_backend.score_text = MagicMock(return_value=iter([]))
         mock_backend.score_chat = MagicMock(return_value=iter([]))
@@ -1312,7 +1314,7 @@ class TestSyncBackendAdapterIntegration:
         async with adapter:
             # Submit 5 concurrent requests
             requests = [
-                GenerateRequest(
+                GenerateChatRequest(
                     key=f"req-{i}",
                     messages=[],
                     n=1,
@@ -1323,7 +1325,7 @@ class TestSyncBackendAdapterIntegration:
                 for i in range(5)
             ]
 
-            tasks = [adapter.generate_one(req) for req in requests]
+            tasks = [adapter.generate_chat_one(req) for req in requests]
             results = await asyncio.gather(*tasks)
 
             # All should complete with correct IDs
@@ -1335,7 +1337,7 @@ class TestSyncBackendAdapterIntegration:
         """Exception in worker thread propagates to caller."""
         from unittest.mock import MagicMock
 
-        from place_layers.backend.types import GenerateRequest
+        from place_layers.backend.types import GenerateChatRequest
         from place_layers.server.adapter import SyncBackendAdapter
 
         mock_backend = MagicMock()
@@ -1349,7 +1351,8 @@ class TestSyncBackendAdapterIntegration:
                 raise RuntimeError("GPU exploded")
             yield from ()  # Make it a generator (never reached)
 
-        mock_backend.generate = mock_generate
+        mock_backend.generate_chat = mock_generate
+        mock_backend.generate_text = MagicMock(return_value=iter([]))
         mock_backend.score_tokens = MagicMock(return_value=iter([]))
         mock_backend.score_text = MagicMock(return_value=iter([]))
         mock_backend.score_chat = MagicMock(return_value=iter([]))
@@ -1357,7 +1360,7 @@ class TestSyncBackendAdapterIntegration:
         adapter = SyncBackendAdapter(mock_backend, heartbeat_interval=0.01)
 
         async with adapter:
-            request = GenerateRequest(
+            request = GenerateChatRequest(
                 key="test",
                 messages=[],
                 n=1,
@@ -1367,7 +1370,7 @@ class TestSyncBackendAdapterIntegration:
             )
 
             with pytest.raises(RuntimeError, match="GPU exploded"):
-                await adapter.generate_one(request)
+                await adapter.generate_chat_one(request)
 
 
 # =============================================================================

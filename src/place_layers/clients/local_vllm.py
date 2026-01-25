@@ -240,7 +240,11 @@ class LocalVLLMClient(BaseVLLMClient):
         Returns:
             GenerationResult with samples and prompt token IDs.
         """
-        from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+        from vllm.entrypoints.openai.protocol import (
+            ChatCompletionRequest,
+            ChatCompletionResponse,
+            ErrorResponse,
+        )
 
         if self._chat_serving is None:
             raise RuntimeError("Client not initialized")
@@ -258,45 +262,110 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._chat_serving.create_chat_completion(request)
 
-        # Handle error response
-        from vllm.entrypoints.openai.protocol import ErrorResponse
         if isinstance(response, ErrorResponse):
             raise VLLMBadRequestError(f"Chat completion failed: {response.error}")
 
+        # Type narrow to ChatCompletionResponse
+        assert isinstance(response, ChatCompletionResponse)
+
         # Extract samples from response
         samples: list[GeneratedSample] = []
-        prompt_token_ids: list[int] = []
-
-        # Get prompt tokens if available
-        if hasattr(response, "prompt_token_ids") and response.prompt_token_ids:
-            prompt_token_ids = list(response.prompt_token_ids)
 
         for choice in response.choices:
-            text = choice.message.content or ""
-            token_ids: list[int] = []
             token_logprobs: list[float] = []
-
-            # Extract token IDs and logprobs
-            if hasattr(choice, "token_ids") and choice.token_ids:
-                token_ids = list(choice.token_ids)
-
-            if choice.logprobs and choice.logprobs.content:
-                for logprob_content in choice.logprobs.content:
-                    token_logprobs.append(logprob_content.logprob)
-                    if not token_ids and hasattr(logprob_content, "token"):
-                        # Fallback: get token from logprobs
-                        pass
-
-            truncated = choice.finish_reason == "length"
+            if choice.logprobs is not None and choice.logprobs.content is not None:
+                token_logprobs = [item.logprob for item in choice.logprobs.content]
 
             samples.append(
                 GeneratedSample(
-                    text=text,
-                    token_ids=token_ids,
+                    text=choice.message.content or "",
+                    token_ids=choice.token_ids or [],
                     token_logprobs=token_logprobs,
-                    truncated=truncated,
+                    truncated=choice.finish_reason == "length",
                 )
             )
+
+        return GenerationResult(
+            request_id=request_id or str(response.id),
+            samples=samples,
+            prompt_token_ids=response.prompt_token_ids or [],
+        )
+
+    async def text_generate(
+        self,
+        prompt: str,
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        request_id: str = "",
+    ) -> GenerationResult:
+        """Generate completions from a text prompt.
+
+        Uses vLLM's OpenAIServingCompletion internally.
+
+        Args:
+            prompt: Text prompt.
+            n: Number of completions to generate.
+            max_tokens: Maximum tokens per completion.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            request_id: Optional ID for tracking.
+
+        Returns:
+            GenerationResult with samples and prompt token IDs.
+        """
+        from vllm.entrypoints.openai.protocol import (
+            CompletionRequest,
+            CompletionResponse,
+            ErrorResponse,
+        )
+
+        if self._completion_serving is None:
+            raise RuntimeError("Client not initialized")
+
+        request = CompletionRequest(
+            model=self._model_name,
+            prompt=prompt,
+            n=n,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            logprobs=1,
+        )
+
+        response = await self._completion_serving.create_completion(request)
+
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Completion failed: {response.error}")
+
+        # Type narrow to CompletionResponse
+        assert isinstance(response, CompletionResponse)
+
+        # Extract samples from response
+        samples: list[GeneratedSample] = []
+
+        for choice in response.choices:
+            token_logprobs: list[float] = []
+            if choice.logprobs is not None:
+                token_logprobs = [
+                    lp for lp in choice.logprobs.token_logprobs if lp is not None
+                ]
+
+            samples.append(
+                GeneratedSample(
+                    text=choice.text,
+                    token_ids=choice.token_ids or [],
+                    token_logprobs=token_logprobs,
+                    truncated=choice.finish_reason == "length",
+                )
+            )
+
+        # Get prompt token IDs from first choice
+        prompt_token_ids: list[int] = []
+        if response.choices and response.choices[0].prompt_token_ids:
+            prompt_token_ids = response.choices[0].prompt_token_ids
 
         return GenerationResult(
             request_id=request_id or str(response.id),

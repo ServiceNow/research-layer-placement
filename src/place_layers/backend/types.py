@@ -36,19 +36,30 @@ class BackendError(BaseModel):
     message: str = Field(description="Human-readable error message")
 
 
-class GenerateRequest(BaseModel):
-    """Request to generate completions for a chat conversation."""
+class GenerateRequestBase(BaseModel):
+    """Base class for generation requests with common parameters."""
 
     model_config = {"frozen": True}
 
     key: str = Field(description="Unique identifier for this request")
-    messages: list[ChatMessage] = Field(description="Chat messages")
 
     # Generation parameters (requests with same params can be batched together)
     n: int = Field(default=1, description="Number of completions to generate")
     max_tokens: int = Field(default=256, description="Maximum tokens to generate")
     temperature: float = Field(default=0.0, description="Sampling temperature")
     top_p: float = Field(default=1.0, description="Top-p (nucleus) sampling")
+
+
+class GenerateChatRequest(GenerateRequestBase):
+    """Request to generate completions for a chat conversation."""
+
+    messages: list[ChatMessage] = Field(description="Chat messages")
+
+
+class GenerateTextRequest(GenerateRequestBase):
+    """Request to generate completions from a text prompt."""
+
+    prompt: str = Field(description="Text prompt")
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,8 @@ from tenacity.wait import wait_base
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
 from place_layers.backend.types import (
     BackendError,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     LogProbResult,
     ModelStructure,
     ScoreChatRequest,
@@ -39,7 +40,8 @@ from place_layers.backend.types import (
 )
 from place_layers.clients.types import GenerationResult
 from place_layers.server.schemas import (
-    GenerateRequest as ServerGenerateRequest,
+    GenerateChatRequest as ServerGenerateChatRequest,
+    GenerateTextRequest as ServerGenerateTextRequest,
     ScoreChatRequest as ServerScoreChatRequest,
     ScoreTextRequest as ServerScoreTextRequest,
     ScoreTokensRequest as ServerScoreTokensRequest,
@@ -659,11 +661,12 @@ class RESTBackend(AsyncBackend):
             )
         return self._model_structure
 
-    def generate(
+    def generate_chat(
         self,
-        requests: Iterable[GenerateRequest] | AsyncIterable[GenerateRequest | None],
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
     ) -> AsyncIterator[GenerationResult | BackendError]:
-        """Generate completions, yielding results as they complete.
+        """Generate completions from chat messages, yielding as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Requests are distributed across healthy servers.
@@ -671,9 +674,11 @@ class RESTBackend(AsyncBackend):
         On transient errors, yields BackendError instead of killing the stream.
         """
 
-        async def process_one(req: GenerateRequest) -> GenerationResult | BackendError:
+        async def process_one(
+            req: GenerateChatRequest,
+        ) -> GenerationResult | BackendError:
             try:
-                server_request = ServerGenerateRequest(
+                server_request = ServerGenerateChatRequest(
                     key=req.key,
                     messages=req.messages,
                     n=req.n,
@@ -682,7 +687,41 @@ class RESTBackend(AsyncBackend):
                     top_p=req.top_p,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/generate", server_request)
+                data = await self._call_with_failover("/generate_chat", server_request)
+                return GenerationResult.model_validate(data)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
+
+        Results may arrive in any order. Use request_id to join with input.
+        Requests are distributed across healthy servers.
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(
+            req: GenerateTextRequest,
+        ) -> GenerationResult | BackendError:
+            try:
+                server_request = ServerGenerateTextRequest(
+                    key=req.key,
+                    prompt=req.prompt,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover("/generate_text", server_request)
                 return GenerationResult.model_validate(data)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")

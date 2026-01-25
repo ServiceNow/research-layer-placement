@@ -26,7 +26,7 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.types import BackendError, GenerateRequest
+from place_layers.backend.types import BackendError, GenerateChatRequest
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
@@ -168,7 +168,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         # Build generation requests (params included in each request)
         requests = [
-            GenerateRequest(
+            GenerateChatRequest(
                 key=f"{task_name}:{idx}",
                 messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
                 n=self.config.samples_per_problem,
@@ -183,7 +183,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (yielded in input order)
-            results_iter = self._backend.generate(requests)
+            results_iter = self._backend.generate_chat(requests)
 
             for idx, result in zip(remaining_indices, results_iter):
                 doc = docs[idx]
@@ -255,7 +255,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
         # Build generation requests (params included in each request)
         requests = [
-            GenerateRequest(
+            GenerateChatRequest(
                 key=f"{task_name}:{idx}",
                 messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
                 n=self.config.samples_per_problem,
@@ -276,7 +276,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (may arrive in any order)
-            async for result in self._backend.generate(requests):
+            async for result in self._backend.generate_chat(requests):
                 # Handle backend errors gracefully
                 if isinstance(result, BackendError):
                     skipped = SkippedProblem(

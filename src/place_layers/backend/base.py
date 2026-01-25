@@ -34,7 +34,8 @@ from pydantic import BaseModel, Field
 from place_layers.backend.types import (
     BackendError,
     ChatMessage,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     ModelStructure,
     ScoreChatRequest,
     ScoreChatResult,
@@ -700,11 +701,12 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
-    def generate(
+    def generate_chat(
         self,
-        requests: Iterable[GenerateRequest] | AsyncIterable[GenerateRequest | None],
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
     ) -> AsyncIterator[GenerationResult | BackendError]:
-        """Generate completions, yielding results as they complete.
+        """Generate completions from chat messages, yielding as they complete.
 
         Results may arrive in any order. Use request_id to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
@@ -713,7 +715,32 @@ class AsyncBackend(ABC):
         BackendError instead of killing the stream.
 
         Args:
-            requests: Generation requests with keys and params. Can be sync
+            requests: Chat generation requests with keys and params. Can be sync
+                iterable (batch mode) or async iterable (streaming mode with
+                None heartbeats).
+
+        Yields:
+            GenerationResult with request_id matching request.key, or
+            BackendError if the request failed.
+        """
+        pass
+
+    @abstractmethod
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
+
+        Results may arrive in any order. Use request_id to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
+
+        Args:
+            requests: Text generation requests with keys and params. Can be sync
                 iterable (batch mode) or async iterable (streaming mode with
                 None heartbeats).
 
@@ -825,11 +852,11 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
-    def generate(
+    def generate_chat(
         self,
-        requests: Iterable[GenerateRequest | None],
+        requests: Iterable[GenerateChatRequest | None],
     ) -> Iterator["GenerationResult"]:
-        """Generate completions, yielding results as batches complete.
+        """Generate completions from chat messages, yielding as batches complete.
 
         Results are yielded in input order. Batching is handled internally.
         Requests with different generation params (n, max_tokens, temperature,
@@ -839,7 +866,30 @@ class SyncBackend(ABC):
         Streaming mode: None values are heartbeats for timeout-based flushing.
 
         Args:
-            requests: Generation requests with keys and params. None values
+            requests: Chat generation requests with keys and params. None values
+                are heartbeats for timeout checking in streaming mode.
+
+        Yields:
+            GenerationResult with request_id matching request.key.
+        """
+        pass
+
+    @abstractmethod
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest | None],
+    ) -> Iterator["GenerationResult"]:
+        """Generate completions from text prompts, yielding as batches complete.
+
+        Results are yielded in input order. Batching is handled internally.
+        Requests with different generation params (n, max_tokens, temperature,
+        top_p) trigger a batch flush - only requests with identical params
+        are batched together.
+
+        Streaming mode: None values are heartbeats for timeout-based flushing.
+
+        Args:
+            requests: Text generation requests with keys and params. None values
                 are heartbeats for timeout checking in streaming mode.
 
         Yields:
