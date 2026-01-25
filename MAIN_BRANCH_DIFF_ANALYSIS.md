@@ -205,22 +205,41 @@ These changes exist on main but are obsolete for our branch due to architectural
 |--------|-------------|---------------------|
 | `c522df7`, `04d7995` | Refactor REST backend to eliminate code duplication | We rewrote REST backend with unified streaming interface |
 | `54c0b11`, `1263df4` | TraceWriter refactors (append_sync vs append) | Different architecture - check if sync handling needed |
-| `9c41f40` | Send all chats from a problem to same server | **Consider porting** - may improve diff-based scoring consistency |
+| `9c41f40` | Send all chats from a problem to same server | **Not needed** - our request types bundle all choices together (see below) |
 | `255fe65` | Separate trace-writer output dirs for placements | Potentially useful - review for our trace output structure |
+
+### Why We Don't Need Problem-to-Server Affinity (9c41f40)
+
+**Main branch's problem:**
+```python
+# Main's API took individual (context, completion) tuples
+compute_chat_log_probs(chats: Sequence[tuple[context, completion]])
+# Individual choices distributed across servers - broke diff-based scoring
+```
+
+**Our architecture solves this at the API level:**
+```python
+# Our request types bundle ALL choices for a problem together
+ScoreChatRequest(
+    key="problem_1",
+    context_messages=[...],           # The question
+    completion_messages=[A, B, C, D], # ALL choices
+)
+
+ScoreTextRequest(
+    key="problem_1",
+    context="...",
+    choices=["A", "B", "C", "D"],  # ALL choices
+)
+```
+
+The fan-in happens at the **evaluator level** (`_build_choice_chats` bundles choices), not the backend. Each request is atomic (one problem, all choices) and goes to exactly one server.
 
 ---
 
 ## 5. Low Priority / Nice to Have
 
-### 5.1 Problem-to-Server Affinity
-
-**Commit:** `9c41f40`
-
-Sends all chats from a given problem to the same server. This may improve consistency for diff-based answer range calculation since all choices for a multiple-choice question are scored together.
-
-**Consideration:** Our `select_server()` uses pure round-robin. For scoring operations where all choices for a problem should go to the same server, we might want to add an optional `affinity_key` parameter.
-
-### 5.2 Separate Output Dirs per Placement
+### 5.1 Separate Output Dirs per Placement
 
 **Commit:** `255fe65`
 
@@ -270,6 +289,7 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] `evaluate_truncated_samples` flag (ported 2026-01-25) - config field + usage in evaluators
 - [x] `build_text_prompt()` function in lm_eval_utils.py (ported 2026-01-25)
 - [x] REST round-robin distribution fix (ported 2026-01-25) - ServerPool.select_server() + preferred_server
+- [x] Problem-to-server affinity (analyzed 2026-01-25) - **not needed**: our request types bundle all choices together
 
 ### To Do 📋
 
@@ -278,7 +298,6 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [ ] REST DNS backend config - convenience for Kubernetes deployments
 - [ ] Copy task configs (fda.yaml, swde.yaml) - extraction evaluation support
 - [ ] Copy extraction.yaml generation config - extraction evaluation support
-- [ ] Review problem-to-server affinity for scoring consistency
 
 ---
 
