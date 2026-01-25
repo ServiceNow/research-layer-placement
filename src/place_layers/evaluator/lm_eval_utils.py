@@ -193,7 +193,7 @@ def build_text_prompt(
     """Build raw text prompt for a problem with few-shot examples.
 
     This is the text-based counterpart to build_chat_messages. Used when
-    use_chat_template=False for evaluating base models.
+    use_chat_template=False for evaluating base models without chat formatting.
 
     Args:
         task: The lm-eval task.
@@ -201,9 +201,8 @@ def build_text_prompt(
         num_fewshot: Number of few-shot examples.
 
     Returns:
-        Raw text prompt string (context + question).
+        Raw text prompt string (few-shot context + question).
     """
-    context: str
     if num_fewshot > 0:
         # fewshot_context returns few-shot examples AND the current question
         fewshot_ctx = task.fewshot_context(doc, num_fewshot)

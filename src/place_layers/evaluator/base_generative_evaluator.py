@@ -26,7 +26,7 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.types import BackendError, GenerateChatRequest
+from place_layers.backend.types import BackendError, GenerateChatRequest, GenerateTextRequest
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
@@ -166,24 +166,38 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         logger.info(f"Processing {total} problems")
         log_memory(f"TASK {task_name} START")
 
-        # Build generation requests (params included in each request)
-        requests = [
-            GenerateChatRequest(
-                key=f"{task_name}:{idx}",
-                messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                n=self.config.samples_per_problem,
-                max_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-            )
-            for idx in remaining_indices
-        ]
+        # Build generation requests based on use_chat_template setting
+        if self.config.use_chat_template:
+            chat_requests = [
+                GenerateChatRequest(
+                    key=f"{task_name}:{idx}",
+                    messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                    n=self.config.samples_per_problem,
+                    max_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+                for idx in remaining_indices
+            ]
+            results_iter = self._backend.generate_chat(chat_requests)
+        else:
+            text_requests = [
+                GenerateTextRequest(
+                    key=f"{task_name}:{idx}",
+                    prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
+                    n=self.config.samples_per_problem,
+                    max_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+                for idx in remaining_indices
+            ]
+            results_iter = self._backend.generate_text(text_requests)
 
         with create_progress() as progress:
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (yielded in input order)
-            results_iter = self._backend.generate_chat(requests)
 
             for idx, result in zip(remaining_indices, results_iter):
                 doc = docs[idx]
@@ -253,18 +267,33 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         total = len(remaining_indices)
         processed_count = 0
 
-        # Build generation requests (params included in each request)
-        requests = [
-            GenerateChatRequest(
-                key=f"{task_name}:{idx}",
-                messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                n=self.config.samples_per_problem,
-                max_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-            )
-            for idx in remaining_indices
-        ]
+        # Build generation requests based on use_chat_template setting
+        if self.config.use_chat_template:
+            chat_requests = [
+                GenerateChatRequest(
+                    key=f"{task_name}:{idx}",
+                    messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                    n=self.config.samples_per_problem,
+                    max_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+                for idx in remaining_indices
+            ]
+            results_stream = self._backend.generate_chat(chat_requests)
+        else:
+            text_requests = [
+                GenerateTextRequest(
+                    key=f"{task_name}:{idx}",
+                    prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
+                    n=self.config.samples_per_problem,
+                    max_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+                for idx in remaining_indices
+            ]
+            results_stream = self._backend.generate_text(text_requests)
 
         # Map key -> (idx, doc) for result processing
         key_to_doc = {
@@ -276,7 +305,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
 
             # Generate and process results (may arrive in any order)
-            async for result in self._backend.generate_chat(requests):
+            async for result in results_stream:
                 # Handle backend errors gracefully
                 if isinstance(result, BackendError):
                     skipped = SkippedProblem(
@@ -333,15 +362,13 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         le=1.0,
     )
     use_chat_template: bool = Field(
-        default=True,
         description="Whether to use chat template formatting. When False, prompts are "
         "formatted as raw text without any chat structure. "
         "Use False for evaluating base models or when chat template is undesired.",
     )
     evaluate_truncated_samples: bool = Field(
-        default=False,
         description="Whether to evaluate truncated samples for correctness. "
         "When True, samples that reach max_new_tokens are still checked against the ground truth. "
         "Useful for extraction tasks where the answer may be complete before hitting the limit. "
-        "When False (default), truncated samples are automatically marked as incorrect.",
+        "When False, truncated samples are automatically marked as incorrect.",
     )

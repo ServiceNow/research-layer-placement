@@ -68,16 +68,16 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
     ) -> list[Generation]:
         """Create Generation records from a generation result.
 
-        Handles truncated samples based on config.evaluate_truncated_samples:
-        - If True: evaluates truncated samples for correctness (useful for extraction tasks)
-        - If False: marks truncated samples as incorrect (default for reasoning tasks)
+        Truncated sample handling depends on evaluate_truncated_samples config:
+        - When False (default): truncated samples marked incorrect (reasoning tasks)
+        - When True: truncated samples evaluated for correctness (extraction tasks)
         """
         task_name = task.config.task or ""
         generations = []
         problem_id = f"{task_name}:{idx}"
 
         for sample_idx, sample in enumerate(result.samples):
-            if sample.truncated:
+            if sample.truncated and not self.config.evaluate_truncated_samples:
                 logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
                 if self.config.evaluate_truncated_samples:
                     # Evaluate truncated samples - answer may be complete
