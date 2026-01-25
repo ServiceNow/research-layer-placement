@@ -8,6 +8,7 @@ defaults:
   - /command: serve
   - /backend: local_vllm
   - /model: apriel2_0_5b_dev
+  - override /hydra/job_logging: server  # Enable server access logging
   - _self_
 
 model:

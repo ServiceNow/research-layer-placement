@@ -73,17 +73,13 @@ class ServeCommand(BaseCommand):
         # Both TransformersBackend and VLLMBackend work with create_app
         app = create_app(self.config.backend)
 
-        # Configure uvicorn
+        # Configure uvicorn with access logging enabled
         config = uvicorn.Config(
             app,
             host=self.config.host,
             port=self.config.port,
             log_level="info",
-            # Disable access logs for less noise during evaluation
-            access_log=False,
-            # Increase keepalive timeout to prevent premature connection closure
-            # Default is 5s, which causes issues when client is idle between tasks
-            timeout_keep_alive=120,
+            access_log=True,
         )
 
         # Run server

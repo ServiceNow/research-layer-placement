@@ -12,9 +12,11 @@ Server-side batching is transparent to clients.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
 from place_layers.backend.types import (
@@ -91,6 +93,66 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # =========================================================================
+    # Request Logging Middleware
+    # =========================================================================
+
+    # Dedicated access logger for request/response logs
+    access_logger = logging.getLogger("place_layers.server.access")
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next) -> Response:
+        """Log all requests with timing and context information.
+
+        Logs to place_layers.server.access logger with structured fields:
+        - request_id: UUID for correlating logs
+        - method: HTTP method
+        - path: Request path
+        - client: Client IP address
+        - status: Response status code
+        - duration_ms: Request duration in milliseconds
+        - error: Error type if request failed
+        """
+        request_id = str(uuid.uuid4())[:8]  # Short ID for readability
+        start_time = time.perf_counter()
+
+        # Extract client info
+        client_host = request.client.host if request.client else "unknown"
+        content_length = request.headers.get("content-length", "-")
+
+        # Log request start at DEBUG level
+        logger.debug(
+            f"[{request_id}] {request.method} {request.url.path} "
+            f"client={client_host} content_length={content_length}"
+        )
+
+        try:
+            response = await call_next(request)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+
+            # Log completed request
+            # Use WARNING for 4xx/5xx, INFO for success
+            log_level = logging.WARNING if response.status_code >= 400 else logging.INFO
+            access_logger.log(
+                log_level,
+                f"[{request_id}] {request.method} {request.url.path} "
+                f"status={response.status_code} duration={duration_ms:.1f}ms "
+                f"client={client_host}",
+            )
+
+            # Add request ID to response headers for client-side correlation
+            response.headers["X-Request-ID"] = request_id
+            return response
+
+        except Exception as e:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            access_logger.error(
+                f"[{request_id}] {request.method} {request.url.path} "
+                f"FAILED duration={duration_ms:.1f}ms client={client_host} "
+                f"error={type(e).__name__}: {e}",
+            )
+            raise
 
     # =========================================================================
     # Health & Info
