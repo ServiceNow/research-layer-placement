@@ -61,7 +61,6 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
 
     def __init__(self, config: "GenerativeEvaluatorConfig") -> None:
         super().__init__(config)
-        logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
 
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult

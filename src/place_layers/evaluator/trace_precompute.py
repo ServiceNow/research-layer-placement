@@ -61,7 +61,6 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
 
     def __init__(self, config: "TracePrecomputeEvaluatorConfig") -> None:
         super().__init__(config)
-        logger.info(f"Saving traces to: {self._output_dir}/validation.jsonl")
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling."""
