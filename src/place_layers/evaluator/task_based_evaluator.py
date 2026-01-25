@@ -7,6 +7,7 @@ infrastructure on top of BackendEvaluator:
 - Task type validation (generate_until vs multiple_choice)
 - Document retrieval and max_problems limiting
 - Resumability via TraceWriter.get_completed_problems()
+- Async doc prefetching for pipeline efficiency
 
 Concrete evaluators (GenerativeEvaluator, LikelihoodEvaluator, etc.)
 inherit from this and implement their specific evaluation logic.
@@ -14,7 +15,9 @@ inherit from this and implement their specific evaluation logic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING, Literal, Self, cast
 
 from pydantic import Field, model_validator
@@ -66,8 +69,12 @@ class TaskBasedEvaluator(BackendEvaluator):
         super().__init__(config)
         # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
-        # Cache for docs - persists across placements (lazy populated in _prepare_task)
+        # Cache for docs - persists across placements (populated by prefetcher)
         self._docs_cache: dict[str, Docs] = {}
+        # Events to signal when docs are ready (for prefetch synchronization)
+        self._docs_ready: dict[str, threading.Event] = {}
+        # Background prefetch task
+        self._prefetch_task: asyncio.Task | None = None
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling, or None for default behavior.
@@ -77,12 +84,13 @@ class TaskBasedEvaluator(BackendEvaluator):
         return None
 
     async def __aenter__(self) -> Self:
-        """Enter context: initialize backend and load tasks.
+        """Enter context: initialize backend, load tasks, start doc prefetcher.
 
         Tasks are loaded here (not in __init__) because:
         1. Backend must be initialized first
         2. Seed may depend on evaluator-specific logic (_get_fewshot_seed)
         3. Loading all tasks together is ~6x faster than individual loading
+        4. Doc prefetching starts immediately to overlap with evaluation
         """
         await super().__aenter__()
 
@@ -94,7 +102,44 @@ class TaskBasedEvaluator(BackendEvaluator):
         )
         logger.info(f"Loaded {len(self._task_cache)} tasks")
 
+        # Initialize doc-ready events for each task
+        for task_name in self._task_cache:
+            self._docs_ready[task_name] = threading.Event()
+            # If already cached (from previous placement), mark as ready
+            if task_name in self._docs_cache:
+                self._docs_ready[task_name].set()
+
+        # Start background doc prefetcher
+        self._prefetch_task = asyncio.create_task(
+            self._prefetch_docs(prefetch_ahead=self.config.doc_prefetch_count)
+        )
+
         return self
+
+    async def _prefetch_docs(self, prefetch_ahead: int) -> None:
+        """Prefetch docs for tasks with limited concurrency.
+
+        Runs in background, loading docs ahead of evaluation to hide I/O latency.
+        Uses asyncio.to_thread to avoid blocking the event loop.
+
+        Args:
+            prefetch_ahead: Max number of tasks to prefetch concurrently.
+        """
+        sem = asyncio.Semaphore(prefetch_ahead)
+
+        async def load_one(task_spec: TaskSpecInput) -> None:
+            task_name = get_task_name(task_spec)
+            async with sem:
+                if task_name not in self._docs_cache:
+                    task = self._task_cache[task_name]  # type: ignore[index]
+                    # Run blocking I/O in thread to not block event loop
+                    task.download()
+                    docs = await asyncio.to_thread(get_docs, task, self.config.split)
+                    self._docs_cache[task_name] = docs
+                    logger.debug(f"Prefetched docs for '{task_name}'")
+                self._docs_ready[task_name].set()
+
+        await asyncio.gather(*[load_one(ts) for ts in self.config.tasks])
 
     def _prepare_task(
         self,
@@ -137,8 +182,14 @@ class TaskBasedEvaluator(BackendEvaluator):
                 f"expected '{expected_output_type}'"
             )
 
-        # Get documents from cache (or load and cache on first access)
+        # Wait for docs to be prefetched (blocks until ready)
+        # Uses threading.Event so sync code can wait on async prefetcher
+        if task_name in self._docs_ready:
+            self._docs_ready[task_name].wait()
+
+        # Get documents from cache (should be populated by prefetcher)
         if task_name not in self._docs_cache:
+            # Fallback: load synchronously if not prefetched
             task.download()
             self._docs_cache[task_name] = get_docs(task, self.config.split)
 
@@ -184,6 +235,12 @@ class TaskBasedEvaluatorConfig(BackendEvaluatorConfig):
     split: str = Field(
         default="test",
         description="Dataset split to use ('test' or 'validation')",
+    )
+    doc_prefetch_count: int = Field(
+        default=2,
+        description="Number of tasks to prefetch docs for ahead of evaluation. "
+        "Higher values hide I/O latency but use more memory.",
+        ge=1,
     )
 
     @model_validator(mode="after")

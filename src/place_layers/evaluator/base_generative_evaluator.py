@@ -3,7 +3,7 @@
 This module provides BaseGenerativeEvaluator which handles the generation
 loop infrastructure for evaluators that sample completions from models:
 
-- Sync batched generation with memory logging
+- Streams requests across all tasks for optimal server utilization
 - Async worker pool generation for throughput
 - SkippedProblem handling for generation errors
 - Progress bars
@@ -16,8 +16,8 @@ from this and provide their record factory function.
 from __future__ import annotations
 
 import logging
-import time
 from abc import abstractmethod
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Sequence
 
 from pydantic import Field
@@ -30,7 +30,7 @@ from place_layers.backend.types import BackendError, GenerateChatRequest, Genera
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.lm_eval_utils import Docs, build_chat_messages, build_text_prompt
+from place_layers.evaluator.lm_eval_utils import build_chat_messages, build_text_prompt
 from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
@@ -122,96 +122,86 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         return summarize_generations(self._output_dir)
 
     def _run_tasks_sync(self) -> None:
-        """Run all tasks synchronously with batching."""
+        """Run all tasks as a unified stream (sync backend).
+
+        Streams requests across all tasks to the backend, processing results
+        in order. Uses lazy request generation to overlap doc loading.
+        """
         assert isinstance(self._backend, SyncBackend)
+
+        # Prepare all tasks and build lookup tables
+        key_to_context: dict[str, tuple["Task", str, int]] = {}
+        total_problems = 0
 
         for task_spec in self.config.tasks:
             prepared = self._prepare_task(task_spec, "generate_until")
-
             if prepared is None:
                 continue
 
             task, task_name, docs, remaining = prepared
-            self._run_generation_sync(task, task_name, docs, remaining)
+            for idx in remaining:
+                key = f"{task_name}:{idx}"
+                key_to_context[key] = (task, task_name, idx)
+            total_problems += len(remaining)
 
-    def _run_generation_sync(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: Docs,
-        remaining_indices: list[int],
-        memory_log_interval: float = 30.0,
-    ) -> int:
-        """Run sync generation with error handling and memory logging.
+        if total_problems == 0:
+            logger.info("All tasks already complete")
+            return
 
-        Args:
-            task: The lm-eval task.
-            task_name: Task name for logging and problem IDs.
-            docs: Document collection.
-            remaining_indices: Problem indices to process.
-            memory_log_interval: Seconds between memory logs.
+        logger.info(f"Streaming {total_problems} problems across {len(self.config.tasks)} tasks")
+        log_memory("GENERATION START")
 
-        Returns:
-            Number of problems processed.
-        """
-        assert isinstance(self._backend, SyncBackend)
+        # Lazy request generator
+        def request_generator() -> Iterator[GenerateChatRequest] | Iterator[GenerateTextRequest]:
+            for task_spec in self.config.tasks:
+                prepared = self._prepare_task(task_spec, "generate_until")
+                if prepared is None:
+                    continue
 
-        total = len(remaining_indices)
-        last_memory_log_time = time.perf_counter()
+                task, task_name, docs, remaining = prepared
+
+                for idx in remaining:
+                    if self.config.use_chat_template:
+                        yield GenerateChatRequest(
+                            key=f"{task_name}:{idx}",
+                            messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
+                    else:
+                        yield GenerateTextRequest(
+                            key=f"{task_name}:{idx}",
+                            prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
+
+        # Stream to backend
+        if self.config.use_chat_template:
+            results_iter = self._backend.generate_chat(request_generator())  # type: ignore[arg-type]
+        else:
+            results_iter = self._backend.generate_text(request_generator())  # type: ignore[arg-type]
+
         processed = 0
 
-        logger.info(f"Processing {total} problems")
-        log_memory(f"TASK {task_name} START")
-
-        # Build generation requests based on use_chat_template setting
-        if self.config.use_chat_template:
-            chat_requests = [
-                GenerateChatRequest(
-                    key=f"{task_name}:{idx}",
-                    messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                    n=self.config.samples_per_problem,
-                    max_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                )
-                for idx in remaining_indices
-            ]
-            results_iter = self._backend.generate_chat(chat_requests)
-        else:
-            text_requests = [
-                GenerateTextRequest(
-                    key=f"{task_name}:{idx}",
-                    prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
-                    n=self.config.samples_per_problem,
-                    max_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                )
-                for idx in remaining_indices
-            ]
-            results_iter = self._backend.generate_text(text_requests)
-
         with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
+            progress_task = progress.add_task("[cyan]Generating", total=total_problems)
 
-            # Generate and process results (yielded in input order)
+            for result in results_iter:
+                # Look up context from key
+                task, task_name, idx = key_to_context[result.request_id]
+                doc = self._docs_cache[task_name][idx]
 
-            for idx, result in zip(remaining_indices, results_iter):
-                doc = docs[idx]
-
-                # Log memory periodically
-                current_time = time.perf_counter()
-                if current_time - last_memory_log_time >= memory_log_interval:
-                    log_memory(f"PROGRESS {processed}/{total}")
-                    last_memory_log_time = current_time
-
-                # Create and save records
+                # Create records
                 records = self._make_records(task, doc, idx, result)
 
                 if records:
                     self._trace_writer.append(records)
                 else:
-                    # No samples returned (backend issue)
                     skipped = SkippedProblem(
                         problem_id=f"{task_name}:{idx}",
                         task_name=task_name,
@@ -222,89 +212,85 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 processed += 1
                 progress.advance(progress_task)
 
-        # Log final memory state
-        log_memory(f"TASK {task_name} END")
-        logger.info(f"Task '{task_name}': generation complete ({processed} problems)")
-
-        return processed
+        log_memory("GENERATION END")
+        logger.info(f"Generation complete: {processed} problems processed")
 
     async def _run_tasks_async(self) -> None:
-        """Run all tasks asynchronously with worker pool."""
+        """Run all tasks as a unified stream for optimal server utilization.
+
+        Streams requests across all tasks to the backend, processing results
+        as they arrive. Uses lazy request generation to overlap doc loading
+        with request processing.
+        """
         assert isinstance(self._backend, AsyncBackend)
+
+        # Prepare all tasks and build lookup tables
+        # key -> (task, task_name, idx) for result processing
+        key_to_context: dict[str, tuple["Task", str, int]] = {}
+        total_problems = 0
 
         for task_spec in self.config.tasks:
             prepared = self._prepare_task(task_spec, "generate_until")
-
             if prepared is None:
                 continue
 
             task, task_name, docs, remaining = prepared
-            await self._run_generation_async(task, task_name, docs, remaining)
+            for idx in remaining:
+                key = f"{task_name}:{idx}"
+                key_to_context[key] = (task, task_name, idx)
+            total_problems += len(remaining)
 
-    async def _run_generation_async(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: Docs,
-        remaining_indices: list[int],
-    ) -> int:
-        """Run async generation with error handling.
+        if total_problems == 0:
+            logger.info("All tasks already complete")
+            return
 
-        Args:
-            task: The lm-eval task.
-            task_name: Task name for logging and problem IDs.
-            docs: Document collection.
-            remaining_indices: Problem indices to process.
+        logger.info(f"Streaming {total_problems} problems across {len(self.config.tasks)} tasks")
 
-        Returns:
-            Number of problems processed.
-        """
-        assert isinstance(self._backend, AsyncBackend)
+        # Lazy request generator - yields requests across all tasks
+        def request_generator() -> Iterator[GenerateChatRequest] | Iterator[GenerateTextRequest]:
+            for task_spec in self.config.tasks:
+                prepared = self._prepare_task(task_spec, "generate_until")
+                if prepared is None:
+                    continue
 
-        total = len(remaining_indices)
+                task, task_name, docs, remaining = prepared
+
+                for idx in remaining:
+                    if self.config.use_chat_template:
+                        yield GenerateChatRequest(
+                            key=f"{task_name}:{idx}",
+                            messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
+                    else:
+                        yield GenerateTextRequest(
+                            key=f"{task_name}:{idx}",
+                            prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
+                            n=self.config.samples_per_problem,
+                            max_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                        )
+
+        # Stream to backend
+        if self.config.use_chat_template:
+            results_stream = self._backend.generate_chat(request_generator())  # type: ignore[arg-type]
+        else:
+            results_stream = self._backend.generate_text(request_generator())  # type: ignore[arg-type]
+
         processed_count = 0
 
-        # Build generation requests based on use_chat_template setting
-        if self.config.use_chat_template:
-            chat_requests = [
-                GenerateChatRequest(
-                    key=f"{task_name}:{idx}",
-                    messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                    n=self.config.samples_per_problem,
-                    max_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                )
-                for idx in remaining_indices
-            ]
-            results_stream = self._backend.generate_chat(chat_requests)
-        else:
-            text_requests = [
-                GenerateTextRequest(
-                    key=f"{task_name}:{idx}",
-                    prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
-                    n=self.config.samples_per_problem,
-                    max_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                )
-                for idx in remaining_indices
-            ]
-            results_stream = self._backend.generate_text(text_requests)
-
-        # Map key -> (idx, doc) for result processing
-        key_to_doc = {
-            f"{task_name}:{idx}": (idx, docs[idx])
-            for idx in remaining_indices
-        }
-
         with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
+            progress_task = progress.add_task("[cyan]Generating", total=total_problems)
 
-            # Generate and process results (may arrive in any order)
+            # Process results as they arrive (may be out of order)
             async for result in results_stream:
-                # Handle backend errors gracefully
+                # Handle backend errors
                 if isinstance(result, BackendError):
+                    task_name = result.key.rsplit(":", 1)[0]
                     skipped = SkippedProblem(
                         problem_id=result.key,
                         task_name=task_name,
@@ -315,7 +301,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                     progress.advance(progress_task)
                     continue
 
-                idx, doc = key_to_doc[result.request_id]
+                # Look up context from key
+                task, task_name, idx = key_to_context[result.request_id]
+                doc = self._docs_cache[task_name][idx]
 
                 # Create records
                 records = self._make_records(task, doc, idx, result)
@@ -323,7 +311,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 if records:
                     self._trace_writer.append(records)
                 else:
-                    # No samples returned (backend issue)
                     skipped = SkippedProblem(
                         problem_id=f"{task_name}:{idx}",
                         task_name=task_name,
@@ -334,8 +321,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 processed_count += 1
                 progress.advance(progress_task)
 
-        logger.info(f"Task '{task_name}': generation complete ({processed_count} problems)")
-        return processed_count
+        logger.info(f"Generation complete: {processed_count} problems processed")
 
 
 class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):

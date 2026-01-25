@@ -19,7 +19,8 @@ These have been implemented on our branch.
 | `1031248` | Increase `timeout_keep_alive` to 30s | Set in `command/serve.py` | ✅ Ported |
 | `ecc59ef`, `6ff46cb`, `8129a1b` | REST backend distribution fix | `ServerPool.select_server()` with round-robin + `preferred_server` in `_call_with_failover()` | ✅ Ported |
 | `255fe65` | Separate trace-writer output dirs for placements | Run-length encoded dir names (`a2g3`), placement in `OutputMetadata` | ✅ Ported (improved) |
-| `d06b226`, `2a97683` | Batch task loading + docs caching | `load_tasks()` in `__aenter__`, lazy `_docs_cache` in `_prepare_task()` | ✅ Ported (simplified) |
+| `d06b226`, `2a97683` | Batch task loading + docs caching | `load_tasks()` in `__aenter__`, async prefetching with `doc_prefetch_count` | ✅ Ported (improved) |
+| *N/A (our addition)* | Streaming evaluation across tasks | Requests streamed across ALL tasks in single stream, not task-by-task | ✅ Our improvement |
 
 ### Architectural Difference: Text Generation
 
@@ -59,14 +60,21 @@ Our approach is cleaner - placement is stored once in metadata instead of duplic
 - Pre-loads ALL docs in `__aenter__()` after batch loading tasks
 - ~45s startup overhead for 57 MMLU tasks
 - Loads docs even for tasks that might be complete (resumption)
+- Task-by-task evaluation (processes all problems for task A, then all for task B, etc.)
 
 **Our approach:**
 - `_task_cache`: Batch loaded in `__aenter__()` via `load_tasks()` (~6x faster)
-- `_docs_cache`: Lazy populated in `_prepare_task()` on first access
+- `_docs_cache`: Lazy populated via async prefetcher, synchronized with `threading.Event`
+- `doc_prefetch_count` config controls prefetch concurrency (default: 2)
 - Both caches persist across placements (docs are task-specific, not placement-specific)
-- Only loads docs we actually need
+- **Streaming evaluation**: Requests streamed across ALL tasks in a single stream for optimal server utilization
+- Lazy request generation to overlap doc loading with request processing
 
-Our approach is simpler - no upfront doc loading, same caching benefit across placements.
+Our approach is better:
+- No upfront doc loading overhead
+- Prefetching hides I/O latency (~0.8s per task for HuggingFace metadata)
+- Cross-task streaming prevents pipeline stalls between tasks
+- Results processed as they arrive (may be out of order)
 
 ### Architectural Difference: REST Distribution
 
@@ -266,7 +274,8 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] REST round-robin distribution fix (ported 2026-01-25) - ServerPool.select_server() + preferred_server
 - [x] Problem-to-server affinity (analyzed 2026-01-25) - **not needed**: our request types bundle all choices together
 - [x] Separate output dirs per placement (ported 2026-01-25) - run-length encoded dir names (e.g., `a2g3a2`)
-- [x] Batch task loading + docs caching (ported 2026-01-25) - `load_tasks()` in `__aenter__`, lazy `_docs_cache`
+- [x] Batch task loading + docs caching (ported 2026-01-25) - `load_tasks()` in `__aenter__`, async prefetching
+- [x] Streaming evaluation across tasks (added 2026-01-25) - requests across all tasks in single stream, not task-by-task
 
 ### To Do 📋
 
@@ -290,3 +299,18 @@ Our `ServerPool` combines health tracking with load balancing (Option B from des
 - This maintains consistent distribution even when servers fail/recover
 - Thread-safe without locks (GIL + no await points between read/write)
 - Returns `None` when no servers available, letting `_call_with_failover` handle recovery
+
+### Doc Prefetching Design
+Docs are prefetched in background to hide ~0.8s I/O latency per task (HuggingFace metadata fetch):
+- `_prefetch_docs()` runs as async task in `__aenter__`, bounded by `asyncio.Semaphore(prefetch_ahead)`
+- Uses `asyncio.to_thread()` for blocking I/O so event loop isn't blocked
+- `threading.Event` allows sync request generator to wait on async prefetcher (GIL released during I/O)
+- Fallback: if prefetcher hasn't loaded docs yet, `_prepare_task()` loads synchronously
+
+### Streaming Evaluation Design
+Evaluation streams requests across ALL tasks rather than processing task-by-task:
+- Prevents pipeline stalls when transitioning between tasks
+- Lazy `request_generator()` yields requests across all tasks
+- Results keyed by `"{task_name}:{idx}"` and looked up in `key_to_context` dict
+- Docs retrieved from `_docs_cache[task_name]` (populated by prefetcher)
+- Benefits: better server utilization, no idle time between tasks
