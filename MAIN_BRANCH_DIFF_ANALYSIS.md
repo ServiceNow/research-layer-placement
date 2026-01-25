@@ -1,7 +1,7 @@
 # Main Branch Diff Analysis
 
 **Last Updated:** 2026-01-25
-**Our Branch:** `feature/unified-backend-api` (current: `fea9d8c`)
+**Our Branch:** `feature/unified-backend-api` (current: `eba265e`)
 **Main Branch:** `origin/main` (commit `1d842e0`)
 **Merge Base:** `2b89c52` (Fix docstring: correct=False not correct=None for truncated samples)
 **Total Commits on Main Since Divergence:** 59
@@ -21,6 +21,7 @@ These have been implemented on our branch.
 | `255fe65` | Separate trace-writer output dirs for placements | Run-length encoded dir names (`a2g3`), placement in `OutputMetadata` | ✅ Ported (improved) |
 | `d06b226`, `2a97683` | Batch task loading + docs caching | `load_tasks()` in `__aenter__`, async prefetching with `doc_prefetch_count` | ✅ Ported (improved) |
 | *N/A (our addition)* | Streaming evaluation across tasks | Requests streamed across ALL tasks in single stream, not task-by-task | ✅ Our improvement |
+| *N/A (our addition)* | Command refactoring | `resolve_placement()` utility, generic result handlers, cleaner evaluate/precompute_traces | ✅ Our improvement |
 
 ### Architectural Difference: Text Generation
 
@@ -276,6 +277,7 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] Separate output dirs per placement (ported 2026-01-25) - run-length encoded dir names (e.g., `a2g3a2`)
 - [x] Batch task loading + docs caching (ported 2026-01-25) - `load_tasks()` in `__aenter__`, async prefetching
 - [x] Streaming evaluation across tasks (added 2026-01-25) - requests across all tasks in single stream, not task-by-task
+- [x] Command refactoring (added 2026-01-25) - `resolve_placement()` utility, generic result handlers
 
 ### To Do 📋
 
@@ -314,3 +316,10 @@ Evaluation streams requests across ALL tasks rather than processing task-by-task
 - Results keyed by `"{task_name}:{idx}"` and looked up in `key_to_context` dict
 - Docs retrieved from `_docs_cache[task_name]` (populated by prefetcher)
 - Benefits: better server utilization, no idle time between tasks
+
+### Command Refactoring
+Cleaned up evaluate and precompute_traces commands:
+- `placement_utils.py`: Shared `resolve_placement()` for cyclic extension, validation, name-to-index conversion
+- Result handlers now accept any `BaseModel`, not just `SearchResult`
+- `EvaluateCommandConfig` uses `result_handler: ResultHandlerConfig` (defaults via Hydra YAML)
+- No defaults in Python configs - all defaults provided by Hydra YAML files
