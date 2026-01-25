@@ -49,9 +49,24 @@ logger = logging.getLogger(__name__)
 
 
 class RESTBackendError(Exception):
-    """Error communicating with REST server."""
+    """Error communicating with REST server.
 
-    pass
+    Attributes:
+        status_code: HTTP status code if available (4xx for client errors, 5xx for server errors).
+        message: Error message.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+    @property
+    def error_type(self) -> Literal["bad_request", "timeout", "server_error"]:
+        """Return error type based on status code."""
+        if self.status_code is not None and 400 <= self.status_code < 500:
+            return "bad_request"
+        return "server_error"
 
 
 class TransientError(RESTBackendError):
@@ -431,7 +446,8 @@ class RESTBackend(AsyncBackend):
                                 # Client error - don't retry, raise immediately
                                 error_text = await resp.text()
                                 raise RESTBackendError(
-                                    f"Request failed (status {resp.status}): {error_text}"
+                                    f"Request failed (status {resp.status}): {error_text}",
+                                    status_code=resp.status,
                                 )
                             # Success - parse response (errors here are not connection issues)
                             self._server_pool.mark_success(server)
@@ -670,7 +686,7 @@ class RESTBackend(AsyncBackend):
                 return GenerationResult.model_validate(data)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
-                return BackendError(key=req.key, error_type="server_error", message=str(e))
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
 
         return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
@@ -699,7 +715,7 @@ class RESTBackend(AsyncBackend):
                 return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
-                return BackendError(key=req.key, error_type="server_error", message=str(e))
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -743,7 +759,7 @@ class RESTBackend(AsyncBackend):
                 return ScoreTextResult(key=req.key, results=results)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
-                return BackendError(key=req.key, error_type="server_error", message=str(e))
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
@@ -787,7 +803,7 @@ class RESTBackend(AsyncBackend):
                 return ScoreChatResult(key=req.key, results=results)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
-                return BackendError(key=req.key, error_type="server_error", message=str(e))
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
 
         async for result in concurrent_map(
             requests, process_one, self.max_concurrent_requests
