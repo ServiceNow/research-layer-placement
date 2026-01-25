@@ -34,7 +34,7 @@ from place_layers.backend import (
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
-from place_layers.evaluator.traces.writer import TraceWriter
+from place_layers.evaluator.traces.writer import OutputMetadata, TraceWriter
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +77,11 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         hydra_cfg = HydraConfig.get()
         self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
 
+        # Build metadata from config
+        metadata = self._build_metadata()
+
         # Initialize trace writer with base directory (updated per-placement in _set_placement)
-        self._trace_writer = TraceWriter(self._base_output_dir)
+        self._trace_writer = TraceWriter(self._base_output_dir, metadata=metadata)
 
     async def __aenter__(self) -> Self:
         """Enter context: initialize backend and get model structure."""
@@ -149,6 +152,28 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         For single evaluations, it returns the base output directory.
         """
         return self._trace_writer.output_dir
+
+    def _build_metadata(self, placement: tuple[str, ...] | None = None) -> OutputMetadata:
+        """Build output metadata from evaluator config.
+
+        Assembles model info, config hash, and optional placement.
+        Subclasses can override to add evaluator-specific fields.
+        """
+        from place_layers.evaluator.traces.writer import compute_config_hash
+
+        # Get model name from backend config
+        model_name = getattr(self.config.backend, "model_path", None)
+        if model_name is None:
+            model_name = getattr(self.config.backend, "model", None)
+
+        # Compute config hash for resumption validation
+        config_hash = compute_config_hash(self.config.model_dump(mode="json"))
+
+        return OutputMetadata(
+            model_name=str(model_name) if model_name else None,
+            config_hash=config_hash,
+            placement=placement,
+        )
 
     def _get_placement_output_dir(self, placement: tuple[str, ...]) -> Path:
         """Get placement-specific output directory.
@@ -231,7 +256,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # Create placement-specific output directory and TraceWriter
         # This ensures results from different placements don't get mixed during optimization
         placement_dir = self._get_placement_output_dir(mixer_names)
-        self._trace_writer = TraceWriter(placement_dir)
+        metadata = self._build_metadata(placement=mixer_names)
+        self._trace_writer = TraceWriter(placement_dir, metadata=metadata)
         logger.debug(f"Created TraceWriter for placement: {placement_dir.name}")
 
         # Skip backend call for single-mixer models (no dynamic switching needed)

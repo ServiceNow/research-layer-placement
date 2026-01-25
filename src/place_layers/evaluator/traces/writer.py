@@ -37,23 +37,52 @@ from place_layers.evaluator.traces.types import (
 logger = logging.getLogger(__name__)
 
 
-class PrecomputeMetadata(BaseModel):
-    """Metadata for a trace precomputation run.
+class OutputMetadata(BaseModel):
+    """Metadata for trace output directories.
 
-    This is the only persisted state besides the traces themselves.
-    It's used for:
+    Different commands populate different fields based on their needs.
+    All fields except created_at are optional to support various use cases.
+
+    Used for:
     1. Validating config hash on resumption
-    2. Providing context when loading traces
+    2. Providing provenance (model, revision) when loading traces
+    3. Recording placement for supernet optimization
     """
 
     model_config = {"frozen": True}
 
-    config_hash: str = Field(description="Hash of config for resumption validation")
-    teacher_model: str = Field(description="Teacher model identifier")
-    samples_per_problem: int = Field(description="Target samples per problem")
+    # Timing
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        description="When this run was started",
+        description="When this output directory was created",
+    )
+
+    # Model identification
+    model_name: str | None = Field(
+        default=None,
+        description="Model name or path",
+    )
+    model_revision: str | None = Field(
+        default=None,
+        description="Model revision (git commit, HF revision, etc.)",
+    )
+
+    # Placement (supernet evaluation)
+    placement: tuple[str, ...] | None = Field(
+        default=None,
+        description="Layer placement (mixer name per layer)",
+    )
+
+    # Resumption
+    config_hash: str | None = Field(
+        default=None,
+        description="Hash of config for resumption validation",
+    )
+
+    # Precomputation specific
+    samples_per_problem: int | None = Field(
+        default=None,
+        description="Number of samples generated per problem",
     )
 
 
@@ -63,22 +92,84 @@ class TraceWriter:
     This structure enables direct loading via HuggingFace datasets:
         load_dataset(output_dir, split='validation')
 
+    Owns metadata lifecycle:
+    - Loads existing metadata on init (for resumption)
+    - Merges with provided metadata
+    - Saves merged metadata to disk
+
     State reconstruction scans both files, filtering by task_name field.
 
     Thread-safe for concurrent writes from parallel task evaluation via asyncio.Lock.
     """
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        metadata: OutputMetadata | None = None,
+        validate_config_hash: bool = True,
+    ) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
 
-    def _write_records(self, records: Sequence[TraceRecord]) -> None:
-        """Write records to disk (internal, no locking).
+        # Load existing metadata (if resuming)
+        existing = self._load_metadata()
 
-        Args:
-            records: Records to write.
-        """
+        # Validate config hash if both exist
+        if (
+            validate_config_hash
+            and existing is not None
+            and metadata is not None
+            and existing.config_hash is not None
+            and metadata.config_hash is not None
+            and existing.config_hash != metadata.config_hash
+        ):
+            raise ValueError(
+                f"Config hash mismatch: existing={existing.config_hash}, "
+                f"current={metadata.config_hash}. Cannot resume with different config."
+            )
+
+        # Merge: provided metadata fields override existing
+        if metadata is not None:
+            if existing is not None:
+                merged_data = existing.model_dump()
+                for key, value in metadata.model_dump().items():
+                    if value is not None:
+                        merged_data[key] = value
+                self._metadata = OutputMetadata.model_validate(merged_data)
+            else:
+                self._metadata = metadata
+            self._save_metadata()
+        else:
+            self._metadata = existing
+
+        self._is_resuming = existing is not None
+
+    @property
+    def is_resuming(self) -> bool:
+        """Whether this writer is resuming from existing data."""
+        return self._is_resuming
+
+    @property
+    def metadata(self) -> OutputMetadata | None:
+        """Current metadata for this output directory."""
+        return self._metadata
+
+    def _load_metadata(self) -> OutputMetadata | None:
+        """Load metadata from disk if it exists."""
+        path = self.output_dir / "metadata.json"
+        if not path.exists():
+            return None
+        return OutputMetadata.model_validate_json(path.read_text())
+
+    def _save_metadata(self) -> None:
+        """Save current metadata to disk."""
+        if self._metadata is not None:
+            path = self.output_dir / "metadata.json"
+            path.write_text(self._metadata.model_dump_json(indent=2))
+
+    def append(self, records: Sequence[TraceRecord]) -> None:
+        """Append records to appropriate files based on record type."""
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
             r for r in records
@@ -140,21 +231,6 @@ def compute_config_hash(config: dict) -> str:
     """Compute a hash of configuration for resumption validation."""
     config_str = json.dumps(config, sort_keys=True)
     return hashlib.sha256(config_str.encode()).hexdigest()[:16]
-
-
-def load_metadata(output_dir: Path) -> PrecomputeMetadata | None:
-    """Load metadata from output directory, if it exists."""
-    path = output_dir / "metadata.json"
-    if not path.exists():
-        return None
-    return PrecomputeMetadata.model_validate_json(path.read_text())
-
-
-def save_metadata(output_dir: Path, metadata: PrecomputeMetadata) -> None:
-    """Save metadata to output directory."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "metadata.json"
-    path.write_text(metadata.model_dump_json(indent=2))
 
 
 def _extract_problem_idx(problem_id: str) -> int:
