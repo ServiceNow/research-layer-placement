@@ -18,6 +18,7 @@ These have been implemented on our branch.
 | `f7442f9` | `evaluate_truncated_samples` flag | Config field in `BaseGenerativeEvaluatorConfig`, used in `_make_records()` | ✅ Ported |
 | `1031248` | Increase `timeout_keep_alive` to 30s | Set in `command/serve.py` | ✅ Ported |
 | `ecc59ef`, `6ff46cb`, `8129a1b` | REST backend distribution fix | `ServerPool.select_server()` with round-robin + `preferred_server` in `_call_with_failover()` | ✅ Ported |
+| `255fe65` | Separate trace-writer output dirs for placements | Run-length encoded dir names (`a2g3`), placement in `OutputMetadata` | ✅ Ported (improved) |
 
 ### Architectural Difference: Text Generation
 
@@ -34,6 +35,22 @@ These have been implemented on our branch.
 - `use_chat_template` config flag dispatches between methods
 
 Our approach is cleaner - the caller explicitly chooses which generation type to use, and the evaluator respects the config flag.
+
+### Architectural Difference: Placement Output Directories
+
+**Main branch approach:**
+- Directory naming: MD5 hash of placement (`8f3a2b1c`)
+- Writes `placement.txt` file with readable placement
+- Adds `placement` field to every `BaseGeneration` and `SkippedProblem` record
+
+**Our approach:**
+- Directory naming: Run-length encoding (`a2g3`) - more readable
+- Placement stored in `OutputMetadata` (metadata.json) - no duplication
+- `backend.placement` property reads current placement from model
+- `_current_placement` set in `__aenter__()` before any trace writer init
+- Non-supernet models (`placement=None`) use base output directory
+
+Our approach is cleaner - placement is stored once in metadata instead of duplicated on every record, and directory names are human-readable.
 
 ### Architectural Difference: REST Distribution
 
@@ -206,7 +223,6 @@ These changes exist on main but are obsolete for our branch due to architectural
 | `c522df7`, `04d7995` | Refactor REST backend to eliminate code duplication | We rewrote REST backend with unified streaming interface |
 | `54c0b11`, `1263df4` | TraceWriter refactors (append_sync vs append) | Different architecture - check if sync handling needed |
 | `9c41f40` | Send all chats from a problem to same server | **Not needed** - our request types bundle all choices together (see below) |
-| `255fe65` | Separate trace-writer output dirs for placements | Potentially useful - review for our trace output structure |
 
 ### Why We Don't Need Problem-to-Server Affinity (9c41f40)
 

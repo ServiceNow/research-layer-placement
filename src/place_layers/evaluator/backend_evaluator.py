@@ -232,21 +232,21 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
                 abbrev_map[mixer] = f"{base}{i}"
                 used_abbrevs.add(f"{base}{i}")
 
-        # Run-length encode: (attention, attention, gdn, gdn, gdn) -> "a2g3"
+        # Run-length encode: [attention, attention, gdn, gdn, gdn] -> "a2g3"
+        # Placement is guaranteed non-empty (None case handled above)
+        current = placement[0]
+        count = 1
         parts: list[str] = []
-        if placement:
-            current = placement[0]
-            count = 1
-            for mixer in placement[1:]:
-                if mixer == current:
-                    count += 1
-                else:
-                    parts.append(f"{abbrev_map[current]}{count}")
-                    current = mixer
-                    count = 1
-            parts.append(f"{abbrev_map[current]}{count}")
+        for mixer in placement[1:]:
+            if mixer == current:
+                count += 1
+            else:
+                parts.append(f"{abbrev_map[current]}{count}")
+                current = mixer
+                count = 1
+        parts.append(f"{abbrev_map[current]}{count}")
 
-        placement_code = "".join(parts) if parts else "empty"
+        placement_code = "".join(parts)
 
         # Create subdirectory: placements/<run-length-code>
         placement_dir = self._base_output_dir / "placements" / placement_code
