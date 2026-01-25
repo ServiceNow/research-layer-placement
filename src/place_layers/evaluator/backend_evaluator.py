@@ -31,6 +31,7 @@ from place_layers.backend import (
     ScoreTokensRequest,
     ScoreTokensResult,
     SyncBackend,
+    get_model_path,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
@@ -167,22 +168,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             )
         return self._trace_writer.output_dir
 
-    def _get_model_name(self) -> str:
-        """Get model name from backend config.
-
-        Raises:
-            ValueError: If model name cannot be determined.
-        """
-        model_name = getattr(self.config.backend, "model_path", None)
-        if model_name is None:
-            model_name = getattr(self.config.backend, "model", None)
-        if model_name is None:
-            raise ValueError(
-                "Cannot determine model_name from backend config. "
-                "Backend must have 'model_path' or 'model' attribute."
-            )
-        return str(model_name)
-
     def _build_metadata(self) -> OutputMetadata:
         """Build output metadata from current state.
 
@@ -191,7 +176,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         from place_layers.evaluator.traces.writer import compute_config_hash
 
         return OutputMetadata(
-            model_name=self._get_model_name(),
+            model_name=get_model_path(self.config.backend),
             config_hash=compute_config_hash(self.config.model_dump(mode="json")),
             placement=self._current_placement,
         )

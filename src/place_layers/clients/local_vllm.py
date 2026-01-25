@@ -271,7 +271,8 @@ class LocalVLLMClient(BaseVLLMClient):
             raise VLLMBadRequestError(f"Chat completion failed: {response.error}")
 
         # Type narrow to ChatCompletionResponse
-        assert isinstance(response, ChatCompletionResponse)
+        if not isinstance(response, ChatCompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
 
         # Extract samples from response
         samples: list[GeneratedSample] = []
@@ -346,7 +347,8 @@ class LocalVLLMClient(BaseVLLMClient):
             raise VLLMBadRequestError(f"Completion failed: {response.error}")
 
         # Type narrow to CompletionResponse
-        assert isinstance(response, CompletionResponse)
+        if not isinstance(response, CompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
 
         # Extract samples from response
         samples: list[GeneratedSample] = []
@@ -400,7 +402,11 @@ class LocalVLLMClient(BaseVLLMClient):
         Returns:
             ScoringResult with total log probability.
         """
-        from vllm.entrypoints.openai.protocol import CompletionRequest
+        from vllm.entrypoints.openai.protocol import (
+            CompletionRequest,
+            CompletionResponse,
+            ErrorResponse,
+        )
 
         if self._completion_serving is None:
             raise RuntimeError("Client not initialized")
@@ -417,9 +423,10 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._completion_serving.create_completion(request)
 
-        from vllm.entrypoints.openai.protocol import ErrorResponse
         if isinstance(response, ErrorResponse):
             raise VLLMBadRequestError(f"Completion failed: {response.error}")
+        if not isinstance(response, CompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
 
         # Extract logprobs for completion tokens
         choice = response.choices[0]
@@ -458,7 +465,11 @@ class LocalVLLMClient(BaseVLLMClient):
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.
         """
-        from vllm.entrypoints.openai.protocol import CompletionRequest
+        from vllm.entrypoints.openai.protocol import (
+            CompletionRequest,
+            CompletionResponse,
+            ErrorResponse,
+        )
 
         if self._completion_serving is None:
             raise RuntimeError("Client not initialized")
@@ -475,24 +486,27 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._completion_serving.create_completion(request)
 
-        from vllm.entrypoints.openai.protocol import ErrorResponse
         if isinstance(response, ErrorResponse):
             raise VLLMBadRequestError(f"Completion failed: {response.error}")
+        if not isinstance(response, CompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
 
         choice = response.choices[0]
         logprobs_data = choice.logprobs
 
         token_logprobs: list[float | None] = []
-        token_ids: list[int] = []
 
-        if logprobs_data:
-            if logprobs_data.token_logprobs:
-                token_logprobs = list(logprobs_data.token_logprobs)
-            if logprobs_data.tokens:
-                if hasattr(logprobs_data, "token_ids") and logprobs_data.token_ids:
-                    token_ids = list(logprobs_data.token_ids)
-                else:
-                    token_ids = [-1] * len(logprobs_data.tokens)
+        if logprobs_data and logprobs_data.token_logprobs:
+            token_logprobs = list(logprobs_data.token_logprobs)
+
+        # Get token_ids from choice (CompletionResponseChoice.token_ids)
+        # Fall back to placeholder if no token_ids but have logprobs tokens
+        if choice.token_ids:
+            token_ids = list(choice.token_ids)
+        elif logprobs_data and logprobs_data.tokens:
+            token_ids = [-1] * len(logprobs_data.tokens)
+        else:
+            token_ids = []
 
         return SequenceLogProbs(
             token_ids=token_ids,
@@ -520,7 +534,11 @@ class LocalVLLMClient(BaseVLLMClient):
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.
         """
-        from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+        from vllm.entrypoints.openai.protocol import (
+            ChatCompletionRequest,
+            ChatCompletionResponse,
+            ErrorResponse,
+        )
 
         if self._chat_serving is None:
             raise RuntimeError("Client not initialized")
@@ -539,12 +557,13 @@ class LocalVLLMClient(BaseVLLMClient):
 
         response = await self._chat_serving.create_chat_completion(request)
 
-        from vllm.entrypoints.openai.protocol import ErrorResponse
         if isinstance(response, ErrorResponse):
             raise VLLMBadRequestError(f"Chat completion failed: {response.error}")
+        if not isinstance(response, ChatCompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
 
         # Extract prompt_logprobs from response
-        prompt_logprobs_data = getattr(response, "prompt_logprobs", None) or []
+        prompt_logprobs_data = response.prompt_logprobs or []
 
         token_ids: list[int] = []
         logprobs: list[float | None] = []

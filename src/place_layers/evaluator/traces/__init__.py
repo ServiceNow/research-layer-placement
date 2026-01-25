@@ -18,7 +18,6 @@ from place_layers.evaluator.traces.types import (
 )
 from place_layers.evaluator.traces.writer import (
     TraceWriter,
-    get_completed_problems,
     summarize_generations,
     summarize_is,
     summarize_likelihood,

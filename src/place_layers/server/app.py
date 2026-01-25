@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+from place_layers.backend import get_model_path
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
 from place_layers.backend.types import (
     GenerateChatRequest as BackendGenerateChatRequest,
@@ -185,7 +186,7 @@ def create_app(
             pass
 
         return InfoResponse(
-            model_path=getattr(backend_config, "model_path", "unknown"),
+            model_path=get_model_path(backend_config),
             supports_placement=supports_placement,
             current_placement=None,  # TODO: track current placement
             num_layers=num_layers,

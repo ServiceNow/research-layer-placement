@@ -48,10 +48,7 @@ from place_layers.backend import BackendError, ScoreTokensRequest
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.base_evaluator import BaseEvaluator
-from place_layers.evaluator.traces.writer import (
-    get_completed_problems,
-    summarize_is,
-)
+from place_layers.evaluator.traces.writer import summarize_is
 from place_layers.evaluator.traces.types import (
     ISProblemRecord,
     SkippedProblem,
@@ -473,7 +470,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             )
 
             # Get completed problems for resumption
-            completed = get_completed_problems(self._output_dir, task_name)
+            completed = self._trace_writer.get_completed_problems(task_name)
 
             await self._evaluate_task(task_name, problems, completed)
 

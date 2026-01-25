@@ -617,7 +617,7 @@ async def concurrent_expand_map[In, K, E, R, Out](
     Yields:
         Outputs in input order, as soon as all elements for an input complete.
     """
-    if hasattr(items, "__aiter__"):
+    if isinstance(items, AsyncIterable):
         async for result in _concurrent_expand_map_async(
             items, expand, process_one, combine, max_concurrent  # type: ignore[arg-type]
         ):
@@ -1007,3 +1007,35 @@ class BaseBackendConfig(BaseModel):
     def create_backend(self) -> AsyncBackend | SyncBackend:
         """Smart constructor: instantiate backend from config."""
         return self._backend_class(config=self)
+
+
+def get_model_path(config: BaseBackendConfig) -> str:
+    """Extract model path from backend config.
+
+    Uses pattern matching on concrete config types.
+
+    Args:
+        config: Backend configuration.
+
+    Returns:
+        Model path string, or "rest-backend" for REST backends,
+        or "unknown" for unrecognized config types.
+    """
+    # Lazy imports to avoid circular dependencies
+    from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
+    from place_layers.backend.transformers import TransformersBackendConfig
+    from place_layers.backend.vllm import VLLMBackendConfig
+    from place_layers.clients.local_vllm import LocalVLLMClientConfig
+    from place_layers.clients.remote_vllm import RemoteVLLMClientConfig
+
+    match config:
+        case TransformersBackendConfig(model_path=model_path):
+            return str(model_path)
+        case VLLMBackendConfig(client=LocalVLLMClientConfig(model_path=model_path)):
+            return str(model_path)
+        case VLLMBackendConfig(client=RemoteVLLMClientConfig(model=model)):
+            return model
+        case RESTBackendConfig() | RESTDNSBackendConfig():
+            return "rest-backend"
+        case _:
+            return "unknown"

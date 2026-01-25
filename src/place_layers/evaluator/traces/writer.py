@@ -14,7 +14,6 @@ Directory structure:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -97,7 +96,6 @@ class TraceWriter:
 
     State reconstruction scans both files, filtering by task_name field.
 
-    Thread-safe for concurrent writes from parallel task evaluation via asyncio.Lock.
     """
 
     def __init__(
@@ -117,7 +115,6 @@ class TraceWriter:
         """
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = asyncio.Lock()
 
         # Load existing metadata (if resuming)
         existing = self._load_metadata()
@@ -177,25 +174,6 @@ class TraceWriter:
             with (self.output_dir / "skipped.jsonl").open("a") as f:
                 for record in skipped:
                     f.write(record.model_dump_json() + "\n")
-
-    def append_sync(self, records: Sequence[TraceRecord]) -> None:
-        """Append records synchronously (for sync backends like Transformers).
-
-        Args:
-            records: Records to append.
-        """
-        self._write_records(records)
-
-    async def append(self, records: Sequence[TraceRecord]) -> None:
-        """Append records to appropriate files based on record type.
-
-        Thread-safe: Uses async lock to prevent concurrent writes from corrupting files.
-        Records may be written out of submission order when multiple tasks run in parallel,
-        but this is safe since all downstream code (resumability, summarization) is order-independent.
-        """
-        # Acquire lock to ensure atomic file writes
-        async with self._lock:
-            self._write_records(records)
 
     def get_completed_problems(self, task_name: str) -> set[int]:
         """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
@@ -273,48 +251,6 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                     logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
 
     return completed, malformed_lines
-
-
-def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
-
-    This is the authoritative way to determine what work has been done.
-    The traces on disk are the single source of truth. Both successful
-    traces and skipped problems count as "completed" (no retry needed).
-
-    Args:
-        output_dir: Directory containing trace files.
-        task_name: Name of the task to check.
-
-    Returns:
-        Set of problem indices that have been processed (traced or skipped).
-    """
-    completed, malformed_lines = _scan_completed_problems(output_dir)
-
-    if malformed_lines > 0:
-        logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
-
-    return completed.get(task_name, set())
-
-
-def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problems per task.
-
-    Args:
-        output_dir: Directory containing trace files.
-
-    Returns:
-        Dict mapping task_name -> set of completed problem indices.
-    """
-    completed, malformed_lines = _scan_completed_problems(output_dir)
-
-    if malformed_lines > 0:
-        logger.warning(f"{malformed_lines} malformed lines ignored")
-
-    for task_name, indices in completed.items():
-        logger.info(f"Reconstructed task '{task_name}': {len(indices)} problems completed")
-
-    return completed
 
 
 class TaskStats(BaseModel):
