@@ -88,10 +88,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         pass
 
-    def _get_fewshot_seed(self) -> int | None:
-        """Return seed for few-shot sampling, or None for default behavior."""
-        return None
-
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate by generating completions and checking accuracy.
 

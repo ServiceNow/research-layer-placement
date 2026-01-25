@@ -41,8 +41,9 @@ class TaskBasedEvaluator(BackendEvaluator):
     """Base class for evaluators that iterate over lm-eval tasks.
 
     Extends BackendEvaluator with task iteration infrastructure:
-    - _prepare_task(): Load task, validate type, check resumability
+    - _prepare_task(): Get task from cache, validate type, check resumability
     - Uses self._trace_writer.get_completed_problems() for resumability
+    - Caches tasks and docs for efficiency across multiple placements
 
     Subclasses must implement:
     - evaluate(): The actual evaluation logic
@@ -65,14 +66,13 @@ class TaskBasedEvaluator(BackendEvaluator):
         super().__init__(config)
         # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
-        # Cache for docs to avoid re-loading datasets on every _prepare_task call
+        # Cache for docs - persists across placements (lazy populated in _prepare_task)
         self._docs_cache: dict[str, Docs] = {}
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling, or None for default behavior.
 
         Subclasses can override this to provide a specific seed.
-        Default implementation returns None (no seed).
         """
         return None
 
@@ -82,26 +82,17 @@ class TaskBasedEvaluator(BackendEvaluator):
         Tasks are loaded here (not in __init__) because:
         1. Backend must be initialized first
         2. Seed may depend on evaluator-specific logic (_get_fewshot_seed)
-        3. Loading all tasks upfront is ~6x faster than individual loading
-        4. Pre-loading docs avoids repeated metadata reads during evaluation
+        3. Loading all tasks together is ~6x faster than individual loading
         """
-        # Initialize backend first
         await super().__aenter__()
 
-        # Load all tasks upfront for efficiency
+        # Batch load all tasks for efficiency
         seed = self._get_fewshot_seed()
         logger.info(f"Batch-loading {len(self.config.tasks)} tasks...")
-        self._task_cache = load_tasks(self.config.tasks, self.config.num_fewshot, seed)
+        self._task_cache = load_tasks(
+            self.config.tasks, self.config.num_fewshot, seed
+        )
         logger.info(f"Loaded {len(self._task_cache)} tasks")
-
-        # Pre-load all docs to avoid repeated metadata reads during evaluation
-        # This happens during task loading anyway, but by doing it explicitly here
-        # we can cache the results and avoid re-reading on every _prepare_task call
-        logger.info(f"Pre-loading documents for {len(self._task_cache)} tasks...")
-        for task_name, task in self._task_cache.items():
-            task.download()  # Ensure dataset is downloaded
-            self._docs_cache[task_name] = get_docs(task, self.config.split)
-        logger.info(f"All documents pre-loaded")
 
         return self
 
@@ -115,7 +106,7 @@ class TaskBasedEvaluator(BackendEvaluator):
         This handles:
         - Retrieving the pre-loaded task from cache
         - Validating task type (generate_until or multiple_choice)
-        - Getting documents for the configured split
+        - Getting documents (cached across placements)
         - Applying max_problems limit
         - Checking completed problems for resumability
         - Computing remaining indices
@@ -131,7 +122,7 @@ class TaskBasedEvaluator(BackendEvaluator):
         task_name = get_task_name(task_spec)
         logger.info(f"Task '{task_name}': preparing...")
 
-        # Tasks are always pre-loaded in __aenter__, so cache should never be None
+        # Tasks must be pre-loaded in __aenter__
         if self._task_cache is None:
             raise RuntimeError(
                 "Tasks not loaded. TaskBasedEvaluator must be used as async context manager."
@@ -146,11 +137,9 @@ class TaskBasedEvaluator(BackendEvaluator):
                 f"expected '{expected_output_type}'"
             )
 
-        # Get documents from cache (or load and cache if first time)
+        # Get documents from cache (or load and cache on first access)
         if task_name not in self._docs_cache:
-            # Download dataset if needed (only on first access)
             task.download()
-            # Load and cache documents
             self._docs_cache[task_name] = get_docs(task, self.config.split)
 
         docs = self._docs_cache[task_name]

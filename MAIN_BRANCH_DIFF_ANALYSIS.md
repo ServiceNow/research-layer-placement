@@ -19,6 +19,7 @@ These have been implemented on our branch.
 | `1031248` | Increase `timeout_keep_alive` to 30s | Set in `command/serve.py` | ✅ Ported |
 | `ecc59ef`, `6ff46cb`, `8129a1b` | REST backend distribution fix | `ServerPool.select_server()` with round-robin + `preferred_server` in `_call_with_failover()` | ✅ Ported |
 | `255fe65` | Separate trace-writer output dirs for placements | Run-length encoded dir names (`a2g3`), placement in `OutputMetadata` | ✅ Ported (improved) |
+| `d06b226`, `2a97683` | Batch task loading + docs caching | `load_tasks()` in `__aenter__`, lazy `_docs_cache` in `_prepare_task()` | ✅ Ported (simplified) |
 
 ### Architectural Difference: Text Generation
 
@@ -52,6 +53,21 @@ Our approach is cleaner - the caller explicitly chooses which generation type to
 
 Our approach is cleaner - placement is stored once in metadata instead of duplicated on every record, and directory names are human-readable.
 
+### Architectural Difference: Task and Docs Caching
+
+**Main branch approach:**
+- Pre-loads ALL docs in `__aenter__()` after batch loading tasks
+- ~45s startup overhead for 57 MMLU tasks
+- Loads docs even for tasks that might be complete (resumption)
+
+**Our approach:**
+- `_task_cache`: Batch loaded in `__aenter__()` via `load_tasks()` (~6x faster)
+- `_docs_cache`: Lazy populated in `_prepare_task()` on first access
+- Both caches persist across placements (docs are task-specific, not placement-specific)
+- Only loads docs we actually need
+
+Our approach is simpler - no upfront doc loading, same caching benefit across placements.
+
 ### Architectural Difference: REST Distribution
 
 **Main branch approach:**
@@ -69,78 +85,7 @@ Our approach is cleaner - placement is stored once in metadata instead of duplic
 
 ## 2. Features To Port (High Priority)
 
-### 2.1 Dataset Docs Caching
-
-**Commit:** `2a97683`
-**Priority:** High
-**Complexity:** Low
-
-**What it does:**
-- Caches loaded documents per task in `_docs_cache` dict
-- Pre-loads all docs in `__aenter__()` after batch loading tasks
-- Avoids re-reading HuggingFace metadata on every `_prepare_task()` call
-
-**Performance impact:**
-- Before: ~45s per allocation for 57 MMLU tasks
-- After: <1s per allocation
-- ~18x speedup for optimization runs
-
-**Files to modify:**
-```
-src/place_layers/evaluator/task_based_evaluator.py
-```
-
-**Implementation:**
-```python
-class TaskBasedEvaluator(BackendEvaluator):
-    def __init__(self, config):
-        super().__init__(config)
-        self._docs_cache: dict[str, Docs] = {}
-
-    async def __aenter__(self) -> Self:
-        await super().__aenter__()
-        # ... after loading tasks ...
-
-        # Pre-load all docs
-        for task_name, task in self._task_cache.items():
-            task.download()
-            self._docs_cache[task_name] = get_docs(task, self.config.split)
-
-        return self
-
-    def _prepare_task(self, ...):
-        # Use cached docs instead of calling get_docs()
-        task_name = get_task_name(task_spec)
-        if task_name in self._docs_cache:
-            docs = self._docs_cache[task_name]
-        else:
-            docs = get_docs(task, self.config.split)
-```
-
----
-
-### 2.2 Batch Load Tasks in `__aenter__`
-
-**Commit:** `d06b226`
-**Priority:** Medium
-**Complexity:** Medium
-
-**What it does:**
-- Loads all lm-eval tasks upfront in `__aenter__()` instead of on-demand
-- Uses `load_tasks()` (batch) instead of `load_task()` (individual)
-- ~6x faster task loading
-
-**Files to modify:**
-```
-src/place_layers/evaluator/task_based_evaluator.py
-src/place_layers/evaluator/lm_eval_utils.py  # May need load_tasks() function
-```
-
-**Note:** Check if we already have `load_tasks()` or need to add it.
-
----
-
-### 2.3 REST DNS Backend Config
+### 2.1 REST DNS Backend Config
 
 **Commit:** `71574c6`
 **Priority:** Medium
@@ -321,11 +266,10 @@ git log --oneline 2b89c52..origin/main -- path/to/file.py
 - [x] REST round-robin distribution fix (ported 2026-01-25) - ServerPool.select_server() + preferred_server
 - [x] Problem-to-server affinity (analyzed 2026-01-25) - **not needed**: our request types bundle all choices together
 - [x] Separate output dirs per placement (ported 2026-01-25) - run-length encoded dir names (e.g., `a2g3a2`)
+- [x] Batch task loading + docs caching (ported 2026-01-25) - `load_tasks()` in `__aenter__`, lazy `_docs_cache`
 
 ### To Do 📋
 
-- [ ] Dataset docs caching (`_docs_cache`) - ~18x speedup for multi-task evaluations
-- [ ] Batch task loading (`load_tasks()` in `__aenter__`) - ~6x faster task loading
 - [ ] REST DNS backend config - convenience for Kubernetes deployments
 - [ ] Copy task configs (fda.yaml, swde.yaml) - extraction evaluation support
 - [ ] Copy extraction.yaml generation config - extraction evaluation support

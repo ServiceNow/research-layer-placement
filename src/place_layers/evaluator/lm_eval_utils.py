@@ -264,16 +264,15 @@ def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
     return None
 
 
-def _load_tasks_with_patched_path(
+def load_tasks(
     task_specs: list[TaskSpecInput],
     default_num_fewshot: int,
     seed: int | None = None,
 ) -> dict[str, "Task"]:
-    """Internal helper to load tasks with Path.relative_to patched.
+    """Load multiple lm-eval tasks efficiently with a shared TaskManager.
 
-    This contains the core loading logic shared by load_task() and load_tasks().
-    The monkey-patch fixes a bug in lm-eval-harness 0.4.x where it crashes when
-    trying to print the relative path of custom tasks outside its package.
+    This is significantly faster than loading tasks individually (~6x speedup)
+    because lm-eval can share initialization overhead.
 
     Args:
         task_specs: List of task names or TaskSpec objects.
@@ -324,44 +323,3 @@ def _load_tasks_with_patched_path(
             task.set_fewshot_seed(seed)
 
     return task_dict
-
-
-def load_task(
-    task_spec: TaskSpecInput,
-    default_num_fewshot: int,
-    seed: int | None = None,
-) -> "Task":
-    """Load an lm-eval task from a task spec.
-
-    Args:
-        task_spec: Task name or TaskSpec with overrides.
-        default_num_fewshot: Default few-shot count.
-        seed: Random seed for few-shot sampling (optional).
-
-    Returns:
-        Configured lm-eval Task object.
-    """
-    task_dict = _load_tasks_with_patched_path([task_spec], default_num_fewshot, seed)
-    task_name = get_task_name(task_spec)
-    return task_dict[task_name]
-
-
-def load_tasks(
-    task_specs: list[TaskSpecInput],
-    default_num_fewshot: int,
-    seed: int | None = None,
-) -> dict[str, "Task"]:
-    """Load multiple lm-eval tasks efficiently with a shared TaskManager.
-
-    This is significantly faster than calling load_task() for each task
-    individually (6x speedup) because lm-eval can share initialization overhead.
-
-    Args:
-        task_specs: List of task names or TaskSpec objects.
-        default_num_fewshot: Default few-shot count.
-        seed: Random seed for few-shot sampling (optional).
-
-    Returns:
-        Dict mapping task names to configured Task objects.
-    """
-    return _load_tasks_with_patched_path(task_specs, default_num_fewshot, seed)
