@@ -74,12 +74,15 @@ class ServeCommand(BaseCommand):
         app = create_app(self.config.backend)
 
         # Configure uvicorn with access logging enabled
+        # timeout_keep_alive=30 ensures connections stay open long enough
+        # for client-side connection reuse (aiohttp defaults to 15s)
         config = uvicorn.Config(
             app,
             host=self.config.host,
             port=self.config.port,
             log_level="info",
             access_log=True,
+            timeout_keep_alive=30,
         )
 
         # Run server
