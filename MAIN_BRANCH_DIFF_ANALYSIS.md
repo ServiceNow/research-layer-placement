@@ -221,8 +221,24 @@ These changes exist on main but are obsolete for our branch due to architectural
 | Commit | Description | Why We Don't Need It |
 |--------|-------------|---------------------|
 | `c522df7`, `04d7995` | Refactor REST backend to eliminate code duplication | We rewrote REST backend with unified streaming interface |
-| `54c0b11`, `1263df4` | TraceWriter refactors (append_sync vs append) | Different architecture - check if sync handling needed |
+| `ab22d04`, `1263df4`, `54c0b11` | Parallel task evaluation + async TraceWriter | **Not needed** - we use sequential tasks, sync append (see below) |
 | `9c41f40` | Send all chats from a problem to same server | **Not needed** - our request types bundle all choices together (see below) |
+
+### Why We Don't Need Parallel Task Evaluation (ab22d04)
+
+**Main branch added:**
+- `parallel_tasks: bool = True` config for LikelihoodEvaluator
+- `asyncio.gather()` to run multiple tasks (e.g., MMLU subtasks) concurrently
+- `async def append()` with `asyncio.Lock` to prevent concurrent file writes
+- Then `append_sync()` for sync backends, then refactor to reduce duplication
+
+**Why we decided against it:**
+- Marginal benefit: async backend already saturates throughput within a single task
+- If backend isn't saturated, increase batch size instead
+- Added complexity: async locking, sync/async variants, cascading fixes
+- Memory pressure from loading multiple task datasets simultaneously
+
+Our approach: sequential task evaluation with sync `append()`. Simpler, same throughput.
 
 ### Why We Don't Need Problem-to-Server Affinity (9c41f40)
 
