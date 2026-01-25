@@ -169,22 +169,21 @@ class ServerPool:
 
         return healthy + due_for_check
 
-    def get_next_server_round_robin(self) -> str:
+    def get_next_server_round_robin(self) -> str | None:
         """Get the next healthy server in round-robin order.
 
-        Maintains a counter across calls to ensure even distribution across batches.
+        Maintains a counter across calls to ensure even distribution of requests.
         The counter operates on the full server list, but skips unhealthy servers.
-        This ensures consistent round-robin ordering even when servers fail.
+        This ensures consistent round-robin ordering even when servers fail/recover.
 
         Returns:
-            The selected server.
-
-        Raises:
-            ValueError: If no healthy servers are available.
+            The selected server, or None if no healthy servers are available.
+            When None is returned, callers should fall back to _call_with_failover
+            without a preferred server, which will wait for server recovery.
         """
         servers_to_try = self.get_servers_to_try()
         if not servers_to_try:
-            raise ValueError("No healthy servers available")
+            return None  # Let _call_with_failover handle retry/recovery
 
         # Round-robin over the FULL server list, but skip unhealthy ones
         # This maintains consistent ordering even when servers fail/recover
@@ -200,7 +199,7 @@ class ServerPool:
             attempts += 1
 
         # Should never reach here if get_servers_to_try() returned non-empty list
-        raise ValueError("No healthy servers found in round-robin")
+        return None
 
     def mark_success(self, server: str) -> None:
         """Mark a server as healthy after a successful request."""
@@ -383,16 +382,18 @@ class RESTBackend(AsyncBackend):
         self,
         endpoint: str,
         request: BaseModel,
+        preferred_server: str | None = None,
     ) -> dict[str, Any]:
         """Call an endpoint with failover across servers.
 
-        Tries preferred server first (if specified), then falls back to other
-        healthy servers, then unhealthy servers due for recovery.
+        Tries preferred server first (if specified and healthy), then falls back
+        to other healthy servers, then unhealthy servers due for recovery.
         Uses tenacity for retry with server-aware wait strategy.
 
         Args:
             endpoint: API endpoint (e.g., "/generate").
             request: Typed request model to serialize and send.
+            preferred_server: Optional server to try first (for load distribution).
 
         Returns:
             JSON response from the server.
@@ -419,7 +420,6 @@ class RESTBackend(AsyncBackend):
 
             # If preferred server is specified and healthy, try it first
             if preferred_server is not None and preferred_server in servers_to_try:
-                # Move preferred server to front of list
                 servers_to_try = [preferred_server] + [
                     s for s in servers_to_try if s != preferred_server
                 ]
@@ -678,6 +678,8 @@ class RESTBackend(AsyncBackend):
             req: GenerateChatRequest,
         ) -> GenerationResult | BackendError:
             try:
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.get_next_server_round_robin()
                 server_request = ServerGenerateChatRequest(
                     key=req.key,
                     messages=req.messages,
@@ -687,7 +689,9 @@ class RESTBackend(AsyncBackend):
                     top_p=req.top_p,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/generate_chat", server_request)
+                data = await self._call_with_failover(
+                    "/generate_chat", server_request, preferred_server=preferred_server
+                )
                 return GenerationResult.model_validate(data)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
@@ -712,6 +716,8 @@ class RESTBackend(AsyncBackend):
             req: GenerateTextRequest,
         ) -> GenerationResult | BackendError:
             try:
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.get_next_server_round_robin()
                 server_request = ServerGenerateTextRequest(
                     key=req.key,
                     prompt=req.prompt,
@@ -721,7 +727,9 @@ class RESTBackend(AsyncBackend):
                     top_p=req.top_p,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/generate_text", server_request)
+                data = await self._call_with_failover(
+                    "/generate_text", server_request, preferred_server=preferred_server
+                )
                 return GenerationResult.model_validate(data)
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
@@ -744,13 +752,17 @@ class RESTBackend(AsyncBackend):
 
         async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
             try:
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.get_next_server_round_robin()
                 server_request = ServerScoreTokensRequest(
                     key=req.key,
                     prompt_tokens=req.prompt_tokens,
                     completion_tokens=req.completion_tokens,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/score_tokens", server_request)
+                data = await self._call_with_failover(
+                    "/score_tokens", server_request, preferred_server=preferred_server
+                )
                 return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
@@ -778,13 +790,17 @@ class RESTBackend(AsyncBackend):
                 if not req.choices:
                     return ScoreTextResult(key=req.key, results=[])
 
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.get_next_server_round_robin()
                 server_request = ServerScoreTextRequest(
                     key=req.key,
                     context=req.context,
                     choices=req.choices,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/score_text", server_request)
+                data = await self._call_with_failover(
+                    "/score_text", server_request, preferred_server=preferred_server
+                )
 
                 results = [
                     LogProbResult(
@@ -822,13 +838,17 @@ class RESTBackend(AsyncBackend):
                 if not req.completion_messages:
                     return ScoreChatResult(key=req.key, results=[])
 
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.get_next_server_round_robin()
                 server_request = ServerScoreChatRequest(
                     key=req.key,
                     context_messages=req.context_messages,
                     completion_messages=req.completion_messages,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover("/score_chat", server_request)
+                data = await self._call_with_failover(
+                    "/score_chat", server_request, preferred_server=preferred_server
+                )
 
                 results = [
                     LogProbResult(
