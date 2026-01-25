@@ -1,0 +1,31 @@
+# @package backend
+# Mock backend for testing - replays configured responses
+#
+# No defaults provided - tests must compose with replay data.
+# Example test config:
+#
+#   defaults:
+#     - /backend: mock
+#     - /backend/replay@backend.replay: my_test_replay
+#
+# Where conf/backend/replay/my_test_replay.yaml contains:
+#   generate_chat:
+#     - samples:
+#         - text: "42"
+#           token_ids: [42]
+#           token_logprobs: [-0.1]
+#           truncated: false
+#       prompt_token_ids: [1, 2, 3]
+
+backend_type: mock
+
+num_layers: null
+mixer_names: null
+max_concurrent_requests: 10
+
+replay:
+  generate_chat: []
+  generate_text: []
+  score_tokens: []
+  score_text: []
+  score_chat: []

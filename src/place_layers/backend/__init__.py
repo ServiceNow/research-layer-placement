@@ -37,13 +37,18 @@ from place_layers.backend.types import (
 )
 
 # Import backend configs for discriminated union
+from place_layers.backend.mock import MockBackendConfig
 from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
 from place_layers.backend.transformers import TransformersBackendConfig
 from place_layers.backend.vllm import VLLMBackendConfig
 
 # Discriminated union of all backend configs
 BackendConfig = Annotated[
-    VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig | RESTDNSBackendConfig,
+    VLLMBackendConfig
+    | TransformersBackendConfig
+    | RESTBackendConfig
+    | RESTDNSBackendConfig
+    | MockBackendConfig,
     Field(discriminator="backend_type"),
 ]
 
@@ -78,4 +83,5 @@ __all__ = [
     "TransformersBackendConfig",
     "RESTBackendConfig",
     "RESTDNSBackendConfig",
+    "MockBackendConfig",
 ]
