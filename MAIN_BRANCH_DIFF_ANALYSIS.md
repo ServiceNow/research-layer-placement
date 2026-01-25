@@ -240,6 +240,8 @@ These changes exist on main but are obsolete for our branch due to architectural
 
 Our approach: sequential task evaluation with sync `append()`. Simpler, same throughput.
 
+**Config compatibility:** No configs on main explicitly set `parallel_tasks` - it's just a code default. Users of `+evaluator=likelihood` get sequential evaluation on our branch automatically.
+
 ### Why We Don't Need Problem-to-Server Affinity (9c41f40)
 
 **Main branch's problem:**
