@@ -69,7 +69,7 @@ class VLLMBackend(AsyncBackend):
         else:
             self._client = RemoteVLLMClient(config.client)
 
-        self._current_placement: tuple[str, ...] | None = None
+        self._current_placement: list[str] | None = None
 
     @property
     def max_concurrent_requests(self) -> int:
@@ -101,6 +101,11 @@ class VLLMBackend(AsyncBackend):
             num_layers=self._client.num_layers or 0,
             mixer_names=self._client.mixer_names or (),
         )
+
+    @property
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements."""
+        return self._current_placement
 
     def generate_chat(
         self,
@@ -372,7 +377,7 @@ class VLLMBackend(AsyncBackend):
         ):
             yield result
 
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
+    async def set_placement(self, placement: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model.
 
         Only available in local mode with Apriel2 supernet models.
@@ -382,12 +387,12 @@ class VLLMBackend(AsyncBackend):
                 "Dynamic mixer placement is not supported for remote vLLM backend."
             )
 
-        placement_tuple = tuple(mixer_names)
-        if self._current_placement == placement_tuple:
+        placement_list = list(placement)
+        if self._current_placement == placement_list:
             return
 
-        await self._client.set_placement(list(mixer_names))
-        self._current_placement = placement_tuple
+        await self._client.set_placement(placement_list)
+        self._current_placement = placement_list
 
 
 class VLLMBackendConfig(BaseBackendConfig):

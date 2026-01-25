@@ -61,7 +61,7 @@ class TransformersBackend:
 
         # Apriel2 supernet support
         self._apriel_structure: "Apriel2Structure | None" = None
-        self._current_placement: tuple[str, ...] | None = None
+        self._current_placement: list[str] | None = None
 
     @property
     def model(self) -> "PreTrainedModel":
@@ -227,6 +227,17 @@ class TransformersBackend:
             num_layers=self._apriel_structure.num_layers,
             mixer_names=self._apriel_structure.mixer_names,
         )
+
+    @property
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements."""
+        if self._apriel_structure is None:
+            return None
+        # Read current placement from model
+        return [
+            self._model.model.decoder.blocks[i].mixer.main_mixer_name
+            for i in range(self._apriel_structure.num_layers)
+        ]
 
     # =========================================================================
     # Generation
@@ -869,11 +880,11 @@ class TransformersBackend:
     # Placement
     # =========================================================================
 
-    def set_placement(self, mixer_names: Sequence[str]) -> None:
+    def set_placement(self, placement: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model."""
-        placement_tuple = tuple(mixer_names)
+        placement_list = list(placement)
 
-        if self._current_placement == placement_tuple:
+        if self._current_placement == placement_list:
             return
 
         if self._apriel_structure is None:
@@ -882,26 +893,24 @@ class TransformersBackend:
                 "Only Apriel2 supernet models support set_placement()."
             )
 
-        if len(mixer_names) != self._apriel_structure.num_layers:
+        if len(placement_list) != self._apriel_structure.num_layers:
             raise ValueError(
-                f"mixer_names length ({len(mixer_names)}) doesn't match "
+                f"placement length ({len(placement_list)}) doesn't match "
                 f"model layers ({self._apriel_structure.num_layers})"
             )
 
         valid_mixers = set(self._apriel_structure.mixer_names)
-        for layer_idx, mixer_name in enumerate(mixer_names):
-            if mixer_name not in valid_mixers:
+        for layer_idx, mixer in enumerate(placement_list):
+            if mixer not in valid_mixers:
                 raise ValueError(
-                    f"Invalid mixer '{mixer_name}' at layer {layer_idx}. "
+                    f"Invalid mixer '{mixer}' at layer {layer_idx}. "
                     f"Valid mixers: {valid_mixers}"
                 )
 
-        for layer_idx, mixer_name in enumerate(mixer_names):
-            self.model.model.decoder.blocks[layer_idx].mixer.main_mixer_name = (
-                mixer_name
-            )
+        for layer_idx, mixer in enumerate(placement_list):
+            self._model.model.decoder.blocks[layer_idx].mixer.main_mixer_name = mixer
 
-        self._current_placement = placement_tuple
+        self._current_placement = placement_list
 
 
 class TransformersBackendConfig(BaseBackendConfig):

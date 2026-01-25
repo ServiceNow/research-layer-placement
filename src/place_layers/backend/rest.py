@@ -690,6 +690,11 @@ class RESTBackend(AsyncBackend):
             )
         return self._model_structure
 
+    @property
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if not set."""
+        return self._current_placement
+
     def generate_chat(
         self,
         requests: Iterable[GenerateChatRequest]
@@ -898,7 +903,7 @@ class RESTBackend(AsyncBackend):
         ):
             yield result
 
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
+    async def set_placement(self, placement: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.
 
         The placement is stored locally and sent with every request.
@@ -910,9 +915,9 @@ class RESTBackend(AsyncBackend):
         update the server's placement.
 
         Args:
-            mixer_names: Mixer name for each layer.
+            placement: Mixer to use at each layer.
         """
-        self._current_placement = list(mixer_names)
+        self._current_placement = list(placement)
         logger.debug(f"Placement set locally: {self._current_placement}")
 
 

@@ -66,10 +66,10 @@ class OutputMetadata(BaseModel):
         description="Model revision (git commit, HF revision, etc.)",
     )
 
-    # Placement (required - empty tuple for non-supernet)
-    placement: tuple[str, ...] = Field(
-        description="Layer placement (mixer name per layer). "
-        "Empty tuple for non-supernet models.",
+    # Placement (None for non-supernet models)
+    placement: list[str] | None = Field(
+        description="Layer placement (mixer at each layer). "
+        "None for non-supernet models.",
     )
 
     # Resumption (required)

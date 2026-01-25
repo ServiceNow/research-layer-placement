@@ -78,7 +78,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         self._mixer_names: tuple[str, ...] | None = None
 
         # Track current placement to avoid redundant set_placement calls
-        self._current_placement: tuple[str, ...] | None = None
+        # None means model doesn't support placements (non-supernet)
+        self._current_placement: list[str] | None = None
 
         # Set up output directory for saving results (from Hydra)
         hydra_cfg = HydraConfig.get()
@@ -112,6 +113,9 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
                 f"(backend={self.config.backend.backend_type}). "
                 f"Placement switching will not be supported."
             )
+
+        # Read initial placement from backend (the model's current/default placement)
+        self._current_placement = self._backend.placement
 
         return self
 
@@ -180,14 +184,11 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         return str(model_name)
 
     def _build_metadata(self) -> OutputMetadata:
-        """Build output metadata from current placement.
+        """Build output metadata from current state.
 
-        Reads from _current_placement. Must be set before calling.
+        Uses _current_placement (None for non-supernet models).
         """
         from place_layers.evaluator.traces.writer import compute_config_hash
-
-        if self._current_placement is None:
-            raise RuntimeError("_current_placement must be set before building metadata")
 
         return OutputMetadata(
             model_name=self._get_model_name(),
@@ -201,10 +202,13 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         Creates a subdirectory under base output directory named by a
         run-length encoded representation of the placement.
 
-        Reads from _current_placement. Must be set before calling.
+        For non-supernet models (_current_placement is None), returns
+        base output directory (no subdirectory).
         """
         if self._current_placement is None:
-            raise RuntimeError("_current_placement must be set before getting output dir")
+            # Non-supernet model: use base output directory
+            self._base_output_dir.mkdir(parents=True, exist_ok=True)
+            return self._base_output_dir
 
         placement = self._current_placement
 
@@ -279,14 +283,14 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             )
 
         # Convert assignment indices to mixer names
-        mixer_names = tuple(self.mixer_names[idx] for idx in parameters.assignments)
+        placement = [self.mixer_names[idx] for idx in parameters.assignments]
 
         # Skip if unchanged
-        if mixer_names == self._current_placement:
+        if placement == self._current_placement:
             return
 
         # Set placement state first (before _init_trace_writer reads it)
-        self._current_placement = mixer_names
+        self._current_placement = placement
 
         # Initialize trace writer for this placement
         self._init_trace_writer()
@@ -294,10 +298,10 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # Set placement on backend (skip for single-mixer models)
         if len(set(self.mixer_names)) > 1:
             if isinstance(self._backend, AsyncBackend):
-                await self._backend.set_placement(mixer_names)
+                await self._backend.set_placement(placement)
             else:
-                self._backend.set_placement(mixer_names)
-            logger.debug(f"Set backend placement: {mixer_names[:4]}...")
+                self._backend.set_placement(placement)
+            logger.debug(f"Set backend placement: {placement[:4]}...")
 
     async def score_chat(
         self,

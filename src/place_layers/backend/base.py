@@ -811,14 +811,24 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
+    async def set_placement(self, placement: Sequence[str]) -> None:
         """Set the mixer placement for each layer.
 
         Args:
-            mixer_names: Mixer name for each layer (e.g., ["attention", "mamba", ...]).
+            placement: Mixer to use at each layer (e.g., ["attention", "gdn", ...]).
 
         Raises:
             NotImplementedError: If backend doesn't support dynamic placement.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements.
+
+        For supernet models, returns the mixer name at each layer.
+        For non-supernet models, returns None.
         """
         pass
 
@@ -963,8 +973,14 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
-    def set_placement(self, mixer_names: Sequence[str]) -> None:
+    def set_placement(self, placement: Sequence[str]) -> None:
         """Set the mixer placement for each layer."""
+        pass
+
+    @property
+    @abstractmethod
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements."""
         pass
 
     @property

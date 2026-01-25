@@ -104,8 +104,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         if parameters is not None:
             await self._set_placement(parameters)
         else:
-            # Non-supernet: use empty placement
-            self._current_placement = ()
+            # Use default placement (read from backend in __aenter__)
             self._init_trace_writer()
 
         # Dispatch to async or sync generation
