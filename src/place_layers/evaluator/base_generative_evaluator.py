@@ -213,9 +213,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         if parameters is not None:
             await self._set_placement(parameters)
-        else:
-            # Use default placement (read from backend in __aenter__)
-            self._init_trace_writer()
+        self._init_trace_writer()
 
         log_memory("GENERATION START")
 

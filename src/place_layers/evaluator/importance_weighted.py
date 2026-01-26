@@ -455,9 +455,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
                 f"({len(parameters.assignments)} layers)"
             )
             await self._set_placement(parameters)
-        else:
-            # Use default placement (read from backend in __aenter__)
-            self._init_trace_writer()
+        self._init_trace_writer()
 
         # Evaluate each task
         start = time.perf_counter()

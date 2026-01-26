@@ -253,8 +253,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     async def _set_placement(self, parameters: LayerPlacement) -> None:
         """Validate and set the mixer placement on the backend.
 
-        Also initializes trace writer for the new placement.
-
         Args:
             parameters: Layer placement to set.
 
@@ -275,11 +273,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         if placement == self._current_placement:
             return
 
-        # Set placement state first (before _init_trace_writer reads it)
+        # Update placement state
         self._current_placement = placement
-
-        # Initialize trace writer for this placement
-        self._init_trace_writer()
 
         # Set placement on backend (skip for single-mixer models)
         if len(set(self.mixer_names)) > 1:
