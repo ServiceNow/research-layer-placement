@@ -74,7 +74,7 @@ class PrecomputeTracesCommand(BaseCommand):
         log_memory("INIT")
         reset_peak_memory_stats()
 
-        async with self.config.evaluator.create_evaluator() as evaluator:
+        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
             # Resolve placement specification
             resolved = resolve_placement(self.config.placement, evaluator)
 

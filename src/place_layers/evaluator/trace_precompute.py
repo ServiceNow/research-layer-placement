@@ -23,6 +23,7 @@ Usage
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
@@ -59,8 +60,10 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
 
     config: "TracePrecomputeEvaluatorConfig"
 
-    def __init__(self, config: "TracePrecomputeEvaluatorConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self, config: "TracePrecomputeEvaluatorConfig", *, output_dir: "Path"
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling."""

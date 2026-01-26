@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
@@ -345,8 +346,10 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
     config: "LikelihoodEvaluatorConfig"
 
-    def __init__(self, config: "LikelihoodEvaluatorConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self, config: "LikelihoodEvaluatorConfig", *, output_dir: "Path"
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     # -------------------------------------------------------------------------
     # Abstract hook implementations from TaskBasedEvaluator

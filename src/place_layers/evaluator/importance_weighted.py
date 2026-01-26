@@ -188,12 +188,14 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
 
     config: "ImportanceWeightedEvaluatorConfig"
 
-    def __init__(self, config: "ImportanceWeightedEvaluatorConfig") -> None:
+    def __init__(
+        self, config: "ImportanceWeightedEvaluatorConfig", *, output_dir: Path
+    ) -> None:
         self._weight_clip_min = config.weight_clip_min
         self._weight_clip_max = config.weight_clip_max
 
         # Call parent init (sets up backend, trace writer, etc.)
-        super().__init__(config)
+        super().__init__(config, output_dir=output_dir)
 
         # Load and merge all traces by task_name
         self.merged_traces = self._load_and_merge_traces()

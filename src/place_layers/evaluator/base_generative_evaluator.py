@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from pydantic import Field
@@ -67,8 +68,10 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
     config: "BaseGenerativeEvaluatorConfig"
 
-    def __init__(self, config: "BaseGenerativeEvaluatorConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self, config: "BaseGenerativeEvaluatorConfig", *, output_dir: Path
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     @abstractmethod
     def _make_records(

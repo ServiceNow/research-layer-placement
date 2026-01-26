@@ -66,7 +66,7 @@ class EvaluateCommand(BaseCommand):
         logger.info(f"Output directory: {output_dir}")
         logger.info("Starting evaluation...")
 
-        async with self.config.evaluator.create_evaluator() as evaluator:
+        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
             # Resolve placement specification
             resolved = resolve_placement(self.config.placement, evaluator)
 

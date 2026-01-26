@@ -23,6 +23,7 @@ Usage
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from place_layers.clients.types import GenerationResult
@@ -59,8 +60,10 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
 
     config: "GenerativeEvaluatorConfig"
 
-    def __init__(self, config: "GenerativeEvaluatorConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self, config: "GenerativeEvaluatorConfig", *, output_dir: "Path"
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult

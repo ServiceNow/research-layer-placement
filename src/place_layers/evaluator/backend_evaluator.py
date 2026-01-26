@@ -17,7 +17,6 @@ from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from typing import Self
 
-from hydra.core.hydra_config import HydraConfig
 from pydantic import Field
 
 from place_layers.backend import (
@@ -69,7 +68,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     config: "BackendEvaluatorConfig"
 
-    def __init__(self, config: "BackendEvaluatorConfig") -> None:
+    def __init__(self, config: "BackendEvaluatorConfig", *, output_dir: Path) -> None:
         super().__init__(config)
 
         # Create backend (but don't enter context yet)
@@ -83,9 +82,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         # None means model doesn't support placements (non-supernet)
         self._current_placement: list[str] | None = None
 
-        # Set up output directory for saving results (from Hydra)
-        hydra_cfg = HydraConfig.get()
-        self._base_output_dir = Path(hydra_cfg.runtime.output_dir)
+        # Set up output directory for saving results (injected from caller)
+        self._base_output_dir = output_dir
 
         # TraceWriter is created lazily when placement is known
         # (in _init_trace_writer or _set_placement)
@@ -234,8 +232,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         placement_code = "".join(parts)
 
-        # Create subdirectory: placements/<run-length-code>
-        placement_dir = self._base_output_dir / "placements" / placement_code
+        placement_dir = self._base_output_dir / placement_code
         placement_dir.mkdir(parents=True, exist_ok=True)
 
         return placement_dir
@@ -351,3 +348,11 @@ class BackendEvaluatorConfig(BaseEvaluatorConfig):
     backend: BackendConfig = Field(
         description="Generation backend configuration (vllm, transformers, or rest)"
     )
+
+    def create_evaluator(self, output_dir: Path) -> "BackendEvaluator":  # type: ignore[override]
+        """Create evaluator with required output directory.
+
+        Args:
+            output_dir: Base output directory for results. Required.
+        """
+        return self._impl_class(config=self, output_dir=output_dir)
