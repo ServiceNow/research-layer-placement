@@ -153,6 +153,176 @@ class TextChoiceMetadata(BaseModel):
 ChoiceMetadata = ChatChoiceMetadata | TextChoiceMetadata
 
 
+# =============================================================================
+# Helper functions (pure functions, no class dependency)
+# =============================================================================
+
+
+def _get_gold_idx(task: "Task", doc: dict, choices: list[str]) -> int:
+    """Extract gold answer index from task and document.
+
+    Handles the various formats that lm-eval tasks use to specify the correct answer:
+    - int: Direct index
+    - str: Choice text (looked up in choices list)
+    - list: Multiple correct answers (uses first one)
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+        choices: List of choice strings.
+
+    Returns:
+        Index of the gold answer in the choices list.
+    """
+    gold_target = task.doc_to_target(doc)
+    if isinstance(gold_target, int):
+        return gold_target
+    elif isinstance(gold_target, str):
+        return choices.index(gold_target)
+    else:
+        # For multiple correct answers, use first one
+        return gold_target[0] if gold_target else 0
+
+
+def _compute_prediction(
+    results: list[LogProbResult],
+    gold_idx: int,
+    lengths: list[int],
+) -> PredictionResult:
+    """Compute predictions from log-prob results.
+
+    Takes the log-probabilities from the backend and computes:
+    - Raw prediction (argmax of log-probs)
+    - Length-normalized prediction (argmax of log-probs / lengths)
+
+    Args:
+        results: Log-prob results from backend (one per choice).
+        gold_idx: Index of the correct answer.
+        lengths: Character lengths of each choice (for normalization).
+
+    Returns:
+        PredictionResult with log_probs, predictions, and correctness flags.
+    """
+    log_probs = [r.total_log_prob for r in results]
+    pred_idx = int(np.argmax(log_probs))
+    correct = pred_idx == gold_idx
+
+    normalized = np.array(log_probs) / np.array(lengths)
+    pred_idx_norm = int(np.argmax(normalized))
+    correct_norm = pred_idx_norm == gold_idx
+
+    return PredictionResult(
+        log_probs=log_probs,
+        pred_idx=pred_idx,
+        correct=correct,
+        pred_idx_norm=pred_idx_norm,
+        correct_norm=correct_norm,
+    )
+
+
+def _build_choice_chats(
+    task: "Task", doc: dict
+) -> tuple[list[ChatMessage], list[ChatMessage], ChatChoiceMetadata]:
+    """Build chat context and completion messages for each choice.
+
+    Uses build_chat_messages for context (few-shot + question), then creates
+    a completion message for each choice. The batch_score_chat method
+    uses diff-based scoring that is template-agnostic.
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+
+    Returns:
+        Tuple of (context_msgs, completion_msgs, metadata) where:
+        - context_msgs: The shared context messages (system, user, etc.)
+        - completion_msgs: List of assistant messages, one per choice
+        - metadata: ChatChoiceMetadata with gold_idx, lengths, etc.
+    """
+    # Get context messages using the shared builder
+    context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
+
+    # Get choices and gold answer
+    # doc_to_choice is on ConfigurableTask, but all YAML-defined tasks use it
+    choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
+    gold_idx = _get_gold_idx(task, doc, choices)
+
+    # Build completion messages (one per choice)
+    completion_msgs: list[ChatMessage] = []
+    lengths: list[int] = []
+
+    for choice in choices:
+        completion_msgs.append({"role": "assistant", "content": choice})
+        lengths.append(len(choice))  # Character length for normalization
+
+    metadata = ChatChoiceMetadata(
+        gold_idx=gold_idx,
+        lengths=lengths,
+        raw_choices=choices,
+        context_messages=context_msgs,
+        choice_messages=completion_msgs,
+    )
+    return context_msgs, completion_msgs, metadata
+
+
+def _build_choice_texts(
+    task: "Task", doc: dict
+) -> tuple[str, list[str], TextChoiceMetadata]:
+    """Build raw text context and choices for text-based scoring.
+
+    This method constructs prompts WITHOUT chat template formatting.
+    Used when use_chat_template=False.
+
+    Args:
+        task: The lm-eval task.
+        doc: The problem document.
+
+    Returns:
+        Tuple of (context, choices, metadata) where:
+        - context: Few-shot examples + question as raw text
+        - choices: List of choice strings (continuations with delimiters)
+        - metadata: TextChoiceMetadata with gold_idx, lengths, etc.
+    """
+    # Build context: few-shot examples + question as raw text
+    num_fewshot = task.config.num_fewshot or 0
+    context: str
+    if num_fewshot > 0:
+        # fewshot_context returns few-shot examples AND the current question
+        fewshot_ctx = task.fewshot_context(doc, num_fewshot)
+        context = str(fewshot_ctx) if fewshot_ctx else ""
+    else:
+        # Zero-shot: just the question
+        question_raw = task.doc_to_text(doc)
+        context = str(question_raw) if question_raw is not None else ""
+
+    # Get choices and gold answer
+    raw_choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
+    gold_idx = _get_gold_idx(task, doc, raw_choices)
+
+    # Match lm-eval's _encode_pair approach:
+    # 1. Move trailing whitespace from context to continuation
+    # 2. Prepend target_delimiter to choices
+    # This ensures proper tokenization at word boundaries
+    n_spaces = len(context) - len(context.rstrip())
+    trailing_ws = context[-n_spaces:] if n_spaces > 0 else ""
+    context = context.rstrip()
+
+    delimiter = task.config.target_delimiter
+    choices = [trailing_ws + delimiter + c for c in raw_choices]
+
+    # Build lengths for normalization (use raw choices for char-level normalization)
+    lengths = [len(choice) for choice in raw_choices]
+
+    metadata = TextChoiceMetadata(
+        gold_idx=gold_idx,
+        lengths=lengths,
+        raw_choices=raw_choices,
+        context=context,
+        choices=choices,
+    )
+    return context, choices, metadata
+
+
 class LikelihoodEvaluator(TaskBasedEvaluator):
     """Evaluator for multiple-choice tasks using log-likelihood scoring.
 
@@ -203,20 +373,18 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         """
         key = f"{task_name}:{idx}"
         if self.config.use_chat_template:
-            context_msgs, completion_msgs, metadata = self._build_choice_chats(
-                task, doc
-            )
+            context_msgs, completion_msgs, metadata = _build_choice_chats(task, doc)
             return ScoreChatRequest(
                 key=key,
-                context_messages=tuple(context_msgs),
-                completion_messages=tuple(completion_msgs),
+                context_messages=list(context_msgs),
+                completion_messages=list(completion_msgs),
             ), metadata
         else:
-            context, choices, metadata = self._build_choice_texts(task, doc)
+            context, choices, metadata = _build_choice_texts(task, doc)
             return ScoreTextRequest(
                 key=key,
                 context=context,
-                choices=tuple(choices),
+                choices=list(choices),
             ), metadata
 
     def _stream_to_backend_async(
@@ -274,7 +442,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         """
         assert self._trace_writer is not None
 
-        pred = self._compute_prediction(
+        pred = _compute_prediction(
             list(result.results), context.gold_idx, context.lengths
         )
 
@@ -345,172 +513,6 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         logger.info(f"\n{summary}")
 
         return summary.accuracy
-
-    # -------------------------------------------------------------------------
-    # Helper methods
-    # -------------------------------------------------------------------------
-
-    def _get_gold_idx(self, task: "Task", doc: dict, choices: list[str]) -> int:
-        """Extract gold answer index from task and document.
-
-        Handles the various formats that lm-eval tasks use to specify the correct answer:
-        - int: Direct index
-        - str: Choice text (looked up in choices list)
-        - list: Multiple correct answers (uses first one)
-
-        Args:
-            task: The lm-eval task.
-            doc: The problem document.
-            choices: List of choice strings.
-
-        Returns:
-            Index of the gold answer in the choices list.
-        """
-        gold_target = task.doc_to_target(doc)
-        if isinstance(gold_target, int):
-            return gold_target
-        elif isinstance(gold_target, str):
-            return choices.index(gold_target)
-        else:
-            # For multiple correct answers, use first one
-            return gold_target[0] if gold_target else 0
-
-    def _compute_prediction(
-        self,
-        results: list[LogProbResult],
-        gold_idx: int,
-        lengths: list[int],
-    ) -> PredictionResult:
-        """Compute predictions from log-prob results.
-
-        Takes the log-probabilities from the backend and computes:
-        - Raw prediction (argmax of log-probs)
-        - Length-normalized prediction (argmax of log-probs / lengths)
-
-        Args:
-            results: Log-prob results from backend (one per choice).
-            gold_idx: Index of the correct answer.
-            lengths: Character lengths of each choice (for normalization).
-
-        Returns:
-            PredictionResult with log_probs, predictions, and correctness flags.
-        """
-        log_probs = [r.total_log_prob for r in results]
-        pred_idx = int(np.argmax(log_probs))
-        correct = pred_idx == gold_idx
-
-        normalized = np.array(log_probs) / np.array(lengths)
-        pred_idx_norm = int(np.argmax(normalized))
-        correct_norm = pred_idx_norm == gold_idx
-
-        return PredictionResult(
-            log_probs=log_probs,
-            pred_idx=pred_idx,
-            correct=correct,
-            pred_idx_norm=pred_idx_norm,
-            correct_norm=correct_norm,
-        )
-
-    def _build_choice_chats(
-        self, task: "Task", doc: dict
-    ) -> tuple[list[ChatMessage], list[ChatMessage], ChatChoiceMetadata]:
-        """Build chat context and completion messages for each choice.
-
-        Uses build_chat_messages for context (few-shot + question), then creates
-        a completion message for each choice. The batch_score_chat method
-        uses diff-based scoring that is template-agnostic.
-
-        Args:
-            task: The lm-eval task.
-            doc: The problem document.
-
-        Returns:
-            Tuple of (context_msgs, completion_msgs, metadata) where:
-            - context_msgs: The shared context messages (system, user, etc.)
-            - completion_msgs: List of assistant messages, one per choice
-            - metadata: ChatChoiceMetadata with gold_idx, lengths, etc.
-        """
-        # Get context messages using the shared builder
-        context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
-
-        # Get choices and gold answer
-        # doc_to_choice is on ConfigurableTask, but all YAML-defined tasks use it
-        choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
-        gold_idx = self._get_gold_idx(task, doc, choices)
-
-        # Build completion messages (one per choice)
-        completion_msgs: list[ChatMessage] = []
-        lengths: list[int] = []
-
-        for choice in choices:
-            completion_msgs.append({"role": "assistant", "content": choice})
-            lengths.append(len(choice))  # Character length for normalization
-
-        metadata = ChatChoiceMetadata(
-            gold_idx=gold_idx,
-            lengths=lengths,
-            raw_choices=choices,
-            context_messages=context_msgs,
-            choice_messages=completion_msgs,
-        )
-        return context_msgs, completion_msgs, metadata
-
-    def _build_choice_texts(
-        self, task: "Task", doc: dict
-    ) -> tuple[str, list[str], TextChoiceMetadata]:
-        """Build raw text context and choices for text-based scoring.
-
-        This method constructs prompts WITHOUT chat template formatting.
-        Used when use_chat_template=False.
-
-        Args:
-            task: The lm-eval task.
-            doc: The problem document.
-
-        Returns:
-            Tuple of (context, choices, metadata) where:
-            - context: Few-shot examples + question as raw text
-            - choices: List of choice strings (continuations with delimiters)
-            - metadata: TextChoiceMetadata with gold_idx, lengths, etc.
-        """
-        # Build context: few-shot examples + question as raw text
-        num_fewshot = task.config.num_fewshot or 0
-        context: str
-        if num_fewshot > 0:
-            # fewshot_context returns few-shot examples AND the current question
-            fewshot_ctx = task.fewshot_context(doc, num_fewshot)
-            context = str(fewshot_ctx) if fewshot_ctx else ""
-        else:
-            # Zero-shot: just the question
-            question_raw = task.doc_to_text(doc)
-            context = str(question_raw) if question_raw is not None else ""
-
-        # Get choices and gold answer
-        raw_choices: list[str] = task.doc_to_choice(doc)  # type: ignore[attr-defined]
-        gold_idx = self._get_gold_idx(task, doc, raw_choices)
-
-        # Match lm-eval's _encode_pair approach:
-        # 1. Move trailing whitespace from context to continuation
-        # 2. Prepend target_delimiter to choices
-        # This ensures proper tokenization at word boundaries
-        n_spaces = len(context) - len(context.rstrip())
-        trailing_ws = context[-n_spaces:] if n_spaces > 0 else ""
-        context = context.rstrip()
-
-        delimiter = task.config.target_delimiter
-        choices = [trailing_ws + delimiter + c for c in raw_choices]
-
-        # Build lengths for normalization (use raw choices for char-level normalization)
-        lengths = [len(choice) for choice in raw_choices]
-
-        metadata = TextChoiceMetadata(
-            gold_idx=gold_idx,
-            lengths=lengths,
-            raw_choices=raw_choices,
-            context=context,
-            choices=choices,
-        )
-        return context, choices, metadata
 
 
 class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
