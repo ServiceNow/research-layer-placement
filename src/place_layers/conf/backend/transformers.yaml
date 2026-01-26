@@ -12,4 +12,5 @@ torch_dtype: ${model.torch_dtype}
 device_map: cuda
 trust_remote_code: ${model.trust_remote_code}
 revision: null  # HuggingFace revision (branch, tag, or commit hash)
+attn_implementation: null  # Use model's default attention implementation
 batch_size: 4

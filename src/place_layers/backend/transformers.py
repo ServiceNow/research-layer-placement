@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class TransformersBackend:
+class TransformersBackend(SyncBackend):
     """Sync generation backend using HuggingFace Transformers.
 
     Handles model lifecycle, generation, and log probability computation.
@@ -194,15 +194,15 @@ class TransformersBackend:
         # Build kwargs for model loading
         load_kwargs = {
             "torch_dtype": torch_dtype,
-            "device_map": self.config.device_map,
-            "trust_remote_code": self.config.trust_remote_code,
-            "revision": self.config.revision,
+            "device_map": self._config.device_map,
+            "trust_remote_code": self._config.trust_remote_code,
+            "revision": self._config.revision,
         }
 
         # Add attn_implementation if specified
-        if self.config.attn_implementation is not None:
-            load_kwargs["attn_implementation"] = self.config.attn_implementation
-            logger.info(f"Using attention implementation: {self.config.attn_implementation}")
+        if self._config.attn_implementation is not None:
+            load_kwargs["attn_implementation"] = self._config.attn_implementation
+            logger.info(f"Using attention implementation: {self._config.attn_implementation}")
 
         model = model_class.from_pretrained(
             self._config.model_path,
@@ -915,7 +915,7 @@ class TransformersBackend:
 class TransformersBackendConfig(BaseBackendConfig):
     """Configuration for Transformers generation backend."""
 
-    _backend_class: ClassVar[type[SyncBackend]] = TransformersBackend  # type: ignore[assignment]
+    _backend_class: ClassVar[type[SyncBackend]] = TransformersBackend
 
     backend_type: Literal["transformers"] = "transformers"
 
@@ -948,4 +948,7 @@ class TransformersBackendConfig(BaseBackendConfig):
     revision: str | None = Field(
         default=None,
         description="HuggingFace revision (branch, tag, or commit hash)",
+    )
+    attn_implementation: str | None = Field(
+        description="Attention implementation (e.g., 'eager', 'flash_attention_2'). None uses model default.",
     )
