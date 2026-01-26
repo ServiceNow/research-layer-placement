@@ -73,66 +73,84 @@ Usage
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Literal
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from place_layers.backend import (
-    BackendError,
     ChatMessage,
     LogProbResult,
     ScoreChatRequest,
+    ScoreChatResult,
     ScoreTextRequest,
+    ScoreTextResult,
 )
+from place_layers.backend.base import AsyncBackend, SyncBackend
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.lm_eval_utils import build_chat_messages
-from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
     TaskBasedEvaluatorConfig,
 )
-from place_layers.evaluator.traces.types import LikelihoodRecord, SkippedProblem
+from place_layers.evaluator.traces.types import (
+    ChatLikelihoodRecord,
+    TextLikelihoodRecord,
+)
 from place_layers.evaluator.traces.writer import summarize_likelihood
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
 
-    from place_layers.evaluator.lm_eval_utils import Docs
-
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class PredictionResult:
+class PredictionResult(BaseModel):
     """Result of computing predictions from log-probabilities."""
 
-    log_probs: list[float]
-    """Log-probability for each choice."""
-    pred_idx: int
-    """Predicted choice index (argmax of log_probs)."""
-    correct: bool
-    """Whether prediction matches gold answer."""
-    pred_idx_norm: int
-    """Predicted choice index with length normalization."""
-    correct_norm: bool
-    """Whether length-normalized prediction matches gold answer."""
+    model_config = {"frozen": True}
+
+    log_probs: list[float] = Field(description="Log-probability for each choice")
+    pred_idx: int = Field(description="Predicted choice index (argmax of log_probs)")
+    correct: bool = Field(description="Whether prediction matches gold answer")
+    pred_idx_norm: int = Field(description="Predicted choice index with length normalization")
+    correct_norm: bool = Field(description="Whether length-normalized prediction matches gold answer")
 
 
-@dataclass(frozen=True)
-class ChoiceMetadata:
-    """Metadata about choices for a multiple-choice problem."""
+class ChatChoiceMetadata(BaseModel):
+    """Metadata for chat-based multiple-choice scoring.
 
-    gold_idx: int
-    """Index of the correct answer."""
-    lengths: list[int]
-    """Character length of each choice (for normalization)."""
-    raw_choices: tuple[str, ...]
-    """Original choice text strings."""
+    Used when use_chat_template=True.
+    """
+
+    model_config = {"frozen": True}
+
+    gold_idx: int = Field(description="Index of the correct answer")
+    lengths: list[int] = Field(description="Character length of each choice (for normalization)")
+    raw_choices: list[str] = Field(description="Original choice text strings")
+    context_messages: list[ChatMessage] = Field(description="Context messages for this problem")
+    choice_messages: list[ChatMessage] = Field(description="Choice messages (one per choice)")
+
+
+class TextChoiceMetadata(BaseModel):
+    """Metadata for text-based multiple-choice scoring.
+
+    Used when use_chat_template=False.
+    """
+
+    model_config = {"frozen": True}
+
+    gold_idx: int = Field(description="Index of the correct answer")
+    lengths: list[int] = Field(description="Character length of each choice (for normalization)")
+    raw_choices: list[str] = Field(description="Original choice text strings")
+    context: str = Field(description="Context string (few-shot + question)")
+    choices: list[str] = Field(description="Choice strings with delimiters")
+
+
+ChoiceMetadata = ChatChoiceMetadata | TextChoiceMetadata
 
 
 class LikelihoodEvaluator(TaskBasedEvaluator):
@@ -160,6 +178,143 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
     def __init__(self, config: "LikelihoodEvaluatorConfig") -> None:
         super().__init__(config)
 
+    # -------------------------------------------------------------------------
+    # Abstract hook implementations from TaskBasedEvaluator
+    # -------------------------------------------------------------------------
+
+    def _expected_output_type(self) -> Literal["generate_until", "multiple_choice"]:
+        """Likelihood evaluators expect 'multiple_choice' tasks."""
+        return "multiple_choice"
+
+    def _build_request(
+        self, task: "Task", doc: dict, idx: int, task_name: str
+    ) -> tuple[ScoreChatRequest, ChatChoiceMetadata] | tuple[ScoreTextRequest, TextChoiceMetadata]:
+        """Build scoring request with metadata for result processing.
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+            idx: Problem index within the task.
+            task_name: Name of the task.
+
+        Returns:
+            For chat: (ScoreChatRequest, ChatChoiceMetadata)
+            For text: (ScoreTextRequest, TextChoiceMetadata)
+        """
+        key = f"{task_name}:{idx}"
+        if self.config.use_chat_template:
+            context_msgs, completion_msgs, metadata = self._build_choice_chats(
+                task, doc
+            )
+            return ScoreChatRequest(
+                key=key,
+                context_messages=tuple(context_msgs),
+                completion_messages=tuple(completion_msgs),
+            ), metadata
+        else:
+            context, choices, metadata = self._build_choice_texts(task, doc)
+            return ScoreTextRequest(
+                key=key,
+                context=context,
+                choices=tuple(choices),
+            ), metadata
+
+    def _stream_to_backend_async(
+        self, requests: AsyncIterable[Any]
+    ) -> AsyncIterator[Any]:
+        """Stream scoring requests to async backend.
+
+        Args:
+            requests: Async iterable of ScoreChatRequest or ScoreTextRequest.
+
+        Returns:
+            Async iterator of ScoreChatResult/ScoreTextResult or BackendError.
+        """
+        assert isinstance(self._backend, AsyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.score_chat(requests)
+        else:
+            return self._backend.score_text(requests)
+
+    def _stream_to_backend_sync(
+        self, requests: Iterable[Any]
+    ) -> Iterator[Any]:
+        """Stream scoring requests to sync backend.
+
+        Args:
+            requests: Iterable of ScoreChatRequest or ScoreTextRequest.
+
+        Returns:
+            Iterator of ScoreChatResult/ScoreTextResult or BackendError.
+        """
+        assert isinstance(self._backend, SyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.score_chat(requests)
+        else:
+            return self._backend.score_text(requests)
+
+    def _process_result(
+        self,
+        result: ScoreChatResult | ScoreTextResult,
+        context: ChoiceMetadata,
+        task: "Task",
+        task_name: str,
+        doc: dict,
+        idx: int,
+    ) -> None:
+        """Process scoring result by computing predictions and writing record.
+
+        Args:
+            result: ScoreChatResult or ScoreTextResult from backend.
+            context: ChatChoiceMetadata or TextChoiceMetadata.
+            task: The lm-eval task (unused, context has all needed data).
+            task_name: Name of the task.
+            doc: The problem document (unused, context has all needed data).
+            idx: Problem index within the task (unused, result.key has problem_id).
+        """
+        assert self._trace_writer is not None
+
+        pred = self._compute_prediction(
+            list(result.results), context.gold_idx, context.lengths
+        )
+
+        # Shared fields for both record types
+        shared_fields = {
+            "problem_id": result.key,
+            "task_name": task_name,
+            "raw_choices": context.raw_choices,
+            "choice_token_ids": [list(r.token_ids) for r in result.results],
+            "choice_logprobs": [list(r.logprobs) for r in result.results],
+            "choice_answer_ranges": [r.answer_range for r in result.results],
+            "choice_log_probs": pred.log_probs,
+            "choice_lengths": context.lengths,
+            "gold_idx": context.gold_idx,
+            "pred_idx": pred.pred_idx,
+            "pred_idx_norm": pred.pred_idx_norm,
+            "correct": pred.correct,
+            "correct_norm": pred.correct_norm,
+        }
+
+        # Create appropriate record type based on metadata
+        if isinstance(context, ChatChoiceMetadata):
+            record = ChatLikelihoodRecord(
+                **shared_fields,
+                context_messages=context.context_messages,
+                choices=context.choice_messages,
+            )
+        else:
+            record = TextLikelihoodRecord(
+                **shared_fields,
+                context=context.context,
+                choices=context.choices,
+            )
+
+        self._trace_writer.append([record])
+
+    # -------------------------------------------------------------------------
+    # Main evaluation interface
+    # -------------------------------------------------------------------------
+
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate a placement configuration using likelihood-based accuracy.
 
@@ -177,8 +332,13 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             # Use default placement (read from backend in __aenter__)
             self._init_trace_writer()
 
-        # Run evaluation (streams records to disk)
-        await self._run_evaluation()
+        # Dispatch to base class streaming methods
+        if isinstance(self._backend, AsyncBackend):
+            await self._run_streaming_async()
+        elif isinstance(self._backend, SyncBackend):
+            await self._run_streaming_sync()
+        else:
+            raise TypeError(f"Unknown backend type: {type(self._backend)}")
 
         # Compute summary from disk (single source of truth)
         summary = summarize_likelihood(self._output_dir)
@@ -186,225 +346,9 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
         return summary.accuracy
 
-    async def _run_evaluation(self) -> None:
-        """Run likelihood evaluation across all tasks, streaming records to disk.
-
-        Tasks are evaluated either in parallel (default) or sequentially based on
-        config.parallel_tasks. The TraceWriter uses an async lock to ensure
-        thread-safe file writes in parallel mode.
-        """
-        # Collect tasks to evaluate
-        tasks_to_run = []
-        for task_spec in self.config.tasks:
-            # Use _prepare_task for loading and resumption
-            prepared = self._prepare_task(task_spec, "multiple_choice")
-
-            if prepared is None:
-                # Task already complete
-                continue
-
-            task, task_name, docs, remaining_indices = prepared
-
-            logger.info(
-                f"Task '{task_name}': evaluating {len(remaining_indices)} problems"
-            )
-
-            # Queue task for evaluation
-            tasks_to_run.append(
-                (task, task_name, docs, remaining_indices)
-            )
-
-        # Run tasks in parallel or sequential mode
-        if tasks_to_run:
-            if self.config.parallel_tasks:
-                # Parallel: all tasks run concurrently
-                await asyncio.gather(*[
-                    self._evaluate_task(task, task_name, docs, remaining_indices)
-                    for task, task_name, docs, remaining_indices in tasks_to_run
-                ])
-            else:
-                # Sequential: tasks run one at a time
-                for task, task_name, docs, remaining_indices in tasks_to_run:
-                    await self._evaluate_task(task, task_name, docs, remaining_indices)
-
-    async def _evaluate_task(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: "Docs",
-        remaining_indices: list[int],
-    ) -> None:
-        """Evaluate a single task using log-prob scoring.
-
-        Dispatches to chat-based or text-based scoring based on config.use_chat_template.
-        Streams LikelihoodRecord entries to disk.
-        """
-        if self.config.use_chat_template:
-            await self._evaluate_task_chat(task, task_name, docs, remaining_indices)
-        else:
-            await self._evaluate_task_text(task, task_name, docs, remaining_indices)
-
-    async def _evaluate_task_chat(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: "Docs",
-        remaining_indices: list[int],
-    ) -> None:
-        """Evaluate using chat-based log-prob scoring (with chat template)."""
-        n_problems = len(remaining_indices)
-
-        # Build metadata map for joining results with requests
-        problems: dict[str, tuple[int, ChoiceMetadata, tuple[ChatMessage, ...], tuple[ChatMessage, ...]]] = {}
-
-        def make_requests():
-            for problem_idx in remaining_indices:
-                doc = docs[problem_idx]
-                context_msgs, completion_msgs, metadata = self._build_choice_chats(task, doc)
-                key = f"{task_name}:{problem_idx}"
-                problems[key] = (
-                    problem_idx,
-                    metadata,
-                    tuple(context_msgs),
-                    tuple(completion_msgs),
-                )
-                yield ScoreChatRequest(
-                    key=key,
-                    context_messages=tuple(context_msgs),
-                    completion_messages=tuple(completion_msgs),
-                )
-
-        with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
-
-            async for result in self.score_chat(make_requests()):
-                # Handle backend errors (e.g., prompt too long)
-                if isinstance(result, BackendError):
-                    logger.warning(
-                        f"Skipping {result.key}: {result.error_type} - {result.message}"
-                    )
-                    self._trace_writer.append([
-                        SkippedProblem(
-                            problem_id=result.key,
-                            task_name=task_name,
-                            reason=f"{result.error_type}: {result.message}",
-                        )
-                    ])
-                    progress.advance(progress_task, 1)
-                    continue
-
-                _, metadata, context_msgs, choice_msgs = problems[result.key]
-
-                pred = self._compute_prediction(
-                    list(result.results), metadata.gold_idx, metadata.lengths
-                )
-
-                record = LikelihoodRecord(
-                    problem_id=result.key,
-                    task_name=task_name,
-                    context_messages=context_msgs,
-                    raw_choices=metadata.raw_choices,
-                    choices=choice_msgs,
-                    choice_token_ids=tuple(r.token_ids for r in result.results),
-                    choice_logprobs=tuple(r.logprobs for r in result.results),
-                    choice_answer_ranges=tuple(r.answer_range for r in result.results),
-                    choice_log_probs=tuple(pred.log_probs),
-                    choice_lengths=tuple(metadata.lengths),
-                    gold_idx=metadata.gold_idx,
-                    pred_idx=pred.pred_idx,
-                    pred_idx_norm=pred.pred_idx_norm,
-                    correct=pred.correct,
-                    correct_norm=pred.correct_norm,
-                )
-
-                self._trace_writer.append([record])  # type: ignore[arg-type]
-                progress.advance(progress_task, 1)
-
-    async def _evaluate_task_text(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: "Docs",
-        remaining_indices: list[int],
-    ) -> None:
-        """Evaluate using text-based log-prob scoring (no chat template).
-
-        Uses the same diff-based scoring approach as chat-based evaluation,
-        but without chat template formatting. The backend handles diff-based
-        scoring internally, so we just need to build the text groups.
-        """
-        n_problems = len(remaining_indices)
-
-        # Build metadata map for joining results with requests
-        problems: dict[str, tuple[int, ChoiceMetadata, str]] = {}
-
-        def make_requests():
-            for problem_idx in remaining_indices:
-                doc = docs[problem_idx]
-                context, choices, metadata = self._build_choice_texts(task, doc)
-                key = f"{task_name}:{problem_idx}"
-                problems[key] = (problem_idx, metadata, context)
-                yield ScoreTextRequest(
-                    key=key,
-                    context=context,
-                    choices=tuple(choices),
-                )
-
-        with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=n_problems)
-
-            async for result in self.score_text(make_requests()):
-                # Handle backend errors (e.g., prompt too long)
-                if isinstance(result, BackendError):
-                    logger.warning(
-                        f"Skipping {result.key}: {result.error_type} - {result.message}"
-                    )
-                    self._trace_writer.append([
-                        SkippedProblem(
-                            problem_id=result.key,
-                            task_name=task_name,
-                            reason=f"{result.error_type}: {result.message}",
-                        )
-                    ])
-                    progress.advance(progress_task, 1)
-                    continue
-
-                _, metadata, context_str = problems[result.key]
-
-                pred = self._compute_prediction(
-                    list(result.results), metadata.gold_idx, metadata.lengths
-                )
-
-                # For text-based, store context as a single user message
-                context_msgs: tuple[ChatMessage, ...] = (
-                    {"role": "user", "content": context_str},
-                )
-                # Choices as assistant messages
-                choice_msgs: tuple[ChatMessage, ...] = tuple(
-                    {"role": "assistant", "content": choice}
-                    for choice in metadata.raw_choices
-                )
-
-                record = LikelihoodRecord(
-                    problem_id=result.key,
-                    task_name=task_name,
-                    context_messages=context_msgs,
-                    raw_choices=metadata.raw_choices,
-                    choices=choice_msgs,
-                    choice_token_ids=tuple(r.token_ids for r in result.results),
-                    choice_logprobs=tuple(r.logprobs for r in result.results),
-                    choice_answer_ranges=tuple(r.answer_range for r in result.results),
-                    choice_log_probs=tuple(pred.log_probs),
-                    choice_lengths=tuple(metadata.lengths),
-                    gold_idx=metadata.gold_idx,
-                    pred_idx=pred.pred_idx,
-                    pred_idx_norm=pred.pred_idx_norm,
-                    correct=pred.correct,
-                    correct_norm=pred.correct_norm,
-                )
-
-                self._trace_writer.append([record])  # type: ignore[arg-type]
-                progress.advance(progress_task, 1)
+    # -------------------------------------------------------------------------
+    # Helper methods
+    # -------------------------------------------------------------------------
 
     def _get_gold_idx(self, task: "Task", doc: dict, choices: list[str]) -> int:
         """Extract gold answer index from task and document.
@@ -469,7 +413,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
 
     def _build_choice_chats(
         self, task: "Task", doc: dict
-    ) -> tuple[list[ChatMessage], list[ChatMessage], ChoiceMetadata]:
+    ) -> tuple[list[ChatMessage], list[ChatMessage], ChatChoiceMetadata]:
         """Build chat context and completion messages for each choice.
 
         Uses build_chat_messages for context (few-shot + question), then creates
@@ -484,7 +428,7 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             Tuple of (context_msgs, completion_msgs, metadata) where:
             - context_msgs: The shared context messages (system, user, etc.)
             - completion_msgs: List of assistant messages, one per choice
-            - metadata: ChoiceMetadata with gold_idx, lengths, and raw_choices
+            - metadata: ChatChoiceMetadata with gold_idx, lengths, etc.
         """
         # Get context messages using the shared builder
         context_msgs = build_chat_messages(task, doc, task.config.num_fewshot or 0)
@@ -502,16 +446,18 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
             completion_msgs.append({"role": "assistant", "content": choice})
             lengths.append(len(choice))  # Character length for normalization
 
-        metadata = ChoiceMetadata(
+        metadata = ChatChoiceMetadata(
             gold_idx=gold_idx,
             lengths=lengths,
-            raw_choices=tuple(choices),
+            raw_choices=choices,
+            context_messages=context_msgs,
+            choice_messages=completion_msgs,
         )
         return context_msgs, completion_msgs, metadata
 
     def _build_choice_texts(
         self, task: "Task", doc: dict
-    ) -> tuple[str, list[str], ChoiceMetadata]:
+    ) -> tuple[str, list[str], TextChoiceMetadata]:
         """Build raw text context and choices for text-based scoring.
 
         This method constructs prompts WITHOUT chat template formatting.
@@ -524,8 +470,8 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         Returns:
             Tuple of (context, choices, metadata) where:
             - context: Few-shot examples + question as raw text
-            - choices: List of choice strings (continuations)
-            - metadata: ChoiceMetadata with gold_idx, lengths, and raw_choices
+            - choices: List of choice strings (continuations with delimiters)
+            - metadata: TextChoiceMetadata with gold_idx, lengths, etc.
         """
         # Build context: few-shot examples + question as raw text
         num_fewshot = task.config.num_fewshot or 0
@@ -557,10 +503,12 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
         # Build lengths for normalization (use raw choices for char-level normalization)
         lengths = [len(choice) for choice in raw_choices]
 
-        metadata = ChoiceMetadata(
+        metadata = TextChoiceMetadata(
             gold_idx=gold_idx,
             lengths=lengths,
-            raw_choices=tuple(raw_choices),  # Original choices without space prefix
+            raw_choices=raw_choices,
+            context=context,
+            choices=choices,
         )
         return context, choices, metadata
 

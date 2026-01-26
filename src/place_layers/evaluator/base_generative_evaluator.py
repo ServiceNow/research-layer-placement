@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from pydantic import Field
 
@@ -26,12 +26,11 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.types import BackendError, GenerateChatRequest, GenerateTextRequest
+from place_layers.backend.types import GenerateChatRequest, GenerateTextRequest
 from place_layers.clients.types import GenerationResult
 from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.lm_eval_utils import build_chat_messages, build_text_prompt
-from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
     TaskBasedEvaluatorConfig,
@@ -50,10 +49,11 @@ logger = logging.getLogger(__name__)
 class BaseGenerativeEvaluator(TaskBasedEvaluator):
     """Base class for evaluators that generate completions.
 
-    Provides the generation loop infrastructure:
-    - _run_tasks_sync(): Batched sync generation with memory logging
-    - _run_tasks_async(): Worker pool async generation
-    - evaluate(): Handles placement, dispatches to sync/async, computes summary
+    Provides the generation loop infrastructure via TaskBasedEvaluator's
+    streaming methods, with generation-specific hooks:
+    - _build_request(): Builds GenerateChatRequest or GenerateTextRequest
+    - _stream_to_backend_*(): Routes to backend.generate_chat/generate_text
+    - _process_result(): Creates records via _make_records() and writes to disk
 
     Subclasses must implement:
     - _make_records(): Create records from generation results
@@ -88,6 +88,120 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         pass
 
+    # -------------------------------------------------------------------------
+    # Abstract hook implementations from TaskBasedEvaluator
+    # -------------------------------------------------------------------------
+
+    def _expected_output_type(self) -> Literal["generate_until", "multiple_choice"]:
+        """Generative evaluators expect 'generate_until' tasks."""
+        return "generate_until"
+
+    def _build_request(
+        self, task: "Task", doc: dict, idx: int, task_name: str
+    ) -> tuple[GenerateChatRequest | GenerateTextRequest, None]:
+        """Build generation request. Context is None (not needed for generation).
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+            idx: Problem index within the task.
+            task_name: Name of the task.
+
+        Returns:
+            (request, None) - request is GenerateChatRequest or GenerateTextRequest.
+        """
+        key = f"{task_name}:{idx}"
+        if self.config.use_chat_template:
+            return GenerateChatRequest(
+                key=key,
+                messages=list(
+                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
+                ),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+            ), None
+        else:
+            return GenerateTextRequest(
+                key=key,
+                prompt=build_text_prompt(task, doc, task.config.num_fewshot or 0),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+            ), None
+
+    def _stream_to_backend_async(
+        self, requests: AsyncIterable[Any]
+    ) -> AsyncIterator[Any]:
+        """Stream generation requests to async backend.
+
+        Args:
+            requests: Async iterable of GenerateChatRequest or GenerateTextRequest.
+
+        Returns:
+            Async iterator of GenerationResult or BackendError.
+        """
+        assert isinstance(self._backend, AsyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.generate_chat(requests)
+        else:
+            return self._backend.generate_text(requests)
+
+    def _stream_to_backend_sync(
+        self, requests: Iterable[Any]
+    ) -> Iterator[Any]:
+        """Stream generation requests to sync backend.
+
+        Args:
+            requests: Iterable of GenerateChatRequest or GenerateTextRequest.
+
+        Returns:
+            Iterator of GenerationResult or BackendError.
+        """
+        assert isinstance(self._backend, SyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.generate_chat(requests)
+        else:
+            return self._backend.generate_text(requests)
+
+    def _process_result(
+        self,
+        result: GenerationResult,
+        context: None,
+        task: "Task",
+        task_name: str,
+        doc: dict,
+        idx: int,
+    ) -> None:
+        """Process generation result by creating records and writing to disk.
+
+        Args:
+            result: GenerationResult from backend.
+            context: Unused (None for generation).
+            task: The lm-eval task.
+            task_name: Name of the task.
+            doc: The problem document.
+            idx: Problem index within the task.
+        """
+        assert self._trace_writer is not None
+        records = self._make_records(task, doc, idx, result)
+
+        if records:
+            self._trace_writer.append(records)
+        else:
+            skipped = SkippedProblem(
+                problem_id=f"{task_name}:{idx}",
+                task_name=task_name,
+                reason="no samples returned",
+            )
+            self._trace_writer.append([skipped])
+
+    # -------------------------------------------------------------------------
+    # Main evaluation interface
+    # -------------------------------------------------------------------------
+
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate by generating completions and checking accuracy.
 
@@ -103,13 +217,17 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
             # Use default placement (read from backend in __aenter__)
             self._init_trace_writer()
 
-        # Dispatch to async or sync generation
+        log_memory("GENERATION START")
+
+        # Dispatch to base class streaming methods
         if isinstance(self._backend, AsyncBackend):
-            await self._run_tasks_async()
+            await self._run_streaming_async()
         elif isinstance(self._backend, SyncBackend):
-            self._run_tasks_sync()
+            await self._run_streaming_sync()
         else:
             raise TypeError(f"Unknown backend type: {type(self._backend)}")
+
+        log_memory("GENERATION END")
 
         # Compute summary from disk (single source of truth)
         summary = self._summarize()
@@ -120,208 +238,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     def _summarize(self) -> "GenerationSummary":
         """Compute summary from disk. Override for different summary types."""
         return summarize_generations(self._output_dir)
-
-    def _run_tasks_sync(self) -> None:
-        """Run all tasks as a unified stream (sync backend).
-
-        Streams requests across all tasks to the backend, processing results
-        in order. Uses lazy request generation to overlap doc loading.
-        """
-        assert isinstance(self._backend, SyncBackend)
-
-        # Prepare all tasks and build lookup tables
-        key_to_context: dict[str, tuple["Task", str, int]] = {}
-        total_problems = 0
-
-        for task_spec in self.config.tasks:
-            prepared = self._prepare_task(task_spec, "generate_until")
-            if prepared is None:
-                continue
-
-            task, task_name, docs, remaining = prepared
-            for idx in remaining:
-                key = f"{task_name}:{idx}"
-                key_to_context[key] = (task, task_name, idx)
-            total_problems += len(remaining)
-
-        if total_problems == 0:
-            logger.info("All tasks already complete")
-            return
-
-        logger.info(f"Streaming {total_problems} problems across {len(self.config.tasks)} tasks")
-        log_memory("GENERATION START")
-
-        # Lazy request generator
-        def request_generator() -> Iterator[GenerateChatRequest] | Iterator[GenerateTextRequest]:
-            for task_spec in self.config.tasks:
-                prepared = self._prepare_task(task_spec, "generate_until")
-                if prepared is None:
-                    continue
-
-                task, task_name, docs, remaining = prepared
-
-                for idx in remaining:
-                    if self.config.use_chat_template:
-                        yield GenerateChatRequest(
-                            key=f"{task_name}:{idx}",
-                            messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                        )
-                    else:
-                        yield GenerateTextRequest(
-                            key=f"{task_name}:{idx}",
-                            prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                        )
-
-        # Stream to backend
-        if self.config.use_chat_template:
-            results_iter = self._backend.generate_chat(request_generator())  # type: ignore[arg-type]
-        else:
-            results_iter = self._backend.generate_text(request_generator())  # type: ignore[arg-type]
-
-        processed = 0
-
-        with create_progress() as progress:
-            progress_task = progress.add_task("[cyan]Generating", total=total_problems)
-
-            for result in results_iter:
-                # Look up context from key
-                task, task_name, idx = key_to_context[result.request_id]
-                doc = self._docs_cache[task_name][idx]
-
-                # Create records
-                records = self._make_records(task, doc, idx, result)
-
-                if records:
-                    self._trace_writer.append(records)
-                else:
-                    skipped = SkippedProblem(
-                        problem_id=f"{task_name}:{idx}",
-                        task_name=task_name,
-                        reason="no samples returned",
-                    )
-                    self._trace_writer.append([skipped])
-
-                processed += 1
-                progress.advance(progress_task)
-
-        log_memory("GENERATION END")
-        logger.info(f"Generation complete: {processed} problems processed")
-
-    async def _run_tasks_async(self) -> None:
-        """Run all tasks as a unified stream for optimal server utilization.
-
-        Streams requests across all tasks to the backend, processing results
-        as they arrive. Uses lazy request generation to overlap doc loading
-        with request processing.
-        """
-        assert isinstance(self._backend, AsyncBackend)
-
-        # Prepare all tasks and build lookup tables
-        # key -> (task, task_name, idx) for result processing
-        key_to_context: dict[str, tuple["Task", str, int]] = {}
-        total_problems = 0
-
-        for task_spec in self.config.tasks:
-            prepared = self._prepare_task(task_spec, "generate_until")
-            if prepared is None:
-                continue
-
-            task, task_name, docs, remaining = prepared
-            for idx in remaining:
-                key = f"{task_name}:{idx}"
-                key_to_context[key] = (task, task_name, idx)
-            total_problems += len(remaining)
-
-        if total_problems == 0:
-            logger.info("All tasks already complete")
-            return
-
-        logger.info(f"Streaming {total_problems} problems across {len(self.config.tasks)} tasks")
-
-        # Lazy request generator - yields requests across all tasks
-        def request_generator() -> Iterator[GenerateChatRequest] | Iterator[GenerateTextRequest]:
-            for task_spec in self.config.tasks:
-                prepared = self._prepare_task(task_spec, "generate_until")
-                if prepared is None:
-                    continue
-
-                task, task_name, docs, remaining = prepared
-
-                for idx in remaining:
-                    if self.config.use_chat_template:
-                        yield GenerateChatRequest(
-                            key=f"{task_name}:{idx}",
-                            messages=list(build_chat_messages(task, docs[idx], task.config.num_fewshot or 0)),
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                        )
-                    else:
-                        yield GenerateTextRequest(
-                            key=f"{task_name}:{idx}",
-                            prompt=build_text_prompt(task, docs[idx], task.config.num_fewshot or 0),
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                        )
-
-        # Stream to backend
-        if self.config.use_chat_template:
-            results_stream = self._backend.generate_chat(request_generator())  # type: ignore[arg-type]
-        else:
-            results_stream = self._backend.generate_text(request_generator())  # type: ignore[arg-type]
-
-        processed_count = 0
-
-        with create_progress() as progress:
-            progress_task = progress.add_task("[cyan]Generating", total=total_problems)
-
-            # Process results as they arrive (may be out of order)
-            async for result in results_stream:
-                # Handle backend errors
-                if isinstance(result, BackendError):
-                    task_name = result.key.rsplit(":", 1)[0]
-                    skipped = SkippedProblem(
-                        problem_id=result.key,
-                        task_name=task_name,
-                        reason=f"{result.error_type}: {result.message}",
-                    )
-                    self._trace_writer.append([skipped])
-                    processed_count += 1
-                    progress.advance(progress_task)
-                    continue
-
-                # Look up context from key
-                task, task_name, idx = key_to_context[result.request_id]
-                doc = self._docs_cache[task_name][idx]
-
-                # Create records
-                records = self._make_records(task, doc, idx, result)
-
-                if records:
-                    self._trace_writer.append(records)
-                else:
-                    skipped = SkippedProblem(
-                        problem_id=f"{task_name}:{idx}",
-                        task_name=task_name,
-                        reason="no samples returned",
-                    )
-                    self._trace_writer.append([skipped])
-
-                processed_count += 1
-                progress.advance(progress_task)
-
-        logger.info(f"Generation complete: {processed_count} problems processed")
 
 
 class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):

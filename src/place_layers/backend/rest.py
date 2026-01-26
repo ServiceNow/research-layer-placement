@@ -31,12 +31,14 @@ from place_layers.backend.types import (
     GenerateTextRequest,
     LogProbResult,
     ModelStructure,
+    NoStructure,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    SupernetStructure,
 )
 from place_layers.clients.types import GenerationResult
 from place_layers.server.schemas import (
@@ -328,7 +330,7 @@ class RESTBackend(AsyncBackend):
         # Per-server semaphores for concurrency control
         self._server_semaphores: dict[str, asyncio.Semaphore] | None = None
         self._current_placement: list[str] | None = None
-        self._model_structure: ModelStructure | None = None
+        self._model_structure: SupernetStructure | None = None
 
         if not config.servers:
             raise ValueError("At least one server URL must be provided")
@@ -659,9 +661,9 @@ class RESTBackend(AsyncBackend):
                     )
 
             # Store model structure
-            self._model_structure = ModelStructure(
+            self._model_structure = SupernetStructure(
                 num_layers=ref_layers,
-                mixer_names=tuple(ref_mixers),
+                mixer_names=ref_mixers,
             )
 
         logger.info(
@@ -675,15 +677,11 @@ class RESTBackend(AsyncBackend):
 
         Available after entering async context (__aenter__).
 
-        Raises:
-            NotImplementedError: If server doesn't expose model structure.
+        Returns SupernetStructure if the server has model structure info,
+        NoStructure otherwise.
         """
         if self._model_structure is None:
-            raise NotImplementedError(
-                "Model structure not available from REST server. "
-                "The server may be running a non-supernet model, or "
-                "the server version doesn't support model structure discovery."
-            )
+            return NoStructure()
         return self._model_structure
 
     @property

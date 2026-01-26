@@ -36,12 +36,14 @@ from place_layers.backend.types import (
     GenerateChatRequest,
     GenerateTextRequest,
     ModelStructure,
+    NoStructure,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    SupernetStructure,
 )
 from place_layers.clients.types import GenerationResult
 
@@ -272,10 +274,14 @@ class MockBackend(AsyncBackend):
 
     @property
     def model_structure(self) -> ModelStructure:
-        """Return configured model structure."""
+        """Return configured model structure.
+
+        Returns SupernetStructure if num_layers and mixer_names are configured,
+        NoStructure otherwise.
+        """
         if self._config.num_layers is None or self._config.mixer_names is None:
-            raise NotImplementedError("Mock backend has no model structure configured")
-        return ModelStructure(
+            return NoStructure()
+        return SupernetStructure(
             num_layers=self._config.num_layers,
             mixer_names=self._config.mixer_names,
         )
@@ -308,7 +314,7 @@ class MockBackendConfig(BaseBackendConfig):
     num_layers: int | None = Field(
         description="Number of layers to simulate. None disables model_structure.",
     )
-    mixer_names: tuple[str, ...] | None = Field(
+    mixer_names: list[str] | None = Field(
         description="Available mixer names. None disables model_structure.",
     )
     max_concurrent_requests: int = Field(

@@ -77,13 +77,9 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
 
         for sample_idx, sample in enumerate(result.samples):
             if sample.truncated and not self.config.evaluate_truncated_samples:
+                # Truncated and we don't evaluate truncated -> mark incorrect
                 logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
-                if self.config.evaluate_truncated_samples:
-                    # Evaluate truncated samples - answer may be complete
-                    correct = check_correctness(task, doc, sample.text)
-                else:
-                    # Truncated = failed to produce complete answer
-                    correct = False
+                correct = False
             else:
                 correct = check_correctness(task, doc, sample.text)
 

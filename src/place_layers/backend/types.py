@@ -8,7 +8,6 @@ Server schemas can subclass these to add placement fields.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -62,23 +61,36 @@ class GenerateTextRequest(GenerateRequestBase):
     prompt: str = Field(description="Text prompt")
 
 
-@dataclass(frozen=True)
-class ModelStructure:
-    """Model structure for placement optimization.
+class SupernetStructure(BaseModel):
+    """Structure for supernet models with switchable mixers.
 
-    Generic representation of model structure that backends expose.
-    Decoupled from Apriel2-specific details.
+    Returned by backends when the model supports dynamic mixer placement.
     """
 
-    num_layers: int
-    """Number of layers with switchable mixers."""
+    model_config = {"frozen": True}
 
-    mixer_names: tuple[str, ...]
-    """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
+    structure_type: Literal["supernet"] = "supernet"
+    num_layers: int = Field(description="Number of layers with switchable mixers")
+    mixer_names: list[str] = Field(
+        description="Available mixer types (e.g., ['attention', 'gdn', 'kda'])"
+    )
 
 
-@dataclass(frozen=True)
-class SequenceScoringRequest:
+class NoStructure(BaseModel):
+    """Indicates a model without switchable structure.
+
+    Returned by backends when the model doesn't support placement optimization.
+    """
+
+    model_config = {"frozen": True}
+
+    structure_type: Literal["none"] = "none"
+
+
+ModelStructure = SupernetStructure | NoStructure
+
+
+class SequenceScoringRequest(BaseModel):
     """Request to score a single token sequence with specified answer range.
 
     This is the internal/low-level scoring request used by _score_sequences.
@@ -87,11 +99,12 @@ class SequenceScoringRequest:
     (determined by diff-based scoring for multiple-choice).
     """
 
-    tokens: tuple[int, ...]
-    """Full token sequence to score."""
+    model_config = {"frozen": True}
 
-    answer_range: tuple[int, int]
-    """(start, end) indices for tokens that contribute to total_log_prob."""
+    tokens: list[int] = Field(description="Full token sequence to score")
+    answer_range: tuple[int, int] = Field(
+        description="(start, end) indices for tokens that contribute to total_log_prob"
+    )
 
 
 class TextScoringElement(BaseModel):

@@ -24,12 +24,14 @@ from place_layers.backend.types import (
     GenerateTextRequest,
     LogProbResult,
     ModelStructure,
+    NoStructure,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    SupernetStructure,
     TextScoringElement,
 )
 from place_layers.clients.base_vllm import BaseVLLMClient
@@ -87,19 +89,16 @@ class VLLMBackend(AsyncBackend):
     def model_structure(self) -> ModelStructure:
         """Model structure (num_layers, mixer_names).
 
-        Only available in local mode with Apriel2 supernet models.
+        Returns SupernetStructure for local Apriel2 supernet models,
+        NoStructure for remote backends or non-supernet models.
         """
         if not isinstance(self._client, LocalVLLMClient):
-            raise NotImplementedError(
-                "Model structure discovery is not supported for remote vLLM backend."
-            )
+            return NoStructure()
         if not self._client.supports_placement:
-            raise NotImplementedError(
-                "Model structure discovery requires an Apriel2 supernet model."
-            )
-        return ModelStructure(
+            return NoStructure()
+        return SupernetStructure(
             num_layers=self._client.num_layers or 0,
-            mixer_names=self._client.mixer_names or (),
+            mixer_names=self._client.mixer_names or [],
         )
 
     @property

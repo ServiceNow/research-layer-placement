@@ -99,7 +99,7 @@ class LocalVLLMClient(BaseVLLMClient):
         self._model_name: str = ""
         self._supports_placement = False
         self._num_layers: int | None = None
-        self._mixer_names: tuple[str, ...] | None = None
+        self._mixer_names: list[str] | None = None
         self._current_placement: list[str] | None = None
 
     async def __aenter__(self) -> "Self":
@@ -198,7 +198,7 @@ class LocalVLLMClient(BaseVLLMClient):
         return self._num_layers
 
     @property
-    def mixer_names(self) -> tuple[str, ...] | None:
+    def mixer_names(self) -> list[str] | None:
         """Available mixer types."""
         return self._mixer_names
 

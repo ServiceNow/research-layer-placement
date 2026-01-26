@@ -55,8 +55,8 @@ class BaseEvaluator[ParametersT]:
 
     @property
     @abstractmethod
-    def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (e.g., ('attention', 'gdn', 'kda')).
+    def mixer_names(self) -> list[str]:
+        """Available mixer types (e.g., ['attention', 'gdn', 'kda']).
 
         Implementations should derive this from the actual model or backend.
         """

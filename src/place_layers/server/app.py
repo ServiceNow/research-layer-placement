@@ -26,6 +26,7 @@ from place_layers.backend.types import (
     ScoreChatRequest as BackendScoreChatRequest,
     ScoreTextRequest as BackendScoreTextRequest,
     ScoreTokensRequest as BackendScoreTokensRequest,
+    SupernetStructure,
 )
 from place_layers.server.adapter import (
     BackendAdapter,
@@ -177,13 +178,11 @@ def create_app(
         mixer_names = None
         supports_placement = False
 
-        try:
-            structure = backend.model_structure
+        structure = backend.model_structure
+        if isinstance(structure, SupernetStructure):
             num_layers = structure.num_layers
             mixer_names = list(structure.mixer_names)
             supports_placement = True
-        except NotImplementedError:
-            pass
 
         return InfoResponse(
             model_path=get_model_path(backend_config),

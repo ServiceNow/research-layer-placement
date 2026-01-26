@@ -26,12 +26,16 @@ from pydantic import BaseModel, Field
 
 from place_layers.evaluator.traces.types import (
     BaseGeneration,
+    ChatLikelihoodRecord,
     ISProblemRecord,
-    LikelihoodRecord,
     SkippedProblem,
+    TextLikelihoodRecord,
     TraceRecord,
     TraceRecordAdapter,
 )
+
+# Tuple for isinstance checks (union types don't work with isinstance)
+_LikelihoodRecordTypes = (ChatLikelihoodRecord, TextLikelihoodRecord)
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +165,7 @@ class TraceWriter:
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
             r for r in records
-            if isinstance(r, (BaseGeneration, LikelihoodRecord, ISProblemRecord))
+            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord))
         ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
@@ -234,12 +238,13 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                     record = TraceRecordAdapter.validate_json(line)
                     match record:
                         # BaseGeneration covers both Trace and Generation
-                        # LikelihoodRecord for multiple-choice evaluation
+                        # ChatLikelihoodRecord/TextLikelihoodRecord for multiple-choice
                         # ISProblemRecord for importance-weighted evaluation
                         case (
                             BaseGeneration(task_name=tn, problem_id=pid)
                             | SkippedProblem(task_name=tn, problem_id=pid)
-                            | LikelihoodRecord(task_name=tn, problem_id=pid)
+                            | ChatLikelihoodRecord(task_name=tn, problem_id=pid)
+                            | TextLikelihoodRecord(task_name=tn, problem_id=pid)
                             | ISProblemRecord(task_name=tn, problem_id=pid)
                         ):
                             if tn not in completed:
@@ -493,7 +498,7 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
                 continue
             try:
                 record = TraceRecordAdapter.validate_json(line)
-                if isinstance(record, LikelihoodRecord):
+                if isinstance(record, _LikelihoodRecordTypes):
                     task_results[record.task_name].append(
                         (record.correct, record.correct_norm)
                     )

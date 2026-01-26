@@ -24,6 +24,7 @@ from place_layers.backend.types import (
     GenerateTextRequest,
     LogProbResult,
     ModelStructure,
+    NoStructure,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
@@ -31,6 +32,7 @@ from place_layers.backend.types import (
     ScoreTokensRequest,
     ScoreTokensResult,
     SequenceScoringRequest,
+    SupernetStructure,
 )
 from place_layers.clients.types import GeneratedSample, GenerationResult
 from place_layers.core.memory_logging import (
@@ -215,17 +217,14 @@ class TransformersBackend:
     def model_structure(self) -> ModelStructure:
         """Model structure (num_layers, mixer_names).
 
-        Raises:
-            NotImplementedError: If model is not an Apriel2 supernet.
+        Returns SupernetStructure for Apriel2 supernet models,
+        NoStructure for non-supernet models.
         """
         if self._apriel_structure is None:
-            raise NotImplementedError(
-                "Model structure discovery requires an Apriel2 supernet model. "
-                "The loaded model does not support dynamic mixer placement."
-            )
-        return ModelStructure(
+            return NoStructure()
+        return SupernetStructure(
             num_layers=self._apriel_structure.num_layers,
-            mixer_names=self._apriel_structure.mixer_names,
+            mixer_names=list(self._apriel_structure.mixer_names),
         )
 
     @property
@@ -737,7 +736,7 @@ class TransformersBackend:
         def process_batch(batch: list[ScoreTokensRequest]) -> list[ScoreTokensResult]:
             score_requests = [
                 SequenceScoringRequest(
-                    tokens=tuple(req.prompt_tokens) + tuple(req.completion_tokens),
+                    tokens=list(req.prompt_tokens) + list(req.completion_tokens),
                     answer_range=(
                         len(req.prompt_tokens),
                         len(req.prompt_tokens) + len(req.completion_tokens),
@@ -791,7 +790,7 @@ class TransformersBackend:
             return (
                 req.key,
                 [
-                    SequenceScoringRequest(tokens=tuple(seq), answer_range=rng)
+                    SequenceScoringRequest(tokens=list(seq), answer_range=rng)
                     for seq, rng in zip(token_sequences, answer_ranges)
                 ],
             )
@@ -854,7 +853,7 @@ class TransformersBackend:
             return (
                 req.key,
                 [
-                    SequenceScoringRequest(tokens=tuple(seq), answer_range=rng)
+                    SequenceScoringRequest(tokens=list(seq), answer_range=rng)
                     for seq, rng in zip(token_sequences, answer_ranges)
                 ],
             )

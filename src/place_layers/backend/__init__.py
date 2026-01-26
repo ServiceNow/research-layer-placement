@@ -28,12 +28,14 @@ from place_layers.backend.types import (
     GenerateTextRequest,
     LogProbResult,
     ModelStructure,
+    NoStructure,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    SupernetStructure,
 )
 
 # Import backend configs for discriminated union
@@ -71,6 +73,8 @@ __all__ = [
     "GenerateTextRequest",
     "LogProbResult",
     "ModelStructure",
+    "NoStructure",
+    "SupernetStructure",
     # Scoring request/result types
     "ScoreTokensRequest",
     "ScoreTokensResult",

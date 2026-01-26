@@ -30,6 +30,7 @@ from place_layers.backend import (
     ScoreTextResult,
     ScoreTokensRequest,
     ScoreTokensResult,
+    SupernetStructure,
     SyncBackend,
     get_model_path,
 )
@@ -76,7 +77,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         # Model structure (populated in __aenter__ from backend)
         self._num_layers: int | None = None
-        self._mixer_names: tuple[str, ...] | None = None
+        self._mixer_names: list[str] | None = None
 
         # Track current placement to avoid redundant set_placement calls
         # None means model doesn't support placements (non-supernet)
@@ -98,16 +99,16 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             self._backend.__enter__()
 
         # Try to get model structure from backend (optional - not all backends support it)
-        try:
-            structure = self._backend.model_structure
+        structure = self._backend.model_structure
+        if isinstance(structure, SupernetStructure):
             self._num_layers = structure.num_layers
             self._mixer_names = structure.mixer_names
             logger.info(
                 f"{self.__class__.__name__} initialized: {self._num_layers} layers, "
                 f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
             )
-        except NotImplementedError:
-            # Model structure not available (e.g., vLLM backend)
+        else:
+            # Model structure not available (NoStructure)
             # This is fine if we're not doing placement switching
             logger.info(
                 f"{self.__class__.__name__} initialized: model structure not available "
@@ -146,8 +147,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         return len(self._mixer_names)
 
     @property
-    def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
+    def mixer_names(self) -> list[str]:
+        """Available mixer types (e.g., ['attention', 'gdn', 'kda'])."""
         if self._mixer_names is None:
             raise RuntimeError(
                 "mixer_names not available - evaluator must be entered first"
