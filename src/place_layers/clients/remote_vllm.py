@@ -98,7 +98,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
+        key: str,
     ) -> GenerationResult:
         """Generate completions from chat messages.
 
@@ -110,7 +110,7 @@ class RemoteVLLMClient(BaseVLLMClient):
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
             top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            key: Request key for joining with input.
 
         Returns:
             GenerationResult with samples and prompt token IDs.
@@ -161,7 +161,7 @@ class RemoteVLLMClient(BaseVLLMClient):
             )
 
         return GenerationResult(
-            request_id=request_id,
+            key=key,
             samples=samples,
             prompt_token_ids=prompt_token_ids,
         )
@@ -174,7 +174,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
+        key: str,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -186,7 +186,7 @@ class RemoteVLLMClient(BaseVLLMClient):
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
             top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            key: Request key for joining with input.
 
         Returns:
             GenerationResult with samples and prompt token IDs.
@@ -239,7 +239,7 @@ class RemoteVLLMClient(BaseVLLMClient):
             prompt_token_ids = data["choices"][0].get("prompt_token_ids") or []
 
         return GenerationResult(
-            request_id=request_id,
+            key=key,
             samples=samples,
             prompt_token_ids=prompt_token_ids,
         )
@@ -252,14 +252,14 @@ class RemoteVLLMClient(BaseVLLMClient):
         self,
         prompt_tokens: Sequence[int],
         completion_tokens: Sequence[int],
-        request_id: str = "",
+        key: str,
     ) -> ScoringResult:
         """Score a completion given prompt tokens.
 
         Args:
             prompt_tokens: Token IDs for the prompt/context.
             completion_tokens: Token IDs for the completion to score.
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             ScoringResult with total log probability.
@@ -299,14 +299,14 @@ class RemoteVLLMClient(BaseVLLMClient):
         return ScoringResult(
             total_logprob=sum(valid_logprobs),
             num_completion_tokens=len(valid_logprobs),
-            request_id=request_id,
+            key=key,
         )
 
     async def score_text_completion(
         self,
         context: str,
         continuation: str,
-        request_id: str = "",
+        key: str,
     ) -> SequenceLogProbs:
         """Score a text continuation.
 
@@ -317,7 +317,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         Args:
             context: The context/prompt text.
             continuation: The continuation text to score.
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.
@@ -368,14 +368,14 @@ class RemoteVLLMClient(BaseVLLMClient):
         return SequenceLogProbs(
             token_ids=token_ids,
             logprobs=token_logprobs,
-            request_id=request_id,
+            key=key,
         )
 
     async def score_chat_completion(
         self,
         context_messages: list[ChatMessage],
         completion_messages: list[ChatMessage],
-        request_id: str = "",
+        key: str,
     ) -> SequenceLogProbs:
         """Score chat completion messages.
 
@@ -386,7 +386,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         Args:
             context_messages: Context messages (system, user, etc.).
             completion_messages: Completion messages to score (typically assistant).
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.
@@ -436,6 +436,6 @@ class RemoteVLLMClient(BaseVLLMClient):
         return SequenceLogProbs(
             token_ids=token_ids,
             logprobs=logprobs,
-            request_id=request_id,
+            key=key,
         )
 

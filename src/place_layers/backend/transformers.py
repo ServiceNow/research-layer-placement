@@ -435,7 +435,7 @@ class TransformersBackend(SyncBackend):
 
             results.append(
                 GenerationResult(
-                    request_id=key,
+                    key=key,
                     samples=samples,
                     prompt_token_ids=prompt_tokens,
                 )
@@ -443,186 +443,6 @@ class TransformersBackend(SyncBackend):
 
         torch.cuda.empty_cache()
         return results
-
-    def batch_generate_text(
-        self,
-        prompts: Sequence[str],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-    ) -> list[GenerationResult]:
-        """Generate n completions for each text prompt without chat template.
-
-        Similar to generate_batch but skips chat template application.
-
-        Args:
-            prompts: List of raw text prompt strings.
-            n: Number of completions per prompt.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-
-        Returns:
-            List of GenerationResult, one per prompt.
-        """
-        if not prompts:
-            return []
-
-        batch_size = len(prompts)
-        mem_before = get_memory_stats()
-        logger.debug(
-            f"batch_generate_text: batch_size={batch_size}, n={n}, max_tokens={max_tokens}, "
-            f"GPU alloc={mem_before.gpu_allocated_gb:.2f}GB"
-        )
-
-        # Tokenize all prompts with left padding (required for batched generation)
-        # Save original padding side and restore after
-        original_padding_side = self._tokenizer.padding_side
-        self._tokenizer.padding_side = "left"
-
-        batch_encoding = self._tokenizer(
-            list(prompts),
-            return_tensors="pt",
-            padding=True,
-        )
-
-        self._tokenizer.padding_side = original_padding_side
-
-        # Track original prompt lengths (before padding)
-        prompt_lengths = [
-            (batch_encoding.attention_mask[i] == 1).sum().item()
-            for i in range(batch_size)
-        ]
-
-        # Move to device
-        input_ids = batch_encoding.input_ids.to(self._device)
-        attention_mask = batch_encoding.attention_mask.to(self._device)
-
-        # Generate with scores for log probability extraction
-        # temperature=0 means greedy (matches vLLM behavior)
-        do_sample = temperature > 0
-        with torch.no_grad():
-            outputs = self._model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=max_tokens,
-                temperature=temperature if do_sample else 1.0,  # Avoid temperature=0 warning
-                top_p=top_p,
-                do_sample=do_sample,
-                num_return_sequences=n,
-                pad_token_id=self._tokenizer.pad_token_id,
-                eos_token_id=self._tokenizer.eos_token_id,
-                output_scores=True,
-                return_dict_in_generate=True,
-            )
-
-        # outputs.sequences: [batch_size * n, seq_len]
-        # outputs.scores: tuple of [batch_size * n, vocab_size] for each generated token
-        sequences = outputs.sequences
-        scores = outputs.scores  # Tuple of logits for each generation step
-
-        # Build results for each prompt
-        results: list[GenerationResult] = []
-        padded_prompt_len = input_ids.shape[1]
-
-        for prompt_idx in range(batch_size):
-            # Get unpadded prompt tokens for this prompt
-            prompt_start = padded_prompt_len - prompt_lengths[prompt_idx]
-            prompt_tokens = input_ids[prompt_idx, prompt_start:].tolist()
-
-            samples: list[GeneratedSample] = []
-
-            for sample_idx in range(n):
-                # Output index in the flattened batch
-                output_idx = prompt_idx * n + sample_idx
-
-                # Extract completion tokens (after padded prompt)
-                full_sequence = sequences[output_idx].tolist()
-                completion_tokens = full_sequence[padded_prompt_len:]
-
-                # Remove trailing pad tokens
-                while completion_tokens and completion_tokens[-1] == self._tokenizer.pad_token_id:
-                    completion_tokens.pop()
-
-                # Check if truncated
-                truncated = (
-                    len(completion_tokens) >= max_tokens
-                    and (
-                        not completion_tokens
-                        or completion_tokens[-1] != self._tokenizer.eos_token_id
-                    )
-                )
-
-                # Extract log probabilities from scores
-                token_logprobs = []
-                for step_idx, token_id in enumerate(completion_tokens):
-                    if step_idx < len(scores):
-                        step_logits = scores[step_idx][output_idx]
-                        step_log_probs = F.log_softmax(step_logits, dim=-1)
-                        token_logprobs.append(step_log_probs[token_id].item())
-
-                # Decode completion text
-                completion_text = self._tokenizer.decode(
-                    completion_tokens, skip_special_tokens=True
-                )
-
-                samples.append(
-                    GeneratedSample(
-                        text=completion_text,
-                        token_ids=completion_tokens,
-                        token_logprobs=token_logprobs,
-                        truncated=truncated,
-                    )
-                )
-
-            results.append(
-                GenerationResult(
-                    request_id="",
-                    samples=samples,
-                    prompt_token_ids=prompt_tokens,
-                )
-            )
-
-        # Clear cache after generation
-        torch.cuda.empty_cache()
-
-        return results
-
-    def generate_text(
-        self,
-        prompt: str,
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> GenerationResult:
-        """Generate n completions from a text prompt without chat template.
-
-        Args:
-            prompt: Raw text prompt string.
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
-
-        Returns:
-            GenerationResult with samples and prompt token IDs.
-        """
-        results = self.batch_generate_text(
-            [prompt],
-            n=n,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        result = results[0]
-        result.request_id = request_id
-        return result
 
     # =========================================================================
     # Log Probability Computation
@@ -941,9 +761,9 @@ class TransformersBackendConfig(BaseBackendConfig):
         description="Number of prompts to batch together",
         gt=0,
     )
-    flush_timeout: float | None = Field(
-        default=None,
-        description="Flush partial batches after this many seconds (for streaming)",
+    flush_timeout: float = Field(
+        description="Flush partial batches after this many seconds (required for streaming)",
+        gt=0,
     )
     revision: str | None = Field(
         default=None,

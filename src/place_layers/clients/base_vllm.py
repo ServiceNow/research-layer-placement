@@ -37,7 +37,7 @@ class BaseVLLMClient(ABC):
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
+        key: str,
     ) -> GenerationResult:
         """Generate completions from chat messages.
 
@@ -47,7 +47,7 @@ class BaseVLLMClient(ABC):
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
             top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            key: Request key for joining with input.
 
         Returns:
             GenerationResult with samples and prompt token IDs.
@@ -63,7 +63,7 @@ class BaseVLLMClient(ABC):
         max_tokens: int,
         temperature: float,
         top_p: float,
-        request_id: str = "",
+        key: str,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -73,7 +73,7 @@ class BaseVLLMClient(ABC):
             max_tokens: Maximum tokens per completion.
             temperature: Sampling temperature.
             top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            key: Request key for joining with input.
 
         Returns:
             GenerationResult with samples and prompt token IDs.
@@ -85,14 +85,14 @@ class BaseVLLMClient(ABC):
         self,
         prompt_tokens: Sequence[int],
         completion_tokens: Sequence[int],
-        request_id: str = "",
+        key: str,
     ) -> ScoringResult:
         """Score a completion given prompt tokens.
 
         Args:
             prompt_tokens: Token IDs for the prompt/context.
             completion_tokens: Token IDs for the completion to score.
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             ScoringResult with total log probability.
@@ -104,7 +104,7 @@ class BaseVLLMClient(ABC):
         self,
         context: str,
         continuation: str,
-        request_id: str = "",
+        key: str,
     ) -> SequenceLogProbs:
         """Score a text continuation.
 
@@ -115,7 +115,7 @@ class BaseVLLMClient(ABC):
         Args:
             context: The context/prompt text.
             continuation: The continuation text to score.
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.
@@ -127,7 +127,7 @@ class BaseVLLMClient(ABC):
         self,
         context_messages: list[ChatMessage],
         completion_messages: list[ChatMessage],
-        request_id: str = "",
+        key: str,
     ) -> SequenceLogProbs:
         """Score chat completion messages.
 
@@ -138,7 +138,7 @@ class BaseVLLMClient(ABC):
         Args:
             context_messages: Context messages (system, user, etc.).
             completion_messages: Completion messages to score (typically assistant).
-            request_id: Optional identifier for tracking.
+            key: Request key for joining with input.
 
         Returns:
             SequenceLogProbs with token IDs and per-token logprobs.

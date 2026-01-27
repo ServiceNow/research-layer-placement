@@ -80,6 +80,9 @@ class VLLMBackend(AsyncBackend):
 
     async def __aenter__(self) -> Self:
         await self._client.__aenter__()
+        # Sync initial placement from client (if local vLLM with supernet model)
+        if isinstance(self._client, LocalVLLMClient):
+            self._current_placement = self._client.current_placement
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -113,7 +116,7 @@ class VLLMBackend(AsyncBackend):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from chat messages, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
         Concurrency is managed internally via semaphore.
 
@@ -131,7 +134,7 @@ class VLLMBackend(AsyncBackend):
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,
                     top_p=req.top_p,
-                    request_id=req.key,
+                    key=req.key,
                 )
             except VLLMBadRequestError as e:
                 logger.warning(f"Bad request for {req.key}: {e}")
@@ -152,7 +155,7 @@ class VLLMBackend(AsyncBackend):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from text prompts, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
         Concurrency is managed internally via semaphore.
 
@@ -170,7 +173,7 @@ class VLLMBackend(AsyncBackend):
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,
                     top_p=req.top_p,
-                    request_id=req.key,
+                    key=req.key,
                 )
             except VLLMBadRequestError as e:
                 logger.warning(f"Bad request for {req.key}: {e}")
@@ -200,7 +203,7 @@ class VLLMBackend(AsyncBackend):
         async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
             try:
                 result = await self._client.score_token_completion(
-                    req.prompt_tokens, req.completion_tokens
+                    req.prompt_tokens, req.completion_tokens, key=req.key
                 )
                 return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
             except VLLMBadRequestError as e:
@@ -279,7 +282,7 @@ class VLLMBackend(AsyncBackend):
         ) -> SequenceLogProbs | BackendError:
             try:
                 return await self._client.score_text_completion(
-                    element.context, element.continuation
+                    element.context, element.continuation, key=""
                 )
             except VLLMBadRequestError as e:
                 # Return error with empty key - combine will fill in the real key
@@ -345,7 +348,7 @@ class VLLMBackend(AsyncBackend):
         ) -> SequenceLogProbs | BackendError:
             try:
                 return await self._client.score_chat_completion(
-                    element.context_messages, [element.completion_message]
+                    element.context_messages, [element.completion_message], key=""
                 )
             except VLLMBadRequestError as e:
                 return BackendError(key="", error_type="bad_request", message=str(e))

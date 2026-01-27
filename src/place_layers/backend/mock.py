@@ -156,7 +156,7 @@ class MockBackend(AsyncBackend):
                 yield response
             else:
                 yield GenerationResult(
-                    request_id=request.key,
+                    key=request.key,
                     samples=response.samples,
                     prompt_token_ids=response.prompt_token_ids,
                 )
@@ -181,7 +181,7 @@ class MockBackend(AsyncBackend):
                 yield response
             else:
                 yield GenerationResult(
-                    request_id=request.key,
+                    key=request.key,
                     samples=response.samples,
                     prompt_token_ids=response.prompt_token_ids,
                 )

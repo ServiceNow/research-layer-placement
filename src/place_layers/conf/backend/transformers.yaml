@@ -14,3 +14,4 @@ trust_remote_code: ${model.trust_remote_code}
 revision: null  # HuggingFace revision (branch, tag, or commit hash)
 attn_implementation: null  # Use model's default attention implementation
 batch_size: 4
+flush_timeout: 0.1  # Flush partial batches after 100ms (required for REST server)

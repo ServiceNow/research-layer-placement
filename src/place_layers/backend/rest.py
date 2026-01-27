@@ -696,7 +696,7 @@ class RESTBackend(AsyncBackend):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from chat messages, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Requests are distributed across healthy servers.
 
         On transient errors, yields BackendError instead of killing the stream.
@@ -734,7 +734,7 @@ class RESTBackend(AsyncBackend):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from text prompts, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Requests are distributed across healthy servers.
 
         On transient errors, yields BackendError instead of killing the stream.

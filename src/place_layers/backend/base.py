@@ -708,7 +708,7 @@ class AsyncBackend(ABC):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from chat messages, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
 
         On transient errors (bad request, timeout, server error), yields
@@ -720,7 +720,7 @@ class AsyncBackend(ABC):
                 None heartbeats).
 
         Yields:
-            GenerationResult with request_id matching request.key, or
+            GenerationResult with key matching request.key, or
             BackendError if the request failed.
         """
         pass
@@ -733,7 +733,7 @@ class AsyncBackend(ABC):
     ) -> AsyncIterator[GenerationResult | BackendError]:
         """Generate completions from text prompts, yielding as they complete.
 
-        Results may arrive in any order. Use request_id to join with input.
+        Results may arrive in any order. Use key to join with input.
         Each request contains its own generation params (n, max_tokens, etc.).
 
         On transient errors (bad request, timeout, server error), yields
@@ -745,7 +745,7 @@ class AsyncBackend(ABC):
                 None heartbeats).
 
         Yields:
-            GenerationResult with request_id matching request.key, or
+            GenerationResult with key matching request.key, or
             BackendError if the request failed.
         """
         pass
@@ -880,7 +880,7 @@ class SyncBackend(ABC):
                 are heartbeats for timeout checking in streaming mode.
 
         Yields:
-            GenerationResult with request_id matching request.key.
+            GenerationResult with key matching request.key.
         """
         pass
 
@@ -903,7 +903,7 @@ class SyncBackend(ABC):
                 are heartbeats for timeout checking in streaming mode.
 
         Yields:
-            GenerationResult with request_id matching request.key.
+            GenerationResult with key matching request.key.
         """
         pass
 

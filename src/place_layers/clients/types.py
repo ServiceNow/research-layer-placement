@@ -31,7 +31,7 @@ class GenerationResult(BaseModel):
 
     model_config = {"frozen": True}
 
-    request_id: str = Field(description="Request identifier")
+    key: str = Field(description="Request key for joining with input")
     samples: list[GeneratedSample] = Field(description="Generated samples")
     prompt_token_ids: list[int] = Field(description="Token IDs of the prompt")
 
@@ -43,7 +43,7 @@ class ScoringResult(BaseModel):
 
     total_logprob: float = Field(description="Sum of log-probabilities for completion tokens")
     num_completion_tokens: int = Field(description="Number of completion tokens scored")
-    request_id: str = Field(description="Request identifier", default="")
+    key: str = Field(description="Request key for joining with input", default="")
 
 
 class SequenceLogProbs(BaseModel):
@@ -61,4 +61,4 @@ class SequenceLogProbs(BaseModel):
     logprobs: list[float | None] = Field(
         description="Per-token logprobs (None for first token which has no context)"
     )
-    request_id: str = Field(description="Request identifier", default="")
+    key: str = Field(description="Request key for joining with input", default="")
