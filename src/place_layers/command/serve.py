@@ -1,35 +1,43 @@
-"""Serve command - starts a REST server exposing TransformersBackend.
+"""Serve command - starts a REST server exposing a local backend.
 
-This command starts a FastAPI server that wraps a TransformersBackend,
-allowing multiple GPUs to be used for parallel evaluation via the REST
-backend.
+This command starts a FastAPI server that wraps a local backend
+(TransformersBackend or VLLMBackend with local client), allowing multiple GPUs
+to be used for parallel evaluation via the REST backend.
 
 Usage:
-    # Start server on GPU 0
-    CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+    # Start transformers server on GPU 0
+    CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev
 
-    # Start server on GPU 1
-    CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+    # Start vLLM server on GPU 1
+    CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev
 """
 
 from __future__ import annotations
 
 import logging
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field
 
+from place_layers.backend import (
+    TransformersBackendConfig,
+    VLLMBackendConfig,
+)
+from place_layers.clients.local_vllm import LocalVLLMClientConfig
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.backend.base import (
-    TransformersBackendConfig,
-)
 
 logger = logging.getLogger(__name__)
 
+# Servable backends - those that can be wrapped in a REST API
+ServableBackendConfig = Annotated[
+    TransformersBackendConfig | VLLMBackendConfig,
+    Field(discriminator="backend_type"),
+]
+
 
 class ServeCommand(BaseCommand):
-    """Command to start a REST server exposing TransformersBackend."""
+    """Command to start a REST server exposing a local backend."""
 
     config: "ServeCommandConfig"
 
@@ -41,22 +49,40 @@ class ServeCommand(BaseCommand):
         """
         import uvicorn
 
+        logger.info(f"Starting server on {self.config.host}:{self.config.port}")
+        logger.info(f"Backend type: {self.config.backend.backend_type}")
+
+        # Create FastAPI app based on backend type
         from place_layers.server.app import create_app
 
-        logger.info(f"Starting server on {self.config.host}:{self.config.port}")
-        logger.info(f"Model: {self.config.backend.model_path}")
+        if isinstance(self.config.backend, TransformersBackendConfig):
+            logger.info(f"Model: {self.config.backend.model_path}")
+        elif isinstance(self.config.backend, VLLMBackendConfig):
+            # VLLMBackend can be local or remote - only local makes sense for serve
+            if not isinstance(self.config.backend.client, LocalVLLMClientConfig):
+                raise ValueError(
+                    "serve command requires local vLLM client, not remote. "
+                    "Use +backend=local_vllm instead of +backend=vllm"
+                )
+            logger.info(f"Model: {self.config.backend.client.model_path}")
+        else:
+            raise ValueError(
+                f"Unknown backend type: {self.config.backend.backend_type}"
+            )
 
-        # Create FastAPI app with the backend config
+        # Both TransformersBackend and VLLMBackend work with create_app
         app = create_app(self.config.backend)
 
-        # Configure uvicorn
+        # Configure uvicorn with access logging enabled
+        # timeout_keep_alive=30 ensures connections stay open long enough
+        # for client-side connection reuse (aiohttp defaults to 15s)
         config = uvicorn.Config(
             app,
             host=self.config.host,
             port=self.config.port,
             log_level="info",
-            # Disable access logs for less noise during evaluation
-            access_log=False,
+            access_log=True,
+            timeout_keep_alive=30,
         )
 
         # Run server
@@ -71,8 +97,8 @@ class ServeCommandConfig(BaseCommandConfig):
 
     command: Literal["serve"] = "serve"
 
-    backend: TransformersBackendConfig = Field(
-        description="TransformersBackend configuration"
+    backend: ServableBackendConfig = Field(
+        description="Backend configuration (transformers or vllm with local client)"
     )
     host: str = Field(
         description="Host address to bind to (e.g., '0.0.0.0' for all interfaces)"

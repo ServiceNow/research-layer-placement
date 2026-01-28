@@ -84,9 +84,9 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         return self.config.num_mixers
 
     @property
-    def mixer_names(self) -> tuple[str, ...]:
+    def mixer_names(self) -> list[str]:
         """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
-        return tuple(f"mixer_{i}" for i in range(self.config.num_mixers))
+        return [f"mixer_{i}" for i in range(self.config.num_mixers)]
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """

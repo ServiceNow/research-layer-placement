@@ -1,11 +1,22 @@
-"""REST server for TransformersBackend."""
+"""REST server for generation backends."""
 
+from place_layers.server.adapter import (
+    AsyncBackendAdapter,
+    BackendAdapter,
+    SyncBackendAdapter,
+    create_adapter,
+)
 from place_layers.server.app import create_app
 from place_layers.server.schemas import (
-    BatchGenerateRequest,
     ChatMessageSchema,
-    ComputeLogProbsRequest,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
+    HealthResponse,
     InfoResponse,
-    SetPlacementRequest,
+    ScoreChatRequest,
+    ScoreChatResponse,
+    ScoreTextRequest,
+    ScoreTextResponse,
+    ScoreTokensRequest,
+    ScoreTokensResponse,
 )

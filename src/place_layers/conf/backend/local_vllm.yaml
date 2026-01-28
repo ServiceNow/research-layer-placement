@@ -1,0 +1,22 @@
+# @package backend
+# vLLM backend with local in-process engine
+#
+# Uses vLLM's AsyncLLM engine for truly async generation.
+# Supports Apriel2 models with runtime mixer placement switching.
+#
+# Note: Apriel2 model registration is handled via vLLM's plugin system.
+# See fast_llm setup.cfg entry_points (vllm.general_plugins).
+
+backend_type: vllm
+
+client:
+  client_type: local
+  model_path: ${model.model_path}  # From model config group
+  tokenizer_path: null  # Defaults to model_path if null
+  torch_dtype: ${model.torch_dtype}
+  trust_remote_code: ${model.trust_remote_code}
+  gpu_memory_utilization: 0.9
+  max_model_len: null  # Use model's default
+  disable_compile: false
+  enable_prefix_caching: false
+  max_concurrent_requests: 32

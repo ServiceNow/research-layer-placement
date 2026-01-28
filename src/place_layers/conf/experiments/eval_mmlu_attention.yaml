@@ -1,0 +1,18 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on MMLU with all-attention placement (likelihood)
+#
+# Usage:
+#   python -m place_layers +experiments=eval_mmlu_attention
+
+defaults:
+  - /command: evaluate
+  - /evaluator: likelihood
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - /task: mmlu
+  - /placement: all_attention
+  - _self_
+
+evaluator:
+  use_chat_template: false
+  batch_size: 8

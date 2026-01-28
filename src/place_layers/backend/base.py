@@ -1,83 +1,678 @@
-"""Generation backends for trace pre-computation.
+"""Abstract base classes for generation backends.
 
 Provides a categorical abstraction for generation backends:
 - AsyncBackend: For remote servers (vLLM, sglang, OpenAI-compatible APIs)
 - SyncBackend: For local models (transformers)
 
-The command uses different execution strategies based on category:
-- AsyncBackend → async worker pool with max_concurrent_requests
-- SyncBackend → sync loop (sequential or batched processing)
+Scoring methods use an iterator-based API with keyed requests:
+- Caller submits requests with unique keys
+- Backend yields results in any order (first-completed for async)
+- Caller joins results by key, not position
+
+This design hides batching/concurrency from callers:
+- SyncBackend: Chunks requests internally, yields as batches complete
+- AsyncBackend: Manages concurrency with semaphores, yields as requests complete
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, Sequence, TypedDict
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+)
+from typing import Any, ClassVar, Self, Sequence
 
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from place_layers.backend.apriel_validation import (
-        Apriel2Structure,
+from place_layers.backend.types import (
+    BackendError,
+    ChatMessage,
+    GenerateChatRequest,
+    GenerateTextRequest,
+    ModelStructure,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
+)
+from place_layers.clients.types import GenerationResult
+
+
+# =============================================================================
+# Concurrency/Batching Helpers
+# =============================================================================
+
+
+def batched_map[T, R](
+    items: Iterable[T | None],
+    process: Callable[[list[T]], Iterable[R]],
+    batch_size: int,
+    flush_timeout: float | None = None,
+) -> Iterator[R]:
+    """Process items in batches, yielding results as batches complete.
+
+    Accumulates items up to batch_size, calls process on the batch,
+    and yields all results. Handles the final partial batch.
+
+    This is a special case of batched_expand_map where each item expands
+    to exactly one element.
+
+    Args:
+        items: Items to process. If flush_timeout is set, None values are
+            treated as heartbeats for timeout checking.
+        process: Function that takes a batch and returns results (1:1 with input).
+        batch_size: Maximum items per batch.
+        flush_timeout: If set, flush partial batches after this many seconds
+            of no new items. Requires items to yield None as heartbeats.
+
+    Yields:
+        Results in input order.
+    """
+    # Use object() as unique keys since items may not be hashable
+    item_id = 0
+
+    def expand(item: T) -> tuple[int, list[T]]:
+        nonlocal item_id
+        key = item_id
+        item_id += 1
+        return (key, [item])
+
+    def process_batch(elements: list[T]) -> list[R]:
+        return list(process(elements))
+
+    def combine(key: int, results: list[R]) -> R:
+        return results[0]
+
+    yield from batched_expand_map(
+        items, expand, process_batch, combine, batch_size, flush_timeout
     )
-    from place_layers.backend.vllm import GenerationResult
 
 
-class ChatMessage(TypedDict):
-    """A single message in a chat conversation."""
+def batched_expand_map[In, K, E, R, Out](
+    items: Iterable[In | None],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_batch: Callable[[list[E]], list[R]],
+    combine: Callable[[K, list[R]], Out],
+    batch_size: int,
+    flush_timeout: float | None = None,
+) -> Iterator[Out]:
+    """Expand items into elements, batch elements, process, and recombine.
 
-    role: Literal["system", "user", "assistant"]
-    content: str
+    This handles the case where one input expands to multiple elements that
+    may span batch boundaries. Elements are batched at fixed size for
+    efficient processing, then results are recombined by input.
 
+    Pattern: fan-out → batch → process → fan-in
 
-# =============================================================================
-# Model Structure
-# =============================================================================
+    Example: Multiple-choice scoring where each question has N choices.
+    Questions are expanded to N sequences, sequences are batched for GPU
+    efficiency, then results are recombined per question.
 
+    Streaming mode: When flush_timeout is set, the items iterator should
+    yield None as heartbeats. This allows timeout-based flushing even when
+    no new items are arriving, enabling true streaming from async sources.
 
-@dataclass(frozen=True)
-class ModelStructure:
-    """Model structure for placement optimization.
+    Args:
+        items: Input items to process. If flush_timeout is set, None values
+            are treated as heartbeats for timeout checking.
+        expand: Fan-out function. Returns (key, elements) or None to skip.
+            The key identifies this input for recombining results.
+        process_batch: Processes a batch of elements, returns results 1:1.
+        combine: Fan-in function. Takes key and all results for that input,
+            returns the final output.
+        batch_size: Fixed batch size for element processing.
+        flush_timeout: If set, flush partial batches after this many seconds.
+            Requires items to yield None as heartbeats for timeout checks.
 
-    Generic representation of model structure that backends expose.
-    Decoupled from Apriel2-specific details.
+    Yields:
+        Outputs in input order, as soon as all elements for an input complete.
     """
+    # Track pending elements: (key, index within expansion, element)
+    pending: list[tuple[K, int, E]] = []
 
-    num_layers: int
-    """Number of layers with switchable mixers."""
+    # Track results per key: key -> [(index, result), ...]
+    results_by_key: dict[K, list[tuple[int, R]]] = {}
 
-    mixer_names: tuple[str, ...]
-    """Available mixer types (e.g., ('attention', 'gdn', 'kda'))."""
+    # Track expected element count per key
+    expected_counts: dict[K, int] = {}
+
+    # Track input order for yielding
+    key_order: list[K] = []
+
+    # Track last flush time for timeout-based flushing
+    last_flush_time = time.monotonic() if flush_timeout else 0.0
+
+    def process_pending_batch(batch: list[tuple[K, int, E]]) -> Iterator[Out]:
+        """Process a batch of pending elements and yield completed outputs."""
+        nonlocal last_flush_time
+
+        # Process elements
+        elements = [elem for _, _, elem in batch]
+        batch_results = process_batch(elements)
+
+        # Store results by key
+        for (key, idx, _), result in zip(batch, batch_results):
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Update flush time
+        if flush_timeout:
+            last_flush_time = time.monotonic()
+
+        # Yield any completed outputs (in order)
+        yield from yield_completed()
+
+    def flush_full_batches() -> Iterator[Out]:
+        """Process complete batches (batch_size) and yield completed outputs."""
+        nonlocal pending
+
+        while len(pending) >= batch_size:
+            batch = pending[:batch_size]
+            pending = pending[batch_size:]
+            yield from process_pending_batch(batch)
+
+    def flush_partial_batch() -> Iterator[Out]:
+        """Process any remaining pending elements as a partial batch."""
+        nonlocal pending
+
+        if pending:
+            batch = pending
+            pending = []
+            yield from process_pending_batch(batch)
+
+    def should_timeout_flush() -> bool:
+        """Check if we should flush due to timeout."""
+        if not flush_timeout or not pending:
+            return False
+        return time.monotonic() - last_flush_time >= flush_timeout
+
+    def yield_completed() -> Iterator[Out]:
+        """Yield outputs that have all their elements processed."""
+        while key_order:
+            key = key_order[0]
+            results = results_by_key.get(key, [])
+
+            if len(results) == expected_counts[key]:
+                # All elements complete - sort by index and combine
+                results.sort(key=lambda x: x[0])
+                ordered_results = [r for _, r in results]
+                yield combine(key, ordered_results)
+
+                # Cleanup
+                del results_by_key[key]
+                del expected_counts[key]
+                key_order.pop(0)
+            else:
+                # Not complete yet - can't yield out of order
+                break
+
+    # Process inputs
+    for item in items:
+        # Handle heartbeats (None) for timeout checking
+        if item is None:
+            if should_timeout_flush():
+                yield from flush_partial_batch()
+            continue
+
+        expanded = expand(item)
+
+        if expanded is None:
+            # Skip this item
+            continue
+
+        key, elements = expanded
+
+        # Track this key (even if empty, to preserve order)
+        expected_counts[key] = len(elements)
+        key_order.append(key)
+
+        if not elements:
+            # Empty expansion - mark as ready (will yield when at front of queue)
+            results_by_key[key] = []
+            yield from yield_completed()
+            continue
+
+        # Add elements to pending
+        for idx, elem in enumerate(elements):
+            pending.append((key, idx, elem))
+
+        # Process any complete batches
+        yield from flush_full_batches()
+
+        # Also check timeout flush after adding new items
+        if should_timeout_flush():
+            yield from flush_partial_batch()
+
+    # Drain remaining elements (final partial batch)
+    yield from flush_partial_batch()
+
+    # Yield any remaining completed outputs
+    yield from yield_completed()
 
 
-@dataclass(frozen=True)
-class ChatLogProbResult:
-    """Detailed result from chat log-prob computation.
+def batched_map_by_key[T, K, R](
+    items: Iterable[T | None],
+    get_key: Callable[[T], K],
+    process: Callable[[K, list[T]], Iterable[R]],
+    batch_size: int,
+    flush_timeout: float | None = None,
+) -> Iterator[R]:
+    """Process items in batches, flushing when key changes.
 
-    Contains all token-level information needed for observability:
-    - Full token sequence (after chat template applied)
-    - Per-token logprobs
-    - Answer range (which tokens were identified as "the answer")
-    - Total score (sum of answer logprobs)
+    Like batched_map, but groups consecutive items by key. A batch is flushed
+    when: (1) batch reaches batch_size, (2) key changes, or (3) timeout expires.
+
+    Use case: Generation requests where all items in a batch must share the
+    same parameters. When a request arrives with different params, flush the
+    current batch before starting a new one.
+
+    Args:
+        items: Items to process. None values are heartbeats for timeout checking.
+        get_key: Extract grouping key from item (e.g., generation params).
+        process: Function that takes (key, batch) and returns results 1:1.
+        batch_size: Maximum items per batch.
+        flush_timeout: Flush partial batches after this many seconds.
+
+    Yields:
+        Results in input order.
     """
+    pending: list[T] = []
+    current_key: K | None = None
+    last_flush_time = time.monotonic() if flush_timeout else 0.0
 
-    token_ids: tuple[int, ...]
-    """Full token sequence for this chat (context + completion)."""
+    def flush() -> Iterator[R]:
+        nonlocal pending, last_flush_time
+        if pending and current_key is not None:
+            yield from process(current_key, pending)
+            pending = []
+            if flush_timeout:
+                last_flush_time = time.monotonic()
 
-    logprobs: tuple[float | None, ...]
-    """Per-token logprobs (None for first token which has no prior context)."""
+    def should_timeout_flush() -> bool:
+        if not flush_timeout or not pending:
+            return False
+        return time.monotonic() - last_flush_time >= flush_timeout
 
-    answer_range: tuple[int, int]
-    """(start, end) indices identifying answer tokens in token_ids."""
+    for item in items:
+        if item is None:  # Heartbeat
+            if should_timeout_flush():
+                yield from flush()
+            continue
 
-    total_log_prob: float
-    """Sum of logprobs for answer tokens (used for prediction)."""
+        item_key = get_key(item)
+
+        if current_key is not None and item_key != current_key:
+            yield from flush()
+
+        current_key = item_key
+        pending.append(item)
+
+        if len(pending) >= batch_size:
+            yield from flush()
+
+        if should_timeout_flush():
+            yield from flush()
+
+    yield from flush()
+
+
+async def _concurrent_expand_map_sync[In, K, E, R, Out](
+    items: Iterable[In],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Implementation for sync iterables. See concurrent_expand_map for docs."""
+    # Track results per key: key -> [(index, result), ...]
+    results_by_key: dict[K, list[tuple[int, R]]] = {}
+
+    # Track expected element count per key
+    expected_counts: dict[K, int] = {}
+
+    # Track input order for yielding
+    key_order: list[K] = []
+
+    # Pending tasks: set of tasks, each tagged with (key, idx)
+    pending: set[asyncio.Task[tuple[K, int, R]]] = set()
+
+    # Element buffer: elements waiting to be scheduled
+    buffer: list[tuple[K, int, E]] = []
+
+    # Item iterator
+    items_iter = iter(items)
+    items_exhausted = False
+
+    async def process_with_key(key: K, idx: int, element: E) -> tuple[K, int, R]:
+        result = await process_one(element)
+        return (key, idx, result)
+
+    def expand_more_items() -> None:
+        """Expand items to fill the buffer."""
+        nonlocal items_exhausted
+
+        while len(buffer) + len(pending) < max_concurrent and not items_exhausted:
+            try:
+                item = next(items_iter)
+            except StopIteration:
+                items_exhausted = True
+                break
+
+            expanded = expand(item)
+            if expanded is None:
+                continue
+
+            key, elements = expanded
+            key_order.append(key)
+            expected_counts[key] = len(elements)
+
+            if not elements:
+                # Empty expansion - immediately ready
+                results_by_key[key] = []
+            else:
+                for idx, elem in enumerate(elements):
+                    buffer.append((key, idx, elem))
+
+    def schedule_from_buffer() -> None:
+        """Move elements from buffer to pending tasks."""
+        while buffer and len(pending) < max_concurrent:
+            key, idx, elem = buffer.pop(0)
+            task = asyncio.create_task(process_with_key(key, idx, elem))
+            pending.add(task)
+
+    def yield_completed() -> Iterator[Out]:
+        """Yield outputs for keys that have all results, in input order."""
+        while key_order:
+            key = key_order[0]
+
+            if key not in results_by_key:
+                break
+            if len(results_by_key[key]) != expected_counts[key]:
+                break
+
+            # All results for this key - combine and yield
+            results = results_by_key.pop(key)
+            del expected_counts[key]
+            key_order.pop(0)
+
+            results.sort(key=lambda x: x[0])
+            ordered_results = [r for _, r in results]
+            yield combine(key, ordered_results)
+
+    # Initial setup
+    expand_more_items()
+    schedule_from_buffer()
+
+    # Yield any empty expansions that are already complete
+    for out in yield_completed():
+        yield out
+
+    # Main loop
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        # Collect results
+        for task in done:
+            key, idx, result = task.result()
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Yield completed outputs
+        for out in yield_completed():
+            yield out
+
+        # Refill
+        expand_more_items()
+        schedule_from_buffer()
+
+    # Final yield (for any remaining completed outputs)
+    for out in yield_completed():
+        yield out
+
+
+async def _concurrent_expand_map_async[In, K, E, R, Out](
+    items: AsyncIterable[In | None],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Implementation for async iterables. See concurrent_expand_map for docs."""
+    # Track results per key: key -> [(index, result), ...]
+    results_by_key: dict[K, list[tuple[int, R]]] = {}
+
+    # Track expected element count per key
+    expected_counts: dict[K, int] = {}
+
+    # Track input order for yielding
+    key_order: list[K] = []
+
+    # Pending tasks: set of tasks, each tagged with (key, idx)
+    pending: set[asyncio.Task[tuple[K, int, R]]] = set()
+
+    # Element buffer: elements waiting to be scheduled
+    buffer: list[tuple[K, int, E]] = []
+
+    # Async iterator state
+    items_aiter = items.__aiter__()
+    items_exhausted = False
+    next_item_task: asyncio.Task[In | None] | None = None
+
+    async def process_with_key(key: K, idx: int, element: E) -> tuple[K, int, R]:
+        result = await process_one(element)
+        return (key, idx, result)
+
+    def expand_item(item: In) -> None:
+        """Expand a single item and add elements to buffer."""
+        expanded = expand(item)
+        if expanded is None:
+            return
+
+        key, elements = expanded
+        key_order.append(key)
+        expected_counts[key] = len(elements)
+
+        if not elements:
+            results_by_key[key] = []
+        else:
+            for idx, elem in enumerate(elements):
+                buffer.append((key, idx, elem))
+
+    def schedule_from_buffer() -> None:
+        """Move elements from buffer to pending tasks."""
+        while buffer and len(pending) < max_concurrent:
+            key, idx, elem = buffer.pop(0)
+            task = asyncio.create_task(process_with_key(key, idx, elem))
+            pending.add(task)
+
+    def yield_completed() -> Iterator[Out]:
+        """Yield outputs for keys that have all results, in input order."""
+        while key_order:
+            key = key_order[0]
+
+            if key not in results_by_key:
+                break
+            if len(results_by_key[key]) != expected_counts[key]:
+                break
+
+            results = results_by_key.pop(key)
+            del expected_counts[key]
+            key_order.pop(0)
+
+            results.sort(key=lambda x: x[0])
+            ordered_results = [r for _, r in results]
+            yield combine(key, ordered_results)
+
+    async def start_next_item_fetch() -> None:
+        """Start fetching the next item from async iterator."""
+        nonlocal next_item_task
+        if items_exhausted or next_item_task is not None:
+            return
+        if len(buffer) + len(pending) >= max_concurrent:
+            return
+
+        async def fetch_next() -> In | None:
+            return await items_aiter.__anext__()
+
+        next_item_task = asyncio.create_task(fetch_next())
+
+    # Initial fetch
+    await start_next_item_fetch()
+    schedule_from_buffer()
+
+    # Yield any empty expansions that are already complete
+    for out in yield_completed():
+        yield out
+
+    # Main loop - wait on both processing tasks and next-item fetch
+    while pending or next_item_task is not None:
+        # Build wait set
+        wait_tasks: set[asyncio.Task[Any]] = set(pending)
+        if next_item_task is not None:
+            wait_tasks.add(next_item_task)
+
+        if not wait_tasks:
+            break
+
+        done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+        # Handle completed next-item fetch
+        if next_item_task is not None and next_item_task in done:
+            done.discard(next_item_task)
+            try:
+                item = next_item_task.result()
+                next_item_task = None
+
+                # Skip heartbeats (None values)
+                if item is not None:
+                    expand_item(item)
+            except StopAsyncIteration:
+                items_exhausted = True
+                next_item_task = None
+
+        # Handle completed processing tasks
+        for task in done:
+            pending.discard(task)  # type: ignore[arg-type]
+            key, idx, result = task.result()
+            if key not in results_by_key:
+                results_by_key[key] = []
+            results_by_key[key].append((idx, result))
+
+        # Yield completed outputs
+        for out in yield_completed():
+            yield out
+
+        # Schedule more work
+        schedule_from_buffer()
+        await start_next_item_fetch()
+
+    # Final yield
+    for out in yield_completed():
+        yield out
+
+
+async def concurrent_expand_map[In, K, E, R, Out](
+    items: Iterable[In] | AsyncIterable[In | None],
+    expand: Callable[[In], tuple[K, list[E]] | None],
+    process_one: Callable[[E], Coroutine[Any, Any, R]],
+    combine: Callable[[K, list[R]], Out],
+    max_concurrent: int,
+) -> AsyncIterator[Out]:
+    """Expand items into elements, process concurrently, and recombine.
+
+    Async equivalent of batched_expand_map for fan-out/fan-in patterns.
+    Instead of batching elements for GPU efficiency, processes elements
+    concurrently with a semaphore limit.
+
+    Pattern: fan-out → concurrent process → fan-in
+
+    Example: Multiple-choice scoring where each question has N choices.
+    Questions are expanded to N scoring requests, requests are processed
+    concurrently (up to max_concurrent), then results are recombined
+    per question.
+
+    Accepts both sync and async iterables. For async iterables, heartbeats
+    (None values) are skipped automatically.
+
+    Args:
+        items: Input items to process (sync or async iterable).
+        expand: Fan-out function. Returns (key, elements) or None to skip.
+            The key identifies this input for recombining results.
+        process_one: Async function to process a single element.
+        combine: Fan-in function. Takes key and all results for that input,
+            returns the final output.
+        max_concurrent: Maximum concurrent process_one calls.
+
+    Yields:
+        Outputs in input order, as soon as all elements for an input complete.
+    """
+    if isinstance(items, AsyncIterable):
+        async for result in _concurrent_expand_map_async(
+            items, expand, process_one, combine, max_concurrent  # type: ignore[arg-type]
+        ):
+            yield result
+    else:
+        async for result in _concurrent_expand_map_sync(
+            items, expand, process_one, combine, max_concurrent  # type: ignore[arg-type]
+        ):
+            yield result
+
+
+async def concurrent_map[T, R](
+    items: Iterable[T] | AsyncIterable[T | None],
+    process: Callable[[T], Coroutine[Any, Any, R]],
+    max_concurrent: int,
+) -> AsyncIterator[R]:
+    """Process items concurrently, yielding results in input order.
+
+    Maintains up to max_concurrent tasks in flight. Results are yielded
+    in input order (waits for earlier items to complete before yielding
+    later ones).
+
+    Accepts both sync and async iterables. For async iterables, heartbeats
+    (None values) are skipped automatically.
+
+    This is a convenience wrapper around concurrent_expand_map for 1:1
+    item-to-result mappings.
+
+    Args:
+        items: Items to process (sync or async iterable).
+        process: Async function to apply to each item.
+        max_concurrent: Maximum concurrent tasks.
+
+    Yields:
+        Results in input order.
+    """
+    item_id = 0
+
+    def expand(item: T) -> tuple[int, list[T]]:
+        nonlocal item_id
+        key = item_id
+        item_id += 1
+        return (key, [item])
+
+    def combine(key: int, results: list[R]) -> R:
+        return results[0]
+
+    async for result in concurrent_expand_map(
+        items, expand, process, combine, max_concurrent
+    ):
+        yield result
 
 
 # =============================================================================
-# Base Classes
+# Abstract Base Classes
 # =============================================================================
 
 
@@ -85,7 +680,8 @@ class AsyncBackend(ABC):
     """Base class for async generation backends (vLLM, sglang, etc.).
 
     These backends communicate with remote servers via HTTP and support
-    concurrent requests. Used with async worker pool execution.
+    concurrent requests. Scoring methods yield results as they complete
+    (not necessarily in input order) - caller joins by key.
     """
 
     @property
@@ -105,101 +701,134 @@ class AsyncBackend(ABC):
         pass
 
     @abstractmethod
-    async def agenerate(
+    def generate_chat(
         self,
-        messages: list[ChatMessage],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate n completions asynchronously.
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from chat messages, yielding as they complete.
+
+        Results may arrive in any order. Use key to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
 
         Args:
-            messages: Chat messages (list of role/content dicts).
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            requests: Chat generation requests with keys and params. Can be sync
+                iterable (batch mode) or async iterable (streaming mode with
+                None heartbeats).
 
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        Yields:
+            GenerationResult with key matching request.key, or
+            BackendError if the request failed.
         """
         pass
 
     @abstractmethod
-    async def compute_batch_log_probs(
+    def generate_text(
         self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for a batch of traces (token-based).
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
+
+        Results may arrive in any order. Use key to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
 
         Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
+            requests: Text generation requests with keys and params. Can be sync
+                iterable (batch mode) or async iterable (streaming mode with
+                None heartbeats).
 
-        Returns:
-            List of log probabilities (sum over completion tokens) in input order.
+        Yields:
+            GenerationResult with key matching request.key, or
+            BackendError if the request failed.
         """
         pass
 
     @abstractmethod
-    async def compute_text_log_probs(
+    def score_tokens(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations (text-based).
+        requests: Iterable[ScoreTokensRequest]
+        | AsyncIterable[ScoreTokensRequest | None],
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
+        """Score token sequences, yielding results as they complete.
 
-        This is the text-based counterpart to compute_batch_log_probs.
-        Tokenization is handled internally by the backend.
+        Results may arrive in any order. Use request.key to join with input.
+
+        On transient errors, yields BackendError instead of killing the stream.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            requests: Token scoring requests with keys. Can be sync or async.
 
-        Returns:
-            List of log P(continuation | context) values in input order.
-
-        Raises:
-            NotImplementedError: If backend doesn't support text-based scoring.
+        Yields:
+            ScoreTokensResult with key and log_prob, or BackendError.
         """
         pass
 
     @abstractmethod
-    async def compute_chat_log_probs(
+    def score_text(
         self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions with full observability.
+        requests: Iterable[ScoreTextRequest] | AsyncIterable[ScoreTextRequest | None],
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
+        """Score text continuations (multiple-choice), yielding as complete.
 
-        This is the chat-level counterpart to compute_batch_log_probs.
-        Each chat is a (context_messages, completion_messages) tuple.
+        Results may arrive in any order. Use request.key to join with input.
+        Each result contains LogProbResults for all choices in that request.
+
+        On transient errors, yields BackendError instead of killing the stream.
 
         Args:
-            chats: List of (context_messages, completion_messages) tuples.
-                context_messages: Messages forming the context (e.g., few-shot + question).
-                completion_messages: Messages to score (e.g., assistant answer).
+            requests: Text scoring requests with keys. Can be sync or async.
 
-        Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores for each chat.
+        Yields:
+            ScoreTextResult with key and per-choice results, or BackendError.
         """
         pass
 
     @abstractmethod
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
+    def score_chat(
+        self,
+        requests: Iterable[ScoreChatRequest] | AsyncIterable[ScoreChatRequest | None],
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Use request.key to join with input.
+        Each result contains LogProbResults for all choices in that request.
+
+        On transient errors, yields BackendError instead of killing the stream.
+
+        Args:
+            requests: Chat scoring requests with keys. Can be sync or async.
+
+        Yields:
+            ScoreChatResult with key and per-choice results, or BackendError.
+        """
+        pass
+
+    @abstractmethod
+    async def set_placement(self, placement: Sequence[str]) -> None:
         """Set the mixer placement for each layer.
 
         Args:
-            mixer_names: Mixer name for each layer (e.g., ["attention", "mamba", ...]).
-                        Length must match number of layers with stochastic mixers.
+            placement: Mixer to use at each layer (e.g., ["attention", "gdn", ...]).
 
         Raises:
             NotImplementedError: If backend doesn't support dynamic placement.
-            ValueError: If model is not a supported supernet architecture.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements.
+
+        For supernet models, returns the mixer name at each layer.
+        For non-supernet models, returns None.
         """
         pass
 
@@ -207,8 +836,6 @@ class AsyncBackend(ABC):
     @abstractmethod
     def model_structure(self) -> ModelStructure:
         """Model structure (num_layers, mixer_names).
-
-        Available after entering async context (__aenter__).
 
         Raises:
             NotImplementedError: If backend doesn't support model structure discovery.
@@ -220,14 +847,9 @@ class SyncBackend(ABC):
     """Base class for sync generation backends (transformers, etc.).
 
     These backends run locally and process requests synchronously.
-    Supports both single-prompt and batched generation.
+    Scoring methods yield results in input order as batches complete.
+    Batching is handled internally - caller just iterates.
     """
-
-    @property
-    @abstractmethod
-    def batch_size(self) -> int:
-        """Number of prompts to batch together for generation."""
-        pass
 
     @abstractmethod
     def __enter__(self) -> Self:
@@ -240,140 +862,131 @@ class SyncBackend(ABC):
         pass
 
     @abstractmethod
-    def generate(
+    def generate_chat(
         self,
-        messages: list[ChatMessage],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate n completions for a single message sequence.
+        requests: Iterable[GenerateChatRequest | None],
+    ) -> Iterator["GenerationResult"]:
+        """Generate completions from chat messages, yielding as batches complete.
+
+        Results are yielded in input order. Batching is handled internally.
+        Requests with different generation params (n, max_tokens, temperature,
+        top_p) trigger a batch flush - only requests with identical params
+        are batched together.
+
+        Streaming mode: None values are heartbeats for timeout-based flushing.
 
         Args:
-            messages: Chat messages (list of role/content dicts).
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
+            requests: Chat generation requests with keys and params. None values
+                are heartbeats for timeout checking in streaming mode.
 
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        Yields:
+            GenerationResult with key matching request.key.
         """
         pass
 
     @abstractmethod
-    def batch_generate(
+    def generate_text(
         self,
-        messages_batch: Sequence[list[ChatMessage]],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-    ) -> list["GenerationResult"]:
-        """Generate n completions for each message sequence in batch.
+        requests: Iterable[GenerateTextRequest | None],
+    ) -> Iterator["GenerationResult"]:
+        """Generate completions from text prompts, yielding as batches complete.
+
+        Results are yielded in input order. Batching is handled internally.
+        Requests with different generation params (n, max_tokens, temperature,
+        top_p) trigger a batch flush - only requests with identical params
+        are batched together.
+
+        Streaming mode: None values are heartbeats for timeout-based flushing.
 
         Args:
-            messages_batch: List of message sequences.
-            n: Number of completions per sequence.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
+            requests: Text generation requests with keys and params. None values
+                are heartbeats for timeout checking in streaming mode.
 
-        Returns:
-            List of GenerationResult, one per message sequence.
+        Yields:
+            GenerationResult with key matching request.key.
         """
         pass
 
     @abstractmethod
-    def compute_batch_log_probs(
+    def score_tokens(
         self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for a batch of traces (token-based).
+        requests: Iterable[ScoreTokensRequest | None],
+    ) -> Iterator[ScoreTokensResult]:
+        """Score token sequences, yielding results as batches complete.
 
-        Uses config.batch_size for internal batching.
+        Results are yielded in input order. Batching is handled internally.
+
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
 
         Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
+            requests: Token scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
-        Returns:
-            List of log probabilities (sum over completion tokens) in input order.
+        Yields:
+            ScoreTokensResult with key and log_prob.
         """
         pass
 
     @abstractmethod
-    def compute_text_log_probs(
+    def score_text(
         self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations (text-based).
+        requests: Iterable[ScoreTextRequest | None],
+    ) -> Iterator[ScoreTextResult]:
+        """Score text continuations (multiple-choice), yielding as complete.
 
-        This is the text-based counterpart to compute_batch_log_probs.
-        Tokenization is handled internally by the backend.
+        Results are yielded in input order. Each result contains
+        LogProbResults for all choices in that request.
+
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
 
         Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
+            requests: Text scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
-        Returns:
-            List of log P(continuation | context) values in input order.
-
-        Raises:
-            NotImplementedError: If backend doesn't support text-based scoring.
+        Yields:
+            ScoreTextResult with key and per-choice results.
         """
         pass
 
     @abstractmethod
-    def compute_chat_log_probs(
+    def score_chat(
         self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions with full observability.
+        requests: Iterable[ScoreChatRequest | None],
+    ) -> Iterator[ScoreChatResult]:
+        """Score chat completions (multiple-choice), yielding as complete.
 
-        This is the chat-level counterpart to compute_batch_log_probs.
-        Each chat is a (context_messages, completion_messages) tuple.
+        Results are yielded in input order. Each result contains
+        LogProbResults for all choices in that request.
+
+        Streaming mode: When config.flush_timeout is set, requests may include
+        None as heartbeats. Partial batches are flushed after flush_timeout.
 
         Args:
-            chats: List of (context_messages, completion_messages) tuples.
-                context_messages: Messages forming the context (e.g., few-shot + question).
-                completion_messages: Messages to score (e.g., assistant answer).
+            requests: Chat scoring requests with keys. None values are
+                heartbeats for timeout checking in streaming mode.
 
-        Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores for each chat.
+        Yields:
+            ScoreChatResult with key and per-choice results.
         """
         pass
 
     @abstractmethod
-    def set_placement(self, mixer_names: Sequence[str]) -> None:
-        """Set the mixer placement for each layer.
+    def set_placement(self, placement: Sequence[str]) -> None:
+        """Set the mixer placement for each layer."""
+        pass
 
-        Args:
-            mixer_names: Mixer name for each layer (e.g., ["attention", "mamba", ...]).
-                        Length must match number of layers with stochastic mixers.
-
-        Raises:
-            NotImplementedError: If backend doesn't support dynamic placement.
-            ValueError: If model is not a supported supernet architecture.
-        """
+    @property
+    @abstractmethod
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements."""
         pass
 
     @property
     @abstractmethod
     def model_structure(self) -> ModelStructure:
-        """Model structure (num_layers, mixer_names).
-
-        Available after entering context (__enter__).
-
-        Raises:
-            NotImplementedError: If backend doesn't support model structure discovery.
-        """
+        """Model structure (num_layers, mixer_names)."""
         pass
 
 
@@ -396,727 +1009,33 @@ class BaseBackendConfig(BaseModel):
         return self._backend_class(config=self)
 
 
-# =============================================================================
-# vLLM Backend (Async)
-# =============================================================================
+def get_model_path(config: BaseBackendConfig) -> str:
+    """Extract model path from backend config.
 
+    Uses pattern matching on concrete config types.
 
-class VLLMBackend(AsyncBackend):
-    """Async generation backend using vLLM server."""
+    Args:
+        config: Backend configuration.
 
-    def __init__(self, config: "VLLMBackendConfig") -> None:
-        from place_layers.backend.vllm import (
-            VLLMClient,
-            VLLMClientConfig,
-        )
-
-        self._config = config
-        vllm_config = VLLMClientConfig(
-            base_url=config.base_url,
-            model=config.model,
-            api_key=config.api_key,
-            timeout_seconds=config.timeout_seconds,
-            max_concurrent_requests=config.max_concurrent_requests,
-        )
-        self._client = VLLMClient(vllm_config)
-
-    @property
-    def max_concurrent_requests(self) -> int:
-        """Maximum concurrent requests from config."""
-        return self._config.max_concurrent_requests
-
-    async def __aenter__(self) -> Self:
-        await self._client.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self._client.__aexit__(exc_type, exc_val, exc_tb)
-
-    async def agenerate(
-        self,
-        messages: list[ChatMessage],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        return await self._client.chat_generate(
-            messages=messages,
-            n=n,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            request_id=request_id,
-        )
-
-    async def compute_batch_log_probs(
-        self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities using vLLM's echo mode.
-
-        Sends all scoring requests concurrently, bounded by the client's semaphore.
-        """
-        if not traces:
-            return []
-
-        tasks = [
-            self._client.score_completion(prompt, completion, request_id=str(i))
-            for i, (prompt, completion) in enumerate(traces)
-        ]
-
-        results = await asyncio.gather(*tasks)
-        return [r.total_logprob for r in results]
-
-    async def compute_text_log_probs(
-        self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
-
-        Uses vLLM's text_offset in the response to determine where the
-        continuation starts, avoiding the need for local tokenization.
-
-        Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
-
-        Returns:
-            List of log P(continuation | context) values in input order.
-        """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
-            return []
-
-        # Send all scoring requests concurrently, bounded by semaphore
-        tasks = [
-            self._client.score_text_completion(ctx, cont, request_id=str(i))
-            for i, (ctx, cont) in enumerate(zip(contexts, continuations))
-        ]
-
-        results = await asyncio.gather(*tasks)
-        return [r.total_logprob for r in results]
-
-    async def compute_chat_log_probs(
-        self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions with full observability.
-
-        Uses vLLM's prompt_logprobs feature with a diff-based approach:
-        1. Group chats by context (same context = same multiple-choice question)
-        2. Send requests with prompt_logprobs=1 for each chat
-        3. Compare token IDs across chats in each group
-        4. Find differing positions (these are the answer tokens)
-        5. Sum logprobs at differing positions
-
-        This approach is template-agnostic - we don't need to know the chat
-        template structure, just find where tokens differ.
-
-        Args:
-            chats: List of (context_messages, completion_messages) tuples.
-
-        Returns:
-            List of ChatLogProbResult with full token-level detail.
-        """
-        if not chats:
-            return []
-
-        from collections import defaultdict
-
-        # Group chats by context for diff-based scoring
-        # context_key -> [(original_idx, completion_msgs)]
-        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
-            defaultdict(list)
-        )
-        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
-
-        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
-            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
-            context_groups[ctx_key].append((i, comp_msgs))
-            context_msgs_by_key[ctx_key] = ctx_msgs
-
-        # Process each context group
-        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
-
-        for ctx_key, group in context_groups.items():
-            ctx_msgs = context_msgs_by_key[ctx_key]
-            results = await self._score_chat_group(ctx_msgs, group)
-            for (orig_idx, _), result in zip(group, results):
-                all_results[orig_idx] = result
-
-        # Fill any None results with empty results (shouldn't happen)
-        return [
-            r if r is not None else ChatLogProbResult(
-                token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
-            )
-            for r in all_results
-        ]
-
-    async def _score_chat_group(
-        self,
-        context_msgs: Sequence[ChatMessage],
-        group: list[tuple[int, Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Score a group of chats that share the same context.
-
-        Uses INPUT token scoring via vLLM's prompt_logprobs feature. The answer
-        choices are sent as part of the input (in assistant messages), and we
-        extract logprobs for those input tokens. No generation is needed.
-
-        The diff-based approach finds positions where token sequences differ
-        across choices, then extracts logprobs at those positions. This is
-        chat-template agnostic.
-
-        Note: vLLM requires max_tokens >= 1, so we set max_tokens=1. However,
-        we never extract the generated token from the response - we only read
-        prompt_logprobs. The generated content in data["choices"] is ignored.
-
-        Returns ChatLogProbResult with full token-level information.
-        """
-        session = self._client._ensure_session()
-        url = f"{self._client.config.base_url.rstrip('/')}/v1/chat/completions"
-
-        # Send all requests in parallel
-        async def send_request(
-            comp_msgs: Sequence[ChatMessage],
-        ) -> dict:
-            messages = list(context_msgs) + list(comp_msgs)
-            # We use INPUT token scoring: the answer is in comp_msgs (assistant
-            # message), and prompt_logprobs gives us logprobs for all input tokens.
-            # max_tokens=1 is the minimum vLLM accepts; the generated token is
-            # discarded. We only use prompt_logprobs for the input.
-            payload = {
-                "model": self._client.config.model,
-                "messages": messages,
-                "max_tokens": 1,  # vLLM minimum; generated token is discarded
-                "prompt_logprobs": 1,  # Return logprobs for INPUT tokens
-                "temperature": 0,
-            }
-            async with self._client._semaphore:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        raise RuntimeError(
-                            f"vLLM chat request failed: {resp.status}: {error_text}"
-                        )
-                    return await resp.json()
-
-        responses = await asyncio.gather(*[send_request(comp) for _, comp in group])
-
-        # Extract token IDs and logprobs from each response
-        token_sequences: list[list[int | None]] = []
-        logprob_sequences: list[list[float | None]] = []
-
-        for data in responses:
-            prompt_logprobs = data.get("prompt_logprobs", [])
-            tokens: list[int | None] = []
-            logprobs: list[float | None] = []
-
-            for lp in prompt_logprobs:
-                if lp is None:
-                    tokens.append(None)
-                    logprobs.append(None)
-                else:
-                    # The key is the actual token ID (as string)
-                    token_id = int(list(lp.keys())[0])
-                    token_logprob = lp[list(lp.keys())[0]]["logprob"]
-                    tokens.append(token_id)
-                    logprobs.append(token_logprob)
-
-            token_sequences.append(tokens)
-            logprob_sequences.append(logprobs)
-
-        # Find answer token ranges for each sequence (excluding common prefix/suffix)
-        from place_layers.core.token_utils import find_differing_ranges
-
-        answer_ranges = find_differing_ranges(token_sequences)
-
-        # Build ChatLogProbResult for each chat
-        results: list[ChatLogProbResult] = []
-        for tokens, logprobs, (start, end) in zip(
-            token_sequences, logprob_sequences, answer_ranges
-        ):
-            # Extract answer logprobs and compute sum
-            answer_logprobs: list[float] = [
-                logprobs[pos]  # type: ignore[misc]
-                for pos in range(start, end)
-                if pos < len(logprobs) and logprobs[pos] is not None
-            ]
-            total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
-
-            # Convert token_ids: replace None with 0 (shouldn't happen in practice)
-            clean_token_ids = tuple(t if t is not None else 0 for t in tokens)
-
-            results.append(ChatLogProbResult(
-                token_ids=clean_token_ids,
-                logprobs=tuple(logprobs),
-                answer_range=(start, end),
-                total_log_prob=total_log_prob,
-            ))
-
-        return results
-
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
-        """Set mixer placement - NOT YET IMPLEMENTED for vLLM.
-
-        vLLM backend requires custom model integration to support
-        dynamic mixer placement. This will be implemented when the
-        Apriel2 model is ported to vLLM with placement switching support.
-        """
-        raise NotImplementedError(
-            "Dynamic mixer placement is not yet supported for vLLM backend. "
-            "Use TransformersBackend for placement switching, or implement "
-            "vLLM model integration with /v1/set_placement endpoint."
-        )
-
-    @property
-    def model_structure(self) -> ModelStructure:
-        """Model structure - NOT SUPPORTED for vLLM.
-
-        vLLM doesn't expose supernet model structure. Use TransformersBackend
-        or RESTBackend for operations requiring model structure.
-        """
-        raise NotImplementedError(
-            "Model structure discovery is not supported for vLLM backend. "
-            "Use TransformersBackend or RESTBackend for evaluate/optimize commands."
-        )
-
-
-class VLLMBackendConfig(BaseBackendConfig):
-    """Configuration for vLLM generation backend."""
-
-    _backend_class: ClassVar[type[AsyncBackend]] = VLLMBackend
-
-    backend_type: Literal["vllm"] = "vllm"
-
-    base_url: str = Field(description="vLLM server base URL")
-    model: str = Field(description="Model name as registered in vLLM")
-    api_key: str = Field(default="EMPTY", description="API key for vLLM")
-    timeout_seconds: int = Field(default=300, description="Request timeout")
-    max_concurrent_requests: int = Field(
-        default=32, description="Max concurrent HTTP requests"
-    )
-
-
-# =============================================================================
-# Transformers Backend (Sync)
-# =============================================================================
-
-
-class TransformersBackend(SyncBackend):
-    """Sync generation backend using HuggingFace Transformers.
-
-    Wraps TransformersClient for model lifecycle and generation operations.
-    Supports dynamic mixer placement for Apriel2 supernet models.
+    Returns:
+        Model path string, or "rest-backend" for REST backends,
+        or "unknown" for unrecognized config types.
     """
-
-    def __init__(self, config: "TransformersBackendConfig") -> None:
-        from place_layers.backend.transformers import (
-            TransformersClient,
-            TransformersClientConfig,
-        )
-
-        self._config = config
-        client_config = TransformersClientConfig(
-            model_path=config.model_path,
-            tokenizer_path=config.tokenizer_path,
-            torch_dtype=config.torch_dtype,
-            device_map=config.device_map,
-            trust_remote_code=config.trust_remote_code,
-        )
-        self._client = TransformersClient(client_config)
-
-        # Lazy-initialized on first set_placement call
-        self._apriel_structure: "Apriel2Structure | None" = None
-        self._current_placement: tuple[str, ...] | None = None
-
-    @property
-    def batch_size(self) -> int:
-        """Number of prompts to batch together."""
-        return self._config.batch_size
-
-    def __enter__(self) -> Self:
-        from place_layers.backend.apriel_validation import (
-            Apriel2ValidationError,
-            validate_apriel2_model,
-        )
-
-        self._client.__enter__()
-
-        # Eagerly validate model structure on entry
-        try:
-            self._apriel_structure = validate_apriel2_model(self._client.model)
-        except Apriel2ValidationError:
-            # Not an Apriel2 supernet - leave structure as None
-            # This allows using TransformersBackend for non-supernet models
-            # (e.g., precompute_traces with Qwen2)
-            pass
-
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self._client.__exit__(exc_type, exc_val, exc_tb)
-
-    @property
-    def model_structure(self) -> ModelStructure:
-        """Model structure (num_layers, mixer_names).
-
-        Available after entering context (__enter__).
-
-        Raises:
-            NotImplementedError: If model is not an Apriel2 supernet.
-        """
-        if self._apriel_structure is None:
-            raise NotImplementedError(
-                "Model structure discovery requires an Apriel2 supernet model. "
-                "The loaded model does not support dynamic mixer placement."
-            )
-        return ModelStructure(
-            num_layers=self._apriel_structure.num_layers,
-            mixer_names=self._apriel_structure.mixer_names,
-        )
-
-    def generate(
-        self,
-        messages: list[ChatMessage],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate n completions for a single message sequence."""
-        results = self._client.generate_batch(
-            [messages],
-            n=n,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        result = results[0]
-        # Set request_id on the result
-        return type(result)(
-            request_id=request_id,
-            samples=result.samples,
-            prompt_token_ids=result.prompt_token_ids,
-        )
-
-    def batch_generate(
-        self,
-        messages_batch: Sequence[list[ChatMessage]],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-    ) -> list["GenerationResult"]:
-        """Generate n completions for each message sequence in batch."""
-        return self._client.generate_batch(
-            list(messages_batch),
-            n=n,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
-
-    def compute_batch_log_probs(
-        self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities using transformers forward passes.
-
-        Delegates to client's smart batching implementation which groups
-        traces by length for efficient GPU utilization. Uses config.batch_size.
-        """
-        # Convert to the format expected by TransformersClient
-        trace_tuples = [
-            (tuple(prompt), tuple(completion)) for prompt, completion in traces
-        ]
-        return self._client.compute_batch_log_probs(
-            trace_tuples, batch_size=self._config.batch_size
-        )
-
-    def compute_text_log_probs(
-        self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
-
-        Tokenizes contexts and continuations internally, then delegates to
-        compute_batch_log_probs for efficient batched computation.
-
-        Args:
-            contexts: List of context strings (prompts).
-            continuations: List of continuation strings to score.
-
-        Returns:
-            List of log P(continuation | context) values in input order.
-        """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-
-        if not contexts:
-            return []
-
-        tokenizer = self._client.tokenizer
-
-        # Tokenize all contexts and continuations
-        traces: list[tuple[Sequence[int], Sequence[int]]] = []
-        for ctx, cont in zip(contexts, continuations):
-            # Context gets special tokens (BOS), continuation does not
-            ctx_tokens = tokenizer.encode(ctx, add_special_tokens=True)
-            cont_tokens = tokenizer.encode(cont, add_special_tokens=False)
-            traces.append((ctx_tokens, cont_tokens))
-
-        # Delegate to token-based method
-        return self.compute_batch_log_probs(traces)
-
-    def compute_chat_log_probs(
-        self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions using INPUT token scoring.
-
-        Uses the same approach as vLLM backend but with direct model access:
-        1. Group chats by context (same context = same multiple-choice question)
-        2. Tokenize FULL sequence (context + answer) - answer is INPUT, not generated
-        3. Run single forward pass on complete input - NO generation loop
-        4. Compute log_softmax over logits to get per-token logprobs
-        5. Find answer token ranges using diff-based prefix/suffix matching
-        6. SUM logprobs for answer tokens (matches lm-eval semantics)
-
-        This approach is template-agnostic - we find common prefix (context +
-        template overhead) and common suffix (end tokens) to isolate the
-        actual answer tokens. No autoregressive generation needed.
-
-        Args:
-            chats: List of (context_messages, completion_messages) tuples.
-                   completion_messages contain the answer as INPUT.
-
-        Returns:
-            List of ChatLogProbResult with full token-level detail.
-        """
-        if not chats:
-            return []
-
-        from collections import defaultdict
-
-        tokenizer = self._client.tokenizer
-
-        # Group chats by context for diff-based scoring
-        context_groups: dict[tuple, list[tuple[int, Sequence[ChatMessage]]]] = (
-            defaultdict(list)
-        )
-        context_msgs_by_key: dict[tuple, Sequence[ChatMessage]] = {}
-
-        for i, (ctx_msgs, comp_msgs) in enumerate(chats):
-            ctx_key = tuple((m["role"], m["content"]) for m in ctx_msgs)
-            context_groups[ctx_key].append((i, comp_msgs))
-            context_msgs_by_key[ctx_key] = ctx_msgs
-
-        # Process each context group
-        all_results: list[ChatLogProbResult | None] = [None] * len(chats)
-
-        for ctx_key, group in context_groups.items():
-            ctx_msgs = context_msgs_by_key[ctx_key]
-
-            # Tokenize all full messages in this group
-            token_sequences: list[list[int]] = []
-            for _, comp_msgs in group:
-                full_msgs = list(ctx_msgs) + list(comp_msgs)
-                full_text = tokenizer.apply_chat_template(
-                    full_msgs,  # type: ignore[arg-type]
-                    tokenize=False,
-                    add_generation_prompt=False,
-                )
-                tokens = tokenizer.encode(full_text, add_special_tokens=False)  # type: ignore[arg-type]
-                token_sequences.append(tokens)
-
-            # Find answer token ranges using prefix/suffix matching
-            from place_layers.core.token_utils import find_differing_ranges
-
-            answer_ranges = find_differing_ranges(token_sequences)  # type: ignore[arg-type]
-
-            # Compute logprobs and build results
-            results = self._score_sequences_in_ranges(token_sequences, answer_ranges)
-
-            for (orig_idx, _), result in zip(group, results):
-                all_results[orig_idx] = result
-
-        # Fill any None results with empty results (shouldn't happen)
-        return [
-            r if r is not None else ChatLogProbResult(
-                token_ids=(), logprobs=(), answer_range=(0, 0), total_log_prob=0.0
-            )
-            for r in all_results
-        ]
-
-    def _score_sequences_in_ranges(
-        self,
-        token_sequences: list[list[int]],
-        ranges: list[tuple[int, int]],
-    ) -> list[ChatLogProbResult]:
-        """Compute logprobs for each sequence and return full results.
-
-        Args:
-            token_sequences: List of token ID sequences.
-            ranges: List of (start, end) tuples, one per sequence.
-
-        Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
-            answer ranges, and total scores.
-        """
-        import torch
-
-        model = self._client.model
-        device = next(model.parameters()).device
-
-        results: list[ChatLogProbResult] = []
-
-        for tokens, (start, end) in zip(token_sequences, ranges):
-            if not tokens:
-                results.append(ChatLogProbResult(
-                    token_ids=(),
-                    logprobs=(),
-                    answer_range=(start, end),
-                    total_log_prob=0.0,
-                ))
-                continue
-
-            # Run forward pass
-            input_ids = torch.tensor([tokens], device=device)
-            with torch.no_grad():
-                outputs = model(input_ids)
-                logits = outputs.logits[0]  # [seq_len, vocab_size]
-
-            # Compute log probs for each token position
-            log_probs_tensor = torch.log_softmax(logits, dim=-1)
-
-            # Build per-token logprobs list
-            # logprobs[i] is the logprob of token[i] given tokens[:i]
-            # First token has no prior context, so it's None
-            all_logprobs: list[float | None] = [None]
-            for pos in range(1, len(tokens)):
-                token_id = tokens[pos]
-                lp = log_probs_tensor[pos - 1, token_id].item()
-                all_logprobs.append(lp)
-
-            # Extract answer logprobs and compute sum
-            answer_logprobs: list[float] = [
-                all_logprobs[pos]  # type: ignore[misc]
-                for pos in range(start, end)
-                if pos < len(all_logprobs) and all_logprobs[pos] is not None
-            ]
-            total_log_prob = sum(answer_logprobs) if answer_logprobs else 0.0
-
-            results.append(ChatLogProbResult(
-                token_ids=tuple(tokens),
-                logprobs=tuple(all_logprobs),
-                answer_range=(start, end),
-                total_log_prob=total_log_prob,
-            ))
-
-        return results
-
-    def set_placement(self, mixer_names: Sequence[str]) -> None:
-        """Set mixer placement for Apriel2 supernet model.
-
-        Args:
-            mixer_names: Mixer name for each layer (e.g., ["attention", "mamba", ...]).
-
-        Raises:
-            ValueError: If model is not Apriel2 or mixer_names length doesn't match.
-        """
-        placement_tuple = tuple(mixer_names)
-
-        # Skip if already set to this placement
-        if self._current_placement == placement_tuple:
-            return
-
-        # Require Apriel2 supernet (validated in __enter__)
-        if self._apriel_structure is None:
-            raise ValueError(
-                "Model does not support dynamic placement. "
-                "Only Apriel2 supernet models support set_placement()."
-            )
-
-        # Validate length matches
-        if len(mixer_names) != self._apriel_structure.num_layers:
-            raise ValueError(
-                f"mixer_names length ({len(mixer_names)}) doesn't match "
-                f"model layers ({self._apriel_structure.num_layers})"
-            )
-
-        # Validate all mixer names are valid
-        valid_mixers = set(self._apriel_structure.mixer_names)
-        for layer_idx, mixer_name in enumerate(mixer_names):
-            if mixer_name not in valid_mixers:
-                raise ValueError(
-                    f"Invalid mixer '{mixer_name}' at layer {layer_idx}. "
-                    f"Valid mixers: {valid_mixers}"
-                )
-
-        # Set the placement on each layer's stochastic mixer
-        model = self._client.model
-        for layer_idx, mixer_name in enumerate(mixer_names):
-            model.model.decoder.blocks[layer_idx].mixer.main_mixer_name = mixer_name
-
-        self._current_placement = placement_tuple
-
-
-class TransformersBackendConfig(BaseBackendConfig):
-    """Configuration for Transformers generation backend."""
-
-    _backend_class: ClassVar[type[SyncBackend]] = TransformersBackend
-
-    backend_type: Literal["transformers"] = "transformers"
-
-    model_path: str = Field(description="Path to model (local or HF hub)")
-    tokenizer_path: str | None = Field(
-        default=None,
-        description="Path to tokenizer (defaults to model_path)",
-    )
-    torch_dtype: Literal["float16", "bfloat16", "float32"] = Field(
-        default="bfloat16",
-        description="Model dtype",
-    )
-    device_map: str = Field(
-        default="cuda",
-        description="Device map for model loading",
-    )
-    trust_remote_code: bool = Field(
-        default=True,
-        description="Trust remote code when loading model",
-    )
-    batch_size: int = Field(
-        default=1,
-        description="Number of prompts to batch together for generation",
-        gt=0,
-    )
-
-
-# =============================================================================
-# Discriminated Union
-# =============================================================================
-
-# Import REST backend here to avoid circular imports (it imports from this module)
-from place_layers.backend.rest import RESTBackendConfig
-
-BackendConfig = Annotated[
-    VLLMBackendConfig | TransformersBackendConfig | RESTBackendConfig,
-    Field(discriminator="backend_type"),
-]
+    # Lazy imports to avoid circular dependencies
+    from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
+    from place_layers.backend.transformers import TransformersBackendConfig
+    from place_layers.backend.vllm import VLLMBackendConfig
+    from place_layers.clients.local_vllm import LocalVLLMClientConfig
+    from place_layers.clients.remote_vllm import RemoteVLLMClientConfig
+
+    match config:
+        case TransformersBackendConfig(model_path=model_path):
+            return str(model_path)
+        case VLLMBackendConfig(client=LocalVLLMClientConfig(model_path=model_path)):
+            return str(model_path)
+        case VLLMBackendConfig(client=RemoteVLLMClientConfig(model=model)):
+            return model
+        case RESTBackendConfig() | RESTDNSBackendConfig():
+            return "rest-backend"
+        case _:
+            return "unknown"

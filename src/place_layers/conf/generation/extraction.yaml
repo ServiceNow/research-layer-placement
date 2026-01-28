@@ -1,0 +1,15 @@
+# @package generation
+# Short-form extraction (for SWDE, FDA tasks)
+#
+# These tasks extract short values (dates, names, numbers) from documents.
+# The original lm-eval tasks specify 48 tokens max and stop at newline.
+#
+# Note: For extraction tasks, set evaluate_truncated_samples=true since
+# completions that reach max_new_tokens may still contain the answer.
+
+samples_per_problem: 1
+max_new_tokens: 48
+temperature: 0.0  # greedy
+top_p: 1.0
+use_chat_template: true
+evaluate_truncated_samples: true

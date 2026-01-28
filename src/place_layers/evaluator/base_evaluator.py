@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from pathlib import Path
 from typing import ClassVar, Self
 
 from pydantic import BaseModel, Field
@@ -55,8 +56,8 @@ class BaseEvaluator[ParametersT]:
 
     @property
     @abstractmethod
-    def mixer_names(self) -> tuple[str, ...]:
-        """Available mixer types (e.g., ('attention', 'gdn', 'kda')).
+    def mixer_names(self) -> list[str]:
+        """Available mixer types (e.g., ['attention', 'gdn', 'kda']).
 
         Implementations should derive this from the actual model or backend.
         """
@@ -102,6 +103,12 @@ class BaseEvaluatorConfig(BaseModel):
     evaluator_type: str = Field(description="Type identifier for evaluator")
     _impl_class: ClassVar[type[BaseEvaluator]]
 
-    def create_evaluator(self) -> BaseEvaluator:
-        """Smart constructor: instantiate evaluator from config."""
+    def create_evaluator(self, output_dir: "Path | None" = None) -> BaseEvaluator:
+        """Smart constructor: instantiate evaluator from config.
+
+        Args:
+            output_dir: Base output directory for results. Required for
+                       evaluators that write output (BackendEvaluator subclasses).
+                       Can be None for evaluators that don't need output (e.g., mock).
+        """
         return self._impl_class(config=self)

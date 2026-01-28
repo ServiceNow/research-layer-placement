@@ -1,302 +1,385 @@
-"""FastAPI application factory for TransformersBackend REST server.
+"""FastAPI application factory for backend REST server.
 
-This module creates a FastAPI app that exposes the TransformersBackend
-interface over HTTP. The backend is initialized on startup and cleaned
-up on shutdown.
+This module creates a FastAPI app that exposes any backend (sync or async)
+over HTTP. The backend is wrapped in an adapter that provides:
+- For AsyncBackend: thin wrapper, forwards directly
+- For SyncBackend: queue-based batching for GPU efficiency
 
-Usage:
-    from place_layers.server.app import create_app
-    from place_layers.backend.base import (
-        TransformersBackendConfig,
-    )
-
-    config = TransformersBackendConfig(model_path="/path/to/model", ...)
-    app = create_app(config)
-
-    # Run with uvicorn
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+Endpoints mirror backend methods with single-request semantics.
+Server-side batching is transparent to clients.
 """
 
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 
+from place_layers.backend import get_model_path
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
+from place_layers.backend.types import (
+    GenerateChatRequest as BackendGenerateChatRequest,
+    GenerateTextRequest as BackendGenerateTextRequest,
+    ScoreChatRequest as BackendScoreChatRequest,
+    ScoreTextRequest as BackendScoreTextRequest,
+    ScoreTokensRequest as BackendScoreTokensRequest,
+    SupernetStructure,
+)
+from place_layers.server.adapter import (
+    BackendAdapter,
+    BackendRequestError,
+    create_adapter,
+)
 from place_layers.server.schemas import (
-    BatchGenerateRequest,
-    ChatLogProbResultSchema,
-    ComputeChatLogProbsRequest,
-    ComputeChatLogProbsResponse,
-    ComputeLogProbsRequest,
-    ComputeLogProbsResponse,
-    ComputeTextLogProbsRequest,
-    ComputeTextLogProbsResponse,
-    ErrorResponse,
-    GenerateRequest,
+    GenerateChatRequest,
+    GenerateTextRequest,
     HealthResponse,
     InfoResponse,
+    ScoreChatRequest,
+    ScoreChatResponse,
+    ScoreTextRequest,
+    ScoreTextResponse,
+    ScoreTokensRequest,
+    ScoreTokensResponse,
 )
-
-if TYPE_CHECKING:
-    from place_layers.backend.base import (
-        TransformersBackend,
-        TransformersBackendConfig,
-    )
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(backend_config: "TransformersBackendConfig") -> FastAPI:
-    """Create a FastAPI app wrapping a TransformersBackend.
+def create_app(
+    backend_config: BaseBackendConfig,
+    heartbeat_interval: float = 0.01,
+) -> FastAPI:
+    """Create a FastAPI app wrapping any backend.
 
-    The backend is initialized when the server starts and cleaned up
-    when it shuts down. All endpoints are synchronous since the
-    TransformersBackend is synchronous.
+    The backend is wrapped in an adapter that handles:
+    - AsyncBackend: forwards requests directly (backend handles concurrency)
+    - SyncBackend: queues requests and batches them for GPU efficiency
 
     Args:
-        backend_config: Configuration for the TransformersBackend.
+        backend_config: Configuration for the backend.
+        heartbeat_interval: Heartbeat interval for streaming bridge.
 
     Returns:
         FastAPI application ready to be served.
     """
-    # Backend instance - initialized in lifespan
-    backend: "TransformersBackend | None" = None
+    # Adapter instance - initialized in lifespan
+    adapter: BackendAdapter | None = None
+    backend: AsyncBackend | SyncBackend | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        nonlocal backend
-        logger.info(f"Loading model from {backend_config.model_path}")
-        logger.info(f"  torch_dtype: {backend_config.torch_dtype}")
-        logger.info(f"  device_map: {backend_config.device_map}")
-        logger.info(f"  batch_size: {backend_config.batch_size}")
+        nonlocal adapter, backend
+        logger.info(f"Initializing backend: {backend_config.backend_type}")
 
-        # Create and initialize backend
+        # Create backend and adapter
         backend = backend_config.create_backend()
-        backend.__enter__()
+        adapter = create_adapter(backend, heartbeat_interval)
 
-        logger.info("Model loaded successfully, server ready")
+        # Initialize
+        await adapter.__aenter__()
+        logger.info("Backend initialized, server ready")
+
         yield
 
         # Cleanup
-        logger.info("Shutting down, unloading model...")
-        if backend is not None:
-            backend.__exit__(None, None, None)
-        logger.info("Model unloaded")
+        logger.info("Shutting down...")
+        if adapter is not None:
+            await adapter.__aexit__(None, None, None)
+        logger.info("Backend shutdown complete")
 
     app = FastAPI(
-        title="Transformers Backend Server",
-        description="REST API for TransformersBackend with mixer placement support",
+        title="Backend REST Server",
+        description="REST API for generation backends with batching support",
         version="0.1.0",
         lifespan=lifespan,
     )
 
+    # =========================================================================
+    # Request Logging Middleware
+    # =========================================================================
+
+    # Dedicated access logger for request/response logs
+    access_logger = logging.getLogger("place_layers.server.access")
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next) -> Response:
+        """Log all requests with timing and context information.
+
+        Logs to place_layers.server.access logger with structured fields:
+        - request_id: UUID for correlating logs
+        - method: HTTP method
+        - path: Request path
+        - client: Client IP address
+        - status: Response status code
+        - duration_ms: Request duration in milliseconds
+        - error: Error type if request failed
+        """
+        request_id = str(uuid.uuid4())[:8]  # Short ID for readability
+        start_time = time.perf_counter()
+
+        # Extract client info
+        client_host = request.client.host if request.client else "unknown"
+        content_length = request.headers.get("content-length", "-")
+
+        # Log request start at DEBUG level
+        logger.debug(
+            f"[{request_id}] {request.method} {request.url.path} "
+            f"client={client_host} content_length={content_length}"
+        )
+
+        try:
+            response = await call_next(request)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+
+            # Log completed request
+            # Use WARNING for 4xx/5xx, INFO for success
+            log_level = logging.WARNING if response.status_code >= 400 else logging.INFO
+            access_logger.log(
+                log_level,
+                f"[{request_id}] {request.method} {request.url.path} "
+                f"status={response.status_code} duration={duration_ms:.1f}ms "
+                f"client={client_host}",
+            )
+
+            # Add request ID to response headers for client-side correlation
+            response.headers["X-Request-ID"] = request_id
+            return response
+
+        except Exception as e:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            access_logger.error(
+                f"[{request_id}] {request.method} {request.url.path} "
+                f"FAILED duration={duration_ms:.1f}ms client={client_host} "
+                f"error={type(e).__name__}: {e}",
+            )
+            raise
+
+    # =========================================================================
+    # Health & Info
+    # =========================================================================
+
     @app.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
+    async def health() -> HealthResponse:
         """Health check endpoint."""
         return HealthResponse(status="ok")
 
     @app.get("/info", response_model=InfoResponse)
-    def info() -> InfoResponse:
+    async def info() -> InfoResponse:
         """Get server and model information."""
         if backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
-        current_placement = None
-        if backend._current_placement is not None:
-            current_placement = list(backend._current_placement)
-
-        # Get model structure if available (Apriel2 supernet)
+        # Get model structure if available
         num_layers = None
         mixer_names = None
-        if backend._apriel_structure is not None:
-            num_layers = backend._apriel_structure.num_layers
-            mixer_names = list(backend._apriel_structure.mixer_names)
+        supports_placement = False
+
+        structure = backend.model_structure
+        if isinstance(structure, SupernetStructure):
+            num_layers = structure.num_layers
+            mixer_names = list(structure.mixer_names)
+            supports_placement = True
 
         return InfoResponse(
-            model_path=backend_config.model_path,
-            batch_size=backend_config.batch_size,
-            supports_placement=backend._apriel_structure is not None,
-            current_placement=current_placement,
+            model_path=get_model_path(backend_config),
+            supports_placement=supports_placement,
+            current_placement=None,  # TODO: track current placement
             num_layers=num_layers,
             mixer_names=mixer_names,
         )
 
-    @app.post("/generate")
-    def generate(req: GenerateRequest) -> dict:
-        """Generate completions for a single prompt.
+    # =========================================================================
+    # Generation
+    # =========================================================================
 
-        If placement is provided, sets the mixer configuration before generation.
-        The placement setting is a no-op if already set to the same value.
+    @app.post("/generate_chat")
+    async def generate_chat(req: GenerateChatRequest) -> dict:
+        """Generate completions from chat messages.
+
+        Mirrors backend.generate_chat() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert messages to dict format expected by backend
-            messages = [m.model_dump() for m in req.messages]
-
-            # Generate
-            result = backend.generate(
-                messages=messages,
+            # Convert to backend request
+            gen_request = BackendGenerateChatRequest(
+                key=req.key,
+                messages=req.messages,
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
-                request_id=req.request_id,
             )
 
+            # Generate via adapter
+            result = await adapter.generate_chat_one(gen_request)
             return result.model_dump()
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
-            logger.exception("Generation failed")
+            logger.exception("Chat generation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/batch_generate")
-    def batch_generate(req: BatchGenerateRequest) -> list[dict]:
-        """Generate completions for multiple prompts.
+    @app.post("/generate_text")
+    async def generate_text(req: GenerateTextRequest) -> dict:
+        """Generate completions from a text prompt.
 
-        If placement is provided, sets the mixer configuration before generation.
+        Mirrors backend.generate_text() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert messages to dict format
-            messages_batch = [
-                [m.model_dump() for m in messages] for messages in req.messages_batch
-            ]
-
-            # Generate
-            results = backend.batch_generate(
-                messages_batch=messages_batch,
+            # Convert to backend request
+            gen_request = BackendGenerateTextRequest(
+                key=req.key,
+                prompt=req.prompt,
                 n=req.n,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
             )
 
-            return [r.model_dump() for r in results]
+            # Generate via adapter
+            result = await adapter.generate_text_one(gen_request)
+            return result.model_dump()
 
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
-            logger.exception("Batch generation failed")
+            logger.exception("Text generation failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/compute_log_probs", response_model=ComputeLogProbsResponse)
-    def compute_log_probs(req: ComputeLogProbsRequest) -> ComputeLogProbsResponse:
-        """Compute log probabilities for a batch of traces.
+    # =========================================================================
+    # Scoring
+    # =========================================================================
 
-        If placement is provided, sets the mixer configuration before scoring.
+    @app.post("/score_tokens", response_model=ScoreTokensResponse)
+    async def score_tokens(req: ScoreTokensRequest) -> ScoreTokensResponse:
+        """Score a token sequence.
+
+        Mirrors backend.score_tokens() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
 
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert traces to tuple format expected by backend
-            traces = [
-                (tuple(t.prompt_tokens), tuple(t.completion_tokens)) for t in req.traces
-            ]
-
-            # Compute log probs
-            log_probs = backend.compute_batch_log_probs(traces)
-
-            return ComputeLogProbsResponse(log_probs=log_probs)
-
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.exception("Log prob computation failed")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/compute_text_log_probs", response_model=ComputeTextLogProbsResponse)
-    def compute_text_log_probs(
-        req: ComputeTextLogProbsRequest,
-    ) -> ComputeTextLogProbsResponse:
-        """Compute log probabilities for text continuations.
-
-        If placement is provided, sets the mixer configuration before scoring.
-        """
-        if backend is None:
-            raise HTTPException(status_code=503, detail="Backend not initialized")
-        if len(req.contexts) != len(req.continuations):
-            raise HTTPException(
-                status_code=400,
-                detail=f"contexts and continuations must have same length, "
-                f"got {len(req.contexts)} and {len(req.continuations)}",
+            # Convert to backend request
+            score_request = BackendScoreTokensRequest(
+                key=req.key,
+                prompt_tokens=req.prompt_tokens,
+                completion_tokens=req.completion_tokens,
             )
-        try:
-            # Set placement if provided
-            if req.placement is not None:
-                backend.set_placement(req.placement)
 
-            log_probs = backend.compute_text_log_probs(
-                contexts=req.contexts,
-                continuations=req.continuations,
-            )
-            return ComputeTextLogProbsResponse(log_probs=log_probs)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            # Score via adapter
+            result = await adapter.score_tokens_one(score_request)
+            return ScoreTokensResponse(key=result.key, log_prob=result.log_prob)
+
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
-            logger.exception("Text log prob computation failed")
+            logger.exception("Token scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/compute_chat_log_probs", response_model=ComputeChatLogProbsResponse)
-    def compute_chat_log_probs(
-        req: ComputeChatLogProbsRequest,
-    ) -> ComputeChatLogProbsResponse:
-        """Compute log probabilities for chat completions.
+    @app.post("/score_text", response_model=ScoreTextResponse)
+    async def score_text(req: ScoreTextRequest) -> ScoreTextResponse:
+        """Score text continuations with diff-based scoring.
 
-        If placement is provided, sets the mixer configuration before scoring.
+        Mirrors backend.score_text() with single-request semantics.
         """
-        if backend is None:
+        if adapter is None or backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialized")
+
         try:
             # Set placement if provided
             if req.placement is not None:
-                backend.set_placement(req.placement)
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
 
-            # Convert chat messages to dict format expected by backend
-            chats = [
-                (
-                    [m.model_dump() for m in context_msgs],
-                    [m.model_dump() for m in completion_msgs],
-                )
-                for context_msgs, completion_msgs in req.chats
-            ]
-            results = backend.compute_chat_log_probs(chats)
-            response_results = [
-                ChatLogProbResultSchema(
-                    token_ids=list(r.token_ids),
-                    logprobs=list(r.logprobs),
-                    answer_range=r.answer_range,
-                    total_log_prob=r.total_log_prob,
-                )
-                for r in results
-            ]
-            return ComputeChatLogProbsResponse(results=response_results)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            # Convert to backend request
+            score_request = BackendScoreTextRequest(
+                key=req.key,
+                context=req.context,
+                choices=req.choices,
+            )
+
+            # Score via adapter
+            result = await adapter.score_text_one(score_request)
+            return ScoreTextResponse(
+                key=result.key,
+                results=result.results,
+            )
+
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
-            logger.exception("Chat log prob computation failed")
+            logger.exception("Text scoring failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/score_chat", response_model=ScoreChatResponse)
+    async def score_chat(req: ScoreChatRequest) -> ScoreChatResponse:
+        """Score chat completions.
+
+        Mirrors backend.score_chat() with single-request semantics.
+        """
+        if adapter is None or backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+
+        try:
+            # Set placement if provided
+            if req.placement is not None:
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
+
+            # Convert to backend request
+            score_request = BackendScoreChatRequest(
+                key=req.key,
+                context_messages=req.context_messages,
+                completion_messages=req.completion_messages,
+            )
+
+            # Score via adapter
+            result = await adapter.score_chat_one(score_request)
+            return ScoreChatResponse(
+                key=result.key,
+                results=result.results,
+            )
+
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
+        except Exception as e:
+            logger.exception("Chat scoring failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

@@ -1,0 +1,38 @@
+# @package backend
+# REST backend with automatic DNS-based server list generation
+#
+# Generates server URLs from DNS pattern and server count.
+# Useful for Kubernetes deployments with predictable DNS naming.
+#
+# Example: dns_prefix="my-service", num_servers=4, port=8080
+# Generates:
+#   - http://my-service-id-0:8080
+#   - http://my-service-id-1:8080
+#   - http://my-service-id-2:8080
+#   - http://my-service-id-3:8080
+#
+# Usage with environment variables:
+#   DNS_PREFIX=my-cluster NUM_SERVERS=4 python -m place_layers \
+#       +command=evaluate +backend=rest_dns ...
+#
+# Usage with CLI overrides:
+#   python -m place_layers +command=evaluate +backend=rest_dns \
+#       backend.dns_prefix=my-cluster backend.num_servers=4 ...
+
+backend_type: rest_dns
+
+# DNS prefix for server hostnames
+dns_prefix: ${oc.env:DNS_PREFIX}
+
+# Number of servers
+num_servers: ${oc.env:NUM_SERVERS}
+
+# Port (uniform across all servers)
+port: 8080
+
+# Concurrency and timeout settings
+max_concurrent_per_server: 8
+timeout_seconds: 300
+base_recovery_interval: 1.0
+max_recovery_interval: 30.0
+max_retries: 3

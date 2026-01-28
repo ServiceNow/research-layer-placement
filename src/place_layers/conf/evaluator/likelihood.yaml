@@ -30,3 +30,7 @@ split: ${task.split}
 
 # Batching parameters
 batch_size: 32
+
+# Whether to use chat template for formatting prompts
+# Set to false for base models or text-based scoring
+use_chat_template: true

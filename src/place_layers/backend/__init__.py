@@ -1,15 +1,91 @@
 """Generation backend infrastructure.
 
 Provides polymorphic backends for model inference:
-- TransformersBackend: Local HuggingFace models
-- VLLMBackend: Remote vLLM server via OpenAI-compatible API
-- RESTBackend: Generic REST API backend
+- VLLMBackend: vLLM engine, local in-process or remote HTTP (AsyncBackend)
+- TransformersBackend: Local HuggingFace models (SyncBackend)
+- RESTBackend: Generic REST API backend (AsyncBackend)
 """
+
+from typing import Annotated
+
+from pydantic import Field
 
 from place_layers.backend.base import (
     AsyncBackend,
-    BackendConfig,
-    ChatMessage,
-    ModelStructure,
+    BaseBackendConfig,
     SyncBackend,
+    batched_expand_map,
+    batched_map,
+    concurrent_expand_map,
+    concurrent_map,
+    get_model_path,
 )
+from place_layers.backend.types import (
+    BackendError,
+    ChatMessage,
+    GenerateChatRequest,
+    GenerateRequestBase,
+    GenerateTextRequest,
+    LogProbResult,
+    ModelStructure,
+    NoStructure,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
+    SupernetStructure,
+)
+
+# Import backend configs for discriminated union
+from place_layers.backend.mock import MockBackendConfig
+from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
+from place_layers.backend.transformers import TransformersBackendConfig
+from place_layers.backend.vllm import VLLMBackendConfig
+
+# Discriminated union of all backend configs
+BackendConfig = Annotated[
+    VLLMBackendConfig
+    | TransformersBackendConfig
+    | RESTBackendConfig
+    | RESTDNSBackendConfig
+    | MockBackendConfig,
+    Field(discriminator="backend_type"),
+]
+
+__all__ = [
+    "AsyncBackend",
+    "SyncBackend",
+    "BaseBackendConfig",
+    "BackendConfig",
+    "BackendError",
+    # Helper functions
+    "batched_map",
+    "batched_expand_map",
+    "concurrent_map",
+    "concurrent_expand_map",
+    "get_model_path",
+    # Types
+    "ChatMessage",
+    "GenerateChatRequest",
+    "GenerateRequestBase",
+    "GenerateTextRequest",
+    "LogProbResult",
+    "ModelStructure",
+    "NoStructure",
+    "SupernetStructure",
+    # Scoring request/result types
+    "ScoreTokensRequest",
+    "ScoreTokensResult",
+    "ScoreTextRequest",
+    "ScoreTextResult",
+    "ScoreChatRequest",
+    "ScoreChatResult",
+    # Config classes
+    "VLLMBackendConfig",
+    "TransformersBackendConfig",
+    "RESTBackendConfig",
+    "RESTDNSBackendConfig",
+    "MockBackendConfig",
+]

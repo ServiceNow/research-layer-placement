@@ -1,0 +1,98 @@
+version: 1
+disable_existing_loggers: false  # Must be false to allow module-level loggers created at import time
+
+formatters:
+  file_fmt:
+    format: "%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+  rich_fmt:
+    format: "%(message)s"
+
+handlers:
+  console_rich:
+    class: rich.logging.RichHandler
+    level: INFO              # Show INFO level for server monitoring
+    formatter: rich_fmt
+    rich_tracebacks: true
+    tracebacks_show_locals: false
+    markup: true
+    show_time: false
+    show_path: false
+    enable_link_path: false
+
+  file_all:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: file_fmt
+    filename: app.log
+    maxBytes: 10485760       # 10 MB
+    backupCount: 5
+
+  file_err:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: file_fmt
+    filename: error.log
+    maxBytes: 10485760
+    backupCount: 5
+
+  file_access:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: file_fmt
+    filename: access.log      # Dedicated access log
+    maxBytes: 10485760
+    backupCount: 5
+
+root:
+  level: DEBUG
+  handlers: [console_rich, file_all, file_err]
+
+loggers:
+  # vLLM (catch-all + common subtrees)
+  vllm:                 { level: WARNING, handlers: [], propagate: true }
+  vllm.engine:          { level: WARNING, handlers: [], propagate: true }
+  vllm.core:            { level: WARNING, handlers: [], propagate: true }
+  vllm.worker:          { level: WARNING, handlers: [], propagate: true }
+  vllm.v1:              { level: WARNING, handlers: [], propagate: true }
+  vllm.model_executor:  { level: WARNING, handlers: [], propagate: true }
+
+  # Transformers + HF ecosystem
+  transformers:         { level: WARNING, handlers: [], propagate: true }
+  huggingface_hub:      { level: WARNING, handlers: [], propagate: true }
+  tokenizers:           { level: WARNING, handlers: [], propagate: true }
+  safetensors:          { level: WARNING, handlers: [], propagate: true }
+  bitsandbytes:         { level: WARNING, handlers: [], propagate: true }
+  filelock:             { level: WARNING, handlers: [], propagate: true }
+
+  # Networking / HTTP stacks commonly pulled in
+  urllib3:              { level: WARNING, handlers: [], propagate: true }
+  httpx:                { level: WARNING, handlers: [], propagate: true }
+  requests:             { level: WARNING, handlers: [], propagate: true }
+  aiohttp:              { level: WARNING, handlers: [], propagate: true }
+  websockets:           { level: WARNING, handlers: [], propagate: true }
+  grpc:                 { level: ERROR,   handlers: [], propagate: true }
+
+  # Concurrency / event loops
+  asyncio:              { level: WARNING, handlers: [], propagate: true }
+  zmq:                  { level: ERROR,   handlers: [], propagate: true }
+
+  # PyTorch and friends
+  torch:                { level: WARNING, handlers: [], propagate: true }
+  torch.distributed:    { level: WARNING, handlers: [], propagate: true }
+  torch._inductor:      { level: ERROR,   handlers: [], propagate: true }
+
+  # Server logging - ENABLED for serve command
+  uvicorn:              { level: INFO,    handlers: [], propagate: true }
+  uvicorn.error:        { level: INFO,    handlers: [], propagate: true }
+  uvicorn.access:       { level: INFO,    handlers: [file_access], propagate: false }  # uvicorn access log
+  fastapi:              { level: INFO,    handlers: [], propagate: true }
+  starlette:            { level: WARNING, handlers: [], propagate: true }
+
+  # Our custom access logger with request IDs and timing
+  place_layers.server.access: { level: INFO, handlers: [file_access], propagate: false }
+
+  # Misc occasionally noisy libs
+  PIL:                  { level: WARNING, handlers: [], propagate: true }
+  numexpr:              { level: WARNING, handlers: [], propagate: true }
+  tqdm:                 { level: ERROR,   handlers: [], propagate: true }

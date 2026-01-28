@@ -1,375 +1,408 @@
-"""Async client for vLLM OpenAI-compatible API."""
+"""VLLMBackend - Async backend using vLLM (local or remote)."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
-from typing import Self
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from typing import Annotated, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field
+from pydantic import Field
+
+from place_layers.backend.base import (
+    AsyncBackend,
+    BaseBackendConfig,
+    concurrent_expand_map,
+    concurrent_map,
+)
+from place_layers.backend.types import (
+    BackendError,
+    ChatMessage,
+    ChatScoringElement,
+    GenerateChatRequest,
+    GenerateTextRequest,
+    LogProbResult,
+    ModelStructure,
+    NoStructure,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
+    SupernetStructure,
+    TextScoringElement,
+)
+from place_layers.clients.base_vllm import BaseVLLMClient
+from place_layers.clients.local_vllm import LocalVLLMClient, LocalVLLMClientConfig
+from place_layers.clients.remote_vllm import (
+    RemoteVLLMClient,
+    RemoteVLLMClientConfig,
+    VLLMBadRequestError,
+)
+from place_layers.clients.types import GenerationResult, SequenceLogProbs
 
 logger = logging.getLogger(__name__)
 
 
-class VLLMBadRequestError(Exception):
-    """Raised when vLLM returns HTTP 400 (e.g., prompt too long)."""
-
-    pass
-
-
-class VLLMClientConfig(BaseModel):
-    """Configuration for vLLM client."""
-
-    model_config = {"frozen": True}
-
-    base_url: str = Field(description="vLLM server base URL (e.g., 'http://localhost:8000')")
-    model: str = Field(description="Model name as registered in vLLM")
-    api_key: str = Field(description="API key (use 'EMPTY' if not required)", default="EMPTY")
-    timeout_seconds: int = Field(description="Request timeout", default=300)
-    max_concurrent_requests: int = Field(description="Max concurrent requests to vLLM", default=32)
+VLLMClientConfig = Annotated[
+    LocalVLLMClientConfig | RemoteVLLMClientConfig,
+    Field(discriminator="client_type"),
+]
 
 
-class GeneratedSample(BaseModel):
-    """A single generated completion with logprobs."""
+class VLLMBackend(AsyncBackend):
+    """Async generation backend using vLLM (local in-process or remote HTTP).
 
-    model_config = {"frozen": True}
+    Supports both:
+    - Local mode: In-process vLLM engine with OpenAI serving layer
+    - Remote mode: HTTP client for remote vLLM server
 
-    text: str = Field(description="Generated text")
-    token_ids: list[int] = Field(description="Token IDs of generated text")
-    token_logprobs: list[float] = Field(description="Log-probability per token")
-    truncated: bool = Field(description="Whether generation was truncated by max_tokens")
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def total_logprob(self) -> float:
-        """Sum of token log-probabilities."""
-        return sum(self.token_logprobs)
-
-
-class GenerationResult(BaseModel):
-    """Result of a generation request."""
-
-    model_config = {"frozen": True}
-
-    request_id: str = Field(description="Request identifier")
-    samples: list[GeneratedSample] = Field(description="Generated samples")
-    prompt_token_ids: list[int] = Field(description="Token IDs of the prompt")
-
-
-class ScoringResult(BaseModel):
-    """Result of scoring a completion (computing log probability)."""
-
-    model_config = {"frozen": True}
-
-    total_logprob: float = Field(description="Sum of log-probabilities for completion tokens")
-    num_completion_tokens: int = Field(description="Number of completion tokens scored")
-    request_id: str = Field(description="Request identifier", default="")
-
-
-class VLLMClient:
-    """Async client for vLLM's OpenAI-compatible chat completions API.
-
-    Uses /v1/chat/completions which applies the model's chat template.
-
-    Must be used as an async context manager:
-
-        async with VLLMClient(config) as client:
-            result = await client.chat_generate(...)
+    Local mode supports Apriel2 models with runtime mixer placement switching.
     """
 
-    def __init__(self, config: VLLMClientConfig) -> None:
-        self.config = config
-        self._semaphore = asyncio.Semaphore(config.max_concurrent_requests)
-        self._session: aiohttp.ClientSession | None = None
+    def __init__(self, config: "VLLMBackendConfig") -> None:
+        self._config = config
+        self._client: BaseVLLMClient
+
+        if isinstance(config.client, LocalVLLMClientConfig):
+            self._client = LocalVLLMClient(config.client)
+        else:
+            self._client = RemoteVLLMClient(config.client)
+
+        self._current_placement: list[str] | None = None
+
+    @property
+    def max_concurrent_requests(self) -> int:
+        """Maximum number of concurrent requests."""
+        return self._config.client.max_concurrent_requests
 
     async def __aenter__(self) -> Self:
-        """Initialize the HTTP session."""
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-        self._session = aiohttp.ClientSession(
-            timeout=timeout,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+        await self._client.__aenter__()
+        # Sync initial placement from client (if local vLLM with supernet model)
+        if isinstance(self._client, LocalVLLMClient):
+            self._current_placement = self._client.current_placement
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Close the HTTP session."""
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+        await self._client.__aexit__(exc_type, exc_val, exc_tb)
 
-    def _ensure_session(self) -> aiohttp.ClientSession:
-        """Get the session, raising if not in context manager."""
-        if self._session is None:
-            raise RuntimeError(
-                "VLLMClient must be used as an async context manager: "
-                "async with VLLMClient(config) as client: ..."
-            )
-        return self._session
+    @property
+    def model_structure(self) -> ModelStructure:
+        """Model structure (num_layers, mixer_names).
 
-    async def chat_generate(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> GenerationResult:
-        """Generate n completions using chat completions API.
-
-        Uses /v1/chat/completions which applies the model's chat template.
-
-        Args:
-            messages: Chat messages (list of role/content dicts).
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional ID for tracking.
-
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        Returns SupernetStructure for local Apriel2 supernet models,
+        NoStructure for remote backends or non-supernet models.
         """
-        session = self._ensure_session()
-        url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "n": n,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "logprobs": True,
-            "return_token_ids": True,
-        }
+        if not isinstance(self._client, LocalVLLMClient):
+            return NoStructure()
+        if not self._client.supports_placement:
+            return NoStructure()
+        return SupernetStructure(
+            num_layers=self._client.num_layers or 0,
+            mixer_names=self._client.mixer_names or [],
+        )
 
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM chat request failed with status {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+    @property
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if model doesn't support placements."""
+        return self._current_placement
 
-        # prompt_token_ids is at the response root level for chat completions
-        prompt_token_ids: list[int] = data.get("prompt_token_ids") or []
+    def generate_chat(
+        self,
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from chat messages, yielding as they complete.
 
-        samples: list[GeneratedSample] = []
-        for choice in data["choices"]:
-            text: str = choice["message"]["content"]
-            token_ids: list[int] = choice.get("token_ids") or []
-            truncated = choice.get("finish_reason") == "length"
+        Results may arrive in any order. Use key to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+        Concurrency is managed internally via semaphore.
 
-            # Extract logprobs from the logprobs.content array
-            logprobs_data = choice.get("logprobs") or {}
-            content_logprobs = logprobs_data.get("content") or []
-            token_logprobs = [item["logprob"] for item in content_logprobs]
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
+        """
 
-            samples.append(
-                GeneratedSample(
-                    text=text,
-                    token_ids=token_ids,
-                    token_logprobs=token_logprobs,
-                    truncated=truncated,
+        async def process_one(
+            req: GenerateChatRequest,
+        ) -> GenerationResult | BackendError:
+            try:
+                return await self._client.chat_generate(
+                    messages=req.messages,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    key=req.key,
+                )
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
+
+        Results may arrive in any order. Use key to join with input.
+        Each request contains its own generation params (n, max_tokens, etc.).
+        Concurrency is managed internally via semaphore.
+
+        On transient errors (bad request, timeout, server error), yields
+        BackendError instead of killing the stream.
+        """
+
+        async def process_one(
+            req: GenerateTextRequest,
+        ) -> GenerationResult | BackendError:
+            try:
+                return await self._client.text_generate(
+                    prompt=req.prompt,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    key=req.key,
+                )
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
+    async def score_tokens(
+        self,
+        requests: Iterable[ScoreTokensRequest]
+        | AsyncIterable[ScoreTokensRequest | None],
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
+        """Score token sequences, yielding results as they complete.
+
+        Results may arrive in any order. Concurrency is managed internally
+        via semaphore based on max_concurrent_requests.
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
+            try:
+                result = await self._client.score_token_completion(
+                    req.prompt_tokens, req.completion_tokens, key=req.key
+                )
+                return ScoreTokensResult(key=req.key, log_prob=result.total_logprob)
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
+
+    def _build_diff_results(
+        self, results: Sequence[SequenceLogProbs]
+    ) -> list[LogProbResult]:
+        """Build LogProbResults using diff-based scoring.
+
+        Finds where token sequences diverge across choices and computes
+        total log probability for the differing (answer) tokens.
+        """
+        from place_layers.core.token_utils import find_differing_ranges
+
+        token_sequences = [list(r.token_ids) for r in results]
+        answer_ranges = find_differing_ranges(token_sequences)
+
+        log_prob_results: list[LogProbResult] = []
+        for r, (start, end) in zip(results, answer_ranges):
+            answer_logprobs = [
+                lp
+                for pos in range(start, end)
+                if pos < len(r.logprobs) and (lp := r.logprobs[pos]) is not None
+            ]
+            log_prob_results.append(
+                LogProbResult(
+                    token_ids=r.token_ids,
+                    logprobs=r.logprobs,
+                    answer_range=(start, end),
+                    total_log_prob=sum(answer_logprobs),
                 )
             )
+        return log_prob_results
 
-        return GenerationResult(
-            request_id=request_id,
-            samples=samples,
-            prompt_token_ids=prompt_token_ids,
-        )
-
-    async def tokenize(self, text: str) -> Sequence[int]:
-        """Tokenize text using vLLM's tokenize endpoint.
-
-        Args:
-            text: Text to tokenize.
-
-        Returns:
-            Sequence of token IDs.
-        """
-        session = self._ensure_session()
-        url = f"{self.config.base_url.rstrip('/')}/tokenize"
-        payload = {
-            "model": self.config.model,
-            "prompt": text,
-        }
-
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                raise RuntimeError(f"Tokenize failed: {error_text}")
-            data = await resp.json()
-
-        return data.get("tokens", [])
-
-    async def score_completion(
+    async def score_text(
         self,
-        prompt_tokens: Sequence[int],
-        completion_tokens: Sequence[int],
-        request_id: str = "",
-    ) -> ScoringResult:
-        """Compute log probability of completion given prompt.
+        requests: Iterable[ScoreTextRequest] | AsyncIterable[ScoreTextRequest | None],
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
+        """Score text continuations (multiple-choice), yielding as complete.
 
-        Uses vLLM's echo mode: sends the full sequence (prompt + completion)
-        and requests logprobs for all tokens, then extracts just the
-        completion token logprobs.
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
 
-        Args:
-            prompt_tokens: Token IDs for the prompt/context.
-            completion_tokens: Token IDs for the completion to score.
-            request_id: Optional identifier for tracking.
-
-        Returns:
-            ScoringResult with total log probability and token count.
+        On transient errors, yields BackendError instead of killing the stream.
+        If any choice fails, the entire request fails (diff-based scoring
+        requires all choices).
         """
-        session = self._ensure_session()
-        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
 
-        # Concatenate prompt and completion tokens
-        full_tokens = list(prompt_tokens) + list(completion_tokens)
-
-        payload = {
-            "model": self.config.model,
-            "prompt": full_tokens,  # vLLM accepts token IDs directly
-            "max_tokens": 0,  # Don't generate new tokens
-            "echo": True,  # Return logprobs for prompt tokens
-            "logprobs": 1,  # Request logprobs
-        }
-
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM score request failed with status {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
-
-        # Extract logprobs from response
-        # With echo=True, we get logprobs for all tokens including prompt
-        choice = data["choices"][0]
-        logprobs_data = choice.get("logprobs", {})
-        token_logprobs = logprobs_data.get("token_logprobs", [])
-
-        # The first token has no logprob (it's the starting token)
-        # Completion logprobs start at position len(prompt_tokens)
-        prompt_len = len(prompt_tokens)
-        completion_len = len(completion_tokens)
-
-        # Extract logprobs for completion tokens only
-        # token_logprobs[i] is logprob of token[i] given tokens[:i]
-        completion_logprobs = token_logprobs[prompt_len : prompt_len + completion_len]
-
-        # Filter out None values (first token might be None)
-        valid_logprobs = [lp for lp in completion_logprobs if lp is not None]
-        total_logprob = sum(valid_logprobs)
-
-        return ScoringResult(
-            total_logprob=total_logprob,
-            num_completion_tokens=len(valid_logprobs),
-            request_id=request_id,
-        )
-
-    async def score_text_completion(
-        self,
-        context: str,
-        continuation: str,
-        request_id: str = "",
-    ) -> ScoringResult:
-        """Compute log probability of text continuation given text context.
-
-        Unlike score_completion() which requires pre-tokenized inputs, this method
-        accepts raw text and uses vLLM's text_offset in the response to determine
-        where the continuation starts.
-
-        Args:
-            context: The context/prompt text.
-            continuation: The continuation text to score.
-            request_id: Optional identifier for tracking.
-
-        Returns:
-            ScoringResult with total log probability and token count.
-        """
-        session = self._ensure_session()
-        url = f"{self.config.base_url.rstrip('/')}/v1/completions"
-
-        # Send full text - vLLM will tokenize internally
-        full_text = context + continuation
-        continuation_start_char = len(context)
-
-        payload = {
-            "model": self.config.model,
-            "prompt": full_text,
-            "max_tokens": 0,  # Don't generate new tokens
-            "echo": True,  # Return logprobs for prompt tokens
-            "logprobs": 1,  # Request logprobs (includes text_offset)
-        }
-
-        async with self._semaphore:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 400:
-                    error_text = await resp.text()
-                    raise VLLMBadRequestError(error_text)
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM score request failed with status {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
-
-        # Extract logprobs data
-        choice = data["choices"][0]
-        logprobs_data = choice.get("logprobs", {})
-        token_logprobs = logprobs_data.get("token_logprobs", [])
-        text_offset = logprobs_data.get("text_offset", [])
-
-        if not text_offset:
-            raise RuntimeError(
-                "vLLM response missing text_offset. "
-                "This may be due to an older vLLM version or server configuration. "
-                "text_offset is required for text-based log-prob scoring."
+        def expand(
+            req: ScoreTextRequest,
+        ) -> tuple[str, list[TextScoringElement]]:
+            # Fan-out: one request -> list of text scoring elements
+            return (
+                req.key,
+                [
+                    TextScoringElement(context=req.context, continuation=choice)
+                    for choice in req.choices
+                ],
             )
 
-        # Find the first token that starts at or after the continuation
-        # This handles cases where context ends mid-token
-        cont_start_idx = None
-        for i, offset in enumerate(text_offset):
-            if offset >= continuation_start_char:
-                cont_start_idx = i
-                break
+        async def process_one(
+            element: TextScoringElement,
+        ) -> SequenceLogProbs | BackendError:
+            try:
+                return await self._client.score_text_completion(
+                    element.context, element.continuation, key=""
+                )
+            except VLLMBadRequestError as e:
+                # Return error with empty key - combine will fill in the real key
+                return BackendError(key="", error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                return BackendError(key="", error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                return BackendError(key="", error_type="server_error", message=str(e))
 
-        if cont_start_idx is None:
-            # All tokens are context, no continuation tokens
-            return ScoringResult(
-                total_logprob=0.0,
-                num_completion_tokens=0,
-                request_id=request_id,
+        def combine(
+            key: str, results: list[SequenceLogProbs | BackendError]
+        ) -> ScoreTextResult | BackendError:
+            # Check for any errors - if any choice failed, fail the whole request
+            for r in results:
+                if isinstance(r, BackendError):
+                    logger.warning(f"Error scoring {key}: {r.message}")
+                    return BackendError(
+                        key=key, error_type=r.error_type, message=r.message
+                    )
+
+            # All succeeded - build diff results
+            success_results = [r for r in results if isinstance(r, SequenceLogProbs)]
+            if not success_results:
+                return ScoreTextResult(key=key, results=[])
+            return ScoreTextResult(key=key, results=self._build_diff_results(success_results))
+
+        async for result in concurrent_expand_map(
+            requests, expand, process_one, combine, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def score_chat(
+        self,
+        requests: Iterable[ScoreChatRequest] | AsyncIterable[ScoreChatRequest | None],
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
+        If any choice fails, the entire request fails (diff-based scoring
+        requires all choices).
+        """
+
+        def expand(
+            req: ScoreChatRequest,
+        ) -> tuple[str, list[ChatScoringElement]]:
+            # Fan-out: one request -> list of chat scoring elements
+            return (
+                req.key,
+                [
+                    ChatScoringElement(
+                        context_messages=list(req.context_messages),
+                        completion_message=comp_msg,
+                    )
+                    for comp_msg in req.completion_messages
+                ],
             )
 
-        # Sum logprobs for continuation tokens
-        # Note: token_logprobs[0] is typically None (no prior context for first token)
-        continuation_logprobs = token_logprobs[cont_start_idx:]
-        valid_logprobs = [lp for lp in continuation_logprobs if lp is not None]
-        total_logprob = sum(valid_logprobs)
+        async def process_one(
+            element: ChatScoringElement,
+        ) -> SequenceLogProbs | BackendError:
+            try:
+                return await self._client.score_chat_completion(
+                    element.context_messages, [element.completion_message], key=""
+                )
+            except VLLMBadRequestError as e:
+                return BackendError(key="", error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                return BackendError(key="", error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                return BackendError(key="", error_type="server_error", message=str(e))
 
-        return ScoringResult(
-            total_logprob=total_logprob,
-            num_completion_tokens=len(valid_logprobs),
-            request_id=request_id,
-        )
+        def combine(
+            key: str, results: list[SequenceLogProbs | BackendError]
+        ) -> ScoreChatResult | BackendError:
+            # Check for any errors - if any choice failed, fail the whole request
+            for r in results:
+                if isinstance(r, BackendError):
+                    logger.warning(f"Error scoring {key}: {r.message}")
+                    return BackendError(
+                        key=key, error_type=r.error_type, message=r.message
+                    )
 
+            # All succeeded - build diff results
+            success_results = [r for r in results if isinstance(r, SequenceLogProbs)]
+            if not success_results:
+                return ScoreChatResult(key=key, results=[])
+            return ScoreChatResult(key=key, results=self._build_diff_results(success_results))
+
+        async for result in concurrent_expand_map(
+            requests, expand, process_one, combine, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def set_placement(self, placement: Sequence[str]) -> None:
+        """Set mixer placement for Apriel2 supernet model.
+
+        Only available in local mode with Apriel2 supernet models.
+        """
+        if not isinstance(self._client, LocalVLLMClient):
+            raise NotImplementedError(
+                "Dynamic mixer placement is not supported for remote vLLM backend."
+            )
+
+        placement_list = list(placement)
+        if self._current_placement == placement_list:
+            return
+
+        await self._client.set_placement(placement_list)
+        self._current_placement = placement_list
+
+
+class VLLMBackendConfig(BaseBackendConfig):
+    """Configuration for vLLM generation backend (local or remote)."""
+
+    _backend_class: ClassVar[type[AsyncBackend]] = VLLMBackend  # type: ignore[assignment]
+
+    backend_type: Literal["vllm"] = "vllm"
+    client: VLLMClientConfig = Field(
+        description="Client configuration (LocalVLLMClientConfig or RemoteVLLMClientConfig)"
+    )

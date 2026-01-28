@@ -3,9 +3,9 @@
 This module provides BaseGenerativeEvaluator which handles the generation
 loop infrastructure for evaluators that sample completions from models:
 
-- Sync batched generation with memory logging
+- Streams requests across all tasks for optimal server utilization
 - Async worker pool generation for throughput
-- SkippedProblem handling for errors and truncations
+- SkippedProblem handling for generation errors
 - Progress bars
 - Resumability via _prepare_task()
 
@@ -15,11 +15,11 @@ from this and provide their record factory function.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from pydantic import Field
 
@@ -27,18 +27,11 @@ from place_layers.backend.base import (
     AsyncBackend,
     SyncBackend,
 )
-from place_layers.backend.vllm import (
-    GenerationResult,
-    VLLMBadRequestError,
-)
-from place_layers.core.memory_logging import (
-    force_garbage_collection,
-    log_gpu_memory_summary,
-    log_memory,
-)
+from place_layers.backend.types import GenerateChatRequest, GenerateTextRequest
+from place_layers.clients.types import GenerationResult
+from place_layers.core.memory_logging import log_memory
 from place_layers.core.types import LayerPlacement
-from place_layers.evaluator.lm_eval_utils import Docs, build_chat_messages
-from place_layers.evaluator.progress import create_progress
+from place_layers.evaluator.lm_eval_utils import build_chat_messages, build_text_prompt
 from place_layers.evaluator.task_based_evaluator import (
     TaskBasedEvaluator,
     TaskBasedEvaluatorConfig,
@@ -54,19 +47,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _batched(iterable: Sequence, n: int):
-    """Yield successive n-sized chunks from iterable."""
-    for i in range(0, len(iterable), n):
-        yield iterable[i : i + n]
-
-
 class BaseGenerativeEvaluator(TaskBasedEvaluator):
     """Base class for evaluators that generate completions.
 
-    Provides the generation loop infrastructure:
-    - _run_tasks_sync(): Batched sync generation with memory logging
-    - _run_tasks_async(): Worker pool async generation
-    - evaluate(): Handles placement, dispatches to sync/async, computes summary
+    Provides the generation loop infrastructure via TaskBasedEvaluator's
+    streaming methods, with generation-specific hooks:
+    - _build_request(): Builds GenerateChatRequest or GenerateTextRequest
+    - _stream_to_backend_*(): Routes to backend.generate_chat/generate_text
+    - _process_result(): Creates records via _make_records() and writes to disk
 
     Subclasses must implement:
     - _make_records(): Create records from generation results
@@ -80,8 +68,10 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
 
     config: "BaseGenerativeEvaluatorConfig"
 
-    def __init__(self, config: "BaseGenerativeEvaluatorConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self, config: "BaseGenerativeEvaluatorConfig", *, output_dir: Path
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     @abstractmethod
     def _make_records(
@@ -101,9 +91,119 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         pass
 
-    def _get_fewshot_seed(self) -> int | None:
-        """Return seed for few-shot sampling, or None for default behavior."""
-        return None
+    # -------------------------------------------------------------------------
+    # Abstract hook implementations from TaskBasedEvaluator
+    # -------------------------------------------------------------------------
+
+    def _expected_output_type(self) -> Literal["generate_until", "multiple_choice"]:
+        """Generative evaluators expect 'generate_until' tasks."""
+        return "generate_until"
+
+    def _build_request(
+        self, task: "Task", doc: dict, idx: int, task_name: str
+    ) -> tuple[GenerateChatRequest | GenerateTextRequest, None]:
+        """Build generation request. Context is None (not needed for generation).
+
+        Args:
+            task: The lm-eval task.
+            doc: The problem document.
+            idx: Problem index within the task.
+            task_name: Name of the task.
+
+        Returns:
+            (request, None) - request is GenerateChatRequest or GenerateTextRequest.
+        """
+        key = f"{task_name}:{idx}"
+        if self.config.use_chat_template:
+            return GenerateChatRequest(
+                key=key,
+                messages=list(
+                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
+                ),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+            ), None
+        else:
+            return GenerateTextRequest(
+                key=key,
+                prompt=build_text_prompt(task, doc, task.config.num_fewshot or 0),
+                n=self.config.samples_per_problem,
+                max_tokens=self.config.max_new_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+            ), None
+
+    def _stream_to_backend_async(
+        self, requests: AsyncIterable[Any]
+    ) -> AsyncIterator[Any]:
+        """Stream generation requests to async backend.
+
+        Args:
+            requests: Async iterable of GenerateChatRequest or GenerateTextRequest.
+
+        Returns:
+            Async iterator of GenerationResult or BackendError.
+        """
+        assert isinstance(self._backend, AsyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.generate_chat(requests)
+        else:
+            return self._backend.generate_text(requests)
+
+    def _stream_to_backend_sync(
+        self, requests: Iterable[Any]
+    ) -> Iterator[Any]:
+        """Stream generation requests to sync backend.
+
+        Args:
+            requests: Iterable of GenerateChatRequest or GenerateTextRequest.
+
+        Returns:
+            Iterator of GenerationResult or BackendError.
+        """
+        assert isinstance(self._backend, SyncBackend)
+        if self.config.use_chat_template:
+            return self._backend.generate_chat(requests)
+        else:
+            return self._backend.generate_text(requests)
+
+    def _process_result(
+        self,
+        result: GenerationResult,
+        context: None,
+        task: "Task",
+        task_name: str,
+        doc: dict,
+        idx: int,
+    ) -> None:
+        """Process generation result by creating records and writing to disk.
+
+        Args:
+            result: GenerationResult from backend.
+            context: Unused (None for generation).
+            task: The lm-eval task.
+            task_name: Name of the task.
+            doc: The problem document.
+            idx: Problem index within the task.
+        """
+        assert self._trace_writer is not None
+        records = self._make_records(task, doc, idx, result)
+
+        if records:
+            self._trace_writer.append(records)
+        else:
+            skipped = SkippedProblem(
+                problem_id=f"{task_name}:{idx}",
+                task_name=task_name,
+                reason="no samples returned",
+            )
+            self._trace_writer.append([skipped])
+
+    # -------------------------------------------------------------------------
+    # Main evaluation interface
+    # -------------------------------------------------------------------------
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
         """Evaluate by generating completions and checking accuracy.
@@ -116,16 +216,19 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         if parameters is not None:
             await self._set_placement(parameters)
-        else:
-            logger.debug("No placement specified, using default configuration")
+        self._init_trace_writer()
 
-        # Dispatch to async or sync generation
+        log_memory("GENERATION START")
+
+        # Dispatch to base class streaming methods
         if isinstance(self._backend, AsyncBackend):
-            await self._run_tasks_async()
+            await self._run_streaming_async()
         elif isinstance(self._backend, SyncBackend):
-            self._run_tasks_sync()
+            await self._run_streaming_sync()
         else:
             raise TypeError(f"Unknown backend type: {type(self._backend)}")
+
+        log_memory("GENERATION END")
 
         # Compute summary from disk (single source of truth)
         summary = self._summarize()
@@ -136,245 +239,6 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     def _summarize(self) -> "GenerationSummary":
         """Compute summary from disk. Override for different summary types."""
         return summarize_generations(self._output_dir)
-
-    def _run_tasks_sync(self) -> None:
-        """Run all tasks synchronously with batching."""
-        assert isinstance(self._backend, SyncBackend)
-
-        for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
-
-            if prepared is None:
-                continue
-
-            task, task_name, docs, remaining = prepared
-            self._run_generation_sync(task, task_name, docs, remaining)
-
-    def _run_generation_sync(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: Docs,
-        remaining_indices: list[int],
-        memory_log_interval: float = 30.0,
-    ) -> int:
-        """Run sync generation with batching, error handling, and memory logging.
-
-        Args:
-            task: The lm-eval task.
-            task_name: Task name for logging and problem IDs.
-            docs: Document collection.
-            remaining_indices: Problem indices to process.
-            memory_log_interval: Seconds between memory logs.
-
-        Returns:
-            Number of problems processed.
-        """
-        assert isinstance(self._backend, SyncBackend)
-
-        total = len(remaining_indices)
-        batch_size = self._backend.batch_size
-
-        last_memory_log_time = time.perf_counter()
-        processed = 0
-
-        logger.info(f"Processing {total} problems with batch_size={batch_size}")
-        log_memory(f"TASK {task_name} START")
-
-        with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
-
-            for batch_indices in _batched(remaining_indices, batch_size):
-                # Build messages for this batch
-                batch_docs = [docs[idx] for idx in batch_indices]
-                messages_batch = [
-                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
-                    for doc in batch_docs
-                ]
-
-                # Log memory periodically
-                current_time = time.perf_counter()
-                if current_time - last_memory_log_time >= memory_log_interval:
-                    log_memory(f"BATCH {processed}/{total}")
-                    last_memory_log_time = current_time
-
-                # Generate completions
-                try:
-                    results = self._backend.batch_generate(
-                        messages_batch,
-                        n=self.config.samples_per_problem,
-                        max_tokens=self.config.max_new_tokens,
-                        temperature=self.config.temperature,
-                        top_p=self.config.top_p,
-                    )
-                except Exception as e:
-                    # Log memory state on exception
-                    logger.error(f"Batch failed: {type(e).__name__}: {e}")
-                    log_memory(f"BATCH {processed} EXCEPTION", level=logging.ERROR)
-
-                    # Check if OOM and log detailed info
-                    if "CUDA out of memory" in str(e) or "OutOfMemory" in type(e).__name__:
-                        logger.error("OUT OF MEMORY DETECTED!")
-                        log_gpu_memory_summary()
-
-                    # Skip all problems in the batch
-                    logger.warning(f"Skipping {len(batch_indices)} problems due to error")
-                    for idx in batch_indices:
-                        skipped = SkippedProblem(
-                            problem_id=f"{task_name}:{idx}",
-                            task_name=task_name,
-                            reason=str(e),
-                        )
-                        self._trace_writer.append([skipped])
-
-                    # Try to recover memory
-                    force_garbage_collection()
-                    processed += len(batch_indices)
-                    progress.advance(progress_task, len(batch_indices))
-                    continue
-
-                # Create and save records for each problem
-                for idx, doc, result in zip(batch_indices, batch_docs, results):
-                    records = self._make_records(task, doc, idx, result)
-
-                    if records:
-                        self._trace_writer.append(records)
-                    else:
-                        # All samples were truncated/invalid
-                        skipped = SkippedProblem(
-                            problem_id=f"{task_name}:{idx}",
-                            task_name=task_name,
-                            reason=f"all {len(result.samples)} samples truncated",
-                        )
-                        self._trace_writer.append([skipped])
-
-                processed += len(batch_indices)
-                progress.advance(progress_task, len(batch_indices))
-
-        # Log final memory state
-        log_memory(f"TASK {task_name} END")
-        logger.info(f"Task '{task_name}': generation complete ({processed} problems)")
-
-        return processed
-
-    async def _run_tasks_async(self) -> None:
-        """Run all tasks asynchronously with worker pool."""
-        assert isinstance(self._backend, AsyncBackend)
-
-        for task_spec in self.config.tasks:
-            prepared = self._prepare_task(
-                task_spec, "generate_until", seed=self._get_fewshot_seed()
-            )
-
-            if prepared is None:
-                continue
-
-            task, task_name, docs, remaining = prepared
-            await self._run_generation_async(task, task_name, docs, remaining)
-
-    async def _run_generation_async(
-        self,
-        task: "Task",
-        task_name: str,
-        docs: Docs,
-        remaining_indices: list[int],
-    ) -> int:
-        """Run async generation with worker pool and error handling.
-
-        Args:
-            task: The lm-eval task.
-            task_name: Task name for logging and problem IDs.
-            docs: Document collection.
-            remaining_indices: Problem indices to process.
-
-        Returns:
-            Number of problems processed.
-        """
-        assert isinstance(self._backend, AsyncBackend)
-        backend = self._backend  # Local var for type narrowing in nested function
-
-        total = len(remaining_indices)
-
-        queue: asyncio.Queue[int] = asyncio.Queue()
-        for idx in remaining_indices:
-            await queue.put(idx)
-
-        processed_count = 0
-        write_lock = asyncio.Lock()
-
-        with create_progress() as progress:
-            progress_task = progress.add_task(f"[cyan]{task_name}", total=total)
-
-            async def worker():
-                nonlocal processed_count
-                while True:
-                    try:
-                        idx = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-
-                    doc = docs[idx]
-                    messages = build_chat_messages(task, doc, task.config.num_fewshot or 0)
-
-                    try:
-                        result = await backend.agenerate(
-                            messages,
-                            n=self.config.samples_per_problem,
-                            max_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                            request_id=f"{task_name}:{idx}",
-                        )
-
-                        # Create records
-                        records = self._make_records(task, doc, idx, result)
-
-                        async with write_lock:
-                            if records:
-                                self._trace_writer.append(records)
-                            else:
-                                # All samples were truncated/invalid
-                                skipped = SkippedProblem(
-                                    problem_id=f"{task_name}:{idx}",
-                                    task_name=task_name,
-                                    reason=f"all {len(result.samples)} samples truncated",
-                                )
-                                self._trace_writer.append([skipped])
-
-                    except VLLMBadRequestError as e:
-                        logger.warning(f"Skipping {task_name}:{idx} - {e}")
-                        async with write_lock:
-                            skipped = SkippedProblem(
-                                problem_id=f"{task_name}:{idx}",
-                                task_name=task_name,
-                                reason=str(e),
-                            )
-                            self._trace_writer.append([skipped])
-
-                    except Exception as e:
-                        logger.warning(f"Problem {task_name}:{idx} failed: {e}")
-                        async with write_lock:
-                            skipped = SkippedProblem(
-                                problem_id=f"{task_name}:{idx}",
-                                task_name=task_name,
-                                reason=str(e),
-                            )
-                            self._trace_writer.append([skipped])
-
-                    processed_count += 1
-                    progress.advance(progress_task)
-
-            # Start workers
-            num_workers = min(self._backend.max_concurrent_requests, total)
-            workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
-
-            # Wait for completion
-            await asyncio.gather(*workers)
-
-        logger.info(f"Task '{task_name}': generation complete ({processed_count} problems)")
-        return processed_count
 
 
 class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
@@ -396,4 +260,15 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         description="Nucleus sampling parameter",
         gt=0.0,
         le=1.0,
+    )
+    use_chat_template: bool = Field(
+        description="Whether to use chat template formatting. When False, prompts are "
+        "formatted as raw text without any chat structure. "
+        "Use False for evaluating base models or when chat template is undesired.",
+    )
+    evaluate_truncated_samples: bool = Field(
+        description="Whether to evaluate truncated samples for correctness. "
+        "When True, samples that reach max_new_tokens are still checked against the ground truth. "
+        "Useful for extraction tasks where the answer may be complete before hitting the limit. "
+        "When False, truncated samples are automatically marked as incorrect.",
     )

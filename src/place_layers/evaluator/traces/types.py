@@ -38,6 +38,10 @@ class BaseGeneration(BaseModel):
         description="Whether the answer extracted from completion is correct. "
         "None if correctness could not be determined."
     )
+    truncated: bool = Field(
+        default=False,
+        description="Whether generation hit max tokens without EOS.",
+    )
 
     # Metadata
     problem_id: str = Field(
@@ -52,6 +56,11 @@ class BaseGeneration(BaseModel):
     completion_text: str = Field(
         description="Decoded completion text (for debugging)",
         default="",
+    )
+    placement: tuple[str, ...] | None = Field(
+        default=None,
+        description="Layer placement configuration (mixer names per layer). "
+        "None for non-supernet models or when placement is not tracked.",
     )
 
     @property
@@ -97,54 +106,43 @@ class SkippedProblem(BaseModel):
     problem_id: str = Field(description="Unique identifier for the source problem")
     task_name: str = Field(description="lm-eval task name")
     reason: str = Field(description="Why the problem was skipped")
+    placement: tuple[str, ...] | None = Field(
+        default=None,
+        description="Layer placement configuration (mixer names per layer). "
+        "None for non-supernet models or when placement is not tracked.",
+    )
 
 
-class LikelihoodRecord(BaseModel):
-    """Multiple-choice evaluation record with full token-level observability.
-
-    Used by the LikelihoodEvaluator to stream evaluation results to disk.
-    Records everything needed to debug and analyze likelihood scoring:
-    - Full chat messages (few-shot + question + each choice as assistant message)
-    - Per-choice token sequences and logprobs
-    - Answer range detection results
-    - Predictions and correctness
-    """
+class _LikelihoodRecordBase(BaseModel):
+    """Base fields shared by chat and text likelihood records."""
 
     model_config = {"frozen": True}
-
-    record_type: Literal["likelihood"] = "likelihood"
 
     # === Problem Identification ===
     problem_id: str = Field(description="Unique identifier (e.g., 'mmlu_astronomy:42')")
     task_name: str = Field(description="lm-eval task name")
 
-    # === Input: Full Chat Messages ===
-    context_messages: tuple[ChatMessage, ...] = Field(
-        description="Chat messages forming the shared context (few-shot + question)"
-    )
-    raw_choices: tuple[str, ...] = Field(
-        description="Raw choice strings (e.g., ('A', 'B', 'C', 'D'))"
-    )
-    choices: tuple[ChatMessage, ...] = Field(
-        description="Full assistant message for each choice"
+    # === Raw Choices (shared) ===
+    raw_choices: list[str] = Field(
+        description="Raw choice strings (e.g., ['A', 'B', 'C', 'D'])"
     )
 
     # === Token-Level Data Per Choice (parallel arrays indexed by choice) ===
-    choice_token_ids: tuple[tuple[int, ...], ...] = Field(
-        description="Full tokenized sequence for each choice (after chat template)"
+    choice_token_ids: list[list[int]] = Field(
+        description="Full tokenized sequence for each choice (after template)"
     )
-    choice_logprobs: tuple[tuple[float | None, ...], ...] = Field(
+    choice_logprobs: list[list[float | None]] = Field(
         description="Per-token logprobs for each choice (None for first token)"
     )
-    choice_answer_ranges: tuple[tuple[int, int], ...] = Field(
+    choice_answer_ranges: list[tuple[int, int]] = Field(
         description="(start, end) range identifying answer tokens for each choice"
     )
 
     # === Scores (derived but stored for convenience) ===
-    choice_log_probs: tuple[float, ...] = Field(
+    choice_log_probs: list[float] = Field(
         description="Sum of answer logprobs for each choice (used for prediction)"
     )
-    choice_lengths: tuple[int, ...] = Field(
+    choice_lengths: list[int] = Field(
         description="Character length of each choice (for length normalization)"
     )
 
@@ -154,6 +152,43 @@ class LikelihoodRecord(BaseModel):
     pred_idx_norm: int = Field(description="Index predicted with length normalization")
     correct: bool = Field(description="Whether pred_idx == gold_idx")
     correct_norm: bool = Field(description="Whether pred_idx_norm == gold_idx")
+
+
+class ChatLikelihoodRecord(_LikelihoodRecordBase):
+    """Multiple-choice evaluation record for chat-based scoring.
+
+    Used when use_chat_template=True. Stores context and choices as chat messages.
+    """
+
+    record_type: Literal["chat_likelihood"] = "chat_likelihood"
+
+    # === Input: Chat Messages ===
+    context_messages: list[ChatMessage] = Field(
+        description="Chat messages forming the shared context (few-shot + question)"
+    )
+    choices: list[ChatMessage] = Field(
+        description="Assistant message for each choice"
+    )
+
+
+class TextLikelihoodRecord(_LikelihoodRecordBase):
+    """Multiple-choice evaluation record for text-based scoring.
+
+    Used when use_chat_template=False. Stores context and choices as raw strings.
+    """
+
+    record_type: Literal["text_likelihood"] = "text_likelihood"
+
+    # === Input: Raw Text ===
+    context: str = Field(
+        description="Raw text context (few-shot + question)"
+    )
+    choices: list[str] = Field(
+        description="Choice strings with delimiters"
+    )
+
+
+LikelihoodRecord = ChatLikelihoodRecord | TextLikelihoodRecord
 
 
 class ISProblemRecord(BaseModel):
@@ -342,6 +377,7 @@ class TraceDataset(BaseModel):
         task_names: set[str] = set()
         malformed = 0
 
+        truncated_count = 0
         if validation_path.exists():
             with validation_path.open() as f:
                 for line in f:
@@ -350,6 +386,10 @@ class TraceDataset(BaseModel):
                         continue
                     try:
                         trace = Trace.model_validate_json(line)
+                        # Skip truncated traces - they have incomplete reasoning
+                        if trace.truncated:
+                            truncated_count += 1
+                            continue
                         all_traces.append(trace)
                         task_names.add(trace.task_name)
                     except Exception:
@@ -357,6 +397,8 @@ class TraceDataset(BaseModel):
 
         if malformed > 0:
             logger.warning(f"{malformed} malformed lines ignored in validation.jsonl")
+        if truncated_count > 0:
+            logger.info(f"{truncated_count} truncated traces skipped (incomplete reasoning)")
 
         return cls(
             traces=tuple(all_traces),

@@ -23,9 +23,10 @@ Usage
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from place_layers.backend.vllm import GenerationResult
+from place_layers.clients.types import GenerationResult
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,
@@ -59,32 +60,37 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
 
     config: "GenerativeEvaluatorConfig"
 
-    def __init__(self, config: "GenerativeEvaluatorConfig") -> None:
-        super().__init__(config)
-        logger.info(f"Saving generations to: {self._output_dir}/validation.jsonl")
+    def __init__(
+        self, config: "GenerativeEvaluatorConfig", *, output_dir: "Path"
+    ) -> None:
+        super().__init__(config, output_dir=output_dir)
 
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult
     ) -> list[Generation]:
         """Create Generation records from a generation result.
 
-        Skips truncated samples (incomplete text makes correctness checking unreliable).
-        Returns empty list if all samples are truncated.
+        Truncated sample handling depends on evaluate_truncated_samples config:
+        - When False (default): truncated samples marked incorrect (reasoning tasks)
+        - When True: truncated samples evaluated for correctness (extraction tasks)
         """
         task_name = task.config.task or ""
         generations = []
         problem_id = f"{task_name}:{idx}"
 
         for sample_idx, sample in enumerate(result.samples):
-            if sample.truncated:
-                logger.debug(f"Skipping truncated sample {problem_id}:{sample_idx}")
-                continue
+            if sample.truncated and not self.config.evaluate_truncated_samples:
+                # Truncated and we don't evaluate truncated -> mark incorrect
+                logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
+                correct = False
+            else:
+                correct = check_correctness(task, doc, sample.text)
 
-            correct = check_correctness(task, doc, sample.text)
             gen = Generation(
                 prompt_tokens=tuple(result.prompt_token_ids),
                 completion_tokens=tuple(sample.token_ids),
                 correct=correct,
+                truncated=sample.truncated,
                 problem_id=problem_id,
                 task_name=task_name,
                 sample_idx=sample_idx,

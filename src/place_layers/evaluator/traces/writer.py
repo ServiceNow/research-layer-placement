@@ -26,33 +26,64 @@ from pydantic import BaseModel, Field
 
 from place_layers.evaluator.traces.types import (
     BaseGeneration,
+    ChatLikelihoodRecord,
     ISProblemRecord,
-    LikelihoodRecord,
     SkippedProblem,
+    TextLikelihoodRecord,
     TraceRecord,
     TraceRecordAdapter,
 )
 
+# Tuple for isinstance checks (union types don't work with isinstance)
+_LikelihoodRecordTypes = (ChatLikelihoodRecord, TextLikelihoodRecord)
+
 logger = logging.getLogger(__name__)
 
 
-class PrecomputeMetadata(BaseModel):
-    """Metadata for a trace precomputation run.
+class OutputMetadata(BaseModel):
+    """Metadata for trace output directories.
 
-    This is the only persisted state besides the traces themselves.
-    It's used for:
-    1. Validating config hash on resumption
-    2. Providing context when loading traces
+    Required fields ensure proper provenance tracking and resumption support.
+    TraceWriter validates that required fields are provided.
+
+    Used for:
+    1. Validating config hash on resumption (prevents mixing incompatible runs)
+    2. Providing provenance (model, placement) when loading traces
+    3. Recording placement for supernet optimization
     """
 
     model_config = {"frozen": True}
 
-    config_hash: str = Field(description="Hash of config for resumption validation")
-    teacher_model: str = Field(description="Teacher model identifier")
-    samples_per_problem: int = Field(description="Target samples per problem")
+    # Timing
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        description="When this run was started",
+        description="When this output directory was created",
+    )
+
+    # Model identification (required)
+    model_name: str = Field(
+        description="Model name or path (required for provenance)",
+    )
+    model_revision: str | None = Field(
+        default=None,
+        description="Model revision (git commit, HF revision, etc.)",
+    )
+
+    # Placement (None for non-supernet models)
+    placement: list[str] | None = Field(
+        description="Layer placement (mixer at each layer). "
+        "None for non-supernet models.",
+    )
+
+    # Resumption (required)
+    config_hash: str = Field(
+        description="Hash of config for resumption validation",
+    )
+
+    # Precomputation specific (optional)
+    samples_per_problem: int | None = Field(
+        default=None,
+        description="Number of samples generated per problem",
     )
 
 
@@ -62,19 +93,79 @@ class TraceWriter:
     This structure enables direct loading via HuggingFace datasets:
         load_dataset(output_dir, split='validation')
 
+    Owns metadata lifecycle:
+    - Loads existing metadata on init (for resumption)
+    - Merges with provided metadata
+    - Saves merged metadata to disk
+
     State reconstruction scans both files, filtering by task_name field.
+
     """
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        metadata: OutputMetadata,
+    ) -> None:
+        """Initialize TraceWriter with required metadata.
+
+        Args:
+            output_dir: Directory for trace files (will be created if needed).
+            metadata: Required metadata for this output directory. Must include
+                model_name, placement, and config_hash.
+
+        Raises:
+            ValueError: If resuming with different config_hash.
+        """
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Load existing metadata (if resuming)
+        existing = self._load_metadata()
+
+        # Validate config hash on resumption
+        if existing is not None and existing.config_hash != metadata.config_hash:
+            raise ValueError(
+                f"Config hash mismatch: existing={existing.config_hash}, "
+                f"current={metadata.config_hash}. Cannot resume with different config."
+            )
+
+        # Always use provided metadata (it's from current config)
+        # For resumption, we've validated config_hash matches
+        self._metadata = metadata
+        self._save_metadata()
+
+        self._is_resuming = existing is not None
+
+    @property
+    def is_resuming(self) -> bool:
+        """Whether this writer is resuming from existing data."""
+        return self._is_resuming
+
+    @property
+    def metadata(self) -> OutputMetadata | None:
+        """Current metadata for this output directory."""
+        return self._metadata
+
+    def _load_metadata(self) -> OutputMetadata | None:
+        """Load metadata from disk if it exists."""
+        path = self.output_dir / "metadata.json"
+        if not path.exists():
+            return None
+        return OutputMetadata.model_validate_json(path.read_text())
+
+    def _save_metadata(self) -> None:
+        """Save current metadata to disk."""
+        if self._metadata is not None:
+            path = self.output_dir / "metadata.json"
+            path.write_text(self._metadata.model_dump_json(indent=2))
 
     def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
         # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
         valid = [
             r for r in records
-            if isinstance(r, (BaseGeneration, LikelihoodRecord, ISProblemRecord))
+            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord))
         ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
@@ -115,21 +206,6 @@ def compute_config_hash(config: dict) -> str:
     return hashlib.sha256(config_str.encode()).hexdigest()[:16]
 
 
-def load_metadata(output_dir: Path) -> PrecomputeMetadata | None:
-    """Load metadata from output directory, if it exists."""
-    path = output_dir / "metadata.json"
-    if not path.exists():
-        return None
-    return PrecomputeMetadata.model_validate_json(path.read_text())
-
-
-def save_metadata(output_dir: Path, metadata: PrecomputeMetadata) -> None:
-    """Save metadata to output directory."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "metadata.json"
-    path.write_text(metadata.model_dump_json(indent=2))
-
-
 def _extract_problem_idx(problem_id: str) -> int:
     """Extract problem index from problem_id like 'gsm8k:42'."""
     match = re.search(r":(\d+)$", problem_id)
@@ -162,12 +238,13 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                     record = TraceRecordAdapter.validate_json(line)
                     match record:
                         # BaseGeneration covers both Trace and Generation
-                        # LikelihoodRecord for multiple-choice evaluation
+                        # ChatLikelihoodRecord/TextLikelihoodRecord for multiple-choice
                         # ISProblemRecord for importance-weighted evaluation
                         case (
                             BaseGeneration(task_name=tn, problem_id=pid)
                             | SkippedProblem(task_name=tn, problem_id=pid)
-                            | LikelihoodRecord(task_name=tn, problem_id=pid)
+                            | ChatLikelihoodRecord(task_name=tn, problem_id=pid)
+                            | TextLikelihoodRecord(task_name=tn, problem_id=pid)
                             | ISProblemRecord(task_name=tn, problem_id=pid)
                         ):
                             if tn not in completed:
@@ -179,48 +256,6 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                     logger.warning(f"Malformed line {line_num} in {jsonl_path}: {e}")
 
     return completed, malformed_lines
-
-
-def get_completed_problems(output_dir: Path, task_name: str) -> set[int]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problem indices.
-
-    This is the authoritative way to determine what work has been done.
-    The traces on disk are the single source of truth. Both successful
-    traces and skipped problems count as "completed" (no retry needed).
-
-    Args:
-        output_dir: Directory containing trace files.
-        task_name: Name of the task to check.
-
-    Returns:
-        Set of problem indices that have been processed (traced or skipped).
-    """
-    completed, malformed_lines = _scan_completed_problems(output_dir)
-
-    if malformed_lines > 0:
-        logger.warning(f"Task '{task_name}': {malformed_lines} malformed lines ignored")
-
-    return completed.get(task_name, set())
-
-
-def get_all_completed_problems(output_dir: Path) -> dict[str, set[int]]:
-    """Scan validation.jsonl and skipped.jsonl to find completed problems per task.
-
-    Args:
-        output_dir: Directory containing trace files.
-
-    Returns:
-        Dict mapping task_name -> set of completed problem indices.
-    """
-    completed, malformed_lines = _scan_completed_problems(output_dir)
-
-    if malformed_lines > 0:
-        logger.warning(f"{malformed_lines} malformed lines ignored")
-
-    for task_name, indices in completed.items():
-        logger.info(f"Reconstructed task '{task_name}': {len(indices)} problems completed")
-
-    return completed
 
 
 class TaskStats(BaseModel):
@@ -463,7 +498,7 @@ def summarize_likelihood(output_dir: Path) -> LikelihoodSummary:
                 continue
             try:
                 record = TraceRecordAdapter.validate_json(line)
-                if isinstance(record, LikelihoodRecord):
+                if isinstance(record, _LikelihoodRecordTypes):
                     task_results[record.task_name].append(
                         (record.correct, record.correct_norm)
                     )

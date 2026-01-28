@@ -34,7 +34,7 @@ class OptimizeCommand(BaseCommand):
 
         # Create component instances using smart constructors
         # Architecture: Problem wraps Evaluator, Search only sees Problem
-        async with self.config.evaluator.create_evaluator() as evaluator:
+        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
             problem = self.config.problem.create_problem(evaluator)
             search_strategy = self.config.search_strategy.create_search_strategy()
             result_handler = self.config.result_handler.create_result_handler()

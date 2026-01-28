@@ -1,0 +1,22 @@
+# @package _global_
+# Start REST server with local vLLM backend
+#
+# Usage:
+#   python -m place_layers +experiments=serve_local_vllm
+
+defaults:
+  - /command: serve
+  - /backend: local_vllm
+  - /model: apriel2_0_5b_dev
+  - override /hydra/job_logging: server  # Enable server access logging
+  - _self_
+
+model:
+  model_path: /tmp/apriel2-0.5b-dev
+
+backend:
+  client:
+    gpu_memory_utilization: 0.7
+
+host: "0.0.0.0"
+port: 8000

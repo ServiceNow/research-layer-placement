@@ -15,32 +15,62 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Self, Sequence
+from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import Field
+from pydantic import BaseModel, Field, computed_field
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
-from place_layers.backend.base import (
-    AsyncBackend,
-    BaseBackendConfig,
-    ChatLogProbResult,
-    ChatMessage,
+from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
+from place_layers.backend.types import (
+    BackendError,
+    GenerateChatRequest,
+    GenerateTextRequest,
+    LogProbResult,
     ModelStructure,
+    NoStructure,
+    ScoreChatRequest,
+    ScoreChatResult,
+    ScoreTextRequest,
+    ScoreTextResult,
+    ScoreTokensRequest,
+    ScoreTokensResult,
+    SupernetStructure,
 )
-
-if TYPE_CHECKING:
-    from place_layers.backend.vllm import GenerationResult
+from place_layers.clients.types import GenerationResult
+from place_layers.server.schemas import (
+    GenerateChatRequest as ServerGenerateChatRequest,
+    GenerateTextRequest as ServerGenerateTextRequest,
+    ScoreChatRequest as ServerScoreChatRequest,
+    ScoreTextRequest as ServerScoreTextRequest,
+    ScoreTokensRequest as ServerScoreTokensRequest,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class RESTBackendError(Exception):
-    """Error communicating with REST server."""
+    """Error communicating with REST server.
 
-    pass
+    Attributes:
+        status_code: HTTP status code if available (4xx for client errors, 5xx for server errors).
+        message: Error message.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+    @property
+    def error_type(self) -> Literal["bad_request", "timeout", "server_error"]:
+        """Return error type based on status code."""
+        if self.status_code is not None and 400 <= self.status_code < 500:
+            return "bad_request"
+        return "server_error"
 
 
 class TransientError(RESTBackendError):
@@ -90,15 +120,32 @@ class ServerHealth:
 
 @dataclass
 class ServerPool:
-    """Manages a pool of servers with health tracking and recovery scheduling.
+    """Manages server health tracking and load-balanced server selection.
 
-    Tracks which servers are healthy and schedules recovery checks for
-    unhealthy servers using exponential backoff with a cap.
+    This class has two responsibilities:
 
-    Usage:
-        pool = ServerPool(["http://server1:8080", "http://server2:8080"])
+    1. **Health Tracking**: Tracks which servers are healthy and schedules
+       recovery checks for unhealthy servers using exponential backoff.
 
-        # Get servers to try (healthy first, then unhealthy due for check)
+    2. **Server Selection**: Provides load-balanced server selection via
+       round-robin distribution across healthy servers.
+
+    Thread Safety
+    -------------
+    The `select_server()` method is safe to call from concurrent async tasks.
+    While `_round_robin_counter` is modified without locking, this is safe because:
+    - Python's GIL ensures integer increment is atomic
+    - There are no `await` points between read and write of the counter
+    - Worst case of a "race" is slightly uneven distribution, not incorrectness
+
+    Usage
+    -----
+        pool = ServerPool(["http://server1:8080", "http://server2:8080"], ...)
+
+        # Select a server for load balancing
+        preferred = pool.select_server()
+
+        # Use with failover (tries preferred first, then others)
         for server in pool.get_servers_to_try():
             try:
                 result = await call_server(server, ...)
@@ -106,24 +153,62 @@ class ServerPool:
                 return result
             except TransientError:
                 pool.mark_failure(server)
-
-        raise AllServersFailedError("No servers available")
     """
 
     servers: list[str]
-    base_recovery_interval: float = 10.0  # Initial wait before retry
-    max_recovery_interval: float = 300.0  # Cap at 5 minutes
+    base_recovery_interval: float
+    max_recovery_interval: float
     _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
+    _round_robin_counter: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize health tracking for all servers."""
         self._health = {server: ServerHealth() for server in self.servers}
+        self._round_robin_counter = 0
+
+    # -------------------------------------------------------------------------
+    # Server Selection (Load Balancing)
+    # -------------------------------------------------------------------------
+
+    def select_server(self) -> str | None:
+        """Select the next server using round-robin load balancing.
+
+        Distributes requests evenly across healthy servers. The round-robin
+        counter operates on the full server list but skips unhealthy servers,
+        ensuring consistent ordering even when servers fail and recover.
+
+        Returns:
+            The selected server URL, or None if no servers are available.
+
+        Note:
+            When None is returned, the caller should proceed with failover
+            logic (via `get_servers_to_try()`) which will wait for server
+            recovery if all servers are unhealthy.
+        """
+        available = self.get_servers_to_try()
+        if not available:
+            return None
+
+        # Round-robin over the FULL server list, skipping unavailable servers.
+        # This maintains stable ordering even when servers fail/recover.
+        for _ in range(len(self.servers)):
+            candidate = self.servers[self._round_robin_counter % len(self.servers)]
+            self._round_robin_counter += 1
+            if candidate in available:
+                return candidate
+
+        # Should never reach here if get_servers_to_try() returned non-empty
+        return None
 
     def get_servers_to_try(self) -> list[str]:
-        """Get servers in priority order for trying a request.
+        """Get all available servers in priority order for failover.
 
-        Returns healthy servers first (in original order), then unhealthy
-        servers that are due for a recovery check.
+        Returns healthy servers first (preserving original order), followed by
+        unhealthy servers that are due for a recovery check.
+
+        This method is used by failover logic to determine which servers to
+        try when a request fails. For initial server selection, use
+        `select_server()` instead.
         """
         healthy: list[str] = []
         due_for_check: list[str] = []
@@ -139,6 +224,10 @@ class ServerPool:
 
         return healthy + due_for_check
 
+    # -------------------------------------------------------------------------
+    # Health Tracking
+    # -------------------------------------------------------------------------
+
     def mark_success(self, server: str) -> None:
         """Mark a server as healthy after a successful request."""
         if server in self._health:
@@ -147,8 +236,13 @@ class ServerPool:
             if was_unhealthy:
                 logger.info(f"Server {server} recovered and marked healthy")
 
-    def mark_failure(self, server: str) -> None:
-        """Mark a server as unhealthy after a failed request."""
+    def mark_failure(self, server: str, reason: str = "unknown") -> None:
+        """Mark a server as unhealthy after a failed request.
+
+        Args:
+            server: The server URL that failed.
+            reason: Human-readable reason for the failure.
+        """
         if server in self._health:
             self._health[server].mark_unhealthy()
             health = self._health[server]
@@ -156,11 +250,16 @@ class ServerPool:
                 self.base_recovery_interval, self.max_recovery_interval
             )
             wait_time = next_check - time.monotonic()
+            reason_str = f": {reason}" if reason else ""
             logger.warning(
-                f"Server {server} marked unhealthy "
+                f"Server {server} marked unhealthy: {reason} "
                 f"(failures: {health.consecutive_failures}, "
-                f"next check in {wait_time:.1f}s)"
+                f"next check in {wait_time:.1f}s){reason_str}"
             )
+
+    # -------------------------------------------------------------------------
+    # Status Queries
+    # -------------------------------------------------------------------------
 
     def next_recovery_check_time(self) -> float | None:
         """Get the earliest time when an unhealthy server should be rechecked.
@@ -219,23 +318,19 @@ class WaitForServerRecovery(wait_base):
 class RESTBackend(AsyncBackend):
     """Async backend that distributes requests across multiple REST servers.
 
-    Each server runs a TransformersBackend via the serve command. Requests
-    are distributed using round-robin load balancing. The placement is
-    included in every request, allowing servers to set it lazily.
-
-    Usage:
-        async with RESTBackend(config) as backend:
-            await backend.set_placement(["attention", "mamba", ...])
-            result = await backend.agenerate(messages, n=8, ...)
+    Servers run TransformersBackend via the serve command. Requests are
+    distributed using round-robin load balancing with automatic failover.
+    Each request includes the current placement, allowing servers to
+    update their state lazily on receipt.
     """
 
-    def __init__(self, config: "RESTBackendConfig") -> None:
+    def __init__(self, config: "RESTBackendConfig | RESTDNSBackendConfig") -> None:
         self._config = config
         self._session: aiohttp.ClientSession | None = None
         # Per-server semaphores for concurrency control
         self._server_semaphores: dict[str, asyncio.Semaphore] | None = None
         self._current_placement: list[str] | None = None
-        self._model_structure: ModelStructure | None = None
+        self._model_structure: SupernetStructure | None = None
 
         if not config.servers:
             raise ValueError("At least one server URL must be provided")
@@ -276,8 +371,10 @@ class RESTBackend(AsyncBackend):
             await self._session.close()
             raise
 
+        healthy = self._server_pool.healthy_count()
+        total = len(self._server_pool.servers)
         logger.info(
-            f"REST backend initialized with {len(self._server_pool.servers)} servers, "
+            f"REST backend initialized with {healthy}/{total} healthy servers, "
             f"max {self.max_concurrent_requests} concurrent requests"
         )
         if self._model_structure:
@@ -305,24 +402,25 @@ class RESTBackend(AsyncBackend):
     def _get_semaphore(self, server: str) -> asyncio.Semaphore:
         """Get the semaphore for a specific server."""
         if self._server_semaphores is None:
-            raise RuntimeError(
-                "RESTBackend must be used as an async context manager"
-            )
+            raise RuntimeError("RESTBackend must be used as an async context manager")
         return self._server_semaphores[server]
 
     async def _call_with_failover(
         self,
         endpoint: str,
-        payload: dict[str, Any],
+        request: BaseModel,
+        preferred_server: str | None = None,
     ) -> dict[str, Any]:
         """Call an endpoint with failover across servers.
 
-        Tries healthy servers first, then unhealthy servers due for recovery.
+        Tries preferred server first (if specified and healthy), then falls back
+        to other healthy servers, then unhealthy servers due for recovery.
         Uses tenacity for retry with server-aware wait strategy.
 
         Args:
             endpoint: API endpoint (e.g., "/generate").
-            payload: JSON payload to send.
+            request: Typed request model to serialize and send.
+            preferred_server: Optional server to try first (for load distribution).
 
         Returns:
             JSON response from the server.
@@ -331,6 +429,7 @@ class RESTBackend(AsyncBackend):
             RESTBackendError: If all servers fail after retries.
         """
         session = self._ensure_session()
+        payload = request.model_dump(mode="json")
 
         @retry(
             retry=retry_if_exception_type(AllServersFailedError),
@@ -346,6 +445,12 @@ class RESTBackend(AsyncBackend):
                     "No servers available to try (all unhealthy, none due for check)"
                 )
 
+            # If preferred server is specified and healthy, try it first
+            if preferred_server is not None and preferred_server in servers_to_try:
+                servers_to_try = [preferred_server] + [
+                    s for s in servers_to_try if s != preferred_server
+                ]
+
             errors: list[tuple[str, str]] = []
             for server in servers_to_try:
                 try:
@@ -355,28 +460,38 @@ class RESTBackend(AsyncBackend):
                         ) as resp:
                             if resp.status == 503:
                                 # Server unavailable - mark unhealthy, try next
-                                self._server_pool.mark_failure(server)
-                                errors.append((server, "503 Service Unavailable"))
+                                reason = "503 Service Unavailable"
+                                self._server_pool.mark_failure(server, reason)
+                                errors.append((server, reason))
                                 continue
                             if resp.status >= 500:
                                 # Server error - mark unhealthy, try next
                                 error_text = await resp.text()
-                                self._server_pool.mark_failure(server)
-                                errors.append((server, f"{resp.status}: {error_text}"))
+                                reason = f"{resp.status}: {error_text[:200]}"
+                                self._server_pool.mark_failure(server, reason)
+                                errors.append((server, reason))
                                 continue
                             if resp.status >= 400:
                                 # Client error - don't retry, raise immediately
                                 error_text = await resp.text()
                                 raise RESTBackendError(
-                                    f"Request failed (status {resp.status}): {error_text}"
+                                    f"Request failed (status {resp.status}): {error_text}",
+                                    status_code=resp.status,
                                 )
                             # Success - parse response (errors here are not connection issues)
                             self._server_pool.mark_success(server)
                             return await resp.json()
-                except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
-                    # Connection/timeout errors - mark unhealthy, try next server
-                    self._server_pool.mark_failure(server)
-                    errors.append((server, str(e)))
+                except aiohttp.ClientConnectionError as e:
+                    # Connection error - mark unhealthy, try next server
+                    reason = f"Connection error: {e}"
+                    self._server_pool.mark_failure(server, reason)
+                    errors.append((server, reason))
+                    continue
+                except asyncio.TimeoutError:
+                    # Timeout - mark unhealthy, try next server
+                    reason = f"Timeout after {self._config.timeout_seconds}s"
+                    self._server_pool.mark_failure(server, reason)
+                    errors.append((server, reason))
                     continue
 
             # All servers we tried failed
@@ -388,21 +503,77 @@ class RESTBackend(AsyncBackend):
         except AllServersFailedError as e:
             raise RESTBackendError(str(e)) from e
 
-    async def _validate_servers(self) -> None:
-        """Validate all servers are reachable and have consistent configuration.
+    async def _do_http_request(
+        self,
+        server: str,
+        endpoint: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute an HTTP POST request to a specific server.
 
-        Fetches /info from all servers in parallel, verifies they're all healthy,
-        and checks that they all have the same configuration.
+        Handles response status codes, marks server health, and logs the request.
+        This is the core HTTP logic shared by both _call_server and _call_with_failover.
+
+        Args:
+            server: Server URL to call.
+            endpoint: API endpoint (e.g., "/compute_chat_log_probs").
+            payload: JSON payload to send.
+
+        Returns:
+            JSON response from the server.
 
         Raises:
-            RESTBackendError: If any server is unreachable or configurations differ.
+            RESTBackendError: If the request fails (4xx, 5xx, or connection error).
+        """
+        session = self._ensure_session()
+
+        try:
+            async with self._get_semaphore(server):
+                async with session.post(f"{server}{endpoint}", json=payload) as resp:
+                    if resp.status == 503:
+                        error_msg = "503 Service Unavailable"
+                        self._server_pool.mark_failure(server, error_msg)
+                        raise RESTBackendError(f"{server} returned {error_msg}")
+                    if resp.status >= 500:
+                        error_text = await resp.text()
+                        error_msg = f"{resp.status}: {error_text}"
+                        self._server_pool.mark_failure(server, error_msg)
+                        raise RESTBackendError(
+                            f"{server} returned {error_msg}"
+                        )
+                    if resp.status >= 400:
+                        error_text = await resp.text()
+                        raise RESTBackendError(
+                            f"Request failed (status {resp.status}): {error_text}"
+                        )
+                    # Success
+                    self._server_pool.mark_success(server)
+                    logger.debug(f"Request to {endpoint} handled by {server}")
+                    return await resp.json()
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+            error_msg = f"Connection error: {type(e).__name__}: {e}"
+            self._server_pool.mark_failure(server, error_msg)
+            raise RESTBackendError(f"{error_msg} to {server}") from e
+
+    async def _validate_servers(self) -> None:
+        """Validate servers and check configuration consistency.
+
+        Fetches /info from all servers in parallel. Servers that fail to respond
+        are marked as unhealthy and will be retried during evaluation. At least
+        one server must be reachable. All reachable servers must have consistent
+        configuration.
+
+        Raises:
+            RESTBackendError: If no servers are reachable or configurations differ.
         """
         session = self._ensure_session()
 
         async def fetch_info(server: str) -> tuple[str, dict | None, str | None]:
             """Fetch info from a server, returning (server, data, error)."""
             try:
-                async with session.get(f"{server}/info") as resp:
+                # Use a short timeout for validation to fail fast on unhealthy servers
+                timeout = aiohttp.ClientTimeout(total=10.0)
+                async with session.get(f"{server}/info", timeout=timeout) as resp:
                     if resp.status == 200:
                         return (server, await resp.json(), None)
                     else:
@@ -420,14 +591,25 @@ class RESTBackend(AsyncBackend):
         for server, data, error in results:
             if error is not None:
                 failed.append((server, error))
+                # Mark as unhealthy - will be retried during evaluation
+                self._server_pool.mark_failure(server, error)
             else:
                 assert data is not None  # If no error, data must exist
                 infos.append((server, data))
 
-        if failed:
+        if not infos:
+            # No servers reachable at all
             failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
             raise RESTBackendError(
-                f"Failed to connect to {len(failed)}/{len(self._server_pool.servers)} servers: {failed_msg}"
+                f"Failed to connect to all {len(self._server_pool.servers)} servers: {failed_msg}"
+            )
+
+        if failed:
+            # Some servers failed but at least one succeeded
+            failed_msg = ", ".join(f"{s}: {e}" for s, e in failed)
+            logger.warning(
+                f"Failed to connect to {len(failed)}/{len(self._server_pool.servers)} servers "
+                f"during initialization: {failed_msg}. These servers will be retried during evaluation."
             )
 
         # All succeeded - validate consistency
@@ -479,9 +661,9 @@ class RESTBackend(AsyncBackend):
                     )
 
             # Store model structure
-            self._model_structure = ModelStructure(
+            self._model_structure = SupernetStructure(
                 num_layers=ref_layers,
-                mixer_names=tuple(ref_mixers),
+                mixer_names=ref_mixers,
             )
 
         logger.info(
@@ -495,277 +677,227 @@ class RESTBackend(AsyncBackend):
 
         Available after entering async context (__aenter__).
 
-        Raises:
-            NotImplementedError: If server doesn't expose model structure.
+        Returns SupernetStructure if the server has model structure info,
+        NoStructure otherwise.
         """
         if self._model_structure is None:
-            raise NotImplementedError(
-                "Model structure not available from REST server. "
-                "The server may be running a non-supernet model, or "
-                "the server version doesn't support model structure discovery."
-            )
+            return NoStructure()
         return self._model_structure
 
-    async def agenerate(
+    @property
+    def placement(self) -> list[str] | None:
+        """Current mixer placement, or None if not set."""
+        return self._current_placement
+
+    def generate_chat(
         self,
-        messages: list[ChatMessage],
-        *,
-        n: int,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        request_id: str = "",
-    ) -> "GenerationResult":
-        """Generate completions via REST server.
+        requests: Iterable[GenerateChatRequest]
+        | AsyncIterable[GenerateChatRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from chat messages, yielding as they complete.
 
-        Args:
-            messages: Chat messages for generation.
-            n: Number of completions to generate.
-            max_tokens: Maximum tokens per completion.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling parameter.
-            request_id: Optional request identifier.
+        Results may arrive in any order. Use key to join with input.
+        Requests are distributed across healthy servers.
 
-        Returns:
-            GenerationResult with samples and prompt token IDs.
+        On transient errors, yields BackendError instead of killing the stream.
         """
-        from place_layers.backend.vllm import (
-            GenerationResult,
-        )
 
-        payload = {
-            "messages": messages,
-            "n": n,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "request_id": request_id,
-            "placement": self._current_placement,
-        }
-
-        data = await self._call_with_failover("/generate", payload)
-        return GenerationResult.model_validate(data)
-
-    async def compute_batch_log_probs(
-        self,
-        traces: Sequence[tuple[Sequence[int], Sequence[int]]],
-    ) -> list[float]:
-        """Compute log probabilities for traces, distributed across servers.
-
-        Traces are distributed across healthy servers. Each server processes
-        its chunk and results are reassembled.
-
-        Args:
-            traces: List of (prompt_tokens, completion_tokens) tuples.
-
-        Returns:
-            List of log probabilities in input order.
-        """
-        if not traces:
-            return []
-
-        # Get servers to use (healthy + due for recovery check)
-        servers = self._server_pool.get_servers_to_try()
-        if not servers:
-            raise RESTBackendError("No servers available for batch processing")
-
-        # Distribute traces across servers
-        indexed_traces: list[tuple[int, tuple[Sequence[int], Sequence[int]]]] = [
-            (idx, trace) for idx, trace in enumerate(traces)
-        ]
-
-        results = await self._distribute_batch(
-            items=indexed_traces,
-            endpoint="/compute_log_probs",
-            make_payload=lambda items: {
-                "traces": [
-                    {
-                        "prompt_tokens": list(trace[0]),
-                        "completion_tokens": list(trace[1]),
-                    }
-                    for _, trace in items
-                ],
-                "placement": self._current_placement,
-            },
-            parse_response=lambda items, data: [
-                (idx, lp) for (idx, _), lp in zip(items, data["log_probs"])
-            ],
-        )
-
-        # Sort by original index and extract log probs
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
-
-    async def _distribute_batch[T, R](
-        self,
-        items: list[tuple[int, T]],
-        endpoint: str,
-        make_payload: Callable[[list[tuple[int, T]]], dict[str, Any]],
-        parse_response: Callable[[list[tuple[int, T]], dict[str, Any]], list[tuple[int, R]]],
-    ) -> list[tuple[int, R]]:
-        """Distribute batch items across servers with failover.
-
-        Args:
-            items: List of (index, item) tuples to process.
-            endpoint: API endpoint to call.
-            make_payload: Function to create request payload from items.
-            parse_response: Function to parse response into (index, result) tuples.
-
-        Returns:
-            List of (index, result) tuples.
-        """
-        servers = self._server_pool.get_servers_to_try()
-        if not servers:
-            raise RESTBackendError("No servers available")
-
-        # Distribute items across servers
-        server_items: dict[str, list[tuple[int, Any]]] = {s: [] for s in servers}
-        for i, item in enumerate(items):
-            server = servers[i % len(servers)]
-            server_items[server].append(item)
-
-        # Process each server's chunk
-        async def process_chunk(
-            server: str, chunk_items: list[tuple[int, Any]]
-        ) -> list[tuple[int, Any]]:
-            if not chunk_items:
-                return []
-            payload = make_payload(chunk_items)
+        async def process_one(
+            req: GenerateChatRequest,
+        ) -> GenerationResult | BackendError:
             try:
-                data = await self._call_with_failover(endpoint, payload)
-                return parse_response(chunk_items, data)
-            except RESTBackendError:
-                # If failover exhausted, re-raise
-                raise
-
-        tasks = [
-            process_chunk(server, chunk_items)
-            for server, chunk_items in server_items.items()
-            if chunk_items
-        ]
-
-        chunk_results = await asyncio.gather(*tasks)
-
-        # Flatten results
-        results: list[tuple[int, Any]] = []
-        for chunk in chunk_results:
-            results.extend(chunk)
-        return results
-
-    async def compute_text_log_probs(
-        self,
-        contexts: Sequence[str],
-        continuations: Sequence[str],
-    ) -> list[float]:
-        """Compute log probabilities for text continuations.
-
-        Distributes the contexts/continuations across healthy servers
-        for parallel computation.
-
-        Args:
-            contexts: List of context strings.
-            continuations: List of continuation strings to score.
-
-        Returns:
-            List of log probabilities in input order.
-        """
-        if len(contexts) != len(continuations):
-            raise ValueError(
-                f"contexts and continuations must have same length, "
-                f"got {len(contexts)} and {len(continuations)}"
-            )
-        if not contexts:
-            return []
-
-        # Create indexed items: (idx, (context, continuation))
-        items: list[tuple[int, tuple[str, str]]] = [
-            (idx, (ctx, cont)) for idx, (ctx, cont) in enumerate(zip(contexts, continuations))
-        ]
-
-        # Capture current placement for the lambda
-        placement = self._current_placement
-
-        results = await self._distribute_batch(
-            items=items,
-            endpoint="/compute_text_log_probs",
-            make_payload=lambda chunk_items: {
-                "contexts": [ctx for _, (ctx, _) in chunk_items],
-                "continuations": [cont for _, (_, cont) in chunk_items],
-                "placement": placement,
-            },
-            parse_response=lambda chunk_items, data: [
-                (idx, lp) for (idx, _), lp in zip(chunk_items, data["log_probs"])
-            ],
-        )
-
-        # Sort by original index and extract log probs
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
-
-    async def compute_chat_log_probs(
-        self,
-        chats: Sequence[tuple[Sequence[ChatMessage], Sequence[ChatMessage]]],
-    ) -> list[ChatLogProbResult]:
-        """Compute log probabilities for chat completions.
-
-        Distributes chats across healthy servers.
-
-        Args:
-            chats: List of (context_messages, completion_messages) tuples.
-
-        Returns:
-            List of ChatLogProbResult with token IDs, per-token logprobs,
-            answer range, and total log probability.
-        """
-        if not chats:
-            return []
-
-        # Create indexed items
-        items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]] = [
-            (idx, chat) for idx, chat in enumerate(chats)
-        ]
-
-        # Capture current placement for the closure
-        placement = self._current_placement
-
-        def make_payload(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]]
-        ) -> dict[str, Any]:
-            return {
-                "chats": [
-                    (list(context), list(completion))
-                    for _, (context, completion) in chunk_items
-                ],
-                "placement": placement,
-            }
-
-        def parse_response(
-            chunk_items: list[tuple[int, tuple[Sequence[ChatMessage], Sequence[ChatMessage]]]],
-            data: dict[str, Any],
-        ) -> list[tuple[int, ChatLogProbResult]]:
-            results = []
-            for (idx, _), result_data in zip(chunk_items, data["results"]):
-                result = ChatLogProbResult(
-                    token_ids=tuple(result_data["token_ids"]),
-                    logprobs=tuple(result_data["logprobs"]),
-                    answer_range=tuple(result_data["answer_range"]),
-                    total_log_prob=result_data["total_log_prob"],
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerGenerateChatRequest(
+                    key=req.key,
+                    messages=req.messages,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    placement=self._current_placement,
                 )
-                results.append((idx, result))
-            return results
+                data = await self._call_with_failover(
+                    "/generate_chat", server_request, preferred_server=preferred_server
+                )
+                return GenerationResult.model_validate(data)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
 
-        results = await self._distribute_batch(
-            items=items,
-            endpoint="/compute_chat_log_probs",
-            make_payload=make_payload,
-            parse_response=parse_response,
-        )
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
 
-        # Sort by original index and extract results
-        results.sort(key=lambda x: x[0])
-        return [r[1] for r in results]
+    def generate_text(
+        self,
+        requests: Iterable[GenerateTextRequest]
+        | AsyncIterable[GenerateTextRequest | None],
+    ) -> AsyncIterator[GenerationResult | BackendError]:
+        """Generate completions from text prompts, yielding as they complete.
 
-    async def set_placement(self, mixer_names: Sequence[str]) -> None:
+        Results may arrive in any order. Use key to join with input.
+        Requests are distributed across healthy servers.
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(
+            req: GenerateTextRequest,
+        ) -> GenerationResult | BackendError:
+            try:
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerGenerateTextRequest(
+                    key=req.key,
+                    prompt=req.prompt,
+                    n=req.n,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover(
+                    "/generate_text", server_request, preferred_server=preferred_server
+                )
+                return GenerationResult.model_validate(data)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
+    async def score_tokens(
+        self,
+        requests: Iterable[ScoreTokensRequest]
+        | AsyncIterable[ScoreTokensRequest | None],
+    ) -> AsyncIterator[ScoreTokensResult | BackendError]:
+        """Score token sequences, yielding results as they complete.
+
+        Requests are distributed across healthy servers.
+        Results may arrive in any order.
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(req: ScoreTokensRequest) -> ScoreTokensResult | BackendError:
+            try:
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerScoreTokensRequest(
+                    key=req.key,
+                    prompt_tokens=req.prompt_tokens,
+                    completion_tokens=req.completion_tokens,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover(
+                    "/score_tokens", server_request, preferred_server=preferred_server
+                )
+                return ScoreTokensResult(key=data["key"], log_prob=data["log_prob"])
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def score_text(
+        self,
+        requests: Iterable[ScoreTextRequest] | AsyncIterable[ScoreTextRequest | None],
+    ) -> AsyncIterator[ScoreTextResult | BackendError]:
+        """Score text continuations (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(req: ScoreTextRequest) -> ScoreTextResult | BackendError:
+            try:
+                if not req.choices:
+                    return ScoreTextResult(key=req.key, results=[])
+
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerScoreTextRequest(
+                    key=req.key,
+                    context=req.context,
+                    choices=req.choices,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover(
+                    "/score_text", server_request, preferred_server=preferred_server
+                )
+
+                results = [
+                    LogProbResult(
+                        token_ids=r["token_ids"],
+                        logprobs=r["logprobs"],
+                        answer_range=tuple(r["answer_range"]),
+                        total_log_prob=r["total_log_prob"],
+                    )
+                    for r in data["results"]
+                ]
+                return ScoreTextResult(key=req.key, results=results)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def score_chat(
+        self,
+        requests: Iterable[ScoreChatRequest] | AsyncIterable[ScoreChatRequest | None],
+    ) -> AsyncIterator[ScoreChatResult | BackendError]:
+        """Score chat completions (multiple-choice), yielding as complete.
+
+        Results may arrive in any order. Each result contains all choices
+        for that request (diff-based scoring requires all choices together).
+
+        On transient errors, yields BackendError instead of killing the stream.
+        """
+
+        async def process_one(req: ScoreChatRequest) -> ScoreChatResult | BackendError:
+            try:
+                if not req.completion_messages:
+                    return ScoreChatResult(key=req.key, results=[])
+
+                # Get preferred server via round-robin for load distribution
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerScoreChatRequest(
+                    key=req.key,
+                    context_messages=req.context_messages,
+                    completion_messages=req.completion_messages,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover(
+                    "/score_chat", server_request, preferred_server=preferred_server
+                )
+
+                results = [
+                    LogProbResult(
+                        token_ids=r["token_ids"],
+                        logprobs=r["logprobs"],
+                        answer_range=tuple(r["answer_range"]),
+                        total_log_prob=r["total_log_prob"],
+                    )
+                    for r in data["results"]
+                ]
+                return ScoreChatResult(key=req.key, results=results)
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
+
+    async def set_placement(self, placement: Sequence[str]) -> None:
         """Set mixer placement for subsequent requests.
 
         The placement is stored locally and sent with every request.
@@ -777,44 +909,90 @@ class RESTBackend(AsyncBackend):
         update the server's placement.
 
         Args:
-            mixer_names: Mixer name for each layer.
+            placement: Mixer to use at each layer.
         """
-        self._current_placement = list(mixer_names)
+        self._current_placement = list(placement)
         logger.debug(f"Placement set locally: {self._current_placement}")
 
 
-class RESTBackendConfig(BaseBackendConfig):
-    """Configuration for REST backend."""
+class BaseRESTBackendConfig(BaseBackendConfig):
+    """Base configuration for REST backends.
+
+    Subclasses must provide the `servers` property (either as a field or computed).
+    """
 
     _backend_class: ClassVar[type[AsyncBackend]] = RESTBackend
+
+    max_concurrent_per_server: int = Field(
+        description="Maximum concurrent requests per server",
+        ge=1,
+    )
+    timeout_seconds: int = Field(
+        description="Request timeout in seconds",
+        ge=1,
+    )
+    base_recovery_interval: float = Field(
+        description="Initial wait time before retrying an unhealthy server (seconds)",
+        ge=0.1,
+    )
+    max_recovery_interval: float = Field(
+        description="Maximum wait time between recovery checks (seconds)",
+        ge=1.0,
+    )
+    max_retries: int = Field(
+        description="Maximum number of retry attempts when all servers fail",
+        ge=1,
+    )
+
+
+class RESTBackendConfig(BaseRESTBackendConfig):
+    """REST backend with explicit server list."""
 
     backend_type: Literal["rest"] = "rest"
 
     servers: list[str] = Field(
         description="List of server URLs (e.g., ['http://localhost:8080', 'http://localhost:8081'])"
     )
-    max_concurrent_per_server: int = Field(
-        default=8,
-        description="Maximum concurrent requests per server",
+
+
+class RESTDNSBackendConfig(BaseRESTBackendConfig):
+    """REST backend with auto-generated server list from DNS pattern.
+
+    Generates server URLs automatically based on a DNS prefix and server count.
+    Useful for Kubernetes deployments with predictable DNS naming schemes.
+
+    Example:
+        dns_prefix = "my-service"
+        num_servers = 4
+        port = 8080
+
+        Generates:
+        - http://my-service-id-0:8080
+        - http://my-service-id-1:8080
+        - http://my-service-id-2:8080
+        - http://my-service-id-3:8080
+    """
+
+    backend_type: Literal["rest_dns"] = "rest_dns"
+
+    dns_prefix: str = Field(
+        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..n-1})"
+    )
+    num_servers: int = Field(
+        description="Number of servers to generate",
         ge=1,
     )
-    timeout_seconds: int = Field(
-        default=300,
-        description="Request timeout in seconds",
+    port: int = Field(
+        description="Port for all servers",
         ge=1,
+        le=65535,
     )
-    base_recovery_interval: float = Field(
-        default=10.0,
-        description="Initial wait time before retrying an unhealthy server (seconds)",
-        ge=0.1,
-    )
-    max_recovery_interval: float = Field(
-        default=300.0,
-        description="Maximum wait time between recovery checks (seconds)",
-        ge=1.0,
-    )
-    max_retries: int = Field(
-        default=10,
-        description="Maximum number of retry attempts when all servers fail",
-        ge=1,
-    )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def servers(self) -> list[str]:
+        """Auto-generate server URLs from DNS prefix and server count."""
+        return [
+            f"http://{self.dns_prefix}-id-{i}:{self.port}"
+            for i in range(self.num_servers)
+        ]

@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from place_layers.core.types import SearchResult
     from place_layers.result_handler.base_result_handler_config import (
         BaseResultHandlerConfig,
     )
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class BaseResultHandler:
     """Abstract base class for result handlers."""
 
-    def __init__(self, config: BaseResultHandlerConfig) -> None:
+    def __init__(self, config: "BaseResultHandlerConfig") -> None:
         """
         Initialize the result handler with configuration.
 
@@ -25,12 +25,12 @@ class BaseResultHandler:
         """
         self.config = config
 
-    async def save(self, result: SearchResult, output_path: Path) -> None:
+    async def save(self, result: BaseModel, output_path: Path) -> None:
         """
-        Save search results to specified output path.
+        Save results to specified output path.
 
         Args:
-            result: Search results to save.
+            result: Pydantic model to save (SearchResult, EvaluationResult, etc.).
             output_path: Path where results should be saved.
         """
         raise NotImplementedError
