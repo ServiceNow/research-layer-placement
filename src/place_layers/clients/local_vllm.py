@@ -8,6 +8,8 @@ Supports Apriel2 models with runtime mixer placement switching.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from typing import TYPE_CHECKING, Literal
 
 import torch
@@ -112,22 +114,55 @@ class LocalVLLMClient(BaseVLLMClient):
         )
         from vllm.v1.engine.async_llm import AsyncLLM
 
-        logger.info(f"Loading vLLM model from {self.config.model_path}")
+        # Enable verbose vLLM logging to capture subprocess errors
+        # These must be set before creating the engine subprocess
+        os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+        os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
-        engine_args = AsyncEngineArgs(
-            model=self.config.model_path,
-            tokenizer=self.config.tokenizer_path or self.config.model_path,
-            trust_remote_code=self.config.trust_remote_code,
-            dtype=self.config.torch_dtype,
-            gpu_memory_utilization=self.config.gpu_memory_utilization,
-            max_model_len=self.config.max_model_len,
-            disable_log_stats=True,
-            enable_prefix_caching=self.config.enable_prefix_caching,
-            enforce_eager=self.config.disable_compile,
-        )
+        # Redirect stdout/stderr to capture vLLM subprocess output
+        # This helps capture crashes from the EngineCore subprocess
+        vllm_log_file = "vllm_engine.log"
+        logger.info(f"vLLM subprocess output will be captured to: {vllm_log_file}")
 
-        # Create async engine
-        self._engine = AsyncLLM.from_engine_args(engine_args)
+        # Save original stdout/stderr
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+
+        try:
+            # Open log file for vLLM subprocess output
+            vllm_log = open(vllm_log_file, "a", buffering=1)  # Line buffered
+
+            # Redirect stdout/stderr
+            sys.stdout = vllm_log
+            sys.stderr = vllm_log
+
+            logger.info(f"Loading vLLM model from {self.config.model_path}")
+            logger.info(f"vLLM config: max_model_len={self.config.max_model_len}, "
+                       f"gpu_memory_utilization={self.config.gpu_memory_utilization}, "
+                       f"dtype={self.config.torch_dtype}")
+
+            engine_args = AsyncEngineArgs(
+                model=self.config.model_path,
+                tokenizer=self.config.tokenizer_path or self.config.model_path,
+                trust_remote_code=self.config.trust_remote_code,
+                dtype=self.config.torch_dtype,
+                gpu_memory_utilization=self.config.gpu_memory_utilization,
+                max_model_len=self.config.max_model_len,
+                disable_log_stats=False,  # Enable stats to see what's happening
+                enable_prefix_caching=self.config.enable_prefix_caching,
+                enforce_eager=self.config.disable_compile,
+            )
+
+            # Create async engine
+            logger.info("Creating vLLM AsyncLLM engine (this will spawn a subprocess)...")
+            self._engine = AsyncLLM.from_engine_args(engine_args)
+            logger.info("vLLM engine subprocess spawned successfully")
+
+        finally:
+            # Restore original stdout/stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            # Keep file open - will be closed on exit
         self._model_name = self.config.model_path
 
         # Set triton allocator after engine spawns to avoid CUDA init in parent
