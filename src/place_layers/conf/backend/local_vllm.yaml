@@ -19,4 +19,5 @@ client:
   max_model_len: null  # Use model's default
   disable_compile: false
   enable_prefix_caching: false
+  disable_flash_attn: false
   max_concurrent_requests: 32

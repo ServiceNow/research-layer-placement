@@ -75,6 +75,9 @@ class LocalVLLMClientConfig(BaseModel):
     )
     disable_compile: bool = Field(description="Disable torch.compile")
     enable_prefix_caching: bool = Field(description="Enable prefix caching")
+    disable_flash_attn: bool = Field(
+        default=False, description="Disable Flash Attention (use xformers instead)"
+    )
     max_concurrent_requests: int = Field(description="Maximum concurrent requests")
 
 
@@ -151,6 +154,7 @@ class LocalVLLMClient(BaseVLLMClient):
                 disable_log_stats=False,  # Enable stats to see what's happening
                 enable_prefix_caching=self.config.enable_prefix_caching,
                 enforce_eager=self.config.disable_compile,
+                disable_flash_attn=self.config.disable_flash_attn,
             )
 
             # Create async engine
