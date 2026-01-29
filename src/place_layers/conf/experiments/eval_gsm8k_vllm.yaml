@@ -1,0 +1,17 @@
+# @package _global_
+# Evaluate on GSM8K with local vLLM backend
+#
+# Usage:
+#   python -m place_layers +experiments=eval_gsm8k_vllm +model=apriel2_0_5b_dev +placement=every2nd-gdn
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: local_vllm
+  - /task: gsm8k
+  - /generation: greedy
+  - _self_
+
+backend:
+  client:
+    gpu_memory_utilization: 0.8
