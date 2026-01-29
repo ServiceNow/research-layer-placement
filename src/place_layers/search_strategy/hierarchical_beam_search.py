@@ -78,6 +78,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         # Get dimensions from evaluator
         num_layers = problem.evaluator.num_layers
         num_mixers = problem.evaluator.num_mixers
+        mixer_names = problem.evaluator.mixer_names
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -90,14 +91,19 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Initial beam width: {self.config.initial_beam_width}")
 
         # Run phases
-        fixed_assignments: dict[int, int] = {}
+        fixed_assignments: dict[int, str] = {}
         phase_results: list[PhaseResult] = []
 
         for phase_idx, budget in enumerate(budgets):
+            mixer_name = mixer_names[phase_idx]
+            fallback_mixer = mixer_names[phase_idx + 1]
+
             phase_result = await self._run_phase(
                 phase_idx=phase_idx,
                 budget=budget,
                 num_layers=num_layers,
+                mixer_name=mixer_name,
+                fallback_mixer=fallback_mixer,
                 fixed_assignments=fixed_assignments,
                 problem=problem,
             )
@@ -105,16 +111,17 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
             # Lock in the best layers from this phase
             for layer_idx in phase_result.best_layers:
-                fixed_assignments[layer_idx] = phase_idx
+                fixed_assignments[layer_idx] = mixer_name
 
         # Assign remaining layers to last mixer
+        last_mixer = mixer_names[num_mixers - 1]
         final_assignments = dict(fixed_assignments)
         for layer_idx in range(num_layers):
             if layer_idx not in final_assignments:
-                final_assignments[layer_idx] = num_mixers - 1
+                final_assignments[layer_idx] = last_mixer
 
         # Final evaluation
-        assignments = tuple(final_assignments[i] for i in range(num_layers))
+        assignments = [final_assignments[i] for i in range(num_layers)]
         final_config = LayerPlacement(assignments=assignments)
         final_score = await problem.evaluate(final_config)
         self.eval_count += 1
@@ -123,14 +130,14 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("FINAL EVALUATION")
         logger.info(f"{'='*60}")
         logger.info("Final configuration:")
-        for mixer_idx in range(num_mixers):
+        for mixer_name in mixer_names:
             layers = [
                 layer
                 for layer, mixer in final_assignments.items()
-                if mixer == mixer_idx
+                if mixer == mixer_name
             ]
             logger.info(
-                f"  mixer[{mixer_idx}]: {len(layers)} layers - {sorted(layers)}"
+                f"  {mixer_name}: {len(layers)} layers - {sorted(layers)}"
             )
         logger.info(f"Final score: {final_score:.4f}")
         logger.info(f"Total evaluations: {self.eval_count}")
@@ -147,19 +154,18 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         phase_idx: int,
         budget: int,
         num_layers: int,
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
+        fixed_assignments: dict[int, str],
         problem: BaseProblem,
     ) -> PhaseResult:
         """Run one phase of hierarchical beam search."""
-        mixer_idx = phase_idx
-        fallback_mixer_idx = phase_idx + 1
-
         logger.info(f"\n{'='*60}")
         logger.info(
-            f"PHASE {phase_idx + 1}: Optimizing placement for mixer[{mixer_idx}]"
+            f"PHASE {phase_idx + 1}: Optimizing placement for {mixer_name}"
         )
         logger.info(f"Budget: {budget} layers")
-        logger.info(f"Baseline for non-assigned layers: mixer[{fallback_mixer_idx}]")
+        logger.info(f"Baseline for non-assigned layers: {fallback_mixer}")
         logger.info(f"{'='*60}")
 
         # Get available layers
@@ -169,8 +175,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         # Pre-score individual layers
         layer_scores = await self._prescore_layers(
             unassigned=unassigned,
-            mixer_idx=mixer_idx,
-            fallback_mixer_idx=fallback_mixer_idx,
+            mixer_name=mixer_name,
+            fallback_mixer=fallback_mixer,
             num_layers=num_layers,
             fixed_assignments=fixed_assignments,
             problem=problem,
@@ -180,8 +186,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         beam = await self._grow_beam(
             layer_scores=layer_scores,
             budget=budget,
-            mixer_idx=mixer_idx,
-            fallback_mixer_idx=fallback_mixer_idx,
+            mixer_name=mixer_name,
+            fallback_mixer=fallback_mixer,
             num_layers=num_layers,
             unassigned=unassigned,
             fixed_assignments=fixed_assignments,
@@ -190,12 +196,12 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         best_candidate = beam[0]
         logger.info(f"\nPhase {phase_idx + 1} complete!")
-        logger.info(f"Best layers for mixer[{mixer_idx}]: {best_candidate['layers']}")
+        logger.info(f"Best layers for {mixer_name}: {best_candidate['layers']}")
         logger.info(f"Best score: {best_candidate['score']:.4f}")
 
         return PhaseResult(
             phase_idx=phase_idx,
-            mixer_idx=mixer_idx,
+            mixer_idx=phase_idx,  # Keep for backwards compatibility
             budget=budget,
             best_layers=best_candidate["layers"],
             best_score=best_candidate["score"],
@@ -205,10 +211,10 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
     async def _prescore_layers(
         self,
         unassigned: list[int],
-        mixer_idx: int,
-        fallback_mixer_idx: int,
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         problem: BaseProblem,
     ) -> list[tuple[int, float]]:
         """Pre-score individual layers to seed the beam."""
@@ -219,9 +225,9 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],
-                target_mixer_idx=mixer_idx,
+                target_mixer=mixer_name,
                 unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer_idx,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=assignments)
@@ -233,7 +239,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         # Sort by score
         layer_scores.sort(key=lambda x: x[1], reverse=self.config.higher_is_better)
 
-        logger.info(f"\nLayer ranking for mixer[{mixer_idx}]:")
+        logger.info(f"\nLayer ranking for {mixer_name}:")
         for rank, (layer_idx, score) in enumerate(layer_scores[:10]):
             logger.info(f"  {rank+1}. Layer {layer_idx}: {score:.4f}")
 
@@ -243,11 +249,11 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         self,
         layer_scores: list[tuple[int, float]],
         budget: int,
-        mixer_idx: int,
-        fallback_mixer_idx: int,
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
         unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         problem: BaseProblem,
     ) -> list[dict]:
         """Grow the beam from seed to budget size."""
@@ -275,8 +281,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             # Evaluate candidates
             await self._evaluate_candidates(
                 candidates=candidates,
-                mixer_idx=mixer_idx,
-                fallback_mixer_idx=fallback_mixer_idx,
+                mixer_name=mixer_name,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
                 unassigned=unassigned,
                 fixed_assignments=fixed_assignments,
@@ -301,11 +307,11 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
     async def _evaluate_candidates(
         self,
         candidates: list[dict],
-        mixer_idx: int,
-        fallback_mixer_idx: int,
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
         unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         problem: BaseProblem,
     ) -> None:
         """Evaluate all candidates and store scores."""
@@ -313,9 +319,9 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=candidate["layers"],
-                target_mixer_idx=mixer_idx,
+                target_mixer=mixer_name,
                 unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer_idx,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=assignments)

@@ -40,7 +40,7 @@ class BeamEntry(BaseModel):
 
     model_config = {"frozen": True}
 
-    assignments: tuple[int, ...]
+    assignments: list[str]  # Mixer names, one per layer
     allocation: tuple[int, ...]  # Counts per mixer
     cost: float
     score: float | None = None  # None until evaluated
@@ -220,7 +220,8 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
         if best_entry is None:
             # Fallback to minimum cost allocation
             min_alloc = cost_model.min_cost_allocation(num_layers)
-            assignments = self._allocation_to_assignment(min_alloc, num_layers)
+            mixer_names = problem.evaluator.mixer_names
+            assignments = self._allocation_to_assignment(min_alloc, num_layers, mixer_names)
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -271,7 +272,8 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Starting cost: {start_cost:.4f}")
 
         # Check if most expensive allocation meets target
-        start_assignments = self._allocation_to_assignment(start_allocation, num_layers)
+        mixer_names = problem.evaluator.mixer_names
+        start_assignments = self._allocation_to_assignment(start_allocation, num_layers, mixer_names)
         start_placement = LayerPlacement(assignments=start_assignments)
         start_score = await problem.evaluate(start_placement)
         self.eval_count += 1
@@ -383,9 +385,10 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
             Best BeamEntry found, or None if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
+        mixer_names = problem.evaluator.mixer_names
 
         # Generate initial assignment (canonical assignment for this allocation)
-        initial_assignments = self._allocation_to_assignment(allocation, num_layers)
+        initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
         initial_placement = LayerPlacement(assignments=initial_assignments)
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
@@ -407,8 +410,7 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
             for entry in beam:
                 candidates = self._generate_allocation_preserving_swaps(
                     entry=entry,
-                    cost_model=cost_model,
-                    num_layers=num_layers,
+                    mixer_names=mixer_names,
                 )
                 all_candidates.extend(candidates)
 
@@ -455,8 +457,7 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
     def _generate_allocation_preserving_swaps(
         self,
         entry: BeamEntry,
-        cost_model: BaseCostModel,
-        num_layers: int,
+        mixer_names: list[str],
     ) -> list[BeamEntry]:
         """
         Generate candidate swaps that preserve the allocation.
@@ -465,16 +466,16 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
         We only generate swaps where the two layers have different mixers.
         """
         candidates = []
-        num_mixers = cost_model.num_mixers
 
-        # Group layers by their mixer
-        layers_by_mixer: list[list[int]] = [[] for _ in range(num_mixers)]
-        for layer_idx, mixer in enumerate(entry.assignments):
-            layers_by_mixer[mixer].append(layer_idx)
+        # Group layers by their mixer name
+        layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
+        for layer_idx, mixer_name in enumerate(entry.assignments):
+            layers_by_mixer[mixer_name].append(layer_idx)
 
         # Generate swaps between different mixers
-        for mixer_a in range(num_mixers):
-            for mixer_b in range(mixer_a + 1, num_mixers):
+        mixer_list = list(mixer_names)
+        for i, mixer_a in enumerate(mixer_list):
+            for mixer_b in mixer_list[i + 1:]:
                 for layer_a in layers_by_mixer[mixer_a]:
                     for layer_b in layers_by_mixer[mixer_b]:
                         # Swap layer_a and layer_b's mixers
@@ -484,7 +485,7 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
                         candidates.append(
                             BeamEntry(
-                                assignments=tuple(new_assignments),
+                                assignments=new_assignments,
                                 allocation=entry.allocation,
                                 cost=entry.cost,  # Cost unchanged
                                 score=None,
@@ -497,60 +498,64 @@ class CostConstrainedBeamSearch(BaseSearchStrategy[LayerPlacement]):
         self,
         allocation: Allocation,
         num_layers: int,
-    ) -> tuple[int, ...]:
+        mixer_names: list[str],
+    ) -> list[str]:
         """
         Convert an allocation to a canonical assignment.
 
         Creates a deterministic assignment that achieves the given allocation.
-        Layers are assigned to mixers in order (first n_0 layers to mixer 0,
-        next n_1 layers to mixer 1, etc.).
+        Layers are assigned to mixers in order (first n_0 layers to mixer_names[0],
+        next n_1 layers to mixer_names[1], etc.).
 
         Args:
             allocation: Counts per mixer.
             num_layers: Total number of layers.
+            mixer_names: Ordered mixer names from the evaluator.
 
         Returns:
-            Assignment tuple (length = num_layers).
+            Assignment list of mixer names (length = num_layers).
         """
-        assignments: list[int] = []
+        assignments: list[str] = []
         for mixer_idx, count in enumerate(allocation):
-            assignments.extend([mixer_idx] * count)
+            assignments.extend([mixer_names[mixer_idx]] * count)
 
         assert len(assignments) == num_layers, (
             f"Allocation sum {sum(allocation)} != num_layers {num_layers}"
         )
-        return tuple(assignments)
+        return assignments
 
     def _assignment_to_allocation(
         self,
-        assignments: tuple[int, ...],
-        num_mixers: int,
+        assignments: list[str],
+        mixer_names: list[str],
     ) -> Allocation:
         """
         Convert an assignment to its allocation.
 
         Args:
-            assignments: Layer-to-mixer mapping.
-            num_mixers: Number of mixer types.
+            assignments: List of mixer names, one per layer.
+            mixer_names: Ordered mixer names from the evaluator.
 
         Returns:
             Allocation tuple (counts per mixer).
         """
-        counts = [0] * num_mixers
-        for mixer in assignments:
-            counts[mixer] += 1
+        name_to_idx = {name: i for i, name in enumerate(mixer_names)}
+        counts = [0] * len(mixer_names)
+        for mixer_name in assignments:
+            counts[name_to_idx[mixer_name]] += 1
         return tuple(counts)
 
     def _deduplicate_candidates(
         self, candidates: list[BeamEntry]
     ) -> list[BeamEntry]:
-        """Remove duplicate candidates by assignment tuple."""
-        seen: set[tuple[int, ...]] = set()
+        """Remove duplicate candidates by assignment."""
+        seen: set[tuple[str, ...]] = set()
         unique = []
 
         for candidate in candidates:
-            if candidate.assignments not in seen:
-                seen.add(candidate.assignments)
+            key = tuple(candidate.assignments)
+            if key not in seen:
+                seen.add(key)
                 unique.append(candidate)
 
         return unique

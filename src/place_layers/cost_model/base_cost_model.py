@@ -45,6 +45,21 @@ class BaseCostModel(ABC):
         """Number of mixer types."""
         pass
 
+    @property
+    @abstractmethod
+    def phase_order(self) -> list[str]:
+        """
+        Mixer names in phase order for hierarchical search.
+
+        This determines the order in which phases assign layers to mixers.
+        The first mixer in the list is assigned first, then the second, etc.
+        The last mixer in the list receives all remaining layers.
+
+        Implementations should return mixer names in the order specified
+        by the cost model configuration (e.g., the key order in mixer_costs dict).
+        """
+        pass
+
     # =========================================================================
     # Assignment-level operations
     # =========================================================================
@@ -64,7 +79,7 @@ class BaseCostModel(ABC):
 
     @abstractmethod
     def cost_delta(
-        self, layer_idx: int, old_mixer: int, new_mixer: int
+        self, layer_idx: int, old_mixer: str, new_mixer: str
     ) -> float:
         """
         Compute the change in cost from swapping a single layer's mixer.
@@ -73,8 +88,8 @@ class BaseCostModel(ABC):
 
         Args:
             layer_idx: Index of the layer being changed.
-            old_mixer: Current mixer index for the layer.
-            new_mixer: New mixer index for the layer.
+            old_mixer: Current mixer name for the layer.
+            new_mixer: New mixer name for the layer.
 
         Returns:
             Change in cost (positive = more expensive, negative = cheaper).

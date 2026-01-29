@@ -56,9 +56,10 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         while maintaining the same allocation (counts per mixer).
         """
         alloc_cost = cost_model.allocation_cost(allocation)
+        mixer_names = problem.evaluator.mixer_names
 
         # Generate initial assignment (canonical assignment for this allocation)
-        initial_assignments = self._allocation_to_assignment(allocation, num_layers)
+        initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
         initial_placement = LayerPlacement(assignments=initial_assignments)
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
@@ -80,8 +81,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             for entry in beam:
                 candidates = self._generate_allocation_preserving_swaps(
                     entry=entry,
-                    cost_model=cost_model,
-                    num_layers=num_layers,
+                    mixer_names=mixer_names,
                 )
                 all_candidates.extend(candidates)
 
@@ -128,8 +128,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     def _generate_allocation_preserving_swaps(
         self,
         entry: BeamEntry,
-        cost_model: BaseCostModel,
-        num_layers: int,
+        mixer_names: list[str],
     ) -> list[BeamEntry]:
         """
         Generate candidate swaps that preserve the allocation.
@@ -138,16 +137,16 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         We only generate swaps where the two layers have different mixers.
         """
         candidates = []
-        num_mixers = cost_model.num_mixers
 
-        # Group layers by their mixer
-        layers_by_mixer: list[list[int]] = [[] for _ in range(num_mixers)]
-        for layer_idx, mixer in enumerate(entry.assignments):
-            layers_by_mixer[mixer].append(layer_idx)
+        # Group layers by their mixer name
+        layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
+        for layer_idx, mixer_name in enumerate(entry.assignments):
+            layers_by_mixer[mixer_name].append(layer_idx)
 
         # Generate swaps between different mixers
-        for mixer_a in range(num_mixers):
-            for mixer_b in range(mixer_a + 1, num_mixers):
+        mixer_list = list(mixer_names)
+        for i, mixer_a in enumerate(mixer_list):
+            for mixer_b in mixer_list[i + 1:]:
                 for layer_a in layers_by_mixer[mixer_a]:
                     for layer_b in layers_by_mixer[mixer_b]:
                         # Swap layer_a and layer_b's mixers
@@ -157,7 +156,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
 
                         candidates.append(
                             BeamEntry(
-                                assignments=tuple(new_assignments),
+                                assignments=new_assignments,
                                 allocation=entry.allocation,
                                 cost=entry.cost,  # Cost unchanged
                                 score=None,
@@ -169,13 +168,14 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     def _deduplicate_candidates(
         self, candidates: list[BeamEntry]
     ) -> list[BeamEntry]:
-        """Remove duplicate candidates by assignment tuple."""
-        seen: set[tuple[int, ...]] = set()
+        """Remove duplicate candidates by assignment."""
+        seen: set[tuple[str, ...]] = set()
         unique = []
 
         for candidate in candidates:
-            if candidate.assignments not in seen:
-                seen.add(candidate.assignments)
+            key = tuple(candidate.assignments)
+            if key not in seen:
+                seen.add(key)
                 unique.append(candidate)
 
         return unique

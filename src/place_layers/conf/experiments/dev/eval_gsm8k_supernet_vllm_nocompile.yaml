@@ -1,0 +1,30 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev supernet on GSM8K with local vLLM (no compile)
+#
+# Usage:
+#   python -m place_layers +experiments=eval_gsm8k_supernet_vllm_nocompile
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: local_vllm
+  - /model: apriel2_0_5b_dev
+  - /task: gsm8k
+  - /generation: greedy
+  - /placement: every2nd-gdn
+  - _self_
+
+model:
+  model_path: /tmp/apriel2-0.5b-dev
+
+backend:
+  client:
+    gpu_memory_utilization: 0.7
+    disable_compile: true
+
+task:
+  num_fewshot: 2
+  max_problems_per_task: 100
+
+generation:
+  max_new_tokens: 512

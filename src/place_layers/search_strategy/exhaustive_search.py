@@ -64,6 +64,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         # Get dimensions from evaluator
         num_layers = problem.evaluator.num_layers
         num_mixers = problem.evaluator.num_mixers
+        mixer_names = problem.evaluator.mixer_names
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -87,7 +88,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         # Generate all valid configurations
         logger.info("\nEnumerating all valid configurations...")
         all_configs = list(
-            self._generate_all_valid_configs(num_layers, num_mixers, budgets)
+            self._generate_all_valid_configs(num_layers, num_mixers, budgets, mixer_names)
         )
         logger.info(f"Generated {len(all_configs):,} configurations")
 
@@ -140,7 +141,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         return size
 
     def _generate_all_valid_configs(
-        self, num_layers: int, num_mixers: int, budgets: list[int]
+        self, num_layers: int, num_mixers: int, budgets: list[int], mixer_names: list[str]
     ) -> list[LayerPlacement]:
         """
         Generate all layer placements satisfying budget constraints.
@@ -151,10 +152,10 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         3. Continue for all budget phases
         4. Assign remaining layers to last mixer
         """
-        configs = []
+        configs: list[LayerPlacement] = []
 
         def enumerate_recursive(
-            current_assignment: list[int],
+            current_assignment: list[str],
             available_layers: list[int],
             phase_idx: int,
         ) -> None:
@@ -162,21 +163,22 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
             if phase_idx >= len(budgets):
                 # Base case: assign remaining layers to last mixer
                 final_assignment = current_assignment.copy()
+                last_mixer = mixer_names[num_mixers - 1]
                 for layer in available_layers:
-                    final_assignment[layer] = num_mixers - 1
+                    final_assignment[layer] = last_mixer
 
-                configs.append(LayerPlacement(assignments=tuple(final_assignment)))
+                configs.append(LayerPlacement(assignments=final_assignment))
                 return
 
             # Choose budgets[phase_idx] layers for mixer[phase_idx]
             budget = budgets[phase_idx]
-            mixer_idx = phase_idx
+            mixer_name = mixer_names[phase_idx]
 
             for selected_layers in combinations(available_layers, budget):
                 # Create new assignment with selected layers
                 new_assignment = current_assignment.copy()
                 for layer in selected_layers:
-                    new_assignment[layer] = mixer_idx
+                    new_assignment[layer] = mixer_name
 
                 # Recurse with remaining layers
                 new_available = [
@@ -184,8 +186,8 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
                 ]
                 enumerate_recursive(new_assignment, new_available, phase_idx + 1)
 
-        # Initialize with all layers unassigned
-        initial_assignment = [-1] * num_layers
+        # Initialize with all layers unassigned (empty string placeholder)
+        initial_assignment = [""] * num_layers
         initial_available = list(range(num_layers))
 
         enumerate_recursive(initial_assignment, initial_available, 0)

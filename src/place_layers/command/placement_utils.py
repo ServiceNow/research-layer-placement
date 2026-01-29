@@ -70,8 +70,8 @@ def resolve_placement(
             f"({mixer_names[0]}). Use placement=null for non-supernet models."
         )
 
-    # Build name-to-index mapping
-    name_to_idx = {name: idx for idx, name in enumerate(mixer_names)}
+    # Build valid mixer names set for validation
+    valid_names = set(mixer_names)
 
     # Extend cyclically if shorter than num_layers (periodic boundary conditions)
     if len(spec) < num_layers:
@@ -84,18 +84,21 @@ def resolve_placement(
     else:
         extended = list(spec)
 
-    # Convert mixer names to indices
-    try:
-        indices = tuple(name_to_idx[name] for name in extended)
-    except KeyError as e:
-        raise ValueError(
-            f"Unknown mixer name: {e}. Valid names: {list(name_to_idx.keys())}"
-        ) from e
+    # Validate mixer names
+    for name in extended:
+        if name not in valid_names:
+            raise ValueError(
+                f"Unknown mixer name: {name}. Valid names: {list(valid_names)}"
+            )
 
     logger.info(f"Placement: {extended[:6]}{'...' if len(extended) > 6 else ''}")
 
+    # Build name-to-index mapping for backwards compatibility indices
+    name_to_idx = {name: idx for idx, name in enumerate(mixer_names)}
+    indices = [name_to_idx[name] for name in extended]
+
     return PlacementResolution(
-        placement=LayerPlacement(assignments=indices),
+        placement=LayerPlacement(assignments=extended),
         placement_names=extended,
-        placement_indices=list(indices),
+        placement_indices=indices,
     )

@@ -184,7 +184,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if best_entry is None:
             # Fallback to minimum cost allocation
             min_alloc = cost_model.min_cost_allocation(num_layers)
-            assignments = self._allocation_to_assignment(min_alloc, num_layers)
+            mixer_names = problem.evaluator.mixer_names
+            assignments = self._allocation_to_assignment(min_alloc, num_layers, mixer_names)
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -275,7 +276,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if best_entry is None:
             # No allocation met the target - return the most expensive as best effort
             max_alloc = cost_model.max_cost_allocation(num_layers)
-            assignments = self._allocation_to_assignment(max_alloc, num_layers)
+            mixer_names = problem.evaluator.mixer_names
+            assignments = self._allocation_to_assignment(max_alloc, num_layers, mixer_names)
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -326,32 +328,50 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self,
         allocation: Allocation,
         num_layers: int,
-    ) -> tuple[int, ...]:
+        mixer_names: list[str],
+    ) -> list[str]:
         """
         Convert an allocation to a canonical assignment.
 
         Creates a deterministic assignment that achieves the given allocation.
-        Layers are assigned to mixers in order (first n_0 layers to mixer 0,
-        next n_1 layers to mixer 1, etc.).
+        Layers are assigned to mixers in order (first n_0 layers to mixer_names[0],
+        next n_1 layers to mixer_names[1], etc.).
+
+        Args:
+            allocation: Counts per mixer.
+            num_layers: Total number of layers.
+            mixer_names: Ordered mixer names from the evaluator.
+
+        Returns:
+            List of mixer names (length = num_layers).
         """
-        assignments: list[int] = []
+        assignments: list[str] = []
         for mixer_idx, count in enumerate(allocation):
-            assignments.extend([mixer_idx] * count)
+            assignments.extend([mixer_names[mixer_idx]] * count)
 
         assert len(assignments) == num_layers, (
             f"Allocation sum {sum(allocation)} != num_layers {num_layers}"
         )
-        return tuple(assignments)
+        return assignments
 
     def _assignment_to_allocation(
         self,
-        assignments: tuple[int, ...],
-        num_mixers: int,
+        assignments: list[str],
+        mixer_names: list[str],
     ) -> Allocation:
-        """Convert an assignment to its allocation."""
-        counts = [0] * num_mixers
-        for mixer in assignments:
-            counts[mixer] += 1
+        """Convert an assignment to its allocation.
+
+        Args:
+            assignments: List of mixer names, one per layer.
+            mixer_names: Ordered mixer names from the evaluator.
+
+        Returns:
+            Allocation tuple (counts per mixer in mixer_names order).
+        """
+        name_to_idx = {name: i for i, name in enumerate(mixer_names)}
+        counts = [0] * len(mixer_names)
+        for mixer_name in assignments:
+            counts[name_to_idx[mixer_name]] += 1
         return tuple(counts)
 
     def _create_result(

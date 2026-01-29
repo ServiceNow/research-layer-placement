@@ -88,16 +88,20 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         super().__init__(evaluator, config)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
-        # Create cost model
-        self.cost_model = config.cost_model.create_cost_model()
+        # Get mixer names from evaluator
+        mixer_names = evaluator.mixer_names
 
-        # Validate dimensions
-        num_mixers = evaluator.num_mixers
-        if len(config.cost_model.mixer_costs) != num_mixers:
+        # Validate mixer_costs keys match evaluator mixer names
+        config_mixer_names = set(config.cost_model.mixer_costs.keys())
+        evaluator_mixer_names = set(mixer_names)
+        if config_mixer_names != evaluator_mixer_names:
             raise ValueError(
-                f"Number of mixer costs ({len(config.cost_model.mixer_costs)}) "
-                f"must match number of mixers ({num_mixers})"
+                f"Cost model mixer names {config_mixer_names} "
+                f"must match evaluator mixer names {evaluator_mixer_names}"
             )
+
+        # Create cost model with mixer_names from evaluator
+        self.cost_model = config.cost_model.create_cost_model(mixer_names)
 
         # Validate constraint based on problem type
         num_layers = evaluator.num_layers

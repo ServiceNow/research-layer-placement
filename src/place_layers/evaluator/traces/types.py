@@ -57,7 +57,7 @@ class BaseGeneration(BaseModel):
         description="Decoded completion text (for debugging)",
         default="",
     )
-    placement: tuple[str, ...] | None = Field(
+    placement: list[str] | None = Field(
         default=None,
         description="Layer placement configuration (mixer names per layer). "
         "None for non-supernet models or when placement is not tracked.",
@@ -106,7 +106,7 @@ class SkippedProblem(BaseModel):
     problem_id: str = Field(description="Unique identifier for the source problem")
     task_name: str = Field(description="lm-eval task name")
     reason: str = Field(description="Why the problem was skipped")
-    placement: tuple[str, ...] | None = Field(
+    placement: list[str] | None = Field(
         default=None,
         description="Layer placement configuration (mixer names per layer). "
         "None for non-supernet models or when placement is not tracked.",

@@ -71,7 +71,8 @@ class CalibrateSACommand(BaseCommand):
         if not isinstance(cost_model_config, LinearCostModelConfig):
             raise ValueError("Calibration currently only supports LinearCostModel")
 
-        cost_model = LinearCostModel(cost_model_config)
+        mixer_names = evaluator.mixer_names
+        cost_model = LinearCostModel(cost_model_config, mixer_names)
 
         # Create problem
         problem_config = MaxPerformanceProblemConfig(
@@ -179,26 +180,25 @@ min_temperature: {self.config.min_temperature}
         """Sample random allocation-preserving swaps and return delta distribution."""
         random.seed(self.config.seed)
 
-        num_layers = sum(allocation)
-        num_mixers = len(allocation)
+        mixer_names = problem.evaluator.mixer_names
 
-        # Start from canonical assignment
-        current = []
+        # Start from canonical assignment (mixer names, not indices)
+        current: list[str] = []
         for mixer_idx, count in enumerate(allocation):
-            current.extend([mixer_idx] * count)
+            current.extend([mixer_names[mixer_idx]] * count)
 
-        placement = LayerPlacement(assignments=tuple(current))
+        placement = LayerPlacement(assignments=current)
         current_score = await problem.evaluate(placement)
 
         deltas = []
         for _ in range(self.config.num_samples):
-            # Group layers by mixer
-            layers_by_mixer: list[list[int]] = [[] for _ in range(num_mixers)]
+            # Group layers by mixer name
+            layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
             for i, m in enumerate(current):
                 layers_by_mixer[m].append(i)
 
             # Find mixers with layers
-            non_empty = [i for i, g in enumerate(layers_by_mixer) if g]
+            non_empty = [name for name, g in layers_by_mixer.items() if g]
             if len(non_empty) < 2:
                 continue
 
@@ -211,7 +211,7 @@ min_temperature: {self.config.min_temperature}
             new = current.copy()
             new[l_a], new[l_b] = new[l_b], new[l_a]
 
-            placement = LayerPlacement(assignments=tuple(new))
+            placement = LayerPlacement(assignments=new)
             new_score = await problem.evaluate(placement)
 
             deltas.append(new_score - current_score)

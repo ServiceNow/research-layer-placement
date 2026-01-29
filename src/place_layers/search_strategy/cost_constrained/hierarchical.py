@@ -65,28 +65,38 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         Search for the best assignment within a fixed allocation using hierarchical beam search.
 
         Runs phases sequentially, each phase finding the best layers for one mixer type.
+        Phase order is determined by the order of keys in mixer_costs config, not alphabetical.
 
         When cross_phase_beam_width > 1, maintains multiple candidate paths across phases,
         allowing exploration of phase interactions at higher computational cost.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
+        mixer_names = problem.evaluator.mixer_names  # Canonical order for allocations
+        phase_order = cost_model.phase_order  # User-specified order for phases
         num_mixers = len(allocation)
         cross_phase_k = self.config.cross_phase_beam_width
 
+        # Build mapping from mixer name to allocation index
+        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
+
         # Start with a single path
+        # fixed_assignments maps layer_idx -> mixer_name
         paths: list[dict] = [{
             "fixed": {},
             "unassigned": list(range(num_layers)),
             "score": 0.0,
         }]
 
-        # Extract budgets (counts per mixer, excluding the last one which gets remainder)
-        budgets = list(allocation[:-1])  # e.g., [1, 17] from (1, 17, 30)
+        # Build phase budgets in phase_order (excluding the last which gets remainder)
+        # Each phase assigns layers to one mixer type
+        phase_budgets = [
+            (phase_order[i], allocation[name_to_alloc_idx[phase_order[i]]])
+            for i in range(len(phase_order) - 1)
+        ]
 
-        # Run phases for each mixer type except the last
-        for phase_idx, budget in enumerate(budgets):
-            mixer_idx = phase_idx
-            fallback_mixer = phase_idx + 1  # Unassigned go to next mixer during evaluation
+        # Run phases for each mixer type except the last (in phase_order)
+        for phase_idx, (mixer_name, budget) in enumerate(phase_budgets):
+            fallback_mixer = phase_order[phase_idx + 1]
 
             if budget == 0:
                 # Skip phases with no layers to assign
@@ -103,7 +113,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 beam = await self._run_phase(
                     problem=problem,
                     budget=budget,
-                    mixer_idx=mixer_idx,
+                    mixer_name=mixer_name,
                     fallback_mixer=fallback_mixer,
                     unassigned=path["unassigned"],
                     fixed_assignments=path["fixed"],
@@ -115,7 +125,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     new_fixed = dict(path["fixed"])
                     new_unassigned = list(path["unassigned"])
                     for layer_idx in entry["layers"]:
-                        new_fixed[layer_idx] = mixer_idx
+                        new_fixed[layer_idx] = mixer_name
                         new_unassigned.remove(layer_idx)
                     new_paths.append({
                         "fixed": new_fixed,
@@ -134,13 +144,13 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         # Take best path for final assignment
         best_path = paths[0]
 
-        # Assign remaining layers to the last mixer
-        last_mixer = num_mixers - 1
+        # Assign remaining layers to the last mixer (last in phase_order)
+        last_mixer = phase_order[-1]
         for layer_idx in best_path["unassigned"]:
             best_path["fixed"][layer_idx] = last_mixer
 
-        # Build final assignment tuple
-        assignments = tuple(best_path["fixed"][i] for i in range(num_layers))
+        # Build final assignment list
+        assignments = [best_path["fixed"][i] for i in range(num_layers)]
 
         # Final evaluation
         placement = LayerPlacement(assignments=assignments)
@@ -158,14 +168,14 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         self,
         problem: CostConstrainedProblem,
         budget: int,
-        mixer_idx: int,
-        fallback_mixer: int,
+        mixer_name: str,
+        fallback_mixer: str,
         unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         num_layers: int,
     ) -> list[dict]:
         """
-        Run one phase: find best 'budget' layers for mixer_idx.
+        Run one phase: find best 'budget' layers for mixer_name.
 
         Returns beam of candidates, each with "layers" and "score" keys.
         """
@@ -173,7 +183,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         layer_scores = await self._prescore_layers(
             problem=problem,
             unassigned=unassigned,
-            mixer_idx=mixer_idx,
+            mixer_name=mixer_name,
             fallback_mixer=fallback_mixer,
             fixed_assignments=fixed_assignments,
             num_layers=num_layers,
@@ -189,7 +199,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             problem=problem,
             layer_scores=layer_scores,
             budget=budget,
-            mixer_idx=mixer_idx,
+            mixer_name=mixer_name,
             fallback_mixer=fallback_mixer,
             unassigned=unassigned,
             fixed_assignments=fixed_assignments,
@@ -202,9 +212,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         self,
         problem: CostConstrainedProblem,
         unassigned: list[int],
-        mixer_idx: int,
-        fallback_mixer: int,
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
+        fixed_assignments: dict[int, str],
         num_layers: int,
     ) -> list[tuple[int, float]]:
         """Pre-score individual layers to seed the beam."""
@@ -214,9 +224,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],
-                target_mixer_idx=mixer_idx,
+                target_mixer=mixer_name,
                 unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=assignments)
@@ -233,10 +243,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         problem: CostConstrainedProblem,
         layer_scores: list[tuple[int, float]],
         budget: int,
-        mixer_idx: int,
-        fallback_mixer: int,
+        mixer_name: str,
+        fallback_mixer: str,
         unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         num_layers: int,
     ) -> list[dict]:
         """Grow the beam from seed to budget size."""
@@ -260,7 +270,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             await self._evaluate_candidates(
                 problem=problem,
                 candidates=candidates,
-                mixer_idx=mixer_idx,
+                mixer_name=mixer_name,
                 fallback_mixer=fallback_mixer,
                 unassigned=unassigned,
                 fixed_assignments=fixed_assignments,
@@ -282,10 +292,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         self,
         problem: CostConstrainedProblem,
         candidates: list[dict],
-        mixer_idx: int,
-        fallback_mixer: int,
+        mixer_name: str,
+        fallback_mixer: str,
         unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        fixed_assignments: dict[int, str],
         num_layers: int,
     ) -> None:
         """Evaluate all candidates and store scores."""
@@ -293,9 +303,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=candidate["layers"],
-                target_mixer_idx=mixer_idx,
+                target_mixer=mixer_name,
                 unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=assignments)

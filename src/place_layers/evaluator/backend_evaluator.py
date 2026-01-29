@@ -251,10 +251,10 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         """Validate and set the mixer placement on the backend.
 
         Args:
-            parameters: Layer placement to set.
+            parameters: Layer placement to set (assignments are mixer names).
 
         Raises:
-            ValueError: If placement has wrong number of assignments.
+            ValueError: If placement has wrong number of assignments or invalid mixer names.
         """
         # Validate placement length
         if len(parameters.assignments) != self.num_layers:
@@ -263,8 +263,16 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
                 f"expected {self.num_layers}"
             )
 
-        # Convert assignment indices to mixer names
-        placement = [self.mixer_names[idx] for idx in parameters.assignments]
+        # Validate mixer names
+        valid_names = set(self.mixer_names)
+        for name in parameters.assignments:
+            if name not in valid_names:
+                raise ValueError(
+                    f"Invalid mixer name '{name}'. Valid names: {sorted(valid_names)}"
+                )
+
+        # Assignments are already mixer names - convert to list for backend
+        placement = list(parameters.assignments)
 
         # Skip if unchanged
         if placement == self._current_placement:

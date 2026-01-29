@@ -1,0 +1,16 @@
+# @package _global_
+# Start REST server with Apriel2-0.5B-dev using transformers backend
+#
+# Usage:
+#   python -m place_layers +experiments=serve_apriel2_0_5b_dev_transformers
+#
+# Multi-GPU (run in separate terminals):
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +experiments=serve_apriel2_0_5b_dev_transformers
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +experiments=serve_apriel2_0_5b_dev_transformers port=8081
+
+defaults:
+  - /command: serve
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - override /hydra/job_logging: server  # Enable server access logging
+  - _self_

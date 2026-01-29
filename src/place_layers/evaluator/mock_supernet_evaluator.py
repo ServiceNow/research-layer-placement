@@ -60,7 +60,11 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         # This represents the supernet's learned preferences
         rng = random.Random(self.config.seed)
 
-        # Unary potentials: Each layer's preferred implementation
+        # Build mixer names and name-to-index mapping
+        self._mixer_names = [f"mixer_{i}" for i in range(self.config.num_mixers)]
+        self._name_to_idx = {name: i for i, name in enumerate(self._mixer_names)}
+
+        # Unary potentials: Each layer's preferred implementation (stored as index)
         self.layer_needs = [
             rng.randint(0, self.config.num_mixers - 1)
             for _ in range(self.config.num_layers)
@@ -86,7 +90,7 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     @property
     def mixer_names(self) -> list[str]:
         """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
-        return [f"mixer_{i}" for i in range(self.config.num_mixers)]
+        return self._mixer_names
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """
@@ -95,7 +99,7 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         Score = Σᵢ unary(i) + Σᵢ pairwise(i, i+1) + noise
 
         Args:
-            parameters: Parameters to evaluate.
+            parameters: Parameters to evaluate (assignments are mixer names).
 
         Returns:
             Score (higher is better).
@@ -103,7 +107,8 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         total_score = 0.0
 
         # UNARY POTENTIALS: Does mixer match layer's intrinsic need?
-        for layer_idx, mixer_idx in enumerate(parameters.assignments):
+        for layer_idx, mixer_name in enumerate(parameters.assignments):
+            mixer_idx = self._name_to_idx[mixer_name]
             if mixer_idx == self.layer_needs[layer_idx]:
                 # Correct mixer for this layer
                 total_score += self.config.unary_bonus
