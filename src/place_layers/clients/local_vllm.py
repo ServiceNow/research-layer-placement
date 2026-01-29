@@ -75,8 +75,10 @@ class LocalVLLMClientConfig(BaseModel):
     )
     disable_compile: bool = Field(description="Disable torch.compile")
     enable_prefix_caching: bool = Field(description="Enable prefix caching")
-    disable_flash_attn: bool = Field(
-        default=False, description="Disable Flash Attention (use xformers instead)"
+    attention_backend: str | None = Field(
+        default=None,
+        description="Attention backend (e.g., 'FLASH_ATTN', 'TRITON_ATTN', 'FLASHINFER'). "
+        "If None, vLLM selects automatically. Set to 'TRITON_ATTN' to disable Flash Attention."
     )
     max_concurrent_requests: int = Field(description="Maximum concurrent requests")
 
@@ -154,7 +156,7 @@ class LocalVLLMClient(BaseVLLMClient):
                 disable_log_stats=False,  # Enable stats to see what's happening
                 enable_prefix_caching=self.config.enable_prefix_caching,
                 enforce_eager=self.config.disable_compile,
-                disable_flash_attn=self.config.disable_flash_attn,
+                attention_backend=self.config.attention_backend,
             )
 
             # Create async engine
