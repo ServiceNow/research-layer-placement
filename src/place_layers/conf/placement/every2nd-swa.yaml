@@ -1,0 +1,3 @@
+# @package _global_
+# Sliding window attention at every 2nd layer
+placement: [attention, sliding_window]
