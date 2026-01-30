@@ -38,6 +38,19 @@ class BaseGeneration(BaseModel):
         description="Whether the answer extracted from completion is correct. "
         "None if correctness could not be determined."
     )
+    correct_by_filter: dict[str, bool | None] | None = Field(
+        default=None,
+        description="Per-filter correctness flags when the task defines multiple "
+        "lm-eval filters (e.g., strict extraction vs flexible extraction).",
+    )
+    filtered_completion_text_by_filter: dict[str, str] | None = Field(
+        default=None,
+        description="Per-filter extracted/normalized completion string.",
+    )
+    primary_filter: str | None = Field(
+        default=None,
+        description="Filter name used to populate the scalar 'correct' field.",
+    )
     truncated: bool = Field(
         default=False,
         description="Whether generation hit max tokens without EOS.",

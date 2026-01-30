@@ -1,0 +1,38 @@
+tag:
+  - math_word_problems
+task: aime25
+dataset_path: math-ai/aime25
+# dataset_name: null
+output_type: generate_until
+training_split: test
+fewshot_split: test
+test_split: test
+doc_to_text: "Question: {{problem}}\nAnswer:"
+doc_to_target: "{{answer}}"
+process_results: !function utils.process_results # this will not be found
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "Question:"
+    - "</s>"
+    - "<|im_end|>"
+    - "<|eot_id|>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 32768
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 0.0
+filter_list:
+  - name: "strict-match"
+    filter:
+      - function: "regex"
+        group_select: -1
+        # Prefer extracting from the explicit final-response block, otherwise fall back
+        # to \boxed{...}, otherwise fall back to the last number-like token.
+        regex_pattern: "(?s)\\[BEGIN FINAL RESPONSE\\][\\s\\S]*?(-?[0-9\\.\\,]+)\\s*<\\|end\\|>|\\\\boxed\\{([^}]*)\\}|(-?[0-9\\.\\,]+)"
+      - function: "take_first"

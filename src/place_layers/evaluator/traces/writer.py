@@ -407,6 +407,90 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
     )
 
 
+def summarize_generations_by_filter(output_dir: Path) -> dict[str, GenerationSummary]:
+    """Compute generation summaries per lm-eval filter.
+
+    Uses BaseGeneration.correct_by_filter when present, falling back to the scalar
+    BaseGeneration.correct as a single "none" filter when not present.
+    """
+    from collections import defaultdict
+
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    # filter_name -> task_name -> problem_id -> list of correctness values
+    by_filter: dict[str, dict[str, dict[str, list[bool | None]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if not isinstance(record, BaseGeneration):
+                    continue
+
+                correctness_map = record.correct_by_filter
+                if not correctness_map:
+                    correctness_map = {"none": record.correct}
+
+                for filter_name, correct in correctness_map.items():
+                    by_filter[filter_name][record.task_name][record.problem_id].append(
+                        correct
+                    )
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in per-filter summary")
+
+    summaries: dict[str, GenerationSummary] = {}
+    for filter_name, task_problems in by_filter.items():
+        task_stats: dict[str, TaskStats] = {}
+        total_problems = 0
+        total_samples = 0
+        total_problems_correct = 0
+        total_samples_correct = 0
+
+        for task_name, problems in task_problems.items():
+            num_problems = len(problems)
+            num_samples = sum(len(samples) for samples in problems.values())
+            problems_correct = sum(
+                1 for samples in problems.values() if any(s is True for s in samples)
+            )
+            samples_correct = sum(
+                sum(1 for s in samples if s is True) for samples in problems.values()
+            )
+
+            task_stats[task_name] = TaskStats(
+                num_problems=num_problems,
+                num_samples=num_samples,
+                problems_correct=problems_correct,
+                samples_correct=samples_correct,
+            )
+
+            total_problems += num_problems
+            total_samples += num_samples
+            total_problems_correct += problems_correct
+            total_samples_correct += samples_correct
+
+        summaries[filter_name] = GenerationSummary(
+            task_stats=task_stats,
+            total_problems=total_problems,
+            total_samples=total_samples,
+            problems_correct=total_problems_correct,
+            samples_correct=total_samples_correct,
+        )
+
+    return summaries
+
+
 class LikelihoodTaskStats(BaseModel):
     """Per-task statistics for likelihood (multiple-choice) evaluation."""
 

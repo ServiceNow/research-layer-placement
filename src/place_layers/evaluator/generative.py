@@ -32,7 +32,7 @@ from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,
     BaseGenerativeEvaluatorConfig,
 )
-from place_layers.evaluator.lm_eval_utils import check_correctness
+from place_layers.evaluator.lm_eval_utils import check_correctness_all_filters
 from place_layers.evaluator.traces.types import Generation
 
 if TYPE_CHECKING:
@@ -83,13 +83,31 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
                 # Truncated and we don't evaluate truncated -> mark incorrect
                 logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
                 correct = False
+                correct_by_filter = None
+                filtered_completion_text_by_filter = None
+                primary_filter = None
             else:
-                correct = check_correctness(task, doc, sample.text)
+                filter_results = check_correctness_all_filters(task, doc, sample.text)
+                # Choose a primary filter for the scalar `correct` field.
+                # Prefer strict extraction when present.
+                primary_filter = (
+                    "strict-match"
+                    if "strict-match" in filter_results
+                    else sorted(filter_results.keys())[0]
+                )
+                correct = filter_results[primary_filter][0]
+                correct_by_filter = {k: v[0] for k, v in filter_results.items()}
+                filtered_completion_text_by_filter = {
+                    k: v[1] for k, v in filter_results.items()
+                }
 
             gen = Generation(
                 prompt_tokens=tuple(result.prompt_token_ids),
                 completion_tokens=tuple(sample.token_ids),
                 correct=correct,
+                correct_by_filter=correct_by_filter,
+                filtered_completion_text_by_filter=filtered_completion_text_by_filter,
+                primary_filter=primary_filter,
                 truncated=sample.truncated,
                 problem_id=problem_id,
                 task_name=task_name,
