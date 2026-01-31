@@ -7,6 +7,7 @@ approach: phase-by-phase assignment of layers to mixers.
 from __future__ import annotations
 
 import logging
+from math import comb
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
@@ -27,9 +28,101 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
 
 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------------------------
+# Bounds calculation functions for progress estimation
+# -----------------------------------------------------------------------------
+
+
+def phase_eval_lower(budget: int, unassigned: int, beam_width: int) -> int:
+    """Lower bound for phase evaluations: prescore + one growth step (if budget > 1).
+
+    Lower bound assumes early stopping after the first growth step.
+
+    Args:
+        budget: Number of layers to assign in this phase.
+        unassigned: Number of unassigned layers at phase start.
+        beam_width: Beam width parameter (B).
+
+    Returns:
+        Minimum number of evaluations for this phase.
+    """
+    if budget <= 0:
+        return 0
+    if budget == 1:
+        # Only prescore, no growth
+        return max(0, unassigned)
+    # Prescore (U) + one growth step (B * (U - 1))
+    return unassigned + beam_width * (unassigned - 1)
+
+
+def phase_eval_upper(budget: int, unassigned: int, beam_width: int) -> int:
+    """Upper bound for phase evaluations: prescore + full growth without early stopping.
+
+    Upper bound assumes no early stopping occurs, so all growth steps execute.
+
+    Args:
+        budget: Number of layers to assign in this phase.
+        unassigned: Number of unassigned layers at phase start.
+        beam_width: Beam width parameter (B).
+
+    Returns:
+        Maximum number of evaluations for this phase.
+    """
+    if budget <= 0:
+        return 0
+    if budget == 1:
+        # Only prescore, no growth
+        return max(0, unassigned)
+
+    # Prescore + all growth steps
+    # At growth step s (1-indexed), we have beam entries of size s
+    # Each entry can add any of (U - s) remaining layers
+    # But we cap at beam_width entries, so we evaluate at most B * (U - s)
+    # candidates per step.
+    # Also, we can't generate more candidates than C(U, s+1) (combinations)
+    growth_evals = sum(
+        min(beam_width * (unassigned - s), comb(unassigned, s + 1))
+        for s in range(1, budget)
+    )
+    return unassigned + growth_evals
+
+
+def allocation_bounds(
+    budgets: list[int],
+    num_layers: int,
+    beam_width: int,
+    cross_phase_beam_width: int,
+) -> tuple[int, int]:
+    """Calculate evaluation count bounds for a single allocation.
+
+    Args:
+        budgets: Phase budgets (layers to assign in each phase, excluding last).
+        num_layers: Total number of layers (N).
+        beam_width: Within-phase beam width (B).
+        cross_phase_beam_width: Cross-phase beam width (C).
+
+    Returns:
+        Tuple of (lower_bound, upper_bound) for this allocation.
+    """
+    lower, upper = 1, 1  # Final evaluation always happens
+    unassigned = num_layers
+
+    for p, budget in enumerate(budgets):
+        if budget == 0:
+            continue
+        # First phase has multiplier 1, subsequent phases use cross_phase_beam_width
+        multiplier = 1 if p == 0 else cross_phase_beam_width
+        lower += multiplier * phase_eval_lower(budget, unassigned, beam_width)
+        upper += multiplier * phase_eval_upper(budget, unassigned, beam_width)
+        unassigned -= budget
+
+    return lower, upper
 
 
 class HierarchicalSearch(BaseCostConstrainedSearch):
@@ -50,8 +143,12 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
     - Only assignment (which layers) needs to be found
     """
 
-    def __init__(self, config: "HierarchicalConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "HierarchicalConfig",
+        observer: "SearchObserver | None" = None,
+    ) -> None:
+        super().__init__(config, observer=observer)
         self.config: HierarchicalConfig
 
     async def _search_within_allocation(
@@ -94,6 +191,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             for i in range(len(phase_order) - 1)
         ]
 
+        # Total phases is the number of phases we'll actually run (non-zero budgets)
+        total_phases = sum(1 for _, b in phase_budgets if b > 0)
+        running_phase_idx = 0
+
         # Run phases for each mixer type except the last (in phase_order)
         for phase_idx, (mixer_name, budget) in enumerate(phase_budgets):
             fallback_mixer = phase_order[phase_idx + 1]
@@ -101,6 +202,21 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             if budget == 0:
                 # Skip phases with no layers to assign
                 continue
+
+            running_phase_idx += 1
+
+            # Emit phase started event
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import PhaseStartedEvent
+
+                self.observer.on_phase_started(
+                    PhaseStartedEvent(
+                        phase_index=running_phase_idx,
+                        total_phases=total_phases,
+                        mixer_name=mixer_name,
+                        budget=budget,
+                    )
+                )
 
             new_paths: list[dict] = []
 
@@ -118,6 +234,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     unassigned=path["unassigned"],
                     fixed_assignments=path["fixed"],
                     num_layers=num_layers,
+                    phase_index=running_phase_idx,
+                    total_phases=total_phases,
                 )
 
                 # Create new paths for each beam entry
@@ -140,6 +258,28 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             if not paths:
                 # No valid paths remain
                 return None
+
+            # Emit phase completed event
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import PhaseCompletedEvent
+
+                # Get the layers assigned in this phase from the best path
+                best_path_after = paths[0]
+                phase_layers = sorted([
+                    layer_idx for layer_idx, mixer in best_path_after["fixed"].items()
+                    if mixer == mixer_name
+                ])
+
+                self.observer.on_phase_completed(
+                    PhaseCompletedEvent(
+                        phase_index=running_phase_idx,
+                        total_phases=total_phases,
+                        mixer_name=mixer_name,
+                        budget=budget,
+                        final_layers=phase_layers,
+                        final_score=best_path_after["score"],
+                    )
+                )
 
         # Take best path for final assignment
         best_path = paths[0]
@@ -173,6 +313,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         unassigned: list[int],
         fixed_assignments: dict[int, str],
         num_layers: int,
+        phase_index: int,
+        total_phases: int,
     ) -> list[dict]:
         """
         Run one phase: find best 'budget' layers for mixer_name.
@@ -192,7 +334,25 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         if budget == 1:
             # Simple case: just take the best single layer
             best_layer, best_score = layer_scores[0]
-            return [{"layers": [best_layer], "score": best_score}]
+            beam = [{"layers": [best_layer], "score": best_score}]
+
+            # Emit beam growth step for single-layer phases too
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import BeamGrowthStepEvent
+
+                self.observer.on_beam_growth_step(
+                    BeamGrowthStepEvent(
+                        step=1,
+                        total_steps=1,
+                        phase_index=phase_index,
+                        mixer_name=mixer_name,
+                        base_layers=[],
+                        tried=[{"layer": layer, "score": score} for layer, score in layer_scores],
+                        beam=beam[:5],
+                    )
+                )
+
+            return beam
 
         # Grow beam from best single layers to budget size
         beam = await self._grow_beam(
@@ -204,6 +364,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             unassigned=unassigned,
             fixed_assignments=fixed_assignments,
             num_layers=num_layers,
+            phase_index=phase_index,
         )
 
         return beam
@@ -232,6 +393,11 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
+
+            # Notify observer of eval completion
+            if self.observer is not None:
+                self.observer.on_eval_completed(self.eval_count)
+
             layer_scores.append((layer_idx, score))
 
         # Sort by score (higher is better)
@@ -248,6 +414,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         unassigned: list[int],
         fixed_assignments: dict[int, str],
         num_layers: int,
+        phase_index: int,
     ) -> list[dict]:
         """Grow the beam from seed to budget size."""
         # Initialize beam with single-layer candidates
@@ -257,6 +424,24 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         ]
 
         best_score = beam[0]["score"]
+
+        total_growth_steps = budget - 1
+
+        # Emit step 1 event for initial beam (from prescoring)
+        if self.observer is not None:
+            from place_layers.search_strategy.progress import BeamGrowthStepEvent
+
+            self.observer.on_beam_growth_step(
+                BeamGrowthStepEvent(
+                    step=1,
+                    total_steps=total_growth_steps,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    base_layers=[],
+                    tried=[{"layer": layer, "score": score} for layer, score in layer_scores],
+                    beam=beam[:5],
+                )
+            )
 
         # Grow beam iteratively
         for growth_step in range(1, budget):
@@ -278,7 +463,45 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             )
 
             # Select top candidates using shared function (higher is better)
-            beam = select_top_beam(candidates, self.config.beam_width, higher_is_better=True)
+            new_beam = select_top_beam(candidates, self.config.beam_width, higher_is_better=True)
+
+            # Emit beam growth step event with expansion details
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import BeamGrowthStepEvent
+
+                # For each candidate, find which layer was added by comparing with beam entries
+                # Candidates are generated by adding one layer to a beam entry
+                beam_layer_sets = [set(b["layers"]) for b in beam]
+                tried = []
+                for c in candidates:
+                    candidate_set = set(c["layers"])
+                    # Find the beam entry this candidate was expanded from
+                    for beam_set in beam_layer_sets:
+                        if beam_set < candidate_set and len(candidate_set - beam_set) == 1:
+                            # Found the base, the added layer is the difference
+                            added_layer = (candidate_set - beam_set).pop()
+                            tried.append({"layer": added_layer, "score": c["score"]})
+                            break
+
+                # Sort by score descending for display
+                tried.sort(key=lambda x: x["score"], reverse=True)
+
+                # Base layers are from the best entry in previous beam
+                base_layers = beam[0]["layers"] if beam else []
+
+                self.observer.on_beam_growth_step(
+                    BeamGrowthStepEvent(
+                        step=growth_step + 1,  # +1 because step 1 was prescoring
+                        total_steps=total_growth_steps,
+                        phase_index=phase_index,
+                        mixer_name=mixer_name,
+                        base_layers=base_layers,
+                        tried=tried,
+                        beam=new_beam[:5],
+                    )
+                )
+
+            beam = new_beam
 
             # Check early stopping
             new_best_score = beam[0]["score"]
@@ -311,6 +534,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             placement = LayerPlacement(assignments=assignments)
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
+
+            # Notify observer of eval completion
+            if self.observer is not None:
+                self.observer.on_eval_completed(self.eval_count)
 
 
 class HierarchicalConfig(BaseCostConstrainedConfig):

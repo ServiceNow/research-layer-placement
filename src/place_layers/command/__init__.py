@@ -6,6 +6,7 @@ from pydantic import Field, TypeAdapter
 
 from place_layers.command.calibrate_sa import CalibrateSACommandConfig
 from place_layers.command.convergence_analysis import ConvergenceAnalysisCommandConfig
+from place_layers.command.eval_count_calculator import EvalCountCommandConfig
 from place_layers.command.evaluate import EvaluateCommandConfig
 from place_layers.command.hyperparameter_analysis import (
     HyperparameterAnalysisCommandConfig,
@@ -27,6 +28,7 @@ CommandConfig = Annotated[
     | CalibrateSACommandConfig
     | PrecomputeTracesCommandConfig
     | EvaluateCommandConfig
+    | EvalCountCommandConfig
     | ServeCommandConfig,
     Field(discriminator="command"),
 ]

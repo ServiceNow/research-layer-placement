@@ -11,19 +11,26 @@ if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy_config import (
         BaseSearchStrategyConfig,
     )
+    from place_layers.search_strategy.progress import SearchObserver
 
 
 class BaseSearchStrategy[ParametersT]:
     """Abstract base class for search strategies."""
 
-    def __init__(self, config: BaseSearchStrategyConfig) -> None:
+    def __init__(
+        self,
+        config: "BaseSearchStrategyConfig",
+        observer: "SearchObserver | None" = None,
+    ) -> None:
         """
         Initialize the search strategy with configuration.
 
         Args:
             config: Search strategy configuration.
+            observer: Optional observer for progress events.
         """
         self.config = config
+        self.observer = observer
 
     async def search(
         self,

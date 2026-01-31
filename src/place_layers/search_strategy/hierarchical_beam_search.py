@@ -1,7 +1,9 @@
 """Hierarchical beam search strategy implementation."""
 
+from __future__ import annotations
+
 import logging
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,9 @@ from place_layers.search_strategy.beam_core import (
     generate_beam_candidates,
     select_top_beam,
 )
+
+if TYPE_CHECKING:
+    from place_layers.search_strategy.progress import SearchObserver
 
 
 logger = logging.getLogger(__name__)
@@ -50,8 +55,16 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
     4. Remaining layers use the last mixer
     """
 
-    def __init__(self, config: "HierarchicalBeamSearchConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "HierarchicalBeamSearchConfig",
+        observer: "SearchObserver | None" = None,
+    ) -> None:
+        super().__init__(config, observer)
+        if self.observer is not None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support progress observers."
+            )
         self.config: HierarchicalBeamSearchConfig  # Type narrowing
         self.eval_count = 0
 

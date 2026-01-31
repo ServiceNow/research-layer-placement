@@ -1,8 +1,10 @@
 """Exhaustive search strategy implementation."""
 
-from itertools import combinations
+from __future__ import annotations
+
 import logging
-from typing import ClassVar, Literal
+from itertools import combinations
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
 
@@ -13,6 +15,9 @@ from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
 from place_layers.search_strategy.base_search_strategy_config import (
     BaseSearchStrategyConfig,
 )
+
+if TYPE_CHECKING:
+    from place_layers.search_strategy.progress import SearchObserver
 
 
 logger = logging.getLogger(__name__)
@@ -34,8 +39,16 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
     - 50 layers, budgets=[4,8]: ~10^15 configs (IMPOSSIBLE)
     """
 
-    def __init__(self, config: "ExhaustiveSearchConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "ExhaustiveSearchConfig",
+        observer: "SearchObserver | None" = None,
+    ) -> None:
+        super().__init__(config, observer)
+        if self.observer is not None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support progress observers."
+            )
         self.config: ExhaustiveSearchConfig  # Type narrowing
 
     async def search(

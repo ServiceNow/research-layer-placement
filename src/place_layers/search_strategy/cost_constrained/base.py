@@ -15,6 +15,7 @@ from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
+    MinCostProblemConfig,
 )
 from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
 from place_layers.search_strategy.cost_constrained.types import (
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
     )
+    from place_layers.search_strategy.progress import SearchObserver
 
 
 logger = logging.getLogger(__name__)
@@ -57,8 +59,12 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
        - Stop when performance falls below target
     """
 
-    def __init__(self, config: "BaseCostConstrainedConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "BaseCostConstrainedConfig",
+        observer: "SearchObserver | None" = None,
+    ) -> None:
+        super().__init__(config, observer)
         self.config: BaseCostConstrainedConfig
         self.eval_count = 0
 
@@ -87,26 +93,55 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model = problem.cost_model
         num_layers = problem.evaluator.num_layers
         num_mixers = problem.evaluator.num_mixers
+        mixer_names = problem.evaluator.mixer_names
 
         self._log_config(config, cost_model, num_layers, num_mixers)
 
-        if isinstance(config, MaxPerformanceProblemConfig):
-            return await self._search_max_performance(
-                problem=problem,
-                cost_model=cost_model,
-                num_layers=num_layers,
-                num_mixers=num_mixers,
-                cost_budget=config.cost_budget,
+        match config:
+            case MaxPerformanceProblemConfig(cost_budget=budget):
+                mode: Literal["max_performance", "min_cost"] = "max_performance"
+                constraint_value = budget
+            case MinCostProblemConfig(performance_target=target):
+                mode = "min_cost"
+                constraint_value = target
+            case _:
+                raise TypeError(f"Unexpected config type: {type(config)}")
+
+        if self.observer is not None:
+            from place_layers.search_strategy.progress import SearchStartedEvent
+
+            self.observer.on_search_started(
+                SearchStartedEvent(
+                    mode=mode,
+                    constraint_value=constraint_value,
+                    min_cost=cost_model.min_cost(num_layers),
+                    max_cost=cost_model.max_cost(num_layers),
+                    num_layers=num_layers,
+                    mixer_names=mixer_names,
+                    max_allocations=self.config.max_allocations,
+                    total_allocations=cost_model.count_allocations(num_layers),
+                )
             )
-        else:
-            # MinCostProblemConfig
-            return await self._search_min_cost(
-                problem=problem,
-                cost_model=cost_model,
-                num_layers=num_layers,
-                num_mixers=num_mixers,
-                performance_target=config.performance_target,
-            )
+
+        match config:
+            case MaxPerformanceProblemConfig(cost_budget=budget):
+                return await self._search_max_performance(
+                    problem=problem,
+                    cost_model=cost_model,
+                    num_layers=num_layers,
+                    num_mixers=num_mixers,
+                    cost_budget=budget,
+                )
+            case MinCostProblemConfig(performance_target=target):
+                return await self._search_min_cost(
+                    problem=problem,
+                    cost_model=cost_model,
+                    num_layers=num_layers,
+                    num_mixers=num_mixers,
+                    performance_target=target,
+                )
+            case _:
+                raise TypeError(f"Unexpected config type: {type(config)}")
 
     async def _search_max_performance(
         self,
@@ -149,9 +184,24 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 continue
 
             allocations_explored += 1
+            mixer_names = problem.evaluator.mixer_names
 
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
+
+            # Emit allocation started event
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import AllocationStartedEvent
+
+                self.observer.on_allocation_started(
+                    AllocationStartedEvent(
+                        allocation_index=allocations_explored,
+                        total_allocations=self.config.max_allocations,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=mixer_names,
+                    )
+                )
 
             # Search for best assignment within this allocation
             best_in_allocation = await self._search_within_allocation(
@@ -175,6 +225,19 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 logger.info(
                     f"  NEW BEST: score={best_entry.score:.4f}, cost={best_entry.cost:.4f}"
                 )
+
+                # Emit best updated event
+                if self.observer is not None:
+                    from place_layers.search_strategy.progress import BestUpdatedEvent
+
+                    self.observer.on_best_updated(
+                        BestUpdatedEvent(
+                            score=best_entry.score,
+                            cost=best_entry.cost,
+                            allocation=best_entry.allocation,
+                            assignments=best_entry.assignments,
+                        )
+                    )
 
             # Check for max allocations limit
             if allocations_explored >= self.config.max_allocations:
@@ -233,9 +296,24 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             num_layers, direction="decreasing"
         ):
             allocations_explored += 1
+            mixer_names = problem.evaluator.mixer_names
 
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
+
+            # Emit allocation started event
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import AllocationStartedEvent
+
+                self.observer.on_allocation_started(
+                    AllocationStartedEvent(
+                        allocation_index=allocations_explored,
+                        total_allocations=self.config.max_allocations,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=mixer_names,
+                    )
+                )
 
             # Search for best assignment within this allocation
             best_in_allocation = await self._search_within_allocation(
@@ -260,6 +338,19 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 logger.info(
                     f"  MEETS TARGET: score={best_entry.score:.4f}, cost={best_entry.cost:.4f}"
                 )
+
+                # Emit best updated event
+                if self.observer is not None:
+                    from place_layers.search_strategy.progress import BestUpdatedEvent
+
+                    self.observer.on_best_updated(
+                        BestUpdatedEvent(
+                            score=best_entry.score,
+                            cost=best_entry.cost,
+                            allocation=best_entry.allocation,
+                            assignments=best_entry.assignments,
+                        )
+                    )
             else:
                 # Performance dropped below target - stop searching
                 logger.info(
@@ -390,6 +481,19 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")
         logger.info(f"Total evaluations: {self.eval_count}")
+
+        # Emit search completed event
+        if self.observer is not None:
+            from place_layers.search_strategy.progress import SearchCompletedEvent
+
+            self.observer.on_search_completed(
+                SearchCompletedEvent(
+                    best_score=best_entry.score,
+                    best_cost=best_entry.cost,
+                    total_evaluations=self.eval_count,
+                    allocations_explored=allocations_explored,
+                )
+            )
 
         return CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=best_entry.assignments),

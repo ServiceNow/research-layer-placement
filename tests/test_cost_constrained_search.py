@@ -13,9 +13,7 @@ from place_layers.problem import (
     MaxPerformanceProblemConfig,
     MinCostProblemConfig,
 )
-from place_layers.search_strategy import (
-    CostConstrainedBeamSearchConfig,
-)
+from place_layers.search_strategy import SwapBeamConfig
 
 
 class TestAllocationNavigation:
@@ -414,7 +412,7 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE mode should respect cost budget."""
-        search_config = CostConstrainedBeamSearchConfig(
+        search_config = SwapBeamConfig(
             beam_width=5, max_allocations=20, max_iterations_per_allocation=10
         )
         search = search_config.create_search_strategy()
@@ -430,7 +428,7 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST mode should meet performance target."""
-        search_config = CostConstrainedBeamSearchConfig(
+        search_config = SwapBeamConfig(
             beam_width=5, max_allocations=20, max_iterations_per_allocation=10
         )
         search = search_config.create_search_strategy()
@@ -446,7 +444,7 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE should respect budget (start at budget, explore cheaper)."""
-        search_config = CostConstrainedBeamSearchConfig(
+        search_config = SwapBeamConfig(
             beam_width=3, max_allocations=10, max_iterations_per_allocation=5
         )
         search = search_config.create_search_strategy()
@@ -462,7 +460,7 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST should start from most expensive config and downgrade."""
-        search_config = CostConstrainedBeamSearchConfig(
+        search_config = SwapBeamConfig(
             beam_width=3, max_allocations=10, max_iterations_per_allocation=5
         )
         search = search_config.create_search_strategy()
@@ -489,7 +487,7 @@ class TestCostConstrainedBeamSearch:
             cost_model=cost_model,
             cost_budget=4.0,
         )
-        search_config = CostConstrainedBeamSearchConfig(
+        search_config = SwapBeamConfig(
             beam_width=3, max_allocations=10, max_iterations_per_allocation=5
         )
 
