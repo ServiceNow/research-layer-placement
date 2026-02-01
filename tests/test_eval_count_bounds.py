@@ -47,8 +47,9 @@ async def test_eval_count_within_bounds(
     Runs optimization and checks: lower_bound <= total_evaluations <= upper_bound
     """
     mixer_names = list(mixer_costs.keys())
+    early_stop_threshold = 0.0  # Disable early stopping for predictable bounds
 
-    # Calculate predicted bounds
+    # Calculate predicted bounds (with matching early_stop_threshold)
     bounds = calculate_bounds(
         num_layers=num_layers,
         mixer_costs=mixer_costs,
@@ -56,6 +57,7 @@ async def test_eval_count_within_bounds(
         max_allocations=max_allocations,
         beam_width=beam_width,
         cross_phase_beam_width=cross_phase_beam_width,
+        early_stop_threshold=early_stop_threshold,
     )
 
     # Create evaluator
@@ -78,11 +80,11 @@ async def test_eval_count_within_bounds(
     )
     problem = problem_config.create_problem(evaluator)
 
-    # Create search strategy with early_stop_threshold=0.0 for predictable upper bound
+    # Create search strategy with matching early_stop_threshold
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
-        early_stop_threshold=0.0,  # Disable early stopping
+        early_stop_threshold=early_stop_threshold,
         cross_phase_beam_width=cross_phase_beam_width,
     )
     search = search_config.create_search_strategy()
@@ -95,18 +97,18 @@ async def test_eval_count_within_bounds(
     actual = result.total_evaluations
     lower = bounds["lower_bound"]
     upper = bounds["upper_bound"]
+    expected = bounds["expected"]
 
     assert lower <= actual <= upper, (
         f"[{description}] Eval count {actual} outside bounds [{lower}, {upper}]\n"
-        f"Allocations analyzed: {bounds['allocations_analyzed']}"
+        f"Expected: {expected}, Allocations analyzed: {bounds['allocations_analyzed']}"
     )
 
 
 async def test_bounds_with_early_stopping() -> None:
-    """Verify that with early stopping enabled, actual evals are <= upper bound.
+    """Verify that with early stopping enabled, actual evals fall within statistical bounds.
 
-    Early stopping can cause actual evals to be less than upper bound,
-    so we only check the upper bound constraint.
+    The statistical model accounts for early stopping, so actual should be within bounds.
     """
     num_layers = 20
     mixer_costs = {"m0": 1.0, "m1": 0.5, "m2": 0.2}
@@ -114,8 +116,9 @@ async def test_bounds_with_early_stopping() -> None:
     max_allocations = 5
     beam_width = 3
     cross_phase_beam_width = 1
+    early_stop_threshold = 0.001  # Enable early stopping
 
-    # Calculate bounds
+    # Calculate bounds (with matching early_stop_threshold)
     bounds = calculate_bounds(
         num_layers=num_layers,
         mixer_costs=mixer_costs,
@@ -123,6 +126,7 @@ async def test_bounds_with_early_stopping() -> None:
         max_allocations=max_allocations,
         beam_width=beam_width,
         cross_phase_beam_width=cross_phase_beam_width,
+        early_stop_threshold=early_stop_threshold,
     )
 
     # Create evaluator
@@ -145,11 +149,11 @@ async def test_bounds_with_early_stopping() -> None:
     )
     problem = problem_config.create_problem(evaluator)
 
-    # Create search strategy WITH early stopping enabled (default behavior)
+    # Create search strategy WITH early stopping enabled
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
-        early_stop_threshold=0.001,  # Enable early stopping
+        early_stop_threshold=early_stop_threshold,
         cross_phase_beam_width=cross_phase_beam_width,
     )
     search = search_config.create_search_strategy()
@@ -158,13 +162,13 @@ async def test_bounds_with_early_stopping() -> None:
     async with evaluator:
         result = await search.search(problem)
 
-    # With early stopping, actual should be <= upper bound
-    # (may be less than lower bound if early stopping kicks in aggressively)
+    # With early stopping, actual should be within statistical bounds
     actual = result.total_evaluations
+    lower = bounds["lower_bound"]
     upper = bounds["upper_bound"]
 
-    assert actual <= upper, (
-        f"Eval count {actual} exceeds upper bound {upper} even with early stopping"
+    assert lower <= actual <= upper, (
+        f"Eval count {actual} outside bounds [{lower}, {upper}] with early stopping"
     )
 
 
@@ -183,6 +187,7 @@ class TestCalculateBoundsEdgeCases:
         )
 
         assert bounds["allocations_analyzed"] == 1
+        assert bounds["expected"] > 0
         assert bounds["lower_bound"] > 0
         assert bounds["upper_bound"] >= bounds["lower_bound"]
 
@@ -198,6 +203,7 @@ class TestCalculateBoundsEdgeCases:
         )
 
         assert bounds["allocations_analyzed"] > 0
+        assert bounds["expected"] > 0
         assert bounds["lower_bound"] > 0
         assert bounds["upper_bound"] >= bounds["lower_bound"]
 
@@ -212,10 +218,9 @@ class TestCalculateBoundsEdgeCases:
             cross_phase_beam_width=1,
         )
 
+        assert bounds["expected"] > 0
         assert bounds["lower_bound"] > 0
         assert bounds["upper_bound"] >= bounds["lower_bound"]
-        # With beam_width=1, bounds should be tighter
-        # (less variance in search behavior)
 
     def test_cross_phase_equals_beam_width(self) -> None:
         """Test with cross_phase_beam_width = beam_width."""
@@ -228,9 +233,9 @@ class TestCalculateBoundsEdgeCases:
             cross_phase_beam_width=3,
         )
 
+        assert bounds["expected"] > 0
         assert bounds["lower_bound"] > 0
         assert bounds["upper_bound"] >= bounds["lower_bound"]
-        # Upper bound should be larger with cross_phase_beam_width > 1
 
     def test_allocation_details_returned(self) -> None:
         """Verify allocation_details contains expected information."""
@@ -251,6 +256,25 @@ class TestCalculateBoundsEdgeCases:
             assert "allocation_dict" in detail
             assert "cost" in detail
             assert "budgets" in detail
+            assert "expected" in detail
             assert "lower_bound" in detail
             assert "upper_bound" in detail
             assert detail["cost"] <= 4.0  # Within budget
+
+    def test_expected_in_results(self) -> None:
+        """Verify expected value and std_dev are returned."""
+        bounds = calculate_bounds(
+            num_layers=10,
+            mixer_costs={"m0": 1.0, "m1": 0.5, "m2": 0.2},
+            cost_budget=4.0,
+            max_allocations=3,
+            beam_width=2,
+            cross_phase_beam_width=1,
+        )
+
+        assert "expected" in bounds
+        assert "std_dev" in bounds
+        assert bounds["expected"] > 0
+        assert bounds["std_dev"] >= 0
+        # Expected should be within bounds
+        assert bounds["lower_bound"] <= bounds["expected"] <= bounds["upper_bound"]

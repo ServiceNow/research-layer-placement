@@ -1,6 +1,6 @@
 """Evaluation count calculator command for hierarchical beam search.
 
-This module provides a CLI command to calculate lower and upper bounds
+This module provides a CLI command to calculate statistical bounds
 on the number of evaluations for hierarchical beam search, given problem
 parameters.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -19,20 +20,15 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
 from place_layers.search_strategy.cost_constrained.hierarchical import (
-    allocation_bounds,
-    phase_eval_lower,
-    phase_eval_upper,
+    allocation_statistics,
+    continuation_rate,
 )
 
 
 logger = logging.getLogger(__name__)
 
 
-# Re-export bounds functions for backward compatibility
 __all__ = [
-    "phase_eval_lower",
-    "phase_eval_upper",
-    "allocation_bounds",
     "calculate_bounds",
     "EvalCountCommand",
     "EvalCountCommandConfig",
@@ -46,9 +42,13 @@ def calculate_bounds(
     max_allocations: int,
     beam_width: int,
     cross_phase_beam_width: int,
+    early_stop_threshold: float = 0.001,
 ) -> dict:
     """
-    Calculate total evaluation count bounds across all feasible allocations.
+    Calculate statistical evaluation count bounds across all feasible allocations.
+
+    Uses a probabilistic model that accounts for early stopping behavior,
+    providing expected value with 95% confidence bounds.
 
     Args:
         num_layers: Total number of layers (N).
@@ -57,20 +57,29 @@ def calculate_bounds(
         max_allocations: Maximum number of allocations to analyze.
         beam_width: Within-phase beam width (B).
         cross_phase_beam_width: Cross-phase beam width (C).
+        early_stop_threshold: Early stopping threshold (affects continuation rate).
 
     Returns:
-        Dict with lower_bound, upper_bound, allocations_analyzed, and per-allocation details.
+        Dict with expected, lower_bound, upper_bound, allocations_analyzed,
+        and per-allocation details.
     """
     # Create cost model to enumerate allocations
     config = LinearCostModelConfig(mixer_costs=mixer_costs)
     mixer_names = list(mixer_costs.keys())
     cost_model = config.create_cost_model(mixer_names)
 
-    total_lower, total_upper = 0, 0
+    # Compute continuation rate from early_stop_threshold
+    cont_rate = continuation_rate(early_stop_threshold)
+
+    total_expected = 0.0
+    total_variance = 0.0
     allocations_analyzed = 0
     allocation_details: list[dict] = []
 
     # Enumerate allocations in decreasing cost order (like the actual search)
+    phase_order = cost_model.phase_order
+    name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
+
     for alloc_cost, allocation in cost_model.allocations_by_cost(
         num_layers, "decreasing"
     ):
@@ -79,19 +88,22 @@ def calculate_bounds(
         if allocations_analyzed >= max_allocations:
             break
 
-        # Phase budgets = allocation counts for first K-1 mixers (in phase order)
-        # The phase order follows mixer_costs key order
-        phase_order = cost_model.phase_order
-        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
-
         # Build budgets in phase order (excluding the last mixer which gets remainder)
-        budgets = [allocation[name_to_alloc_idx[phase_order[i]]] for i in range(len(phase_order) - 1)]
+        budgets = [
+            allocation[name_to_alloc_idx[phase_order[i]]]
+            for i in range(len(phase_order) - 1)
+        ]
 
-        lower, upper = allocation_bounds(
-            budgets, num_layers, beam_width, cross_phase_beam_width
+        # Compute statistical bounds
+        expected, variance = allocation_statistics(
+            budgets, num_layers, beam_width, cross_phase_beam_width, cont_rate
         )
-        total_lower += lower
-        total_upper += upper
+        std_dev = math.sqrt(variance) if variance > 0 else 0.0
+        lower = int(expected - 2 * std_dev)
+        upper = int(expected + 2 * std_dev)
+
+        total_expected += expected
+        total_variance += variance
         allocations_analyzed += 1
 
         allocation_details.append({
@@ -99,13 +111,19 @@ def calculate_bounds(
             "allocation_dict": dict(zip(mixer_names, allocation, strict=True)),
             "cost": alloc_cost,
             "budgets": budgets,
+            "expected": int(expected),
             "lower_bound": lower,
             "upper_bound": upper,
         })
 
+    # Compute total bounds
+    total_std_dev = math.sqrt(total_variance) if total_variance > 0 else 0.0
+
     return {
-        "lower_bound": total_lower,
-        "upper_bound": total_upper,
+        "expected": int(total_expected),
+        "lower_bound": int(total_expected - 2 * total_std_dev),
+        "upper_bound": int(total_expected + 2 * total_std_dev),
+        "std_dev": total_std_dev,
         "allocations_analyzed": allocations_analyzed,
         "allocation_details": allocation_details,
     }
@@ -133,6 +151,7 @@ class EvalCountCommand(BaseCommand):
         max_allocations = self.config.max_allocations
         beam_width = self.config.beam_width
         cross_phase_beam_width = self.config.cross_phase_beam_width
+        early_stop_threshold = self.config.early_stop_threshold
 
         logger.info(f"Number of layers (N): {num_layers}")
         logger.info(f"Number of mixers (K): {len(mixer_costs)}")
@@ -141,6 +160,7 @@ class EvalCountCommand(BaseCommand):
         logger.info(f"Max allocations: {max_allocations}")
         logger.info(f"Beam width (B): {beam_width}")
         logger.info(f"Cross-phase beam width (C): {cross_phase_beam_width}")
+        logger.info(f"Early stop threshold: {early_stop_threshold}")
 
         # Calculate bounds
         results = calculate_bounds(
@@ -150,6 +170,7 @@ class EvalCountCommand(BaseCommand):
             max_allocations=max_allocations,
             beam_width=beam_width,
             cross_phase_beam_width=cross_phase_beam_width,
+            early_stop_threshold=early_stop_threshold,
         )
 
         # Log results
@@ -157,13 +178,14 @@ class EvalCountCommand(BaseCommand):
         logger.info("RESULTS")
         logger.info("=" * 60)
         logger.info(f"Allocations analyzed: {results['allocations_analyzed']}")
-        logger.info(f"Lower bound: {results['lower_bound']:,} evaluations")
-        logger.info(f"Upper bound: {results['upper_bound']:,} evaluations")
+        logger.info(f"Expected evaluations: ~{results['expected']:,}")
+        logger.info(
+            f"95% confidence interval: {results['lower_bound']:,} - {results['upper_bound']:,}"
+        )
 
         if results["allocations_analyzed"] > 0:
-            avg_lower = results["lower_bound"] / results["allocations_analyzed"]
-            avg_upper = results["upper_bound"] / results["allocations_analyzed"]
-            logger.info(f"Average per allocation: {avg_lower:.1f} - {avg_upper:.1f}")
+            avg = results["expected"] / results["allocations_analyzed"]
+            logger.info(f"Average per allocation: ~{avg:.0f}")
 
         # Log per-allocation breakdown if not too many
         if results["allocations_analyzed"] <= 20:
@@ -172,7 +194,7 @@ class EvalCountCommand(BaseCommand):
                 logger.info(
                     f"  {i + 1}. {detail['allocation_dict']} "
                     f"(cost={detail['cost']:.4f}): "
-                    f"{detail['lower_bound']:,} - {detail['upper_bound']:,}"
+                    f"~{detail['expected']:,} ({detail['lower_bound']:,} - {detail['upper_bound']:,})"
                 )
 
         # Save JSON results
@@ -185,10 +207,13 @@ class EvalCountCommand(BaseCommand):
                 "max_allocations": max_allocations,
                 "beam_width": beam_width,
                 "cross_phase_beam_width": cross_phase_beam_width,
+                "early_stop_threshold": early_stop_threshold,
             },
             "results": {
+                "expected": results["expected"],
                 "lower_bound": results["lower_bound"],
                 "upper_bound": results["upper_bound"],
+                "std_dev": results["std_dev"],
                 "allocations_analyzed": results["allocations_analyzed"],
             },
             "allocation_details": results["allocation_details"],
@@ -239,4 +264,10 @@ class EvalCountCommandConfig(BaseCommandConfig):
         description="Cross-phase beam width (C)",
         gt=0,
         default=1,
+    )
+
+    early_stop_threshold: float = Field(
+        description="Early stopping threshold (affects continuation rate)",
+        ge=0.0,
+        default=0.001,
     )

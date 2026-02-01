@@ -105,9 +105,16 @@ class RichSearchDisplay:
         self._eval_count: int = 0
         self._last_eval_update: int = 0
 
-        # Eval count bounds (from BoundsUpdatedEvent)
+        # Overall eval count bounds (from BoundsUpdatedEvent)
         self._eval_lower_bound: int | None = None
         self._eval_upper_bound: int | None = None
+        self._eval_expected: int | None = None
+
+        # Per-allocation progress tracking
+        self._alloc_eval_start: int = 0  # eval_count when allocation started
+        self._alloc_lower: int | None = None
+        self._alloc_upper: int | None = None
+        self._alloc_expected: int | None = None
 
         # Track current phase tree for building up the visualization
         self._phase_tree: Tree | None = None
@@ -194,35 +201,60 @@ class RichSearchDisplay:
 
         return Panel(content, title="[green]Best[/green]", border_style="green")
 
-    def _render_progress(self) -> Progress:
-        """Render the progress bar."""
-        # Include percentage column only if we have a known upper bound
-        if self._eval_upper_bound is not None:
-            progress = Progress(
-                SpinnerColumn(),
-                TextColumn(f"Evals: {self._eval_count:,}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TimeElapsedColumn(),
-                console=self._console,
-                transient=False,
+    def _render_progress(self) -> Group:
+        """Render the dual progress bars (overall and per-allocation)."""
+        components = []
+
+        # Overall progress bar using expected value
+        overall_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]Overall:[/bold]"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=self._console,
+            transient=False,
+            expand=False,
+        )
+
+        # Use expected value for progress calculation (more accurate than bounds midpoint)
+        if self._eval_expected is not None:
+            overall_progress.add_task(
+                "Overall",
+                total=self._eval_expected,
+                completed=self._eval_count,
             )
-            progress.add_task(
-                "Searching...",
+        elif self._eval_upper_bound is not None:
+            overall_progress.add_task(
+                "Overall",
                 total=self._eval_upper_bound,
                 completed=self._eval_count,
             )
         else:
-            progress = Progress(
+            overall_progress.add_task("Overall", total=None)
+
+        components.append(overall_progress)
+
+        # Per-allocation progress bar (if we have allocation bounds)
+        if self._alloc_expected is not None:
+            alloc_evals = self._eval_count - self._alloc_eval_start
+            alloc_progress = Progress(
                 SpinnerColumn(),
-                TextColumn(f"Evals: {self._eval_count:,}"),
+                TextColumn("[bold]Allocation:[/bold]"),
                 BarColumn(),
-                TimeElapsedColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 console=self._console,
                 transient=False,
+                expand=False,
             )
-            progress.add_task("Searching...", total=None)
-        return progress
+            alloc_progress.add_task(
+                "Allocation",
+                total=self._alloc_expected,
+                completed=alloc_evals,
+            )
+            components.append(alloc_progress)
+
+        return Group(*components)
 
     # =========================================================================
     # Print methods for permanent output using Rich widgets
@@ -246,7 +278,16 @@ class RichSearchDisplay:
         table.add_row("Cost bounds", f"[{self._min_cost:.4f}, {self._max_cost:.4f}]")
         table.add_row("Layers", str(self._num_layers))
         table.add_row("Mixers", ", ".join(self._mixer_names))
-        if self._eval_lower_bound is not None and self._eval_upper_bound is not None:
+        if self._eval_expected is not None:
+            # Show expected with statistical bounds
+            if self._eval_lower_bound is not None and self._eval_upper_bound is not None:
+                table.add_row(
+                    "Est. evals",
+                    f"~{self._eval_expected:,} ({self._eval_lower_bound:,} - {self._eval_upper_bound:,})",
+                )
+            else:
+                table.add_row("Est. evals", f"~{self._eval_expected:,}")
+        elif self._eval_lower_bound is not None and self._eval_upper_bound is not None:
             table.add_row(
                 "Est. evals", f"{self._eval_lower_bound:,} - {self._eval_upper_bound:,}"
             )
@@ -430,6 +471,7 @@ class RichSearchDisplay:
         # Initialize bounds from event (may be None if not provided)
         self._eval_lower_bound = event.eval_count_lower_bound
         self._eval_upper_bound = event.eval_count_upper_bound
+        self._eval_expected = event.eval_count_expected
 
         # Print search header using Rich panel
         self._print_search_header()
@@ -452,6 +494,12 @@ class RichSearchDisplay:
         self._current_tried = []
         self._current_base_layers = []
         self._phase_tree = None
+
+        # Capture per-allocation bounds for progress tracking
+        self._alloc_eval_start = self._eval_count
+        self._alloc_lower = event.eval_lower_bound
+        self._alloc_upper = event.eval_upper_bound
+        self._alloc_expected = event.eval_expected
 
         # Print allocation header
         self._print_allocation_header()

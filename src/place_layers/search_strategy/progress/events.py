@@ -24,17 +24,25 @@ class SearchStartedEvent:
     total_allocations: int
     eval_count_lower_bound: int | None = None
     eval_count_upper_bound: int | None = None
+    eval_count_expected: int | None = None
 
 
 @dataclass(frozen=True)
 class AllocationStartedEvent:
-    """Emitted when starting search within a new allocation."""
+    """Emitted when starting search within a new allocation.
+
+    Includes per-allocation evaluation bounds for progress tracking.
+    """
 
     allocation_index: int
     total_allocations: int  # max_allocations limit
     allocation: tuple[int, ...]
     allocation_cost: float
     mixer_names: list[str]
+    # Per-allocation evaluation bounds (from progress estimator)
+    eval_lower_bound: int | None = None
+    eval_upper_bound: int | None = None
+    eval_expected: int | None = None
 
 
 @dataclass(frozen=True)

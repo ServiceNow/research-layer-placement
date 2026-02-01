@@ -116,12 +116,14 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             # Get initial bounds from progress estimator if available
             eval_lower = None
             eval_upper = None
+            eval_expected = None
             if self._progress_estimator is not None:
                 estimate = self._progress_estimator.bounds_after(
                     completed_allocations=0, completed_evals=0
                 )
                 eval_lower = estimate.lower
                 eval_upper = estimate.upper
+                eval_expected = estimate.expected
 
             self.observer.on_search_started(
                 SearchStartedEvent(
@@ -135,6 +137,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     total_allocations=cost_model.count_allocations(num_layers),
                     eval_count_lower_bound=eval_lower,
                     eval_count_upper_bound=eval_upper,
+                    eval_count_expected=eval_expected,
                 )
             )
 
@@ -201,6 +204,18 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
 
+            # Get per-allocation bounds from progress estimator
+            alloc_lower: int | None = None
+            alloc_upper: int | None = None
+            alloc_expected: int | None = None
+            if self._progress_estimator is not None:
+                alloc_info = self._progress_estimator.allocation_info[
+                    allocations_explored - 1
+                ]
+                alloc_lower = alloc_info.estimated_lower
+                alloc_upper = alloc_info.estimated_upper
+                alloc_expected = int(alloc_info.expected)
+
             # Emit allocation started event
             if self.observer is not None:
                 from place_layers.search_strategy.progress import AllocationStartedEvent
@@ -212,6 +227,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         allocation=allocation,
                         allocation_cost=alloc_cost,
                         mixer_names=mixer_names,
+                        eval_lower_bound=alloc_lower,
+                        eval_upper_bound=alloc_upper,
+                        eval_expected=alloc_expected,
                     )
                 )
 
@@ -349,6 +367,18 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
 
+            # Get per-allocation bounds from progress estimator
+            alloc_lower: int | None = None
+            alloc_upper: int | None = None
+            alloc_expected: int | None = None
+            if self._progress_estimator is not None:
+                alloc_info = self._progress_estimator.allocation_info[
+                    allocations_explored - 1
+                ]
+                alloc_lower = alloc_info.estimated_lower
+                alloc_upper = alloc_info.estimated_upper
+                alloc_expected = int(alloc_info.expected)
+
             # Emit allocation started event
             if self.observer is not None:
                 from place_layers.search_strategy.progress import AllocationStartedEvent
@@ -360,6 +390,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         allocation=allocation,
                         allocation_cost=alloc_cost,
                         mixer_names=mixer_names,
+                        eval_lower_bound=alloc_lower,
+                        eval_upper_bound=alloc_upper,
+                        eval_expected=alloc_expected,
                     )
                 )
 
