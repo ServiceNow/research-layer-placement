@@ -59,9 +59,10 @@ class OptimizeCommand(BaseCommand):
                 progress_estimator = self._create_progress_estimator(problem)
 
             # Use Rich display for progress visualization
-            with RichSearchDisplay(progress_estimator=progress_estimator) as display:
+            with RichSearchDisplay() as display:
                 search_strategy = self.config.search_strategy.create_search_strategy(
-                    observer=display
+                    observer=display,
+                    progress_estimator=progress_estimator,
                 )
 
                 # Run the search (search only interacts with problem, not evaluator directly)

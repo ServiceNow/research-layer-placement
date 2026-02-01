@@ -24,6 +24,8 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 logger = logging.getLogger(__name__)
@@ -47,9 +49,19 @@ class AnnealingSearch(BaseCostConstrainedSearch):
     multi-hop paths through accumulated accepted moves.
     """
 
-    def __init__(self, config: "AnnealingConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "AnnealingConfig",
+        observer: "SearchObserver | None" = None,
+        progress_estimator: "SearchProgressEstimator | None" = None,
+    ) -> None:
+        super().__init__(config, observer, progress_estimator)
         self.config: AnnealingConfig
+
+        if self.observer is not None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support progress observers."
+            )
 
         # Seed RNG for reproducibility if specified
         if self.config.seed is not None:

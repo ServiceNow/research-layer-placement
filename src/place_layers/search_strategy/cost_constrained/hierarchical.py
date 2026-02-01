@@ -29,6 +29,7 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
     from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 logger = logging.getLogger(__name__)
@@ -147,8 +148,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         self,
         config: "HierarchicalConfig",
         observer: "SearchObserver | None" = None,
+        progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
-        super().__init__(config, observer=observer)
+        super().__init__(config, observer=observer, progress_estimator=progress_estimator)
         self.config: HierarchicalConfig
 
     async def _search_within_allocation(
@@ -170,7 +172,6 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names  # Canonical order for allocations
         phase_order = cost_model.phase_order  # User-specified order for phases
-        num_mixers = len(allocation)
         cross_phase_k = self.config.cross_phase_beam_width
 
         # Build mapping from mixer name to allocation index
@@ -178,11 +179,13 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
         # Start with a single path
         # fixed_assignments maps layer_idx -> mixer_name
-        paths: list[dict] = [{
-            "fixed": {},
-            "unassigned": list(range(num_layers)),
-            "score": 0.0,
-        }]
+        paths: list[dict] = [
+            {
+                "fixed": {},
+                "unassigned": list(range(num_layers)),
+                "score": 0.0,
+            }
+        ]
 
         # Build phase budgets in phase_order (excluding the last which gets remainder)
         # Each phase assigns layers to one mixer type
@@ -245,11 +248,13 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     for layer_idx in entry["layers"]:
                         new_fixed[layer_idx] = mixer_name
                         new_unassigned.remove(layer_idx)
-                    new_paths.append({
-                        "fixed": new_fixed,
-                        "unassigned": new_unassigned,
-                        "score": entry["score"],
-                    })
+                    new_paths.append(
+                        {
+                            "fixed": new_fixed,
+                            "unassigned": new_unassigned,
+                            "score": entry["score"],
+                        }
+                    )
 
             # Prune to top cross_phase_k paths
             new_paths.sort(key=lambda p: p["score"], reverse=True)
@@ -265,10 +270,13 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
                 # Get the layers assigned in this phase from the best path
                 best_path_after = paths[0]
-                phase_layers = sorted([
-                    layer_idx for layer_idx, mixer in best_path_after["fixed"].items()
-                    if mixer == mixer_name
-                ])
+                phase_layers = sorted(
+                    [
+                        layer_idx
+                        for layer_idx, mixer in best_path_after["fixed"].items()
+                        if mixer == mixer_name
+                    ]
+                )
 
                 self.observer.on_phase_completed(
                     PhaseCompletedEvent(
@@ -347,7 +355,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         phase_index=phase_index,
                         mixer_name=mixer_name,
                         base_layers=[],
-                        tried=[{"layer": layer, "score": score} for layer, score in layer_scores],
+                        tried=[
+                            {"layer": layer, "score": score}
+                            for layer, score in layer_scores
+                        ],
                         beam=beam[:5],
                     )
                 )
@@ -438,7 +449,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     phase_index=phase_index,
                     mixer_name=mixer_name,
                     base_layers=[],
-                    tried=[{"layer": layer, "score": score} for layer, score in layer_scores],
+                    tried=[
+                        {"layer": layer, "score": score}
+                        for layer, score in layer_scores
+                    ],
                     beam=beam[:5],
                 )
             )
@@ -463,7 +477,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             )
 
             # Select top candidates using shared function (higher is better)
-            new_beam = select_top_beam(candidates, self.config.beam_width, higher_is_better=True)
+            new_beam = select_top_beam(
+                candidates, self.config.beam_width, higher_is_better=True
+            )
 
             # Emit beam growth step event with expansion details
             if self.observer is not None:
@@ -477,7 +493,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     candidate_set = set(c["layers"])
                     # Find the beam entry this candidate was expanded from
                     for beam_set in beam_layer_sets:
-                        if beam_set < candidate_set and len(candidate_set - beam_set) == 1:
+                        if (
+                            beam_set < candidate_set
+                            and len(candidate_set - beam_set) == 1
+                        ):
                             # Found the base, the added layer is the difference
                             added_layer = (candidate_set - beam_set).pop()
                             tried.append({"layer": added_layer, "score": c["score"]})
@@ -545,7 +564,9 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
 
     _impl_class: ClassVar[type["BaseSearchStrategy"]] = HierarchicalSearch
 
-    strategy_type: Literal["cost_constrained_hierarchical"] = "cost_constrained_hierarchical"
+    strategy_type: Literal["cost_constrained_hierarchical"] = (
+        "cost_constrained_hierarchical"
+    )
 
     beam_width: int = Field(
         description="Number of top candidates to keep at each growth step",

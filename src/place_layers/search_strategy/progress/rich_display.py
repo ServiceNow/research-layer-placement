@@ -13,8 +13,8 @@ The display uses a hybrid print+live approach:
 - Completed steps/phases: Printed to terminal as permanent output (scrolls up)
 - Current state: Rich Live display at bottom showing active step
 
-Optionally accepts a SearchProgressEstimator to track and refine progress
-estimates as allocations complete.
+Progress bounds are received via BoundsUpdatedEvent from the search strategy,
+which owns the progress estimator and emits events as allocations complete.
 """
 
 from __future__ import annotations
@@ -44,8 +44,6 @@ from place_layers.search_strategy.progress.events import (
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
-
 
 class RichSearchDisplay:
     """Rich Live display for search progress.
@@ -69,14 +67,10 @@ class RichSearchDisplay:
     def __init__(
         self,
         console: Console | None = None,
-        progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
         self._start_time: float | None = None
-
-        # Progress estimator for tracking and refining bounds
-        self._progress_estimator = progress_estimator
 
         # State from events
         self._mode: str = ""
@@ -111,12 +105,9 @@ class RichSearchDisplay:
         self._eval_count: int = 0
         self._last_eval_update: int = 0
 
-        # Eval count bounds (from progress estimator or search strategy events)
+        # Eval count bounds (from BoundsUpdatedEvent)
         self._eval_lower_bound: int | None = None
         self._eval_upper_bound: int | None = None
-
-        # Track eval count at allocation start for progress estimation
-        self._eval_at_alloc_start: int = 0
 
         # Track current phase tree for building up the visualization
         self._phase_tree: Tree | None = None
@@ -436,14 +427,9 @@ class RichSearchDisplay:
         self._max_allocations = event.max_allocations
         self._total_allocations = event.total_allocations
 
-        # Initialize bounds from progress estimator if available, else from event
-        if self._progress_estimator:
-            estimate = self._progress_estimator.current
-            self._eval_lower_bound = estimate.lower
-            self._eval_upper_bound = estimate.upper
-        else:
-            self._eval_lower_bound = event.eval_count_lower_bound
-            self._eval_upper_bound = event.eval_count_upper_bound
+        # Initialize bounds from event (may be None if not provided)
+        self._eval_lower_bound = event.eval_count_lower_bound
+        self._eval_upper_bound = event.eval_count_upper_bound
 
         # Print search header using Rich panel
         self._print_search_header()
@@ -452,19 +438,9 @@ class RichSearchDisplay:
 
     def on_allocation_started(self, event: AllocationStartedEvent) -> None:
         """Handle allocation started event."""
-        # Update progress estimate from previous allocation if available
-        # (Previous allocation just completed when we receive this event)
-        if self._progress_estimator and self._allocation_index > 0:
-            allocation_evals = self._eval_count - self._eval_at_alloc_start
-            update = self._progress_estimator.allocation_completed(allocation_evals)
-            if update.changed:
-                self._eval_lower_bound = update.current.lower
-                self._eval_upper_bound = update.current.upper
-
         self._allocation_index = event.allocation_index
         self._current_allocation = event.allocation
         self._current_allocation_cost = event.allocation_cost
-        self._eval_at_alloc_start = self._eval_count
 
         # Reset phase state for new allocation
         self._phase_index = 0
@@ -533,11 +509,6 @@ class RichSearchDisplay:
 
     def on_search_completed(self, event: SearchCompletedEvent) -> None:
         """Handle search completed event."""
-        # Final progress update for the last allocation
-        if self._progress_estimator and self._allocation_index > 0:
-            allocation_evals = event.total_evaluations - self._eval_at_alloc_start
-            self._progress_estimator.allocation_completed(allocation_evals)
-
         self._eval_count = event.total_evaluations
 
         # Print search completion summary

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         BaseCostConstrainedConfig,
     )
     from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self,
         config: "BaseCostConstrainedConfig",
         observer: "SearchObserver | None" = None,
+        progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
         super().__init__(config, observer)
         self.config: BaseCostConstrainedConfig
+        self._progress_estimator = progress_estimator
         self.eval_count = 0
 
     async def search(
@@ -110,6 +113,14 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if self.observer is not None:
             from place_layers.search_strategy.progress import SearchStartedEvent
 
+            # Get initial bounds from progress estimator if available
+            eval_lower = None
+            eval_upper = None
+            if self._progress_estimator is not None:
+                estimate = self._progress_estimator.current
+                eval_lower = estimate.lower
+                eval_upper = estimate.upper
+
             self.observer.on_search_started(
                 SearchStartedEvent(
                     mode=mode,
@@ -120,6 +131,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     mixer_names=mixer_names,
                     max_allocations=self.config.max_allocations,
                     total_allocations=cost_model.count_allocations(num_layers),
+                    eval_count_lower_bound=eval_lower,
+                    eval_count_upper_bound=eval_upper,
                 )
             )
 
@@ -129,7 +142,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     problem=problem,
                     cost_model=cost_model,
                     num_layers=num_layers,
-                    num_mixers=num_mixers,
                     cost_budget=budget,
                 )
             case MinCostProblemConfig(performance_target=target):
@@ -137,7 +149,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     problem=problem,
                     cost_model=cost_model,
                     num_layers=num_layers,
-                    num_mixers=num_mixers,
                     performance_target=target,
                 )
             case _:
@@ -148,7 +159,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         problem: CostConstrainedProblem,
         cost_model: BaseCostModel,
         num_layers: int,
-        num_mixers: int,
         cost_budget: float,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
@@ -203,6 +213,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     )
                 )
 
+            # Track eval count before allocation for progress estimation
+            evals_before = self.eval_count
+
             # Search for best assignment within this allocation
             best_in_allocation = await self._search_within_allocation(
                 problem=problem,
@@ -211,19 +224,43 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 num_layers=num_layers,
             )
 
+            # Emit bounds update if progress estimator is present
+            if self._progress_estimator is not None:
+                evals_this_allocation = self.eval_count - evals_before
+                update = self._progress_estimator.allocation_completed(evals_this_allocation)
+
+                if update.changed and self.observer is not None:
+                    from place_layers.search_strategy.progress import BoundsUpdatedEvent
+
+                    self.observer.on_bounds_updated(
+                        BoundsUpdatedEvent(
+                            previous_lower=update.previous.lower,
+                            previous_upper=update.previous.upper,
+                            new_lower=update.current.lower,
+                            new_upper=update.current.upper,
+                            completed=self.eval_count,
+                            remaining_allocations=(
+                                len(self._progress_estimator.allocation_info)
+                                - self._progress_estimator.completed_allocations
+                            ),
+                            reason="allocation_complete",
+                        )
+                    )
+
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
                 continue
 
-            logger.info(
-                f"  Best in allocation: score={best_in_allocation.score:.4f}"
-            )
+            # Entries returned from _search_within_allocation are always evaluated
+            assert best_in_allocation.score is not None
+
+            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
 
             # Update global best
-            if best_entry is None or best_in_allocation.score > best_entry.score:
+            if best_entry is None or best_in_allocation.score > (best_entry.score or float("-inf")):
                 best_entry = best_in_allocation
                 logger.info(
-                    f"  NEW BEST: score={best_entry.score:.4f}, cost={best_entry.cost:.4f}"
+                    f"  NEW BEST: score={best_in_allocation.score:.4f}, cost={best_entry.cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -232,7 +269,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
                     self.observer.on_best_updated(
                         BestUpdatedEvent(
-                            score=best_entry.score,
+                            score=best_in_allocation.score,
                             cost=best_entry.cost,
                             allocation=best_entry.allocation,
                             assignments=best_entry.assignments,
@@ -241,14 +278,18 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
             # Check for max allocations limit
             if allocations_explored >= self.config.max_allocations:
-                logger.info(f"Reached max allocations limit: {self.config.max_allocations}")
+                logger.info(
+                    f"Reached max allocations limit: {self.config.max_allocations}"
+                )
                 break
 
         if best_entry is None:
             # Fallback to minimum cost allocation
             min_alloc = cost_model.min_cost_allocation(num_layers)
             mixer_names = problem.evaluator.mixer_names
-            assignments = self._allocation_to_assignment(min_alloc, num_layers, mixer_names)
+            assignments = self._allocation_to_assignment(
+                min_alloc, num_layers, mixer_names
+            )
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -271,7 +312,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         problem: CostConstrainedProblem,
         cost_model: BaseCostModel,
         num_layers: int,
-        num_mixers: int,
         performance_target: float,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
@@ -315,6 +355,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     )
                 )
 
+            # Track eval count before allocation for progress estimation
+            evals_before = self.eval_count
+
             # Search for best assignment within this allocation
             best_in_allocation = await self._search_within_allocation(
                 problem=problem,
@@ -323,20 +366,44 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 num_layers=num_layers,
             )
 
+            # Emit bounds update if progress estimator is present
+            if self._progress_estimator is not None:
+                evals_this_allocation = self.eval_count - evals_before
+                update = self._progress_estimator.allocation_completed(evals_this_allocation)
+
+                if update.changed and self.observer is not None:
+                    from place_layers.search_strategy.progress import BoundsUpdatedEvent
+
+                    self.observer.on_bounds_updated(
+                        BoundsUpdatedEvent(
+                            previous_lower=update.previous.lower,
+                            previous_upper=update.previous.upper,
+                            new_lower=update.current.lower,
+                            new_upper=update.current.upper,
+                            completed=self.eval_count,
+                            remaining_allocations=(
+                                len(self._progress_estimator.allocation_info)
+                                - self._progress_estimator.completed_allocations
+                            ),
+                            reason="allocation_complete",
+                        )
+                    )
+
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
                 continue
 
-            logger.info(
-                f"  Best in allocation: score={best_in_allocation.score:.4f}"
-            )
+            # Entries returned from _search_within_allocation are always evaluated
+            assert best_in_allocation.score is not None
+
+            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
 
             # Check if it meets the performance target
             if best_in_allocation.score >= performance_target:
                 # This allocation meets the target - it's the best (lowest cost) so far
                 best_entry = best_in_allocation
                 logger.info(
-                    f"  MEETS TARGET: score={best_entry.score:.4f}, cost={best_entry.cost:.4f}"
+                    f"  MEETS TARGET: score={best_in_allocation.score:.4f}, cost={best_entry.cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -345,7 +412,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
                     self.observer.on_best_updated(
                         BestUpdatedEvent(
-                            score=best_entry.score,
+                            score=best_in_allocation.score,
                             cost=best_entry.cost,
                             allocation=best_entry.allocation,
                             assignments=best_entry.assignments,
@@ -356,19 +423,25 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 logger.info(
                     f"  Performance {best_in_allocation.score:.4f} < target {performance_target:.4f}"
                 )
-                logger.info("  Stopping search (allocations getting cheaper won't help)")
+                logger.info(
+                    "  Stopping search (allocations getting cheaper won't help)"
+                )
                 break
 
             # Check for max allocations limit
             if allocations_explored >= self.config.max_allocations:
-                logger.info(f"Reached max allocations limit: {self.config.max_allocations}")
+                logger.info(
+                    f"Reached max allocations limit: {self.config.max_allocations}"
+                )
                 break
 
         if best_entry is None:
             # No allocation met the target - return the most expensive as best effort
             max_alloc = cost_model.max_cost_allocation(num_layers)
             mixer_names = problem.evaluator.mixer_names
-            assignments = self._allocation_to_assignment(max_alloc, num_layers, mixer_names)
+            assignments = self._allocation_to_assignment(
+                max_alloc, num_layers, mixer_names
+            )
             placement = LayerPlacement(assignments=assignments)
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -415,8 +488,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         """
         pass
 
+    @staticmethod
     def _allocation_to_assignment(
-        self,
         allocation: Allocation,
         num_layers: int,
         mixer_names: list[str],
@@ -440,30 +513,10 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         for mixer_idx, count in enumerate(allocation):
             assignments.extend([mixer_names[mixer_idx]] * count)
 
-        assert len(assignments) == num_layers, (
-            f"Allocation sum {sum(allocation)} != num_layers {num_layers}"
-        )
+        assert (
+            len(assignments) == num_layers
+        ), f"Allocation sum {sum(allocation)} != num_layers {num_layers}"
         return assignments
-
-    def _assignment_to_allocation(
-        self,
-        assignments: list[str],
-        mixer_names: list[str],
-    ) -> Allocation:
-        """Convert an assignment to its allocation.
-
-        Args:
-            assignments: List of mixer names, one per layer.
-            mixer_names: Ordered mixer names from the evaluator.
-
-        Returns:
-            Allocation tuple (counts per mixer in mixer_names order).
-        """
-        name_to_idx = {name: i for i, name in enumerate(mixer_names)}
-        counts = [0] * len(mixer_names)
-        for mixer_name in assignments:
-            counts[name_to_idx[mixer_name]] += 1
-        return tuple(counts)
 
     def _create_result(
         self,
@@ -473,6 +526,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         allocations_explored: int,
     ) -> CostConstrainedSearchResult:
         """Create the final search result."""
+        assert best_entry.score is not None
+
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)

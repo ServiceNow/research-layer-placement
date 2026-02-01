@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
     from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 class BaseSearchStrategyConfig(BaseModel):
@@ -25,6 +26,7 @@ class BaseSearchStrategyConfig(BaseModel):
     def create_search_strategy(
         self,
         observer: "SearchObserver | None" = None,
+        progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> "BaseSearchStrategy":
         """Smart constructor: instantiate search strategy from config.
 
@@ -32,6 +34,8 @@ class BaseSearchStrategyConfig(BaseModel):
             observer: Optional observer to receive progress events during search.
                 If provided but the strategy doesn't support observers,
                 raises NotImplementedError.
+            progress_estimator: Optional progress estimator for tracking search
+                progress and refining bounds as allocations complete.
 
         Returns:
             Instantiated search strategy.
@@ -40,4 +44,6 @@ class BaseSearchStrategyConfig(BaseModel):
             NotImplementedError: If observer is provided but the strategy doesn't
                 support progress events.
         """
-        return self._impl_class(config=self, observer=observer)
+        return self._impl_class(
+            config=self, observer=observer, progress_estimator=progress_estimator
+        )
