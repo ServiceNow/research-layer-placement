@@ -1,12 +1,13 @@
 """Search progress estimation.
 
-Estimates how far into a search we are and how much work remains.
-Refines estimates as actual evaluation counts replace predictions.
+Stateless estimator for search progress bounds. The estimator is a lookup table
+that computes bounds given the caller's current progress state, without maintaining
+any mutable state itself. This makes it safe to reuse across multiple searches.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -39,71 +40,50 @@ class AllocationProgressInfo:
     """
 
     allocation: tuple[int, ...]
-    budgets: list[int]
+    budgets: tuple[int, ...]
     estimated_lower: int
     estimated_upper: int
 
 
 @dataclass(frozen=True)
-class ProgressUpdate:
-    """Result of updating progress after an allocation completes.
-
-    Attributes:
-        previous: Estimate before the update.
-        current: Estimate after the update.
-        changed: Whether the estimate actually changed.
-    """
-
-    previous: ProgressEstimate
-    current: ProgressEstimate
-    changed: bool
-
-
-@dataclass
 class SearchProgressEstimator:
-    """Estimates search progress and refines as allocations complete.
+    """Stateless progress estimator - a lookup table for evaluation bounds.
 
-    Progress = completed_evals + estimate(remaining_allocations)
-    As allocations complete, their actual counts replace estimates.
+    This is an immutable data structure that provides bounds calculations
+    based on caller-provided state. It does not track any mutable state,
+    making it safe to reuse across multiple searches or search strategies.
+
+    The caller (search strategy) maintains progress state (completed_allocations,
+    completed_evals) and queries this estimator for bounds.
 
     Attributes:
         initial: Initial estimate before search starts.
         allocation_info: Per-allocation progress info, in exploration order.
-        completed_evals: Total evaluations completed so far.
-        completed_allocations: Number of allocations fully explored.
     """
 
     initial: ProgressEstimate
-    allocation_info: list[AllocationProgressInfo] = field(default_factory=list)
-    completed_evals: int = 0
-    completed_allocations: int = 0
+    allocation_info: tuple[AllocationProgressInfo, ...]
 
-    @property
-    def current(self) -> ProgressEstimate:
-        """Current progress estimate based on completed + remaining."""
-        remaining = self.allocation_info[self.completed_allocations :]
+    def bounds_after(
+        self,
+        completed_allocations: int,
+        completed_evals: int,
+    ) -> ProgressEstimate:
+        """Get bounds given current progress state.
+
+        Computes: completed_evals + estimate(remaining_allocations)
+
+        Args:
+            completed_allocations: Number of allocations fully explored.
+            completed_evals: Total evaluations completed so far.
+
+        Returns:
+            ProgressEstimate with lower and upper bounds.
+        """
+        remaining = self.allocation_info[completed_allocations:]
         remaining_lower = sum(a.estimated_lower for a in remaining)
         remaining_upper = sum(a.estimated_upper for a in remaining)
         return ProgressEstimate(
-            lower=self.completed_evals + remaining_lower,
-            upper=self.completed_evals + remaining_upper,
-        )
-
-    def allocation_completed(self, actual_evals: int) -> ProgressUpdate:
-        """Record an allocation completing with its actual eval count.
-
-        Args:
-            actual_evals: Number of evaluations used for this allocation.
-
-        Returns:
-            ProgressUpdate with previous and current estimates.
-        """
-        previous = self.current
-        self.completed_allocations += 1
-        self.completed_evals += actual_evals
-        current = self.current
-        return ProgressUpdate(
-            previous=previous,
-            current=current,
-            changed=(previous.lower != current.lower or previous.upper != current.upper),
+            lower=completed_evals + remaining_lower,
+            upper=completed_evals + remaining_upper,
         )

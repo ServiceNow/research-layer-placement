@@ -117,7 +117,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             eval_lower = None
             eval_upper = None
             if self._progress_estimator is not None:
-                estimate = self._progress_estimator.current
+                estimate = self._progress_estimator.bounds_after(
+                    completed_allocations=0, completed_evals=0
+                )
                 eval_lower = estimate.lower
                 eval_upper = estimate.upper
 
@@ -225,23 +227,29 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
             # Emit bounds update if progress estimator is present
-            if self._progress_estimator is not None:
-                evals_this_allocation = self.eval_count - evals_before
-                update = self._progress_estimator.allocation_completed(evals_this_allocation)
+            if self._progress_estimator is not None and self.observer is not None:
+                from place_layers.search_strategy.progress import BoundsUpdatedEvent
 
-                if update.changed and self.observer is not None:
-                    from place_layers.search_strategy.progress import BoundsUpdatedEvent
+                previous = self._progress_estimator.bounds_after(
+                    completed_allocations=allocations_explored - 1,
+                    completed_evals=evals_before,
+                )
+                current = self._progress_estimator.bounds_after(
+                    completed_allocations=allocations_explored,
+                    completed_evals=self.eval_count,
+                )
 
+                if previous.lower != current.lower or previous.upper != current.upper:
                     self.observer.on_bounds_updated(
                         BoundsUpdatedEvent(
-                            previous_lower=update.previous.lower,
-                            previous_upper=update.previous.upper,
-                            new_lower=update.current.lower,
-                            new_upper=update.current.upper,
+                            previous_lower=previous.lower,
+                            previous_upper=previous.upper,
+                            new_lower=current.lower,
+                            new_upper=current.upper,
                             completed=self.eval_count,
                             remaining_allocations=(
                                 len(self._progress_estimator.allocation_info)
-                                - self._progress_estimator.completed_allocations
+                                - allocations_explored
                             ),
                             reason="allocation_complete",
                         )
@@ -367,23 +375,29 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
             # Emit bounds update if progress estimator is present
-            if self._progress_estimator is not None:
-                evals_this_allocation = self.eval_count - evals_before
-                update = self._progress_estimator.allocation_completed(evals_this_allocation)
+            if self._progress_estimator is not None and self.observer is not None:
+                from place_layers.search_strategy.progress import BoundsUpdatedEvent
 
-                if update.changed and self.observer is not None:
-                    from place_layers.search_strategy.progress import BoundsUpdatedEvent
+                previous = self._progress_estimator.bounds_after(
+                    completed_allocations=allocations_explored - 1,
+                    completed_evals=evals_before,
+                )
+                current = self._progress_estimator.bounds_after(
+                    completed_allocations=allocations_explored,
+                    completed_evals=self.eval_count,
+                )
 
+                if previous.lower != current.lower or previous.upper != current.upper:
                     self.observer.on_bounds_updated(
                         BoundsUpdatedEvent(
-                            previous_lower=update.previous.lower,
-                            previous_upper=update.previous.upper,
-                            new_lower=update.current.lower,
-                            new_upper=update.current.upper,
+                            previous_lower=previous.lower,
+                            previous_upper=previous.upper,
+                            new_lower=current.lower,
+                            new_upper=current.upper,
                             completed=self.eval_count,
                             remaining_allocations=(
                                 len(self._progress_estimator.allocation_info)
-                                - self._progress_estimator.completed_allocations
+                                - allocations_explored
                             ),
                             reason="allocation_complete",
                         )

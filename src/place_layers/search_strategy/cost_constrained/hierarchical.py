@@ -27,6 +27,7 @@ from place_layers.search_strategy.cost_constrained.base_config import (
 from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
+    from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
     from place_layers.search_strategy.progress import SearchObserver
     from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
@@ -586,3 +587,89 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         ),
         gt=0,
     )
+
+    def create_progress_estimator(
+        self, problem: "BaseProblem"
+    ) -> "SearchProgressEstimator | None":
+        """Create progress estimator for hierarchical beam search.
+
+        Enumerates allocations and computes bounds for each using the
+        allocation_bounds formula.
+
+        Args:
+            problem: The optimization problem (must be CostConstrainedProblem).
+
+        Returns:
+            Configured SearchProgressEstimator, or None if not applicable.
+        """
+        from place_layers.problem.layer_placement import (
+            MaxPerformanceProblemConfig,
+        )
+        from place_layers.search_strategy.progress.estimator import (
+            AllocationProgressInfo,
+            ProgressEstimate,
+            SearchProgressEstimator,
+        )
+
+        # Only works with cost-constrained problems
+        if not isinstance(problem, CostConstrainedProblem):
+            return None
+
+        config = problem.config
+        cost_model = problem.cost_model
+        num_layers = problem.evaluator.num_layers
+        mixer_names = problem.evaluator.mixer_names
+        phase_order = cost_model.phase_order
+
+        # Only support max_performance mode for now (min_cost has early termination)
+        if not isinstance(config, MaxPerformanceProblemConfig):
+            return None
+
+        # Build name-to-allocation-index mapping
+        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
+
+        # Enumerate allocations in the same order as search will use
+        allocations: list[tuple[int, ...]] = []
+        for alloc_cost, allocation in cost_model.allocations_by_cost(
+            num_layers, direction="decreasing"
+        ):
+            if alloc_cost > config.cost_budget:
+                continue
+            if len(allocations) >= self.max_allocations:
+                break
+            allocations.append(allocation)
+
+        if not allocations:
+            return None
+
+        # Compute bounds for each allocation
+        total_lower, total_upper = 0, 0
+        allocation_info: list[AllocationProgressInfo] = []
+
+        for allocation in allocations:
+            # Get phase budgets in phase_order (excluding last which gets remainder)
+            budgets = tuple(
+                allocation[name_to_alloc_idx[phase_order[i]]]
+                for i in range(len(phase_order) - 1)
+            )
+            lower, upper = allocation_bounds(
+                budgets=list(budgets),  # allocation_bounds expects list
+                num_layers=num_layers,
+                beam_width=self.beam_width,
+                cross_phase_beam_width=self.cross_phase_beam_width,
+            )
+            total_lower += lower
+            total_upper += upper
+            allocation_info.append(
+                AllocationProgressInfo(
+                    allocation=allocation,
+                    budgets=budgets,
+                    estimated_lower=lower,
+                    estimated_upper=upper,
+                )
+            )
+
+        return SearchProgressEstimator(
+            initial=ProgressEstimate(lower=total_lower, upper=total_upper),
+            allocation_info=tuple(allocation_info),
+        )
