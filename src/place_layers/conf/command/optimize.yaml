@@ -1,8 +1,4 @@
 # @package _global_
 
 command: optimize
-
-# Progress estimation is optional - null means no progress estimation
-# When enabled, the display will show refined progress estimates
-progress_estimator:
-  estimator_type: hierarchical
+dry_run: false
