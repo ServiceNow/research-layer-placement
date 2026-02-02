@@ -221,7 +221,7 @@ cost_model:
 cost_budget: 6.4  # 48 layers / 7.5x target
 ```
 
-See `conf/problem/cost_apriel_15b.yaml` for a complete example.
+See `conf/problem/cost_max_perf_apriel_15b.yaml` for a complete example.
 
 #### Step 3: Optimize
 

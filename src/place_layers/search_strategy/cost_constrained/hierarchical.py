@@ -83,15 +83,16 @@ def phase_eval_statistics(
 ) -> tuple[float, float]:
     """Compute expected evaluations and variance for a phase.
 
-    Uses probabilistic model where P(run step s) = continuation_rate^s.
-    This accounts for early stopping stochastically rather than using
-    worst-case bounds.
+    Uses probabilistic model where P(run step s) = adjusted_rate^s.
+    The continuation rate is adjusted upward for large budgets because
+    phases with many layers to assign have more room for score improvement,
+    making early stopping less likely.
 
     Args:
         budget: Number of layers to assign in this phase.
         unassigned: Number of unassigned layers at phase start.
         beam_width: Beam width parameter (B).
-        cont_rate: Continuation rate from continuation_rate().
+        cont_rate: Base continuation rate from continuation_rate().
 
     Returns:
         Tuple of (expected_evals, variance) for this phase.
@@ -102,13 +103,23 @@ def phase_eval_statistics(
         # Prescore only, exact count
         return float(unassigned), 0.0
 
+    # Adjust continuation rate for large budgets.
+    # Large budgets have more room for improvement, so early stopping is less likely.
+    # Blend base rate towards 0.99 as budget increases (saturates around budget=20).
+    # - budget=5:  factor=0.25, adjusted ≈ cont_rate + 0.25*(0.99-cont_rate)
+    # - budget=20: factor=1.0,  adjusted ≈ 0.99
+    # - budget=48: factor=1.0,  adjusted ≈ 0.99
+    budget_factor = min(budget / 20.0, 1.0)
+    high_rate = 0.99
+    adjusted_rate = cont_rate + budget_factor * (high_rate - cont_rate)
+
     # Prescore is exact (no variance)
     expected = float(unassigned)
     variance = 0.0
 
     # Growth steps are probabilistic
     for s in range(1, budget):
-        p_run = cont_rate**s  # P(reach and run step s)
+        p_run = adjusted_rate**s  # P(reach and run step s)
         evals_if_run = min(beam_width * (unassigned - s), comb(unassigned, s + 1))
 
         # Expected contribution: p * evals
@@ -666,6 +677,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         """
         from place_layers.problem.layer_placement import (
             MaxPerformanceProblemConfig,
+            MinCostProblemConfig,
         )
         from place_layers.search_strategy.progress.estimator import (
             AllocationProgressInfo,
@@ -683,10 +695,6 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         mixer_names = problem.evaluator.mixer_names
         phase_order = cost_model.phase_order
 
-        # Only support max_performance mode for now (min_cost has early termination)
-        if not isinstance(config, MaxPerformanceProblemConfig):
-            return None
-
         # Build name-to-allocation-index mapping
         name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
 
@@ -695,8 +703,14 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
         ):
-            if alloc_cost > config.cost_budget:
-                continue
+            # Filter by cost_budget for max_performance only
+            match config:
+                case MaxPerformanceProblemConfig(cost_budget=budget):
+                    if alloc_cost > budget:
+                        continue
+                case MinCostProblemConfig():
+                    pass  # No filtering - enumerate all allocations
+
             if len(allocations) >= self.max_allocations:
                 break
             allocations.append(allocation)

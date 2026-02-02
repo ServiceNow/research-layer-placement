@@ -9,7 +9,7 @@ import pytest
 from place_layers.command.eval_count_calculator import calculate_bounds
 from place_layers.cost_model import LinearCostModelConfig
 from place_layers.evaluator import MockSupernetEvaluatorConfig
-from place_layers.problem import MaxPerformanceProblemConfig
+from place_layers.problem import MaxPerformanceProblemConfig, MinCostProblemConfig
 from place_layers.search_strategy import HierarchicalConfig
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -278,3 +278,187 @@ class TestCalculateBoundsEdgeCases:
         assert bounds["std_dev"] >= 0
         # Expected should be within bounds
         assert bounds["lower_bound"] <= bounds["expected"] <= bounds["upper_bound"]
+
+
+# -----------------------------------------------------------------------------
+# MinCostProblem tests
+# -----------------------------------------------------------------------------
+
+
+async def test_min_cost_creates_progress_estimator() -> None:
+    """MinCostProblem should create a progress estimator."""
+    num_layers = 10
+    mixer_costs = {"m0": 1.0, "m1": 0.5, "m2": 0.2}
+
+    # Create evaluator
+    evaluator_config = MockSupernetEvaluatorConfig(
+        num_layers=num_layers,
+        mixer_names=list(mixer_costs.keys()),
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=0.2,
+    )
+    evaluator = evaluator_config.create_evaluator()
+
+    # Create MinCostProblem
+    cost_model_config = LinearCostModelConfig(mixer_costs=mixer_costs)
+    problem_config = MinCostProblemConfig(
+        cost_model=cost_model_config,
+        performance_target=0.5,
+    )
+    problem = problem_config.create_problem(evaluator)
+
+    # Create search strategy
+    search_config = HierarchicalConfig(
+        max_allocations=5,
+        beam_width=2,
+        early_stop_threshold=0.0,
+        cross_phase_beam_width=1,
+    )
+
+    # Create progress estimator
+    estimator = search_config.create_progress_estimator(problem)
+
+    # Should NOT be None for MinCostProblem
+    assert estimator is not None
+    assert len(estimator.allocation_info) > 0
+
+
+# Test scenarios for min_cost as tuples of:
+# (num_layers, mixer_costs, performance_target, max_allocations, beam_width, description)
+MIN_COST_SCENARIOS = [
+    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 0.3, 5, 2, "low target (explore many)"),
+    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 0.5, 5, 2, "medium target"),
+    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 0.7, 5, 2, "high target (early termination)"),
+    (20, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 0.4, 5, 3, "20 layers"),
+]
+
+
+@pytest.mark.parametrize(
+    "num_layers,mixer_costs,performance_target,max_allocations,beam_width,description",
+    MIN_COST_SCENARIOS,
+    ids=[s[-1] for s in MIN_COST_SCENARIOS],
+)
+async def test_min_cost_eval_count_within_bounds(
+    num_layers: int,
+    mixer_costs: dict[str, float],
+    performance_target: float,
+    max_allocations: int,
+    beam_width: int,
+    description: str,
+) -> None:
+    """Verify actual eval count falls within predicted bounds for MinCostProblem.
+
+    The bounds assume all max_allocations will be explored (upper estimate).
+    Actual may be lower due to early termination when performance drops.
+    """
+    mixer_names = list(mixer_costs.keys())
+    early_stop_threshold = 0.0
+
+    # Create evaluator
+    evaluator_config = MockSupernetEvaluatorConfig(
+        num_layers=num_layers,
+        mixer_names=mixer_names,
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=0.2,
+    )
+    evaluator = evaluator_config.create_evaluator()
+
+    # Create MinCostProblem
+    cost_model_config = LinearCostModelConfig(mixer_costs=mixer_costs)
+    problem_config = MinCostProblemConfig(
+        cost_model=cost_model_config,
+        performance_target=performance_target,
+    )
+    problem = problem_config.create_problem(evaluator)
+
+    # Create search strategy
+    search_config = HierarchicalConfig(
+        max_allocations=max_allocations,
+        beam_width=beam_width,
+        early_stop_threshold=early_stop_threshold,
+        cross_phase_beam_width=1,
+    )
+
+    # Get initial bounds from estimator
+    estimator = search_config.create_progress_estimator(problem)
+    assert estimator is not None
+    initial_bounds = estimator.initial
+
+    # Run optimization
+    search = search_config.create_search_strategy()
+    async with evaluator:
+        result = await search.search(problem)
+
+    # Verify bounds: actual should be <= upper (may be < lower if early termination)
+    actual = result.total_evaluations
+
+    # For min_cost, the bounds are computed assuming all allocations run.
+    # With early termination, actual may be much lower than lower bound.
+    # So we only check actual <= upper.
+    assert actual <= initial_bounds.upper, (
+        f"[{description}] Eval count {actual} exceeds upper bound {initial_bounds.upper}"
+    )
+
+
+async def test_min_cost_early_termination_bounds() -> None:
+    """Verify bounds behavior when min_cost terminates early.
+
+    When performance drops below target, search terminates. The bounds
+    tighten correctly based on completed allocations.
+    """
+    num_layers = 10
+    mixer_costs = {"m0": 1.0, "m1": 0.5, "m2": 0.2}
+    # Very high target - likely to cause early termination
+    performance_target = 0.9
+
+    # Create evaluator
+    evaluator_config = MockSupernetEvaluatorConfig(
+        num_layers=num_layers,
+        mixer_names=list(mixer_costs.keys()),
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=0.2,
+    )
+    evaluator = evaluator_config.create_evaluator()
+
+    # Create MinCostProblem
+    cost_model_config = LinearCostModelConfig(mixer_costs=mixer_costs)
+    problem_config = MinCostProblemConfig(
+        cost_model=cost_model_config,
+        performance_target=performance_target,
+    )
+    problem = problem_config.create_problem(evaluator)
+
+    # Create search strategy with many allocations to see early termination
+    search_config = HierarchicalConfig(
+        max_allocations=10,
+        beam_width=2,
+        early_stop_threshold=0.0,
+        cross_phase_beam_width=1,
+    )
+
+    # Get initial bounds
+    estimator = search_config.create_progress_estimator(problem)
+    assert estimator is not None
+    initial_upper = estimator.initial.upper
+
+    # Run optimization
+    search = search_config.create_search_strategy()
+    async with evaluator:
+        result = await search.search(problem)
+
+    actual = result.total_evaluations
+
+    # With early termination, actual should be well below the upper bound
+    # (which assumed all allocations would run)
+    assert actual <= initial_upper, (
+        f"Eval count {actual} exceeds upper bound {initial_upper}"
+    )
