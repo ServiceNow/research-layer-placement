@@ -11,7 +11,7 @@ formatters:
 handlers:
   console_rich:
     class: rich.logging.RichHandler
-    level: WARNING           # only warnings and errors hit the terminal
+    level: INFO              # show info, warnings, and errors in the terminal
     formatter: rich_fmt
     rich_tracebacks: true
     tracebacks_show_locals: false

@@ -19,4 +19,5 @@ client:
   max_model_len: null  # Use model's default
   disable_compile: false
   enable_prefix_caching: false
+  attention_backend: null  # Auto-select (use TRITON_ATTN or FLASHINFER to disable Flash Attention)
   max_concurrent_requests: 32

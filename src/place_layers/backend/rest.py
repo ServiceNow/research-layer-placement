@@ -958,10 +958,13 @@ class RESTBackendConfig(BaseRESTBackendConfig):
 class RESTDNSBackendConfig(BaseRESTBackendConfig):
     """REST backend with auto-generated server list from DNS pattern.
 
-    Generates server URLs automatically based on a DNS prefix and server count.
+    Generates server URLs automatically based on a DNS prefix and either:
+    1. A specific list of server IDs (via server_ids), or
+    2. A sequential range of server IDs (via num_servers)
+
     Useful for Kubernetes deployments with predictable DNS naming schemes.
 
-    Example:
+    Example with num_servers:
         dns_prefix = "my-service"
         num_servers = 4
         port = 8080
@@ -971,16 +974,32 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         - http://my-service-id-1:8080
         - http://my-service-id-2:8080
         - http://my-service-id-3:8080
+
+    Example with server_ids:
+        dns_prefix = "my-service"
+        server_ids = [0, 2, 5]
+        port = 8080
+
+        Generates:
+        - http://my-service-id-0:8080
+        - http://my-service-id-2:8080
+        - http://my-service-id-5:8080
     """
 
     backend_type: Literal["rest_dns"] = "rest_dns"
 
     dns_prefix: str = Field(
-        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..n-1})"
+        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{N})"
     )
-    num_servers: int = Field(
-        description="Number of servers to generate",
+    num_servers: int | None = Field(
+        default=None,
+        description="Number of servers to generate (creates sequential IDs 0..n-1). "
+        "Mutually exclusive with server_ids.",
         ge=1,
+    )
+    server_ids: list[int] | None = Field(
+        default=None,
+        description="Explicit list of server IDs to use. Mutually exclusive with num_servers.",
     )
     port: int = Field(
         description="Port for all servers",
@@ -988,11 +1007,38 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         le=65535,
     )
 
+    def __init__(self, **data):
+        """Validate that exactly one of num_servers or server_ids is provided."""
+        super().__init__(**data)
+
+        # Check that exactly one is provided
+        has_num = self.num_servers is not None
+        has_ids = self.server_ids is not None
+
+        if not has_num and not has_ids:
+            raise ValueError(
+                "RESTDNSBackendConfig requires either 'num_servers' or 'server_ids' to be specified"
+            )
+        if has_num and has_ids:
+            raise ValueError(
+                "RESTDNSBackendConfig cannot have both 'num_servers' and 'server_ids' specified"
+            )
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def servers(self) -> list[str]:
-        """Auto-generate server URLs from DNS prefix and server count."""
+        """Auto-generate server URLs from DNS prefix and server IDs."""
+        if self.server_ids is not None:
+            # Use explicit server IDs
+            ids = self.server_ids
+        elif self.num_servers is not None:
+            # Use sequential range
+            ids = list(range(self.num_servers))
+        else:
+            # Should never reach here due to __init__ validation
+            raise ValueError("Either num_servers or server_ids must be specified")
+
         return [
             f"http://{self.dns_prefix}-id-{i}:{self.port}"
-            for i in range(self.num_servers)
+            for i in ids
         ]
