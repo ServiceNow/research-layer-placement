@@ -105,11 +105,6 @@ class LocalVLLMClient(BaseVLLMClient):
         os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
         os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
-        # TODO: remove once debugged
-        # Enable detailed CUDA error reporting
-        os.environ["TORCH_USE_CUDA_DSA"] = "1"
-        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-
         # Redirect stdout/stderr to capture vLLM subprocess output
         # This helps capture crashes from the EngineCore subprocess
         vllm_log_file = "vllm_engine.log"
