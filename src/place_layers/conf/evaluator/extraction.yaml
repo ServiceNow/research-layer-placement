@@ -1,0 +1,9 @@
+defaults:
+  - generative
+  - _self_
+
+# Override chat template for extraction tasks
+use_chat_template: false
+
+# Enable evaluation of truncated samples for extraction tasks
+evaluate_truncated_samples: true

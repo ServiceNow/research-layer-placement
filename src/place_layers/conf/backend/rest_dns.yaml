@@ -32,7 +32,7 @@ port: 8080
 
 # Concurrency and timeout settings
 max_concurrent_per_server: 8
-timeout_seconds: 300
+timeout_seconds: 60
 base_recovery_interval: 1.0
 max_recovery_interval: 30.0
 max_retries: 3

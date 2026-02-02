@@ -1,0 +1,12 @@
+# @package model
+# Apriel-2 model with 1p6 teacher
+# V2 (01/31): linear mixers from the 1p5 run, further distilled.
+# Mixers: attention, gdn, kda, sliding_window
+
+# model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_sndist_mix1_1p6an7_lr3e-05_lfmse0.5_rkl0.5_fkl0.5_sl16384_iters5000/export/apriel2_text/4500/
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_dist_dmx1p5_it5_lr1e-05_lfmse0.5_rkl0.9_fkl0.1_sl16384_iters500000/export/apriel2/18000/
+trust_remote_code: true
+torch_dtype: bfloat16
+
+
+
