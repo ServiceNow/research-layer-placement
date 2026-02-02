@@ -1,3 +1,0 @@
-# @package _global_
-# KDA at every 2nd layer (12 KDA layers for 24-layer model)
-placement: [attention, kda]

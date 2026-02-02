@@ -1,0 +1,11 @@
+# @package _global_
+# Start REST server with transformers backend
+#
+# Usage:
+#   python -m place_layers +experiments=serve_transformers +model=apriel2_0_5b_dev
+
+defaults:
+  - /command: serve
+  - /backend: transformers
+  - override /hydra/job_logging: server
+  - _self_

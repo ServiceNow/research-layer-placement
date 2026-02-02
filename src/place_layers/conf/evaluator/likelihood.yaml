@@ -28,9 +28,6 @@ num_fewshot: ${task.num_fewshot}
 max_problems_per_task: ${task.max_problems_per_task}
 split: ${task.split}
 
-# Batching parameters
-batch_size: 32
-
 # Whether to use chat template for formatting prompts
 # Set to false for base models or text-based scoring
 use_chat_template: true

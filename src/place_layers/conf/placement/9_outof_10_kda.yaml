@@ -1,3 +1,0 @@
-# @package _global_
-# Attn at every 10th layer. The rest is KDA
-placement: [attention, kda, kda, kda, kda, kda, kda, kda, kda, kda]

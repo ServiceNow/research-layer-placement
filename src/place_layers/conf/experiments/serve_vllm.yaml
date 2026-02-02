@@ -1,0 +1,15 @@
+# @package _global_
+# Start REST server with local vLLM backend
+#
+# Usage:
+#   python -m place_layers +experiments=serve_vllm +model=apriel2_0_5b_dev
+
+defaults:
+  - /command: serve
+  - /backend: local_vllm
+  - override /hydra/job_logging: server
+  - _self_
+
+backend:
+  client:
+    gpu_memory_utilization: 0.8

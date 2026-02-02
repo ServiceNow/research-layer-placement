@@ -13,7 +13,6 @@ import sys
 from typing import TYPE_CHECKING, Literal
 
 import torch
-import triton
 from pydantic import BaseModel, Field
 
 from place_layers.core.types import ChatMessage
@@ -35,24 +34,6 @@ if TYPE_CHECKING:
     from vllm.v1.engine.async_llm import AsyncLLM
 
 logger = logging.getLogger(__name__)
-
-
-# Triton allocator setup - must be done lazily to avoid initializing CUDA
-# before vLLM can spawn its engine process
-_triton_allocator_set = False
-
-
-def _ensure_triton_allocator() -> None:
-    """Set triton allocator lazily to avoid early CUDA init."""
-    global _triton_allocator_set
-    if _triton_allocator_set:
-        return
-
-    def _triton_allocator(size: int, alignment: int, stream: int | None):  # type: ignore[return]
-        return torch.empty(size, dtype=torch.int8, device="cuda").data_ptr()
-
-    triton.set_allocator(_triton_allocator)
-    _triton_allocator_set = True
 
 
 class LocalVLLMClientConfig(BaseModel):
@@ -170,9 +151,6 @@ class LocalVLLMClient(BaseVLLMClient):
             sys.stderr = original_stderr
             # Keep file open - will be closed on exit
         self._model_name = self.config.model_path
-
-        # Set triton allocator after engine spawns to avoid CUDA init in parent
-        _ensure_triton_allocator()
 
         # Create OpenAI serving layer
         base_model_paths = [BaseModelPath(name=self._model_name, model_path=self.config.model_path)]

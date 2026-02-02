@@ -1,0 +1,3 @@
+# @package _global_
+# All layers use GatedDeltaNet
+placement: [gdn]
