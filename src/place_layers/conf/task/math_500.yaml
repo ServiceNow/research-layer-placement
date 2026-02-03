@@ -1,0 +1,9 @@
+# @package task
+# FDA extraction task
+
+tasks:
+  - hendrycks_math500
+
+num_fewshot: 0
+max_problems_per_task: null
+split: test

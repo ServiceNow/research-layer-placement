@@ -16,14 +16,16 @@ class GeneratedSample(BaseModel):
 
     text: str = Field(description="Generated text")
     token_ids: list[int] = Field(description="Token IDs of generated text")
-    token_logprobs: list[float] = Field(description="Log-probability per token")
+    token_logprobs: list[float | None] = Field(
+        description="Log-probability per token (None if unavailable)"
+    )
     truncated: bool = Field(description="Whether generation was truncated by max_tokens")
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_logprob(self) -> float:
         """Sum of token log-probabilities."""
-        return sum(self.token_logprobs)
+        return sum(lp for lp in self.token_logprobs if lp is not None)
 
 
 class GenerationResult(BaseModel):

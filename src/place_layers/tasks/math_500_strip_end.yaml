@@ -1,0 +1,65 @@
+# MATH-500 variant that extracts answers from [BEGIN FINAL RESPONSE]...<|end|> blocks
+#
+# Use this for models that wrap their final answer in:
+#   [BEGIN FINAL RESPONSE]
+#   $\frac{14}{3}$
+#   <|end|>
+#
+# Handles LaTeX-wrapped answers ($...$, \[...\]) and plain text answers.
+
+tag:
+  - math_word_problems
+task: math_500_strip_end
+dataset_path: HuggingFaceH4/MATH-500
+process_docs: !function utils.process_docs
+dataset_name: default
+output_type: generate_until
+training_split: null
+test_split: test
+doc_to_text: "Problem: {{problem}}\nAnswer:"
+process_results: !function utils.process_results
+doc_to_target: "{{answer}}"
+generation_kwargs:
+  until:
+    - "Problem:"
+    - "</s>"
+    - "<|im_end|>"
+  do_sample: false
+  temperature: 0
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    # Normalize both prediction and reference for comparison
+    ignore_case: false
+    ignore_punctuation: false
+    regexes_to_ignore:
+      # Strip <|end|> token and surrounding whitespace
+      - "\\s*<\\|end\\|>\\s*"
+      # Strip [BEGIN/END FINAL RESPONSE] markers
+      - "\\s*\\[BEGIN FINAL RESPONSE\\]\\s*"
+      - "\\s*\\[END FINAL RESPONSE\\]\\s*"
+      # Strip outer $ delimiters for inline math
+      - "^\\$|\\$$"
+      # Strip outer \[ \] delimiters for display math
+      - "^\\\\\\[\\s*|\\s*\\\\\\]$"
+metadata:
+  version: 1.0
+filter_list:
+  - name: "apriel-extract"
+    filter:
+      # Extract content from [BEGIN FINAL RESPONSE]...<|end|> block
+      # group_select: 0 = first match (there's typically only one)
+      - function: "regex"
+        group_select: 0
+        regex_pattern: "(?s)\\[BEGIN FINAL RESPONSE\\]\\s*(.+?)\\s*<\\|end\\|>"
+        fallback: "[no-match]"
+      - function: "take_first"
+  - name: "boxed-extract"
+    filter:
+      # Fallback: extract from \boxed{...}, get last occurrence
+      - function: "regex"
+        group_select: -1
+        regex_pattern: "\\\\boxed\\{([^}]*)\\}"
+        fallback: "[no-match]"
+      - function: "take_first"

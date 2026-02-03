@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, ValidationError, computed_field
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -721,6 +721,13 @@ class RESTBackend(AsyncBackend):
                     "/generate_chat", server_request, preferred_server=preferred_server
                 )
                 return GenerationResult.model_validate(data)
+            except ValidationError as e:
+                logger.warning(f"Invalid server response for {req.key}: {e}")
+                return BackendError(
+                    key=req.key,
+                    error_type="server_error",
+                    message=f"Invalid server response: {e}",
+                )
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
                 return BackendError(key=req.key, error_type=e.error_type, message=str(e))
@@ -759,6 +766,13 @@ class RESTBackend(AsyncBackend):
                     "/generate_text", server_request, preferred_server=preferred_server
                 )
                 return GenerationResult.model_validate(data)
+            except ValidationError as e:
+                logger.warning(f"Invalid server response for {req.key}: {e}")
+                return BackendError(
+                    key=req.key,
+                    error_type="server_error",
+                    message=f"Invalid server response: {e}",
+                )
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
                 return BackendError(key=req.key, error_type=e.error_type, message=str(e))
