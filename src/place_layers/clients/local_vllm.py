@@ -117,6 +117,7 @@ class LocalVLLMClient(BaseVLLMClient):
             dtype=self.config.torch_dtype,
             gpu_memory_utilization=self.config.gpu_memory_utilization,
             max_model_len=self.config.max_model_len,
+            disable_log_stats=True,
             enable_prefix_caching=self.config.enable_prefix_caching,
             enforce_eager=self.config.disable_compile,
             attention_backend=self.config.attention_backend,
