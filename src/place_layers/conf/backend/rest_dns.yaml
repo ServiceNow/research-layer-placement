@@ -24,15 +24,18 @@ backend_type: rest_dns
 # DNS prefix for server hostnames
 dns_prefix: ${oc.env:DNS_PREFIX}
 
-# Number of servers
+# Number of servers (use this OR server_ids, not both)
 num_servers: ${oc.env:NUM_SERVERS}
+
+# Alternative: Explicit list of server IDs (e.g., [0, 2, 5] for non-sequential IDs)
+# server_ids: ???
 
 # Port (uniform across all servers)
 port: 8080
 
 # Concurrency and timeout settings
 max_concurrent_per_server: 8
-timeout_seconds: 300
+timeout_seconds: 60
 base_recovery_interval: 1.0
 max_recovery_interval: 30.0
 max_retries: 3
