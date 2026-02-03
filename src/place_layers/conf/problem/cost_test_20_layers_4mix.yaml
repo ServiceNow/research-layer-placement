@@ -1,0 +1,16 @@
+# @package problem
+# Cost-constrained problem for 20-layer, 4-mixer mock evaluator
+problem_type: cost_max_performance
+
+cost_model:
+  cost_model_type: linear
+  mixer_costs:
+    m0: 1.0
+    m1: 0.6
+    m2: 0.3
+    m3: 0.1
+
+# Budget: allows a reasonable range of allocations
+# Min cost (all m3): 20 * 0.1 = 2.0
+# Max cost (all m0): 20 * 1.0 = 20.0
+cost_budget: 6.0

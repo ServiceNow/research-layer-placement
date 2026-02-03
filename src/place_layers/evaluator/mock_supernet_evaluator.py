@@ -61,12 +61,13 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         rng = random.Random(self.config.seed)
 
         # Build mixer names and name-to-index mapping
-        self._mixer_names = [f"mixer_{i}" for i in range(self.config.num_mixers)]
+        self._mixer_names = list(self.config.mixer_names)
         self._name_to_idx = {name: i for i, name in enumerate(self._mixer_names)}
 
         # Unary potentials: Each layer's preferred implementation (stored as index)
+        num_mixers = len(self._mixer_names)
         self.layer_needs = [
-            rng.randint(0, self.config.num_mixers - 1)
+            rng.randint(0, num_mixers - 1)
             for _ in range(self.config.num_layers)
         ]
 
@@ -84,8 +85,8 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
 
     @property
     def num_mixers(self) -> int:
-        """Number of mixer types (from config, since this is a mock evaluator)."""
-        return self.config.num_mixers
+        """Number of mixer types (derived from mixer_names)."""
+        return len(self._mixer_names)
 
     @property
     def mixer_names(self) -> list[str]:
@@ -152,8 +153,8 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
         description="Number of layers (must match problem config)", gt=0
     )
 
-    num_mixers: int = Field(
-        description="Number of mixers (must match problem config)", gt=1
+    mixer_names: list[str] = Field(
+        description="Mixer names (e.g., ['FA', 'SWA', 'GDN', 'KDA'])",
     )
 
     seed: int = Field(

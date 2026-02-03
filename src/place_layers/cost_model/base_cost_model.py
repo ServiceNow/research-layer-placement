@@ -217,6 +217,23 @@ class BaseCostModel(ABC):
         """
         pass
 
+    def count_allocations(self, num_layers: int) -> int:
+        """
+        Count total number of possible allocations (stars-and-bars formula).
+
+        The number of ways to distribute num_layers layers among num_mixers mixers
+        is C(num_layers + num_mixers - 1, num_mixers - 1).
+
+        Args:
+            num_layers: Total number of layers.
+
+        Returns:
+            Total number of distinct allocations.
+        """
+        from math import comb
+
+        return comb(num_layers + self.num_mixers - 1, self.num_mixers - 1)
+
     def allocations_by_cost(
         self,
         num_layers: int,

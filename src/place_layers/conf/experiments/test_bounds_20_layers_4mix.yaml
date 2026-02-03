@@ -1,0 +1,17 @@
+# @package _global_
+# Test scenario: 20 layers, 4 mixers
+# Usage: python -m place_layers +experiments=test_bounds_20_layers_4mix
+
+defaults:
+  - /command: optimize
+  - /evaluator: mock_20_layers_4mix
+  - /problem: cost_test_20_layers_4mix
+  - /search_strategy: cost_constrained_hierarchical
+  - /result_handler: json
+  - _self_
+
+search_strategy:
+  max_allocations: 5
+  beam_width: 3
+  early_stop_threshold: 0.0  # Disable for predictable upper bound
+  cross_phase_beam_width: 1
