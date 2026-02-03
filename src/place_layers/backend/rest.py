@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -1007,11 +1007,9 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         le=65535,
     )
 
-    def __init__(self, **data):
+    @model_validator(mode="after")
+    def validate_server_specification(self) -> Self:
         """Validate that exactly one of num_servers or server_ids is provided."""
-        super().__init__(**data)
-
-        # Check that exactly one is provided
         has_num = self.num_servers is not None
         has_ids = self.server_ids is not None
 
@@ -1023,6 +1021,8 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
             raise ValueError(
                 "RESTDNSBackendConfig cannot have both 'num_servers' and 'server_ids' specified"
             )
+
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property
