@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 if TYPE_CHECKING:
+    from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
     from place_layers.search_strategy.progress import SearchObserver
     from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
@@ -47,3 +48,18 @@ class BaseSearchStrategyConfig(BaseModel):
         return self._impl_class(
             config=self, observer=observer, progress_estimator=progress_estimator
         )
+
+    def create_progress_estimator(
+        self, problem: "BaseProblem"
+    ) -> "SearchProgressEstimator | None":
+        """Create a progress estimator for this search strategy.
+
+        Default returns None. Subclasses override if they support progress estimation.
+
+        Args:
+            problem: The optimization problem.
+
+        Returns:
+            Configured SearchProgressEstimator, or None if not supported.
+        """
+        return None

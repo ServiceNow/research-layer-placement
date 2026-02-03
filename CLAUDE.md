@@ -4,8 +4,6 @@ This codebase implements inference benchmarking for supernet layer placement opt
 
 > **Note**: For generic Hydra+Pydantic patterns (discriminated unions, smart constructors, adding new components), see the `hydra-pydantic` skill which will be auto-triggered when relevant.
 
-> **Environment**: A Python virtual environment is available at `/home/toolkit/code/research-layer-placement/.venv/bin/python` for running code in this project.
-
 ---
 
 ## Table of Contents

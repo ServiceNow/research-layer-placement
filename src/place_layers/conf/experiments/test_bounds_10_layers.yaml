@@ -1,0 +1,17 @@
+# @package _global_
+# Test scenario: 10 layers, 3 mixers, small beam
+# Usage: python -m place_layers +experiments=test_bounds_10_layers
+
+defaults:
+  - /command: optimize
+  - /evaluator: mock_10_layers
+  - /problem: cost_test_10_layers
+  - /search_strategy: cost_constrained_hierarchical
+  - /result_handler: json
+  - _self_
+
+search_strategy:
+  max_allocations: 3
+  beam_width: 2
+  early_stop_threshold: 0.0  # Disable for predictable upper bound
+  cross_phase_beam_width: 1

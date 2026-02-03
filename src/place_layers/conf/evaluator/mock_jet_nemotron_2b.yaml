@@ -3,7 +3,7 @@
 # Layer types: FA (2), SWA (2), JetBlock (24)
 evaluator_type: mock_supernet
 num_layers: 28
-num_mixers: 3
+mixer_names: [FA, SWA, JetBlock]
 seed: 42
 unary_bonus: 1.0
 unary_penalty: 0.5
