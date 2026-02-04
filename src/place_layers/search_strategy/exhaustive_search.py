@@ -180,7 +180,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
                 for layer in available_layers:
                     final_assignment[layer] = last_mixer
 
-                configs.append(LayerPlacement(assignments=final_assignment))
+                configs.append(LayerPlacement(assignments=tuple(final_assignment)))
                 return
 
             # Choose budgets[phase_idx] layers for mixer[phase_idx]

@@ -356,7 +356,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_phases=total_phases,
                         mixer_name=mixer_name,
                         budget=budget,
-                        final_layers=phase_layers,
+                        final_layers=tuple(phase_layers),
                         final_score=best_path_after["score"],
                     )
                 )
@@ -373,12 +373,12 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         assignments = [best_path["fixed"][i] for i in range(num_layers)]
 
         # Final evaluation
-        placement = LayerPlacement(assignments=assignments)
+        placement = LayerPlacement(assignments=tuple(assignments))
         final_score = await problem.evaluate(placement)
         self.eval_count += 1
 
         return BeamEntry(
-            assignments=assignments,
+            assignments=tuple(assignments),
             allocation=allocation,
             cost=alloc_cost,
             score=final_score,
@@ -425,12 +425,12 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_steps=1,
                         phase_index=phase_index,
                         mixer_name=mixer_name,
-                        base_layers=[],
-                        tried=[
+                        base_layers=(),
+                        tried=tuple(
                             {"layer": layer, "score": score}
                             for layer, score in layer_scores
-                        ],
-                        beam=beam[:5],
+                        ),
+                        beam=tuple(beam[:5]),
                     )
                 )
 
@@ -472,7 +472,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
 
@@ -519,12 +519,12 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     total_steps=total_growth_steps,
                     phase_index=phase_index,
                     mixer_name=mixer_name,
-                    base_layers=[],
-                    tried=[
+                    base_layers=(),
+                    tried=tuple(
                         {"layer": layer, "score": score}
                         for layer, score in layer_scores
-                    ],
-                    beam=beam[:5],
+                    ),
+                    beam=tuple(beam[:5]),
                 )
             )
 
@@ -585,9 +585,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_steps=total_growth_steps,
                         phase_index=phase_index,
                         mixer_name=mixer_name,
-                        base_layers=base_layers,
-                        tried=tried,
-                        beam=new_beam[:5],
+                        base_layers=tuple(base_layers),
+                        tried=tuple(tried),
+                        beam=tuple(new_beam[:5]),
                     )
                 )
 
@@ -621,7 +621,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
 

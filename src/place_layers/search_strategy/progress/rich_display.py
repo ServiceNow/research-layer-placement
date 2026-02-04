@@ -79,7 +79,7 @@ class RichSearchDisplay:
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
         self._num_layers: int = 0
-        self._mixer_names: list[str] = []
+        self._mixer_names: tuple[str, ...] = ()
         self._max_allocations: int = 0
         self._total_allocations: int = 0
 
@@ -94,14 +94,14 @@ class RichSearchDisplay:
 
         self._beam_step: int = 0
         self._beam_total_steps: int = 0
-        self._current_beam: list[dict] = []
-        self._current_tried: list[dict] = []
-        self._current_base_layers: list[int] = []
+        self._current_beam: tuple[dict, ...] = ()
+        self._current_tried: tuple[dict, ...] = ()
+        self._current_base_layers: tuple[int, ...] = ()
 
         self._best_score: float | None = None
         self._best_cost: float | None = None
         self._best_allocation: tuple[int, ...] | None = None
-        self._best_assignments: list[str] | None = None
+        self._best_assignments: tuple[str, ...] | None = None
 
         self._eval_count: int = 0
         self._last_eval_update: int = 0
@@ -514,9 +514,9 @@ class RichSearchDisplay:
         self._phase_budget = 0
         self._beam_step = 0
         self._beam_total_steps = 0
-        self._current_beam = []
-        self._current_tried = []
-        self._current_base_layers = []
+        self._current_beam = ()
+        self._current_tried = ()
+        self._current_base_layers = ()
         self._phase_tree = None
 
         # Capture per-allocation bounds for progress tracking
@@ -538,9 +538,9 @@ class RichSearchDisplay:
         self._phase_budget = event.budget
         self._beam_step = 0
         self._beam_total_steps = event.budget - 1 if event.budget > 1 else 0
-        self._current_beam = []
-        self._current_tried = []
-        self._current_base_layers = []
+        self._current_beam = ()
+        self._current_tried = ()
+        self._current_base_layers = ()
 
         # Start a new phase tree
         self._print_phase_header()

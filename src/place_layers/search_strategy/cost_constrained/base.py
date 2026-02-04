@@ -148,7 +148,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     min_cost=cost_model.min_cost(num_layers),
                     max_cost=cost_model.max_cost(num_layers),
                     num_layers=num_layers,
-                    mixer_names=mixer_names,
+                    mixer_names=tuple(mixer_names),
                     max_allocations=self.config.max_allocations,
                     total_allocations=cost_model.count_allocations(num_layers),
                     eval_count_lower_bound=eval_lower,
@@ -164,7 +164,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 self.observer.on_allocation_plan(
                     AllocationPlanEvent(
                         allocation_info=self._progress_estimator.allocation_info,
-                        mixer_names=mixer_names,
+                        mixer_names=tuple(mixer_names),
                     )
                 )
 
@@ -256,7 +256,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         total_allocations=self.config.max_allocations,
                         allocation=allocation,
                         allocation_cost=alloc_cost,
-                        mixer_names=mixer_names,
+                        mixer_names=tuple(mixer_names),
                         eval_lower_bound=alloc_lower,
                         eval_upper_bound=alloc_upper,
                         eval_expected=alloc_expected,
@@ -346,11 +346,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = self._allocation_to_assignment(
                 min_alloc, num_layers, mixer_names
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
-                assignments=assignments,
+                assignments=tuple(assignments),
                 allocation=min_alloc,
                 cost=cost_model.allocation_cost(min_alloc),
                 score=score,
@@ -419,7 +419,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         total_allocations=self.config.max_allocations,
                         allocation=allocation,
                         allocation_cost=alloc_cost,
-                        mixer_names=mixer_names,
+                        mixer_names=tuple(mixer_names),
                         eval_lower_bound=alloc_lower,
                         eval_upper_bound=alloc_upper,
                         eval_expected=alloc_expected,
@@ -519,11 +519,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = self._allocation_to_assignment(
                 max_alloc, num_layers, mixer_names
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
-                assignments=assignments,
+                assignments=tuple(assignments),
                 allocation=max_alloc,
                 cost=cost_model.allocation_cost(max_alloc),
                 score=score,

@@ -21,11 +21,11 @@ As allocations complete, variance decreases and bounds tighten automatically.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+
+from pydantic import BaseModel
 
 
-@dataclass(frozen=True)
-class ProgressEstimate:
+class ProgressEstimate(BaseModel):
     """Estimated evaluation count range with statistical bounds.
 
     Uses expected value and variance from probabilistic early stopping model.
@@ -39,6 +39,8 @@ class ProgressEstimate:
         confidence: Confidence level for bounds (default 0.95).
     """
 
+    model_config = {"frozen": True}
+
     lower: int
     upper: int
     expected: int = 0
@@ -46,8 +48,7 @@ class ProgressEstimate:
     confidence: float = 0.95
 
 
-@dataclass(frozen=True)
-class AllocationProgressInfo:
+class AllocationProgressInfo(BaseModel):
     """Progress info for a single allocation.
 
     Used by hierarchical search to track per-allocation statistics for
@@ -62,6 +63,8 @@ class AllocationProgressInfo:
         estimated_upper: Statistical upper bound (expected + 2*sqrt(variance)).
     """
 
+    model_config = {"frozen": True}
+
     allocation: tuple[int, ...]
     budgets: tuple[int, ...]
     expected: float
@@ -70,8 +73,7 @@ class AllocationProgressInfo:
     estimated_upper: int
 
 
-@dataclass(frozen=True)
-class SearchProgressEstimator:
+class SearchProgressEstimator(BaseModel):
     """Stateless progress estimator - a lookup table for evaluation bounds.
 
     This is an immutable data structure that provides bounds calculations
@@ -85,6 +87,8 @@ class SearchProgressEstimator:
         initial: Initial estimate before search starts.
         allocation_info: Per-allocation progress info, in exploration order.
     """
+
+    model_config = {"frozen": True}
 
     initial: ProgressEstimate
     allocation_info: tuple[AllocationProgressInfo, ...]

@@ -98,7 +98,7 @@ def resolve_placement(
     indices = [name_to_idx[name] for name in extended]
 
     return PlacementResolution(
-        placement=LayerPlacement(assignments=extended),
+        placement=LayerPlacement(assignments=tuple(extended)),
         placement_names=extended,
         placement_indices=indices,
     )

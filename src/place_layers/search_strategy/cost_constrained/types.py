@@ -12,7 +12,7 @@ class BeamEntry(BaseModel):
 
     model_config = {"frozen": True}
 
-    assignments: list[str]  # Mixer names, one per layer
+    assignments: tuple[str, ...]  # Mixer names, one per layer
     allocation: tuple[int, ...]  # Counts per mixer
     cost: float
     score: float | None = None  # None until evaluated

@@ -181,7 +181,7 @@ class LandscapeAnalysisCommand(BaseCommand):
                 last_mixer = mixer_names[num_mixers - 1]
                 for layer in available_layers:
                     final_assignment[layer] = last_mixer
-                configs.append(LayerPlacement(assignments=final_assignment))
+                configs.append(LayerPlacement(assignments=tuple(final_assignment)))
                 return
 
             budget = budgets[phase_idx]
@@ -232,7 +232,7 @@ class LandscapeAnalysisCommand(BaseCommand):
             for layer in available:
                 assignment[layer] = last_mixer
 
-            configs.append(LayerPlacement(assignments=assignment))
+            configs.append(LayerPlacement(assignments=tuple(assignment)))
 
         return configs
 

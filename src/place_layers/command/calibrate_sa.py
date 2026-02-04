@@ -187,7 +187,7 @@ min_temperature: {self.config.min_temperature}
         for mixer_idx, count in enumerate(allocation):
             current.extend([mixer_names[mixer_idx]] * count)
 
-        placement = LayerPlacement(assignments=current)
+        placement = LayerPlacement(assignments=tuple(current))
         current_score = await problem.evaluate(placement)
 
         deltas = []
@@ -211,7 +211,7 @@ min_temperature: {self.config.min_temperature}
             new = current.copy()
             new[l_a], new[l_b] = new[l_b], new[l_a]
 
-            placement = LayerPlacement(assignments=new)
+            placement = LayerPlacement(assignments=tuple(new))
             new_score = await problem.evaluate(placement)
 
             deltas.append(new_score - current_score)
