@@ -39,6 +39,7 @@ from place_layers.search_strategy.progress.estimator import (
     SearchProgressEstimator,
 )
 from place_layers.search_strategy.progress.events import (
+    AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BestUpdatedEvent,
@@ -53,6 +54,7 @@ from place_layers.search_strategy.progress.rich_display import RichSearchDisplay
 
 __all__ = [
     # Events
+    "AllocationPlanEvent",
     "AllocationStartedEvent",
     "BeamGrowthStepEvent",
     "BestUpdatedEvent",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
@@ -71,18 +71,34 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self._progress_estimator = progress_estimator
         self.eval_count = 0
 
+    @overload
     async def search(
         self,
-        problem: BaseProblem[LayerPlacement],
-    ) -> CostConstrainedSearchResult:
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: Literal[False] = ...,
+    ) -> CostConstrainedSearchResult: ...
+
+    @overload
+    async def search(
+        self,
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: Literal[True],
+    ) -> None: ...
+
+    async def search(
+        self,
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: bool = False,
+    ) -> CostConstrainedSearchResult | None:
         """
         Run cost-constrained search.
 
         Args:
             problem: CostConstrainedProblem with cost model and constraints.
+            dry_run: If True, emit initial events only (for preview) and return None.
 
         Returns:
-            Search results with best configuration and metadata.
+            Search results with best configuration and metadata, or None if dry_run.
         """
         if not isinstance(problem, CostConstrainedProblem):
             raise TypeError(
@@ -140,6 +156,20 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     eval_count_expected=eval_expected,
                 )
             )
+
+            # Emit allocation plan if progress estimator is available
+            if self._progress_estimator is not None:
+                from place_layers.search_strategy.progress import AllocationPlanEvent
+
+                self.observer.on_allocation_plan(
+                    AllocationPlanEvent(
+                        allocation_info=self._progress_estimator.allocation_info,
+                        mixer_names=mixer_names,
+                    )
+                )
+
+        if dry_run:
+            return None
 
         match config:
             case MaxPerformanceProblemConfig(cost_budget=budget):

@@ -31,6 +31,7 @@ from rich.text import Text
 from rich.tree import Tree
 
 from place_layers.search_strategy.progress.events import (
+    AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BestUpdatedEvent,
@@ -279,14 +280,11 @@ class RichSearchDisplay:
         table.add_row("Layers", str(self._num_layers))
         table.add_row("Mixers", ", ".join(self._mixer_names))
         if self._eval_expected is not None:
-            # Show expected with statistical bounds
+            table.add_row("Expected evals", f"~{self._eval_expected:,}")
             if self._eval_lower_bound is not None and self._eval_upper_bound is not None:
                 table.add_row(
-                    "Est. evals",
-                    f"~{self._eval_expected:,} ({self._eval_lower_bound:,} - {self._eval_upper_bound:,})",
+                    "95% CI", f"[{self._eval_lower_bound:,}, {self._eval_upper_bound:,}]"
                 )
-            else:
-                table.add_row("Est. evals", f"~{self._eval_expected:,}")
         elif self._eval_lower_bound is not None and self._eval_upper_bound is not None:
             table.add_row(
                 "Est. evals", f"{self._eval_lower_bound:,} - {self._eval_upper_bound:,}"
@@ -477,6 +475,32 @@ class RichSearchDisplay:
         self._print_search_header()
 
         self._update_live()
+
+    def on_allocation_plan(self, event: AllocationPlanEvent) -> None:
+        """Handle allocation plan event - show summary table."""
+        if len(event.allocation_info) > 20:
+            return  # Too many to display as table
+
+        table = Table(show_header=True, header_style="bold", padding=(0, 1))
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Allocation")
+        table.add_column("Expected", justify="right")
+        table.add_column("95% CI", justify="right")
+
+        for i, info in enumerate(event.allocation_info, 1):
+            alloc_dict = dict(zip(event.mixer_names, info.allocation, strict=True))
+            alloc_str = ", ".join(f"{k}={v}" for k, v in alloc_dict.items())
+            table.add_row(
+                str(i),
+                f"{{{alloc_str}}}",
+                f"~{int(info.expected):,}",
+                f"[{info.estimated_lower:,}, {info.estimated_upper:,}]",
+            )
+
+        self._console.print()
+        self._console.print(
+            Panel(table, title="[bold]Per-Allocation Breakdown[/bold]", border_style="yellow")
+        )
 
     def on_allocation_started(self, event: AllocationStartedEvent) -> None:
         """Handle allocation started event."""

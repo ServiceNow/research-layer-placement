@@ -7,7 +7,10 @@ Each event captures a specific point in the search process with all relevant dat
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from place_layers.search_strategy.progress.estimator import AllocationProgressInfo
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,18 @@ class BoundsUpdatedEvent:
     completed: int
     remaining_allocations: int
     reason: str
+
+
+@dataclass(frozen=True)
+class AllocationPlanEvent:
+    """Emitted after search starts to show planned allocations.
+
+    Contains the list of allocations that will be explored, with estimated
+    evaluation counts for each. Useful for dry_run preview and live search.
+    """
+
+    allocation_info: tuple["AllocationProgressInfo", ...]
+    mixer_names: list[str]
 
 
 @dataclass(frozen=True)

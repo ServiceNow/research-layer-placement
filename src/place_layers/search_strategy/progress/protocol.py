@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from place_layers.search_strategy.progress.events import (
+    AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BestUpdatedEvent,
@@ -32,6 +33,10 @@ class SearchObserver(Protocol):
 
     def on_search_started(self, event: SearchStartedEvent) -> None:
         """Called when search begins."""
+        ...
+
+    def on_allocation_plan(self, event: AllocationPlanEvent) -> None:
+        """Called after search starts to show planned allocations."""
         ...
 
     def on_allocation_started(self, event: AllocationStartedEvent) -> None:

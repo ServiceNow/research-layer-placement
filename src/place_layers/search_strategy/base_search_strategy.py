@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 
 if TYPE_CHECKING:
@@ -32,17 +32,33 @@ class BaseSearchStrategy[ParametersT]:
         self.config = config
         self.observer = observer
 
+    @overload
     async def search(
         self,
-        problem: BaseProblem[ParametersT],
-    ) -> SearchResult[ParametersT]:
+        problem: "BaseProblem[ParametersT]",
+        dry_run: Literal[False] = ...,
+    ) -> "SearchResult[ParametersT]": ...
+
+    @overload
+    async def search(
+        self,
+        problem: "BaseProblem[ParametersT]",
+        dry_run: Literal[True],
+    ) -> None: ...
+
+    async def search(
+        self,
+        problem: "BaseProblem[ParametersT]",
+        dry_run: bool = False,
+    ) -> "SearchResult[ParametersT] | None":
         """
         Run the search algorithm to find optimal parameters.
 
         Args:
             problem: Problem definition with embedded evaluator and constraints.
+            dry_run: If True, emit initial events only (for preview) and return None.
 
         Returns:
-            Search results with best parameters found.
+            Search results with best parameters found, or None if dry_run.
         """
         raise NotImplementedError
