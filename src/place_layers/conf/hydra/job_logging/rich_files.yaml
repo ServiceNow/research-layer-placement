@@ -27,7 +27,7 @@ handlers:
     formatter: file_fmt
     filename: app.log  # Since chdir=true, this goes to the run directory
     maxBytes: 10485760       # 10 MB
-    backupCount: 5
+    backupCount: 100
 
   file_err:
     class: logging.handlers.RotatingFileHandler
