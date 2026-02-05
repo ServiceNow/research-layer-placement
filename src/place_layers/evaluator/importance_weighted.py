@@ -125,7 +125,7 @@ class ProblemTraces(BaseModel):
 
     problem_id: str
     task_name: str
-    traces: list[Trace] = []
+    traces: list[Trace] = Field(default_factory=list)
 
     @property
     def num_samples(self) -> int:
@@ -136,7 +136,7 @@ class MergedTraces(BaseModel):
     """Traces merged from all sources, grouped by task_name."""
 
     # task_name -> problem_id -> ProblemTraces
-    by_task: dict[str, dict[str, ProblemTraces]] = {}
+    by_task: dict[str, dict[str, ProblemTraces]] = Field(default_factory=dict)
 
     def add_trace(self, trace: "Trace") -> None:
         """Add a trace to the merged collection."""

@@ -10,8 +10,9 @@ problem_type: cost_max_performance
 #   All GDN (48 layers): 11.1x speedup -> cost = 1/11.1 = 0.09
 #   All KDA (48 layers): ~9x speedup -> cost = 0.11
 #
-# KDA estimate: switching from GDN to KDA at 3 FA + 3 SWA requires
-# dropping 1 FA layer to stay within budget, implying c_KDA = 0.11.
+# KDA estimate: With 3 FA + 3 SWA, adding GDN layers would allow ~2 more
+# layers than KDA at same budget. This implies c_KDA ≈ 0.11 (slightly
+# higher than GDN's 0.09).
 #
 # Note: Mixed configurations show ~10% deviation from linear model.
 # This is expected given R^2 = 0.98 for underlying regression.
