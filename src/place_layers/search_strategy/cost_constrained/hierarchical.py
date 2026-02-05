@@ -699,7 +699,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
 
         # Enumerate allocations in the same order as search will use
-        allocations: list[tuple[int, ...]] = []
+        allocations: list[tuple[float, tuple[int, ...]]] = []
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
         ):
@@ -713,7 +713,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
 
             if len(allocations) >= self.max_allocations:
                 break
-            allocations.append(allocation)
+            allocations.append((alloc_cost, allocation))
 
         if not allocations:
             return None
@@ -726,7 +726,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         total_variance = 0.0
         allocation_info: list[AllocationProgressInfo] = []
 
-        for allocation in allocations:
+        for alloc_cost, allocation in allocations:
             # Get phase budgets in phase_order (excluding last which gets remainder)
             budgets = tuple(
                 allocation[name_to_alloc_idx[phase_order[i]]]
@@ -754,6 +754,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
                 AllocationProgressInfo(
                     allocation=allocation,
                     budgets=budgets,
+                    cost=alloc_cost,
                     expected=alloc_exp,
                     variance=alloc_var,
                     estimated_lower=lower,

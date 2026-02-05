@@ -57,6 +57,7 @@ class AllocationProgressInfo(BaseModel):
     Attributes:
         allocation: The allocation tuple (counts per mixer).
         budgets: Phase budgets (layers to assign per phase).
+        cost: The cost of this allocation.
         expected: Expected evaluations for this allocation.
         variance: Variance in evaluations (for aggregation).
         estimated_lower: Statistical lower bound (expected - 2*sqrt(variance)).
@@ -67,6 +68,7 @@ class AllocationProgressInfo(BaseModel):
 
     allocation: tuple[int, ...]
     budgets: tuple[int, ...]
+    cost: float
     expected: float
     variance: float
     estimated_lower: int

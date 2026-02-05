@@ -180,7 +180,7 @@ class RichSearchDisplay:
             tried_parts = []
             for i, t in enumerate(self._current_tried[:8]):
                 marker = "[green]★[/green]" if i == 0 else ""
-                tried_parts.append(f"@{t['layer']}→{t['score']:.1f}{marker}")
+                tried_parts.append(f"@{t['layer']}→{t['score']:.4g}{marker}")
             content.append(" ".join(tried_parts))
             if len(self._current_tried) > 8:
                 content.append(" ...")
@@ -335,9 +335,9 @@ class RichSearchDisplay:
         tried_parts = []
         for i, t in enumerate(event.tried[:6]):
             if i == 0:
-                tried_parts.append(f"[green]@{t['layer']}→{t['score']:.1f}★[/green]")
+                tried_parts.append(f"[green]@{t['layer']}→{t['score']:.4g}★[/green]")
             else:
-                tried_parts.append(f"@{t['layer']}→{t['score']:.1f}")
+                tried_parts.append(f"@{t['layer']}→{t['score']:.4g}")
         tried_str = "  ".join(tried_parts)
         if len(event.tried) > 6:
             tried_str += "  [dim]...[/dim]"
@@ -347,9 +347,9 @@ class RichSearchDisplay:
         for i, b in enumerate(event.beam[:3]):
             layers_str = ",".join(str(l) for l in b["layers"])
             if i == 0:
-                beam_parts.append(f"[green]\\[{layers_str}]→{b['score']:.1f}★[/green]")
+                beam_parts.append(f"[green]\\[{layers_str}]→{b['score']:.4g}★[/green]")
             else:
-                beam_parts.append(f"\\[{layers_str}]→{b['score']:.1f}")
+                beam_parts.append(f"\\[{layers_str}]→{b['score']:.4g}")
         beam_str = "  ".join(beam_parts)
 
         # Build step description
@@ -378,7 +378,7 @@ class RichSearchDisplay:
 
         self._phase_tree.add(
             f"[bold green]✓ Complete[/bold green]: "
-            f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.1f}"
+            f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
         )
 
         # Print the completed tree
@@ -483,16 +483,18 @@ class RichSearchDisplay:
 
         table = Table(show_header=True, header_style="bold", padding=(0, 1))
         table.add_column("#", justify="right", style="dim")
-        table.add_column("Allocation")
-        table.add_column("Expected", justify="right")
-        table.add_column("95% CI", justify="right")
+        table.add_column("Allocation", no_wrap=True)
+        table.add_column("Cost", justify="right")
+        table.add_column("Expected evals", justify="right")
+        table.add_column("95% CI", justify="right", no_wrap=True)
 
         for i, info in enumerate(event.allocation_info, 1):
             alloc_dict = dict(zip(event.mixer_names, info.allocation, strict=True))
-            alloc_str = ", ".join(f"{k}={v}" for k, v in alloc_dict.items())
+            alloc_str = "  ".join(f"{k}:{v}" for k, v in alloc_dict.items())
             table.add_row(
                 str(i),
-                f"{{{alloc_str}}}",
+                alloc_str,
+                f"{info.cost:.4f}",
                 f"~{int(info.expected):,}",
                 f"[{info.estimated_lower:,}, {info.estimated_upper:,}]",
             )
