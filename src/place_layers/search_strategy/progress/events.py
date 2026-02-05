@@ -50,6 +50,27 @@ class AllocationStartedEvent(BaseModel):
     eval_expected: int | None = None
 
 
+class AllocationCompletedEvent(BaseModel):
+    """Emitted when search within an allocation completes.
+
+    Contains the final placement found for this allocation, with all mixer
+    assignments grouped by type for display.
+    """
+
+    model_config = {"frozen": True}
+
+    allocation_index: int
+    allocation: tuple[int, ...]
+    allocation_cost: float
+    mixer_names: tuple[str, ...]
+    # Final assignments - tuple of mixer names, one per layer
+    assignments: tuple[str, ...] | None  # None if no valid assignment found
+    score: float | None  # None if no valid assignment found
+    # Assignments grouped by mixer for compact display
+    # Format: {"FA": (0, 3, 7), "SWA": (1, 2, 5), ...}
+    assignments_by_mixer: dict[str, tuple[int, ...]]
+
+
 class PhaseStartedEvent(BaseModel):
     """Emitted when starting a new phase within hierarchical search."""
 
@@ -59,6 +80,27 @@ class PhaseStartedEvent(BaseModel):
     total_phases: int
     mixer_name: str
     budget: int  # Number of layers to assign in this phase
+    num_paths: int = 1  # 1 for greedy, >1 for cross-phase beam
+
+
+class PathStartedEvent(BaseModel):
+    """Emitted when starting to process a cross-phase path within a phase.
+
+    This event provides visibility into cross-phase compounding: what's fixed
+    from prior phases when starting a new phase. Enables display of inheritance
+    and path separation when cross_phase_beam_width > 1.
+    """
+
+    model_config = {"frozen": True}
+
+    phase_index: int
+    path_index: int  # 0-indexed within current phase
+    total_paths: int  # cross_phase_beam_width (or fewer)
+    inherited_score: float  # Score from previous phase
+
+    # Fixed assignments from ALL prior phases, grouped by mixer
+    # Format: {"FA": (0, 3, 7), "SWA": (1, 2, 5)}
+    fixed_by_mixer: dict[str, tuple[int, ...]]
 
 
 class BeamGrowthStepEvent(BaseModel):
@@ -66,6 +108,11 @@ class BeamGrowthStepEvent(BaseModel):
 
     Contains detailed information about what was tried and the resulting beam state.
     This enables visualization of the search evolution at each step.
+
+    When beam_width > 1, multiple parents are expanded simultaneously. The `parents`
+    field contains all beam entries being expanded, and `tried`/`beam` entries include
+    provenance information (parent_idx, added_layer) to track which parent produced
+    each candidate.
     """
 
     model_config = {"frozen": True}
@@ -74,9 +121,18 @@ class BeamGrowthStepEvent(BaseModel):
     total_steps: int
     phase_index: int
     mixer_name: str
-    base_layers: tuple[int, ...]  # Layers already fixed for this mixer before this step
-    tried: tuple[dict, ...]  # All candidates tried: [{"layer": int, "score": float}, ...]
-    beam: tuple[dict, ...]  # Top-k after selection: [{"layers": [...], "score": float}, ...]
+
+    # All parents being expanded (replaces base_layers)
+    # Format: [{"layers": [...], "score": float | None}, ...]
+    parents: tuple[dict, ...]
+
+    # All candidates tried with provenance
+    # Format: [{"layer": int, "score": float, "parent_idx": int}, ...]
+    tried: tuple[dict, ...]
+
+    # Top-k after selection with provenance
+    # Format: [{"layers": [...], "score": float, "parent_idx": int, "added_layer": int}, ...]
+    beam: tuple[dict, ...]
 
 
 class BestUpdatedEvent(BaseModel):

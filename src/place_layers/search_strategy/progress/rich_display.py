@@ -31,11 +31,13 @@ from rich.text import Text
 from rich.tree import Tree
 
 from place_layers.search_strategy.progress.events import (
+    AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
+    PathStartedEvent,
     PhaseCompletedEvent,
     PhaseStartedEvent,
     SearchCompletedEvent,
@@ -96,7 +98,7 @@ class RichSearchDisplay:
         self._beam_total_steps: int = 0
         self._current_beam: tuple[dict, ...] = ()
         self._current_tried: tuple[dict, ...] = ()
-        self._current_base_layers: tuple[int, ...] = ()
+        self._current_parents: tuple[dict, ...] = ()
 
         self._best_score: float | None = None
         self._best_cost: float | None = None
@@ -119,6 +121,12 @@ class RichSearchDisplay:
 
         # Track current phase tree for building up the visualization
         self._phase_tree: Tree | None = None
+
+        # Multi-path tracking for cross-phase beam width > 1
+        self._current_path_index: int = 0
+        self._total_paths: int = 1
+        self._path_tree: Tree | None = None  # Sub-tree for current path
+        self._path_fixed_by_mixer: dict[str, tuple[int, ...]] = {}
 
     def __enter__(self) -> "RichSearchDisplay":
         """Start the Live display."""
@@ -167,22 +175,20 @@ class RichSearchDisplay:
     def _render_current_step(self) -> Panel:
         """Render the current step being expanded."""
         content = Text()
+        num_parents = len(self._current_parents)
 
-        # Show what we're expanding
-        if self._current_base_layers:
-            base_str = ",".join(str(l) for l in self._current_base_layers)
-            content.append(f"Expanding [{base_str}]: ", style="bold")
-        else:
-            content.append("Initial scoring: ", style="bold")
+        # Show number of parents being expanded
+        content.append(f"Expand {num_parents} parent{'s' if num_parents != 1 else ''}", style="bold")
 
-        # Show top tried candidates
+        # Show top tried candidates (simplified for live display)
         if self._current_tried:
+            content.append(": ")
             tried_parts = []
-            for i, t in enumerate(self._current_tried[:8]):
+            for i, t in enumerate(self._current_tried[:6]):
                 marker = "[green]★[/green]" if i == 0 else ""
-                tried_parts.append(f"@{t['layer']}→{t['score']:.4g}{marker}")
+                tried_parts.append(f"+{t['layer']}→{t['score']:.4g}{marker}")
             content.append(" ".join(tried_parts))
-            if len(self._current_tried) > 8:
+            if len(self._current_tried) > 6:
                 content.append(" ...")
 
         title = f"Step {self._beam_step}/{self._beam_total_steps}: {self._phase_mixer}"
@@ -318,72 +324,185 @@ class RichSearchDisplay:
         self._console.print()
         self._console.print(panel)
 
+    def _print_allocation_complete(self, event: AllocationCompletedEvent) -> None:
+        """Print allocation completion summary with full placement."""
+        if event.assignments is None or event.score is None:
+            self._console.print("[dim]  No valid placement found for this allocation[/dim]")
+            return
+
+        # Format assignments by mixer in canonical order (mixer_names)
+        # This ensures consistent display order: FA, SWA, GDN, KDA, etc.
+        ordered_by_mixer = {
+            name: event.assignments_by_mixer[name]
+            for name in event.mixer_names
+            if name in event.assignments_by_mixer
+        }
+        placement_str = self._format_fixed_assignments(ordered_by_mixer)
+
+        self._console.print(
+            f"[bold cyan]✓ Allocation {event.allocation_index} complete[/bold cyan]: "
+            f"{placement_str} → {event.score:.4g}"
+        )
+
     def _print_phase_header(self) -> None:
         """Start a new phase tree."""
-        # Create a new tree for this phase
-        self._phase_tree = Tree(
+        # Build phase header text
+        header = (
             f"[bold green]Phase {self._phase_index}/{self._total_phases}[/bold green]: "
             f"Place [cyan]{self._phase_mixer}[/cyan] (budget={self._phase_budget})"
         )
 
+        # Add path count suffix for multi-path
+        if self._total_paths > 1:
+            header += f" — {self._total_paths} paths"
+
+        # Create a new tree for this phase
+        self._phase_tree = Tree(header)
+
+        # Reset path tree
+        self._path_tree = None
+
     def _print_beam_step(self, event: BeamGrowthStepEvent) -> None:
-        """Add beam growth step to the phase tree."""
-        if self._phase_tree is None:
+        """Add beam growth step to the phase tree.
+
+        Uses grouped-by-parent format:
+        - P0 [layers]: +layer→score★  +layer→score  ...
+        - P1 [layers]: +layer→score  ...
+        - Beam:
+            - P0+layer → score★
+            - P1+layer → score
+
+        For multi-path mode, steps are added to _path_tree instead of _phase_tree.
+        """
+        # Determine which tree to add to (path tree for multi-path, phase tree otherwise)
+        target_tree = self._path_tree if self._total_paths > 1 else self._phase_tree
+        if target_tree is None:
             return
 
-        # Format tried candidates
-        tried_parts = []
-        for i, t in enumerate(event.tried[:6]):
-            if i == 0:
-                tried_parts.append(f"[green]@{t['layer']}→{t['score']:.4g}★[/green]")
-            else:
-                tried_parts.append(f"@{t['layer']}→{t['score']:.4g}")
-        tried_str = "  ".join(tried_parts)
-        if len(event.tried) > 6:
-            tried_str += "  [dim]...[/dim]"
+        num_parents = len(event.parents)
+        step_label = f"[bold]Step {event.step}[/bold]: Expand {num_parents} parent{'s' if num_parents != 1 else ''}"
+        step_branch = target_tree.add(step_label)
 
-        # Format beam state
-        beam_parts = []
+        # Group tried candidates by parent_idx
+        tried_by_parent: dict[int, list[dict]] = {}
+        for t in event.tried:
+            parent_idx = t.get("parent_idx", 0)
+            if parent_idx not in tried_by_parent:
+                tried_by_parent[parent_idx] = []
+            tried_by_parent[parent_idx].append(t)
+
+        # Sort each parent's tried list by score descending
+        for parent_idx in tried_by_parent:
+            tried_by_parent[parent_idx].sort(key=lambda x: x["score"], reverse=True)
+
+        # Find global best (event.tried is sorted by score descending)
+        global_best = event.tried[0] if event.tried else None
+        global_best_key = (global_best["parent_idx"], global_best["layer"]) if global_best else None
+
+        # Show each parent and its tried candidates
+        for parent_idx, parent in enumerate(event.parents):
+            parent_layers = parent.get("layers", [])
+            if len(parent_layers) <= 6:
+                layers_str = ",".join(str(l) for l in parent_layers)
+            else:
+                layers_str = ",".join(str(l) for l in parent_layers[:3]) + f",...,{parent_layers[-1]}"
+
+            # Format tried candidates for this parent
+            tried_list = tried_by_parent.get(parent_idx, [])
+            tried_parts = []
+            for t in tried_list[:5]:
+                is_global_best = (parent_idx, t["layer"]) == global_best_key
+                if is_global_best:
+                    tried_parts.append(f"[green]+{t['layer']}→{t['score']:.4g}★[/green]")
+                else:
+                    tried_parts.append(f"+{t['layer']}→{t['score']:.4g}")
+            tried_str = "  ".join(tried_parts)
+            if len(tried_list) > 5:
+                tried_str += "  [dim]...[/dim]"
+
+            step_branch.add(f"P{parent_idx} \\[{layers_str}]: {tried_str}")
+
+        # Format beam state with provenance
+        beam_branch = step_branch.add("Beam:")
         for i, b in enumerate(event.beam[:3]):
-            layers_str = ",".join(str(l) for l in b["layers"])
+            parent_idx = b.get("parent_idx", 0)
+            added_layer = b.get("added_layer", "?")
             if i == 0:
-                beam_parts.append(f"[green]\\[{layers_str}]→{b['score']:.4g}★[/green]")
+                beam_branch.add(f"[green]P{parent_idx}+{added_layer} → {b['score']:.4g}★[/green]")
             else:
-                beam_parts.append(f"\\[{layers_str}]→{b['score']:.4g}")
-        beam_str = "  ".join(beam_parts)
+                beam_branch.add(f"P{parent_idx}+{added_layer} → {b['score']:.4g}")
 
-        # Build step description
-        if event.base_layers:
-            base_str = ",".join(str(l) for l in event.base_layers)
-            step_label = f"[bold]Step {event.step}[/bold]: Expand \\[{base_str}]"
+    def _format_fixed_assignments(self, fixed_by_mixer: dict[str, tuple[int, ...]]) -> str:
+        """Format fixed assignments compactly.
+
+        Returns strings like:
+        - Short list (≤8 layers): "FA@[3,7,12,0,15]"
+        - Long list (>8 layers): "FA@[0,1,3,7,...,23]"
+        - Multiple mixers: "FA@[3,7], SWA@[1,2,...,14]"
+        """
+        if not fixed_by_mixer:
+            return ""
+
+        parts = []
+        for mixer, layers in fixed_by_mixer.items():
+            if len(layers) <= 8:
+                layers_str = ",".join(str(l) for l in layers)
+            else:
+                # First 4 + last 1
+                layers_str = ",".join(str(l) for l in layers[:4]) + f",...,{layers[-1]}"
+            parts.append(f"{mixer}@\\[{layers_str}]")
+
+        return ", ".join(parts)
+
+    def _print_path_completion(self, layers: tuple[int, ...], score: float, mixer_name: str) -> None:
+        """Add path completion line to path tree for multi-path mode."""
+        if self._path_tree is None:
+            return
+
+        if len(layers) <= 10:
+            layers_str = ",".join(str(l) for l in layers)
         else:
-            step_label = f"[bold]Step {event.step}[/bold]: Initial"
+            layers_str = ",".join(str(l) for l in layers[:5]) + f",...,{layers[-1]}"
 
-        # Add to tree
-        step_branch = self._phase_tree.add(step_label)
-        step_branch.add(f"Tried: {tried_str}")
-        step_branch.add(f"Beam:  {beam_str}")
+        self._path_tree.add(
+            f"→ {mixer_name}@\\[{layers_str}] → {score:.4g}"
+        )
 
     def _print_phase_complete(self, event: PhaseCompletedEvent) -> None:
         """Complete and print the phase tree."""
         if self._phase_tree is None:
             return
 
-        # Add completion summary
+        # Format layers string
         if len(event.final_layers) <= 10:
             layers_str = ",".join(str(l) for l in event.final_layers)
         else:
             layers_str = ",".join(str(l) for l in event.final_layers[:5])
             layers_str += f",...,{event.final_layers[-1]}"
 
-        self._phase_tree.add(
-            f"[bold green]✓ Complete[/bold green]: "
-            f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
-        )
+        # Multi-path mode: show phase summary with best result
+        if self._total_paths > 1:
+            # Build accumulated fixed context for display
+            accumulated = dict(self._path_fixed_by_mixer)
+            # Add current phase's result
+            accumulated[event.mixer_name] = event.final_layers
+            accumulated_str = self._format_fixed_assignments(accumulated)
+
+            self._phase_tree.add(
+                f"[bold green]✓ Phase {event.phase_index} complete[/bold green]: "
+                f"Best → {accumulated_str} → {event.final_score:.4g}"
+            )
+        else:
+            # Single path mode: simple completion line
+            self._phase_tree.add(
+                f"[bold green]✓ Complete[/bold green]: "
+                f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
+            )
 
         # Print the completed tree
         self._console.print(self._phase_tree)
         self._phase_tree = None
+        self._path_tree = None
 
     def _print_best_update(self) -> None:
         """Print new best found as permanent output."""
@@ -521,6 +640,12 @@ class RichSearchDisplay:
         self._current_base_layers = ()
         self._phase_tree = None
 
+        # Reset multi-path state
+        self._total_paths = 1
+        self._current_path_index = 0
+        self._path_tree = None
+        self._path_fixed_by_mixer = {}
+
         # Capture per-allocation bounds for progress tracking
         self._alloc_eval_start = self._eval_count
         self._alloc_lower = event.eval_lower_bound
@@ -532,22 +657,56 @@ class RichSearchDisplay:
 
         self._update_live()
 
+    def on_allocation_completed(self, event: AllocationCompletedEvent) -> None:
+        """Handle allocation completed event."""
+        # Print allocation completion summary
+        self._print_allocation_complete(event)
+
+        self._update_live()
+
     def on_phase_started(self, event: PhaseStartedEvent) -> None:
         """Handle phase started event."""
         self._phase_index = event.phase_index
         self._total_phases = event.total_phases
         self._phase_mixer = event.mixer_name
         self._phase_budget = event.budget
+        self._total_paths = event.num_paths
         self._beam_step = 0
         self._beam_total_steps = event.budget - 1 if event.budget > 1 else 0
         self._current_beam = ()
         self._current_tried = ()
-        self._current_base_layers = ()
+        self._current_parents = ()
 
         # Start a new phase tree
         self._print_phase_header()
 
         self._update_live()
+
+    def on_path_started(self, event: PathStartedEvent) -> None:
+        """Handle path started event for cross-phase visibility."""
+        self._current_path_index = event.path_index
+        self._path_fixed_by_mixer = event.fixed_by_mixer
+
+        if self._phase_tree is None:
+            return
+
+        # Format fixed context from prior phases
+        fixed_str = self._format_fixed_assignments(event.fixed_by_mixer)
+        fixed_display = f" ← {fixed_str}" if fixed_str else ""
+
+        if self._total_paths > 1:
+            # Multi-path mode: create sub-tree for this path
+            path_label = (
+                f"[bold]Path {event.path_index + 1}/{event.total_paths}[/bold] "
+                f"({event.inherited_score:.4g}){fixed_display}"
+            )
+            self._path_tree = self._phase_tree.add(path_label)
+        else:
+            # Single path mode: just append fixed context to phase header
+            # This is handled by updating the tree label (if fixed context exists)
+            if fixed_str:
+                # Add fixed context as a note under the phase
+                self._phase_tree.add(f"[dim]Fixed: {fixed_str}[/dim]")
 
     def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
         """Handle beam growth step event."""
@@ -555,7 +714,7 @@ class RichSearchDisplay:
         self._beam_total_steps = event.total_steps
         self._current_beam = event.beam
         self._current_tried = event.tried
-        self._current_base_layers = event.base_layers
+        self._current_parents = event.parents
 
         # Add step to phase tree
         self._print_beam_step(event)

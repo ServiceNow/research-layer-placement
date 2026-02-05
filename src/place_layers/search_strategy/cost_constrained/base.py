@@ -303,6 +303,44 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         )
                     )
 
+            # Emit allocation completed event with final placement
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import (
+                    AllocationCompletedEvent,
+                )
+
+                # Build assignments_by_mixer for display
+                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
+                if best_in_allocation is not None:
+                    mixer_layers: dict[str, list[int]] = {}
+                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
+                        if mixer not in mixer_layers:
+                            mixer_layers[mixer] = []
+                        mixer_layers[mixer].append(layer_idx)
+                    assignments_by_mixer = {
+                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
+                    }
+
+                self.observer.on_allocation_completed(
+                    AllocationCompletedEvent(
+                        allocation_index=allocations_explored,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=tuple(mixer_names),
+                        assignments=(
+                            best_in_allocation.assignments
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        score=(
+                            best_in_allocation.score
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        assignments_by_mixer=assignments_by_mixer,
+                    )
+                )
+
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
                 continue
@@ -465,6 +503,44 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                             reason="allocation_complete",
                         )
                     )
+
+            # Emit allocation completed event with final placement
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import (
+                    AllocationCompletedEvent,
+                )
+
+                # Build assignments_by_mixer for display
+                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
+                if best_in_allocation is not None:
+                    mixer_layers: dict[str, list[int]] = {}
+                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
+                        if mixer not in mixer_layers:
+                            mixer_layers[mixer] = []
+                        mixer_layers[mixer].append(layer_idx)
+                    assignments_by_mixer = {
+                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
+                    }
+
+                self.observer.on_allocation_completed(
+                    AllocationCompletedEvent(
+                        allocation_index=allocations_explored,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=tuple(mixer_names),
+                        assignments=(
+                            best_in_allocation.assignments
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        score=(
+                            best_in_allocation.score
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        assignments_by_mixer=assignments_by_mixer,
+                    )
+                )
 
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")

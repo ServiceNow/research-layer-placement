@@ -10,11 +10,13 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from place_layers.search_strategy.progress.events import (
+    AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
+    PathStartedEvent,
     PhaseCompletedEvent,
     PhaseStartedEvent,
     SearchCompletedEvent,
@@ -43,8 +45,16 @@ class SearchObserver(Protocol):
         """Called when starting search within a new allocation."""
         ...
 
+    def on_allocation_completed(self, event: AllocationCompletedEvent) -> None:
+        """Called when search within an allocation completes."""
+        ...
+
     def on_phase_started(self, event: PhaseStartedEvent) -> None:
         """Called when starting a new phase (hierarchical search only)."""
+        ...
+
+    def on_path_started(self, event: PathStartedEvent) -> None:
+        """Called when starting to process a cross-phase path within a phase."""
         ...
 
     def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
