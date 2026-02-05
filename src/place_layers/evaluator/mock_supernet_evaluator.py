@@ -1,5 +1,6 @@
 """Mock supernet evaluator for layer placement optimization."""
 
+import asyncio
 import hashlib
 import json
 import random
@@ -138,6 +139,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         noise_rng = random.Random(noise_seed)
         total_score += noise_rng.gauss(0.0, self.config.noise_sigma)
 
+        # Optional delay for testing display dynamics
+        if self.config.eval_delay_seconds > 0:
+            await asyncio.sleep(self.config.eval_delay_seconds)
+
         return total_score
 
 
@@ -179,5 +184,10 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
 
     noise_sigma: float = Field(
         description="Standard deviation of configuration-specific Gaussian noise",
+        ge=0.0,
+    )
+
+    eval_delay_seconds: float = Field(
+        description="Artificial delay per evaluation (seconds) for testing display dynamics",
         ge=0.0,
     )

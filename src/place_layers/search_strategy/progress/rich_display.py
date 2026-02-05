@@ -37,7 +37,6 @@ from place_layers.search_strategy.progress.events import (
     BeamGrowthStepEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
-    PathStartedEvent,
     PhaseCompletedEvent,
     PhaseStartedEvent,
     SearchCompletedEvent,
@@ -121,12 +120,6 @@ class RichSearchDisplay:
 
         # Track current phase tree for building up the visualization
         self._phase_tree: Tree | None = None
-
-        # Multi-path tracking for cross-phase beam width > 1
-        self._current_path_index: int = 0
-        self._total_paths: int = 1
-        self._path_tree: Tree | None = None  # Sub-tree for current path
-        self._path_fixed_by_mixer: dict[str, tuple[int, ...]] = {}
 
     def __enter__(self) -> "RichSearchDisplay":
         """Start the Live display."""
@@ -352,15 +345,8 @@ class RichSearchDisplay:
             f"Place [cyan]{self._phase_mixer}[/cyan] (budget={self._phase_budget})"
         )
 
-        # Add path count suffix for multi-path
-        if self._total_paths > 1:
-            header += f" — {self._total_paths} paths"
-
         # Create a new tree for this phase
         self._phase_tree = Tree(header)
-
-        # Reset path tree
-        self._path_tree = None
 
     def _print_beam_step(self, event: BeamGrowthStepEvent) -> None:
         """Add beam growth step to the phase tree.
@@ -371,17 +357,16 @@ class RichSearchDisplay:
         - Beam:
             - P0+layer → score★
             - P1+layer → score
-
-        For multi-path mode, steps are added to _path_tree instead of _phase_tree.
         """
-        # Determine which tree to add to (path tree for multi-path, phase tree otherwise)
-        target_tree = self._path_tree if self._total_paths > 1 else self._phase_tree
-        if target_tree is None:
+        if self._phase_tree is None:
             return
 
+        step_label = f"[bold]Step {event.step}:[/bold]"
+        step_branch = self._phase_tree.add(step_label)
+
         num_parents = len(event.parents)
-        step_label = f"[bold]Step {event.step}[/bold]: Expand {num_parents} parent{'s' if num_parents != 1 else ''}"
-        step_branch = target_tree.add(step_label)
+        expand_label = f"Expand {num_parents} parent{'s' if num_parents != 1 else ''}:"
+        expand_branch = step_branch.add(expand_label)
 
         # Group tried candidates by parent_idx
         tried_by_parent: dict[int, list[dict]] = {}
@@ -395,8 +380,8 @@ class RichSearchDisplay:
         for parent_idx in tried_by_parent:
             tried_by_parent[parent_idx].sort(key=lambda x: x["score"], reverse=True)
 
-        # Find global best (event.tried is sorted by score descending)
-        global_best = event.tried[0] if event.tried else None
+        # Find global best across all tried candidates
+        global_best = max(event.tried, key=lambda x: x["score"]) if event.tried else None
         global_best_key = (global_best["parent_idx"], global_best["layer"]) if global_best else None
 
         # Show each parent and its tried candidates
@@ -406,6 +391,23 @@ class RichSearchDisplay:
                 layers_str = ",".join(str(l) for l in parent_layers)
             else:
                 layers_str = ",".join(str(l) for l in parent_layers[:3]) + f",...,{parent_layers[-1]}"
+
+            # Format prior phase context (if any)
+            prior_ctx = self._format_prior_context(parent.get("fixed", {}))
+
+            # Format current phase assignment (mixer_name comes from event)
+            current_ctx = f"{event.mixer_name}@\\[{layers_str}]" if parent_layers else ""
+
+            # Combine into single parenthesized string
+            # Prior phases are dim, current phase is normal color
+            if prior_ctx and current_ctx:
+                context_str = f" ([dim]{prior_ctx}[/dim], {current_ctx})"
+            elif prior_ctx:
+                context_str = f" ([dim]{prior_ctx}[/dim])"
+            elif current_ctx:
+                context_str = f" ({current_ctx})"
+            else:
+                context_str = ""
 
             # Format tried candidates for this parent
             tried_list = tried_by_parent.get(parent_idx, [])
@@ -420,17 +422,68 @@ class RichSearchDisplay:
             if len(tried_list) > 5:
                 tried_str += "  [dim]...[/dim]"
 
-            step_branch.add(f"P{parent_idx} \\[{layers_str}]: {tried_str}")
+            expand_branch.add(f"P{parent_idx}{context_str}: {tried_str}")
 
         # Format beam state with provenance
-        beam_branch = step_branch.add("Beam:")
+        beam_size = len(event.beam)
+        prune_branch = step_branch.add(f"Prune to {beam_size}:")
         for i, b in enumerate(event.beam[:3]):
             parent_idx = b.get("parent_idx", 0)
             added_layer = b.get("added_layer", "?")
-            if i == 0:
-                beam_branch.add(f"[green]P{parent_idx}+{added_layer} → {b['score']:.4g}★[/green]")
+
+            # Get parent's layers and append the added layer
+            parent = event.parents[parent_idx] if parent_idx < len(event.parents) else {}
+            parent_layers = list(parent.get("layers", []))
+            if added_layer != "?":
+                parent_layers.append(added_layer)
+
+            # Format layers string (same logic as Expand)
+            if len(parent_layers) <= 6:
+                layers_str = ",".join(str(l) for l in parent_layers)
             else:
-                beam_branch.add(f"P{parent_idx}+{added_layer} → {b['score']:.4g}")
+                layers_str = ",".join(str(l) for l in parent_layers[:3]) + f",...,{parent_layers[-1]}"
+
+            # Format prior phase context (if any)
+            prior_ctx = self._format_prior_context(parent.get("fixed", {}))
+
+            # Format current phase assignment
+            current_ctx = f"{event.mixer_name}@\\[{layers_str}]" if parent_layers else ""
+
+            # Combine into single parenthesized string
+            if prior_ctx and current_ctx:
+                context_str = f" ([dim]{prior_ctx}[/dim], {current_ctx})"
+            elif prior_ctx:
+                context_str = f" ([dim]{prior_ctx}[/dim])"
+            elif current_ctx:
+                context_str = f" ({current_ctx})"
+            else:
+                context_str = ""
+
+            if i == 0:
+                prune_branch.add(f"[green]B{i}{context_str} → {b['score']:.4g}★[/green]")
+            else:
+                prune_branch.add(f"B{i}{context_str} → {b['score']:.4g}")
+
+        # Show runners-up (candidates that just missed the cut)
+        beam_keys = {(b.get("parent_idx"), b.get("added_layer")) for b in event.beam}
+        cut_candidates = [
+            t for t in event.tried
+            if (t.get("parent_idx"), t["layer"]) not in beam_keys
+        ]
+        # Sort by score descending to show runners-up first
+        cut_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        if cut_candidates:
+            # Show top 2-3 runners-up in compact format
+            shown = cut_candidates[:3]
+            cut_parts = [f"+{c['layer']}→{c['score']:.4g}" for c in shown]
+            cut_str = ", ".join(cut_parts)
+
+            remaining = len(cut_candidates) - len(shown)
+            if remaining > 0:
+                cut_str += f"  (+{remaining} more)"
+
+            prune_branch.add(f"[dim]cut: {cut_str}[/dim]")
 
     def _format_fixed_assignments(self, fixed_by_mixer: dict[str, tuple[int, ...]]) -> str:
         """Format fixed assignments compactly.
@@ -454,19 +507,36 @@ class RichSearchDisplay:
 
         return ", ".join(parts)
 
-    def _print_path_completion(self, layers: tuple[int, ...], score: float, mixer_name: str) -> None:
-        """Add path completion line to path tree for multi-path mode."""
-        if self._path_tree is None:
-            return
+    def _format_prior_context(self, fixed: dict[int, str]) -> str:
+        """Format fixed assignments from prior phases compactly.
 
-        if len(layers) <= 10:
-            layers_str = ",".join(str(l) for l in layers)
-        else:
-            layers_str = ",".join(str(l) for l in layers[:5]) + f",...,{layers[-1]}"
+        Args:
+            fixed: Dict mapping layer_idx -> mixer_name for prior phase assignments.
 
-        self._path_tree.add(
-            f"→ {mixer_name}@\\[{layers_str}] → {score:.4g}"
-        )
+        Returns:
+            Compact string like "FA@[0,5,9]" or "FA@[0,5], SWA@[3,7]" for multiple mixers.
+            Empty string if no prior assignments.
+        """
+        if not fixed:
+            return ""
+
+        # Group layers by mixer
+        by_mixer: dict[str, list[int]] = {}
+        for layer, mixer in fixed.items():
+            by_mixer.setdefault(mixer, []).append(layer)
+
+        # Sort layers within each mixer and format
+        parts = []
+        for mixer in sorted(by_mixer.keys()):
+            layers = sorted(by_mixer[mixer])
+            if len(layers) <= 6:
+                layers_str = ",".join(str(l) for l in layers)
+            else:
+                # First 3 + last 1
+                layers_str = ",".join(str(l) for l in layers[:3]) + f",...,{layers[-1]}"
+            parts.append(f"{mixer}@\\[{layers_str}]")
+
+        return ", ".join(parts)
 
     def _print_phase_complete(self, event: PhaseCompletedEvent) -> None:
         """Complete and print the phase tree."""
@@ -480,29 +550,15 @@ class RichSearchDisplay:
             layers_str = ",".join(str(l) for l in event.final_layers[:5])
             layers_str += f",...,{event.final_layers[-1]}"
 
-        # Multi-path mode: show phase summary with best result
-        if self._total_paths > 1:
-            # Build accumulated fixed context for display
-            accumulated = dict(self._path_fixed_by_mixer)
-            # Add current phase's result
-            accumulated[event.mixer_name] = event.final_layers
-            accumulated_str = self._format_fixed_assignments(accumulated)
-
-            self._phase_tree.add(
-                f"[bold green]✓ Phase {event.phase_index} complete[/bold green]: "
-                f"Best → {accumulated_str} → {event.final_score:.4g}"
-            )
-        else:
-            # Single path mode: simple completion line
-            self._phase_tree.add(
-                f"[bold green]✓ Complete[/bold green]: "
-                f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
-            )
+        # Add completion line
+        self._phase_tree.add(
+            f"[bold green]✓ Complete[/bold green]: "
+            f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
+        )
 
         # Print the completed tree
         self._console.print(self._phase_tree)
         self._phase_tree = None
-        self._path_tree = None
 
     def _print_best_update(self) -> None:
         """Print new best found as permanent output."""
@@ -637,14 +693,8 @@ class RichSearchDisplay:
         self._beam_total_steps = 0
         self._current_beam = ()
         self._current_tried = ()
-        self._current_base_layers = ()
+        self._current_parents = ()
         self._phase_tree = None
-
-        # Reset multi-path state
-        self._total_paths = 1
-        self._current_path_index = 0
-        self._path_tree = None
-        self._path_fixed_by_mixer = {}
 
         # Capture per-allocation bounds for progress tracking
         self._alloc_eval_start = self._eval_count
@@ -670,7 +720,6 @@ class RichSearchDisplay:
         self._total_phases = event.total_phases
         self._phase_mixer = event.mixer_name
         self._phase_budget = event.budget
-        self._total_paths = event.num_paths
         self._beam_step = 0
         self._beam_total_steps = event.budget - 1 if event.budget > 1 else 0
         self._current_beam = ()
@@ -681,32 +730,6 @@ class RichSearchDisplay:
         self._print_phase_header()
 
         self._update_live()
-
-    def on_path_started(self, event: PathStartedEvent) -> None:
-        """Handle path started event for cross-phase visibility."""
-        self._current_path_index = event.path_index
-        self._path_fixed_by_mixer = event.fixed_by_mixer
-
-        if self._phase_tree is None:
-            return
-
-        # Format fixed context from prior phases
-        fixed_str = self._format_fixed_assignments(event.fixed_by_mixer)
-        fixed_display = f" ← {fixed_str}" if fixed_str else ""
-
-        if self._total_paths > 1:
-            # Multi-path mode: create sub-tree for this path
-            path_label = (
-                f"[bold]Path {event.path_index + 1}/{event.total_paths}[/bold] "
-                f"({event.inherited_score:.4g}){fixed_display}"
-            )
-            self._path_tree = self._phase_tree.add(path_label)
-        else:
-            # Single path mode: just append fixed context to phase header
-            # This is handled by updating the tree label (if fixed context exists)
-            if fixed_str:
-                # Add fixed context as a note under the phase
-                self._phase_tree.add(f"[dim]Fixed: {fixed_str}[/dim]")
 
     def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
         """Handle beam growth step event."""

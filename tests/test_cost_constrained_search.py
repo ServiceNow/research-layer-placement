@@ -305,6 +305,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
@@ -325,6 +326,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
@@ -345,6 +347,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"wrong_name": 1.0, "mixer_1": 0.5}),  # Wrong names
@@ -371,6 +374,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
             cost_model=cost_model,
@@ -391,6 +395,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MinCostProblemConfig(
             cost_model=cost_model,
@@ -473,6 +478,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
             cost_model=cost_model,
