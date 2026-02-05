@@ -60,12 +60,11 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         # This represents the supernet's learned preferences
         rng = random.Random(self.config.seed)
 
-        # Build mixer names and name-to-index mapping
-        self._mixer_names = list(self.config.mixer_names)
-        self._name_to_idx = {name: i for i, name in enumerate(self._mixer_names)}
+        # Build name-to-index mapping for O(1) lookup in evaluate()
+        self._name_to_idx = {name: i for i, name in enumerate(self.config.mixer_names)}
 
         # Unary potentials: Each layer's preferred implementation (stored as index)
-        num_mixers = len(self._mixer_names)
+        num_mixers = len(self.config.mixer_names)
         self.layer_needs = [
             rng.randint(0, num_mixers - 1)
             for _ in range(self.config.num_layers)
@@ -85,13 +84,13 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
 
     @property
     def num_mixers(self) -> int:
-        """Number of mixer types (derived from mixer_names)."""
-        return len(self._mixer_names)
+        """Number of mixer types (derived from config)."""
+        return len(self.config.mixer_names)
 
     @property
     def mixer_names(self) -> list[str]:
-        """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
-        return self._mixer_names
+        """Mixer names from config."""
+        return self.config.mixer_names
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """

@@ -104,8 +104,8 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
                 f"must match evaluator mixer names {evaluator_mixer_names}"
             )
 
-        # Create cost model with mixer_names from evaluator
-        self.cost_model = config.cost_model.create_cost_model(mixer_names)
+        # Create cost model (mixer names come from config.cost_model.mixer_costs)
+        self.cost_model = config.cost_model.create_cost_model()
 
         # Validate constraint based on problem type
         num_layers = evaluator.num_layers

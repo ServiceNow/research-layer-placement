@@ -20,15 +20,10 @@ class TestAllocationNavigation:
     """Tests for allocation navigation in the linear cost model."""
 
     @pytest.fixture
-    def mixer_names(self) -> list[str]:
-        """Mixer names for testing."""
-        return ["mixer_0", "mixer_1", "mixer_2"]
-
-    @pytest.fixture
-    def model(self, mixer_names: list[str]) -> LinearCostModel:
+    def model(self) -> LinearCostModel:
         """Create a linear cost model for testing."""
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
-        return config.create_cost_model(mixer_names)
+        return config.create_cost_model()
 
     def test_allocation_cost(self, model: LinearCostModel) -> None:
         """Test allocation cost computation."""
@@ -245,9 +240,8 @@ class TestLinearCostModel:
 
     def test_cost_computation(self) -> None:
         """Test that cost is computed correctly."""
-        mixer_names = ["mixer_0", "mixer_1", "mixer_2"]
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
-        model = config.create_cost_model(mixer_names)
+        model = config.create_cost_model()
 
         # All on cheapest mixer
         placement = LayerPlacement(assignments=("mixer_2", "mixer_2", "mixer_2", "mixer_2", "mixer_2"))
@@ -263,9 +257,8 @@ class TestLinearCostModel:
 
     def test_cost_delta(self) -> None:
         """Test incremental cost computation."""
-        mixer_names = ["mixer_0", "mixer_1", "mixer_2"]
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
-        model = config.create_cost_model(mixer_names)
+        model = config.create_cost_model()
 
         # Upgrade from cheapest to most expensive
         delta = model.cost_delta(layer_idx=0, old_mixer="mixer_2", new_mixer="mixer_0")
@@ -277,25 +270,23 @@ class TestLinearCostModel:
 
     def test_min_max_cost(self) -> None:
         """Test min/max cost bounds."""
-        mixer_names = ["mixer_0", "mixer_1", "mixer_2"]
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
-        model = config.create_cost_model(mixer_names)
+        model = config.create_cost_model()
 
         assert model.min_cost(10) == 10 * 0.2  # 2.0
         assert model.max_cost(10) == 10 * 1.0  # 10.0
 
     def test_cheapest_most_expensive_mixer(self) -> None:
         """Test identification of extreme mixers."""
-        mixer_names = ["mixer_0", "mixer_1", "mixer_2"]
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
-        model = config.create_cost_model(mixer_names)
+        model = config.create_cost_model()
 
         assert model.cheapest_mixer == 2
         assert model.most_expensive_mixer == 0
 
         # Different ordering
         config2 = LinearCostModelConfig(mixer_costs={"mixer_0": 0.3, "mixer_1": 0.9, "mixer_2": 0.1})
-        model2 = config2.create_cost_model(mixer_names)
+        model2 = config2.create_cost_model()
 
         assert model2.cheapest_mixer == 2
         assert model2.most_expensive_mixer == 1
@@ -308,7 +299,7 @@ class TestCostConstrainedProblem:
         """Budget below minimum cost should fail."""
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -328,7 +319,7 @@ class TestCostConstrainedProblem:
         """Budget above maximum cost should fail (trivially satisfied)."""
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -348,7 +339,7 @@ class TestCostConstrainedProblem:
         """Mixer name mismatch should fail."""
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -374,7 +365,7 @@ class TestCostConstrainedBeamSearch:
         cost_model = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -394,7 +385,7 @@ class TestCostConstrainedBeamSearch:
         cost_model = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -476,7 +467,7 @@ class TestCostConstrainedBeamSearch:
         cost_model = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
         evaluator_config = MockSupernetEvaluatorConfig(
             num_layers=10,
-            num_mixers=3,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
             seed=42,
             unary_bonus=1.0,
             unary_penalty=0.5,
@@ -512,7 +503,7 @@ def _make_cost_model(costs: list[float]) -> LinearCostModel:
     mixer_names = [f"mixer_{i}" for i in range(len(costs))]
     mixer_costs_dict = {name: cost for name, cost in zip(mixer_names, costs)}
     config = LinearCostModelConfig(mixer_costs=mixer_costs_dict)
-    return config.create_cost_model(mixer_names)
+    return config.create_cost_model()
 
 
 class TestAllocationBoundStress:

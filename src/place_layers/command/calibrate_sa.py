@@ -71,8 +71,7 @@ class CalibrateSACommand(BaseCommand):
         if not isinstance(cost_model_config, LinearCostModelConfig):
             raise ValueError("Calibration currently only supports LinearCostModel")
 
-        mixer_names = evaluator.mixer_names
-        cost_model = LinearCostModel(cost_model_config, mixer_names)
+        cost_model = LinearCostModel(cost_model_config)
 
         # Create problem
         problem_config = MaxPerformanceProblemConfig(
