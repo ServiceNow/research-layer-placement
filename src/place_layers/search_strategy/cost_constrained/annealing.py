@@ -90,11 +90,11 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         if not self._can_swap(layers_by_mixer):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             return BeamEntry(
-                assignments=assignments,
+                assignments=tuple(assignments),
                 allocation=allocation,
                 cost=alloc_cost,
                 score=score,
@@ -102,7 +102,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
 
         # Initialize with canonical assignment
         current = list(self._allocation_to_assignment(allocation, num_layers, mixer_names))
-        placement = LayerPlacement(assignments=current)
+        placement = LayerPlacement(assignments=tuple(current))
         current_score = await problem.evaluate(placement)
         self.eval_count += 1
 
@@ -124,7 +124,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             current[layer_a], current[layer_b] = current[layer_b], current[layer_a]
 
             # Evaluate
-            placement = LayerPlacement(assignments=current)
+            placement = LayerPlacement(assignments=tuple(current))
             new_score = await problem.evaluate(placement)
             self.eval_count += 1
 
@@ -152,7 +152,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                 break
 
         return BeamEntry(
-            assignments=best,
+            assignments=tuple(best),
             allocation=allocation,
             cost=alloc_cost,
             score=best_score,

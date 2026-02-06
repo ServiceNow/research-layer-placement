@@ -291,15 +291,41 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_phases=total_phases,
                         mixer_name=mixer_name,
                         budget=budget,
+                        num_paths=len(paths),
                     )
                 )
 
             new_paths: list[dict] = []
 
-            for path in paths:
+            for path_idx, path in enumerate(paths):
                 if not path["unassigned"]:
                     # No more layers to assign for this path
                     continue
+
+                # Emit path started event for cross-phase visibility
+                if self.observer is not None:
+                    from place_layers.search_strategy.progress import PathStartedEvent
+
+                    # Compute fixed_by_mixer from path["fixed"]
+                    fixed_by_mixer: dict[str, list[int]] = {}
+                    for layer_idx, mixer in path["fixed"].items():
+                        if mixer not in fixed_by_mixer:
+                            fixed_by_mixer[mixer] = []
+                        fixed_by_mixer[mixer].append(layer_idx)
+                    # Convert to sorted tuples
+                    fixed_by_mixer_tuples = {
+                        k: tuple(sorted(v)) for k, v in fixed_by_mixer.items()
+                    }
+
+                    self.observer.on_path_started(
+                        PathStartedEvent(
+                            phase_index=running_phase_idx,
+                            path_index=path_idx,
+                            total_paths=len(paths),
+                            inherited_score=path["score"],
+                            fixed_by_mixer=fixed_by_mixer_tuples,
+                        )
+                    )
 
                 # Find best layers for this mixer, given this path's state
                 beam = await self._run_phase(
@@ -356,7 +382,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_phases=total_phases,
                         mixer_name=mixer_name,
                         budget=budget,
-                        final_layers=phase_layers,
+                        final_layers=tuple(phase_layers),
                         final_score=best_path_after["score"],
                     )
                 )
@@ -373,12 +399,12 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         assignments = [best_path["fixed"][i] for i in range(num_layers)]
 
         # Final evaluation
-        placement = LayerPlacement(assignments=assignments)
+        placement = LayerPlacement(assignments=tuple(assignments))
         final_score = await problem.evaluate(placement)
         self.eval_count += 1
 
         return BeamEntry(
-            assignments=assignments,
+            assignments=tuple(assignments),
             allocation=allocation,
             cost=alloc_cost,
             score=final_score,
@@ -413,7 +439,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         if budget == 1:
             # Simple case: just take the best single layer
             best_layer, best_score = layer_scores[0]
-            beam = [{"layers": [best_layer], "score": best_score}]
+            beam = [{"layers": [best_layer], "score": best_score, "parent_idx": 0, "added_layer": best_layer}]
 
             # Emit beam growth step for single-layer phases too
             if self.observer is not None:
@@ -425,12 +451,15 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_steps=1,
                         phase_index=phase_index,
                         mixer_name=mixer_name,
-                        base_layers=[],
-                        tried=[
-                            {"layer": layer, "score": score}
+                        parents=({"layers": [], "score": None},),
+                        tried=tuple(
+                            {"layer": layer, "score": score, "parent_idx": 0}
                             for layer, score in layer_scores
-                        ],
-                        beam=beam[:5],
+                        ),
+                        beam=tuple(
+                            {"layers": b["layers"], "score": b["score"], "parent_idx": 0, "added_layer": b["layers"][0]}
+                            for b in beam[:5]
+                        ),
                     )
                 )
 
@@ -472,7 +501,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
 
@@ -519,12 +548,15 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     total_steps=total_growth_steps,
                     phase_index=phase_index,
                     mixer_name=mixer_name,
-                    base_layers=[],
-                    tried=[
-                        {"layer": layer, "score": score}
+                    parents=({"layers": [], "score": None},),
+                    tried=tuple(
+                        {"layer": layer, "score": score, "parent_idx": 0}
                         for layer, score in layer_scores
-                    ],
-                    beam=beam[:5],
+                    ),
+                    beam=tuple(
+                        {"layers": b["layers"], "score": b["score"], "parent_idx": 0, "added_layer": b["layers"][0]}
+                        for b in beam[:5]
+                    ),
                 )
             )
 
@@ -556,28 +588,25 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             if self.observer is not None:
                 from place_layers.search_strategy.progress import BeamGrowthStepEvent
 
-                # For each candidate, find which layer was added by comparing with beam entries
-                # Candidates are generated by adding one layer to a beam entry
-                beam_layer_sets = [set(b["layers"]) for b in beam]
-                tried = []
-                for c in candidates:
-                    candidate_set = set(c["layers"])
-                    # Find the beam entry this candidate was expanded from
-                    for beam_set in beam_layer_sets:
-                        if (
-                            beam_set < candidate_set
-                            and len(candidate_set - beam_set) == 1
-                        ):
-                            # Found the base, the added layer is the difference
-                            added_layer = (candidate_set - beam_set).pop()
-                            tried.append({"layer": added_layer, "score": c["score"]})
-                            break
-
+                # Build tried list with provenance from candidates
+                tried = [
+                    {"layer": c["added_layer"], "score": c["score"], "parent_idx": c["parent_idx"]}
+                    for c in candidates
+                ]
                 # Sort by score descending for display
                 tried.sort(key=lambda x: x["score"], reverse=True)
 
-                # Base layers are from the best entry in previous beam
-                base_layers = beam[0]["layers"] if beam else []
+                # Build parents list from previous beam
+                parents = tuple(
+                    {"layers": b["layers"], "score": b["score"]}
+                    for b in beam
+                )
+
+                # Build beam with provenance
+                beam_with_provenance = tuple(
+                    {"layers": b["layers"], "score": b["score"], "parent_idx": b["parent_idx"], "added_layer": b["added_layer"]}
+                    for b in new_beam[:5]
+                )
 
                 self.observer.on_beam_growth_step(
                     BeamGrowthStepEvent(
@@ -585,9 +614,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                         total_steps=total_growth_steps,
                         phase_index=phase_index,
                         mixer_name=mixer_name,
-                        base_layers=base_layers,
-                        tried=tried,
-                        beam=new_beam[:5],
+                        parents=parents,
+                        tried=tuple(tried),
+                        beam=beam_with_provenance,
                     )
                 )
 
@@ -621,7 +650,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
 
@@ -652,8 +681,8 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
     cross_phase_beam_width: int = Field(
         description=(
             "Number of candidate paths to maintain across phases. "
-            "Default 1 = greedy (lock in best after each phase). "
-            "Set to beam_width to explore phase interactions at k× cost."
+            "Defaults to beam_width (via Hydra interpolation). "
+            "Set to 1 for greedy (lock in best after each phase)."
         ),
         gt=0,
     )
@@ -699,7 +728,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
 
         # Enumerate allocations in the same order as search will use
-        allocations: list[tuple[int, ...]] = []
+        allocations: list[tuple[float, tuple[int, ...]]] = []
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
         ):
@@ -713,7 +742,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
 
             if len(allocations) >= self.max_allocations:
                 break
-            allocations.append(allocation)
+            allocations.append((alloc_cost, allocation))
 
         if not allocations:
             return None
@@ -726,7 +755,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         total_variance = 0.0
         allocation_info: list[AllocationProgressInfo] = []
 
-        for allocation in allocations:
+        for alloc_cost, allocation in allocations:
             # Get phase budgets in phase_order (excluding last which gets remainder)
             budgets = tuple(
                 allocation[name_to_alloc_idx[phase_order[i]]]
@@ -754,6 +783,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
                 AllocationProgressInfo(
                     allocation=allocation,
                     budgets=budgets,
+                    cost=alloc_cost,
                     expected=alloc_exp,
                     variance=alloc_var,
                     estimated_lower=lower,

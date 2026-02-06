@@ -72,13 +72,13 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
 
         # Generate initial assignment (canonical assignment for this allocation)
         initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
-        initial_placement = LayerPlacement(assignments=initial_assignments)
+        initial_placement = LayerPlacement(assignments=tuple(initial_assignments))
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
 
         beam = [
             BeamEntry(
-                assignments=initial_assignments,
+                assignments=tuple(initial_assignments),
                 allocation=allocation,
                 cost=alloc_cost,
                 score=initial_score,
@@ -168,7 +168,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
 
                         candidates.append(
                             BeamEntry(
-                                assignments=new_assignments,
+                                assignments=tuple(new_assignments),
                                 allocation=entry.allocation,
                                 cost=entry.cost,  # Cost unchanged
                                 score=None,

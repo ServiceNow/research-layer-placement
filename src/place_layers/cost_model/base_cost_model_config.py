@@ -21,11 +21,6 @@ class BaseCostModelConfig(BaseModel):
     # Each subclass must define this
     _impl_class: ClassVar[type["BaseCostModel"]]
 
-    def create_cost_model(self, mixer_names: list[str]) -> "BaseCostModel":
-        """Smart constructor: instantiate cost model from config.
-
-        Args:
-            mixer_names: Ordered list of mixer names from the evaluator.
-                        This determines the mapping from allocation indices to names.
-        """
-        return self._impl_class(config=self, mixer_names=mixer_names)
+    def create_cost_model(self) -> "BaseCostModel":
+        """Smart constructor: instantiate cost model from config."""
+        return self._impl_class(config=self)  # type: ignore[call-arg]

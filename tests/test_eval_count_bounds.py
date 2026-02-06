@@ -20,8 +20,6 @@ def _create_estimator_bounds(
     cost_budget: float,
     max_allocations: int,
     beam_width: int,
-    cross_phase_beam_width: int,
-    early_stop_threshold: float = 0.001,
 ):
     """Create progress estimator and return bounds.
 
@@ -42,6 +40,7 @@ def _create_estimator_bounds(
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
 
@@ -57,8 +56,6 @@ def _create_estimator_bounds(
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
-        early_stop_threshold=early_stop_threshold,
-        cross_phase_beam_width=cross_phase_beam_width,
     )
     estimator = search_config.create_progress_estimator(problem)
 
@@ -66,20 +63,19 @@ def _create_estimator_bounds(
 
 
 # Test scenarios as tuples of:
-# (num_layers, mixer_costs, cost_budget, max_allocations, beam_width, cross_phase_beam_width, description)
+# (num_layers, mixer_costs, cost_budget, max_allocations, beam_width, description)
 TEST_SCENARIOS = [
-    # (num_layers, mixer_costs, cost_budget, max_allocs, beam_width, cross_phase_bw, description)
-    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 4.0, 3, 2, 1, "10 layers, 3 mixers, beam=2"),
-    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 5.0, 5, 3, 1, "10 layers, 3 mixers, beam=3"),
-    (20, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 8.0, 5, 3, 1, "20 layers, 3 mixers, beam=3"),
-    (20, {"m0": 1.0, "m1": 0.6, "m2": 0.3, "m3": 0.1}, 6.0, 5, 3, 1, "20 layers, 4 mixers"),
-    (20, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 8.0, 5, 3, 2, "cross_phase_beam_width=2"),
-    (48, {"FA": 1.0, "SWA": 0.156, "GDN": 0.09, "KDA": 0.11}, 6.4, 10, 3, 1, "48 layers (realistic)"),
+    # (num_layers, mixer_costs, cost_budget, max_allocs, beam_width, description)
+    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 4.0, 3, 2, "10 layers, 3 mixers, beam=2"),
+    (10, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 5.0, 5, 3, "10 layers, 3 mixers, beam=3"),
+    (20, {"m0": 1.0, "m1": 0.5, "m2": 0.2}, 8.0, 5, 3, "20 layers, 3 mixers, beam=3"),
+    (20, {"m0": 1.0, "m1": 0.6, "m2": 0.3, "m3": 0.1}, 6.0, 5, 3, "20 layers, 4 mixers"),
+    (48, {"FA": 1.0, "SWA": 0.156, "GDN": 0.09, "KDA": 0.11}, 6.4, 10, 3, "48 layers (realistic)"),
 ]
 
 
 @pytest.mark.parametrize(
-    "num_layers,mixer_costs,cost_budget,max_allocations,beam_width,cross_phase_beam_width,description",
+    "num_layers,mixer_costs,cost_budget,max_allocations,beam_width,description",
     TEST_SCENARIOS,
     ids=[s[-1] for s in TEST_SCENARIOS],
 )
@@ -89,15 +85,12 @@ async def test_eval_count_within_bounds(
     cost_budget: float,
     max_allocations: int,
     beam_width: int,
-    cross_phase_beam_width: int,
     description: str,
 ) -> None:
     """Verify actual eval count falls within predicted bounds.
 
     Runs optimization and checks: lower_bound <= total_evaluations <= upper_bound
     """
-    early_stop_threshold = 0.0  # Disable early stopping for predictable bounds
-
     # Get bounds from progress estimator
     estimator, evaluator, problem, search_config = _create_estimator_bounds(
         num_layers=num_layers,
@@ -105,8 +98,6 @@ async def test_eval_count_within_bounds(
         cost_budget=cost_budget,
         max_allocations=max_allocations,
         beam_width=beam_width,
-        cross_phase_beam_width=cross_phase_beam_width,
-        early_stop_threshold=early_stop_threshold,
     )
 
     assert estimator is not None
@@ -129,48 +120,6 @@ async def test_eval_count_within_bounds(
     )
 
 
-async def test_bounds_with_early_stopping() -> None:
-    """Verify that with early stopping enabled, actual evals fall within statistical bounds.
-
-    The statistical model accounts for early stopping, so actual should be within bounds.
-    """
-    num_layers = 20
-    mixer_costs = {"m0": 1.0, "m1": 0.5, "m2": 0.2}
-    cost_budget = 8.0
-    max_allocations = 5
-    beam_width = 3
-    cross_phase_beam_width = 1
-    early_stop_threshold = 0.001  # Enable early stopping
-
-    # Get bounds from progress estimator
-    estimator, evaluator, problem, search_config = _create_estimator_bounds(
-        num_layers=num_layers,
-        mixer_costs=mixer_costs,
-        cost_budget=cost_budget,
-        max_allocations=max_allocations,
-        beam_width=beam_width,
-        cross_phase_beam_width=cross_phase_beam_width,
-        early_stop_threshold=early_stop_threshold,
-    )
-
-    assert estimator is not None
-    initial = estimator.initial
-
-    # Create search strategy and run optimization
-    search = search_config.create_search_strategy()
-    async with evaluator:
-        result = await search.search(problem)
-
-    # With early stopping, actual should be within statistical bounds
-    actual = result.total_evaluations
-    lower = initial.lower
-    upper = initial.upper
-
-    assert lower <= actual <= upper, (
-        f"Eval count {actual} outside bounds [{lower}, {upper}] with early stopping"
-    )
-
-
 class TestProgressEstimatorEdgeCases:
     """Test edge cases for progress estimator bounds."""
 
@@ -182,7 +131,6 @@ class TestProgressEstimatorEdgeCases:
             cost_budget=4.0,
             max_allocations=1,
             beam_width=2,
-            cross_phase_beam_width=1,
         )
 
         assert estimator is not None
@@ -199,7 +147,6 @@ class TestProgressEstimatorEdgeCases:
             cost_budget=5.0,
             max_allocations=5,
             beam_width=3,
-            cross_phase_beam_width=1,
         )
 
         assert estimator is not None
@@ -216,23 +163,6 @@ class TestProgressEstimatorEdgeCases:
             cost_budget=4.0,
             max_allocations=3,
             beam_width=1,
-            cross_phase_beam_width=1,
-        )
-
-        assert estimator is not None
-        assert estimator.initial.expected > 0
-        assert estimator.initial.lower > 0
-        assert estimator.initial.upper >= estimator.initial.lower
-
-    def test_cross_phase_equals_beam_width(self) -> None:
-        """Test with cross_phase_beam_width = beam_width."""
-        estimator, _evaluator, _, _ = _create_estimator_bounds(
-            num_layers=15,
-            mixer_costs={"m0": 1.0, "m1": 0.5, "m2": 0.2},
-            cost_budget=6.0,
-            max_allocations=5,
-            beam_width=3,
-            cross_phase_beam_width=3,
         )
 
         assert estimator is not None
@@ -248,7 +178,6 @@ class TestProgressEstimatorEdgeCases:
             cost_budget=4.0,
             max_allocations=3,
             beam_width=2,
-            cross_phase_beam_width=1,
         )
 
         assert estimator is not None
@@ -271,7 +200,6 @@ class TestProgressEstimatorEdgeCases:
             cost_budget=4.0,
             max_allocations=3,
             beam_width=2,
-            cross_phase_beam_width=1,
         )
 
         assert estimator is not None
@@ -301,6 +229,7 @@ async def test_min_cost_creates_progress_estimator() -> None:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
 
@@ -316,8 +245,6 @@ async def test_min_cost_creates_progress_estimator() -> None:
     search_config = HierarchicalConfig(
         max_allocations=5,
         beam_width=2,
-        early_stop_threshold=0.0,
-        cross_phase_beam_width=1,
     )
 
     # Create progress estimator
@@ -357,7 +284,6 @@ async def test_min_cost_eval_count_within_bounds(
     Actual may be lower due to early termination when performance drops.
     """
     mixer_names = list(mixer_costs.keys())
-    early_stop_threshold = 0.0
 
     # Create evaluator
     evaluator_config = MockSupernetEvaluatorConfig(
@@ -368,6 +294,7 @@ async def test_min_cost_eval_count_within_bounds(
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
 
@@ -383,8 +310,6 @@ async def test_min_cost_eval_count_within_bounds(
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
-        early_stop_threshold=early_stop_threshold,
-        cross_phase_beam_width=1,
     )
 
     # Get initial bounds from estimator
@@ -428,6 +353,7 @@ async def test_min_cost_early_termination_bounds() -> None:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
 
@@ -443,8 +369,6 @@ async def test_min_cost_early_termination_bounds() -> None:
     search_config = HierarchicalConfig(
         max_allocations=10,
         beam_width=2,
-        early_stop_threshold=0.0,
-        cross_phase_beam_width=1,
     )
 
     # Get initial bounds
@@ -463,4 +387,84 @@ async def test_min_cost_early_termination_bounds() -> None:
     # (which assumed all allocations would run)
     assert actual <= initial_upper, (
         f"Eval count {actual} exceeds upper bound {initial_upper}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Assignment verification tests
+# -----------------------------------------------------------------------------
+
+
+async def test_final_assignment_valid_and_complete() -> None:
+    """Verify that final assignment is valid and complete.
+
+    This test ensures the search algorithm produces valid assignments:
+    - All mixer names in assignment are valid (exist in mixer_costs)
+    - Total assignments equals num_layers
+    - Assignment cost matches the reported final_cost
+    """
+    num_layers = 20
+    mixer_costs = {"m0": 1.0, "m1": 0.5, "m2": 0.2}
+    cost_budget = 8.0
+    max_allocations = 3
+    beam_width = 3
+
+    # Create evaluator
+    evaluator_config = MockSupernetEvaluatorConfig(
+        num_layers=num_layers,
+        mixer_names=list(mixer_costs.keys()),
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=0.2,
+        eval_delay_seconds=0.0,
+    )
+    evaluator = evaluator_config.create_evaluator()
+
+    # Create problem
+    cost_model_config = LinearCostModelConfig(mixer_costs=mixer_costs)
+    problem_config = MaxPerformanceProblemConfig(
+        cost_model=cost_model_config,
+        cost_budget=cost_budget,
+    )
+    problem = problem_config.create_problem(evaluator)
+
+    # Create search strategy
+    search_config = HierarchicalConfig(
+        max_allocations=max_allocations,
+        beam_width=beam_width,
+    )
+
+    # Run optimization
+    search = search_config.create_search_strategy()
+    async with evaluator:
+        result = await search.search(problem)
+
+    # Verify result exists
+    assert result is not None
+    assignments = result.best_parameters.assignments
+
+    # Count mixers in assignment
+    mixer_names = list(mixer_costs.keys())
+    assignment_counts = {name: 0 for name in mixer_names}
+    for mixer in assignments:
+        assert mixer in mixer_names, f"Invalid mixer name: {mixer}"
+        assignment_counts[mixer] += 1
+
+    # Verify total layers
+    total_assigned = sum(assignment_counts.values())
+    assert total_assigned == num_layers, (
+        f"Assignment covers {total_assigned} layers, expected {num_layers}"
+    )
+
+    # Verify cost matches: compute cost from assignments and compare with final_cost
+    computed_cost = sum(mixer_costs[m] for m in assignments)
+    assert abs(computed_cost - result.final_cost) < 1e-6, (
+        f"Computed cost {computed_cost} != reported final_cost {result.final_cost}"
+    )
+
+    # Verify cost is within budget
+    assert result.final_cost <= cost_budget, (
+        f"Final cost {result.final_cost} exceeds budget {cost_budget}"
     )

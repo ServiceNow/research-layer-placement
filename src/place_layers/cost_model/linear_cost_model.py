@@ -49,18 +49,11 @@ class LinearCostModel(BaseCostModel):
     - allocation_neighbors: O(K²) with exact ordering
     """
 
-    def __init__(
-        self, config: "LinearCostModelConfig", mixer_names: list[str]
-    ) -> None:
+    def __init__(self, config: "LinearCostModelConfig") -> None:
         self.config = config
-        # Store mixer names for allocation <-> assignment conversions
-        self._mixer_names = mixer_names
-        # Build name -> cost mapping from config
-        self._mixer_costs_by_name: dict[str, float] = dict(config.mixer_costs)
-        # Build indexed costs tuple for allocation operations (order matches mixer_names)
-        self._mixer_costs = tuple(
-            self._mixer_costs_by_name[name] for name in mixer_names
-        )
+        # Config is single source of truth for mixer names, costs, and phase order.
+        # No private copies - always access through config.mixer_costs.
+        self._mixer_costs = tuple(config.mixer_costs.values())
         # Precompute sorted mixer indices for efficient operations
         self._mixers_by_cost_asc = tuple(
             sorted(range(len(self._mixer_costs)), key=lambda i: self._mixer_costs[i])
@@ -74,12 +67,12 @@ class LinearCostModel(BaseCostModel):
     def cost(self, placement: LayerPlacement) -> float:
         """Compute total cost as sum of per-layer mixer costs."""
         return sum(
-            self._mixer_costs_by_name[mixer_name] for mixer_name in placement.assignments
+            self.config.mixer_costs[mixer_name] for mixer_name in placement.assignments
         )
 
     def cost_delta(self, layer_idx: int, old_mixer: str, new_mixer: str) -> float:
         """Compute cost change from swapping a layer's mixer assignment."""
-        return self._mixer_costs_by_name[new_mixer] - self._mixer_costs_by_name[old_mixer]
+        return self.config.mixer_costs[new_mixer] - self.config.mixer_costs[old_mixer]
 
     def min_cost(self, num_layers: int) -> float:
         """Cost when all layers use the cheapest mixer."""

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -13,12 +14,13 @@ class Apriel2ValidationError(ValueError):
     """Model is not a valid Apriel2 supernet."""
 
 
-@dataclass(frozen=True)
-class Apriel2Structure:
+class Apriel2Structure(BaseModel):
     """Extracted structure from Apriel2 supernet config."""
 
+    model_config = {"frozen": True}
+
     num_layers: int
-    mixer_names: list[str]
+    mixer_names: tuple[str, ...]
     stochastic_block_name: str
     pattern_type: str
 
@@ -59,7 +61,7 @@ def _validate_fixed(decoder: dict, num_blocks: int) -> Apriel2Structure:
 
     return Apriel2Structure(
         num_layers=num_blocks,
-        mixer_names=list(sorted(mixer["mixers"].keys())),
+        mixer_names=tuple(sorted(mixer["mixers"].keys())),
         stochastic_block_name="block",
         pattern_type="fixed",
     )
@@ -93,7 +95,7 @@ def _validate_pattern(decoder: dict, num_blocks: int) -> Apriel2Structure:
 
     return Apriel2Structure(
         num_layers=full_cycles * count_per_cycle + remainder_count,
-        mixer_names=list(sorted(mixer["mixers"].keys())),
+        mixer_names=tuple(sorted(mixer["mixers"].keys())),
         stochastic_block_name=block_name,
         pattern_type="pattern",
     )

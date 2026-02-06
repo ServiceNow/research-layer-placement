@@ -1,5 +1,6 @@
 """Mock supernet evaluator for layer placement optimization."""
 
+import asyncio
 import hashlib
 import json
 import random
@@ -60,12 +61,11 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         # This represents the supernet's learned preferences
         rng = random.Random(self.config.seed)
 
-        # Build mixer names and name-to-index mapping
-        self._mixer_names = list(self.config.mixer_names)
-        self._name_to_idx = {name: i for i, name in enumerate(self._mixer_names)}
+        # Build name-to-index mapping for O(1) lookup in evaluate()
+        self._name_to_idx = {name: i for i, name in enumerate(self.config.mixer_names)}
 
         # Unary potentials: Each layer's preferred implementation (stored as index)
-        num_mixers = len(self._mixer_names)
+        num_mixers = len(self.config.mixer_names)
         self.layer_needs = [
             rng.randint(0, num_mixers - 1)
             for _ in range(self.config.num_layers)
@@ -85,13 +85,13 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
 
     @property
     def num_mixers(self) -> int:
-        """Number of mixer types (derived from mixer_names)."""
-        return len(self._mixer_names)
+        """Number of mixer types (derived from config)."""
+        return len(self.config.mixer_names)
 
     @property
     def mixer_names(self) -> list[str]:
-        """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
-        return self._mixer_names
+        """Mixer names from config."""
+        return self.config.mixer_names
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """
@@ -139,6 +139,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         noise_rng = random.Random(noise_seed)
         total_score += noise_rng.gauss(0.0, self.config.noise_sigma)
 
+        # Optional delay for testing display dynamics
+        if self.config.eval_delay_seconds > 0:
+            await asyncio.sleep(self.config.eval_delay_seconds)
+
         return total_score
 
 
@@ -180,5 +184,10 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
 
     noise_sigma: float = Field(
         description="Standard deviation of configuration-specific Gaussian noise",
+        ge=0.0,
+    )
+
+    eval_delay_seconds: float = Field(
+        description="Artificial delay per evaluation (seconds) for testing display dynamics",
         ge=0.0,
     )

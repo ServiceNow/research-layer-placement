@@ -135,7 +135,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
 
         # Final evaluation
         assignments = [final_assignments[i] for i in range(num_layers)]
-        final_config = LayerPlacement(assignments=assignments)
+        final_config = LayerPlacement(assignments=tuple(assignments))
         final_score = await problem.evaluate(final_config)
         self.eval_count += 1
 
@@ -243,7 +243,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             layer_scores.append((layer_idx, score))
@@ -337,7 +337,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
 

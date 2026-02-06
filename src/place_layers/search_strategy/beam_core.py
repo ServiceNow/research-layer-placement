@@ -24,12 +24,16 @@ def generate_beam_candidates(
         unassigned: Layer indices available for assignment.
 
     Returns:
-        List of candidate dicts with "layers" (sorted list) and "score" (None).
+        List of candidate dicts with:
+        - "layers": sorted list of layer indices
+        - "score": None (to be filled in by evaluation)
+        - "parent_idx": index of the beam entry this candidate was expanded from
+        - "added_layer": the layer index that was added to create this candidate
     """
     candidates = []
     seen: set[tuple[int, ...]] = set()
 
-    for beam_entry in beam:
+    for parent_idx, beam_entry in enumerate(beam):
         existing = set(beam_entry["layers"])
 
         for layer_idx in unassigned:
@@ -42,7 +46,12 @@ def generate_beam_candidates(
                 continue
             seen.add(new_layers)
 
-            candidates.append({"layers": list(new_layers), "score": None})
+            candidates.append({
+                "layers": list(new_layers),
+                "score": None,
+                "parent_idx": parent_idx,
+                "added_layer": layer_idx,
+            })
 
     return candidates
 

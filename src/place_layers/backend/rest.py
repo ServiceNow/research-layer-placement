@@ -16,11 +16,10 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator, PrivateAttr
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -85,8 +84,7 @@ class AllServersFailedError(TransientError):
     pass
 
 
-@dataclass
-class ServerHealth:
+class ServerHealth(BaseModel):
     """Health state for a single server with exponential recovery backoff."""
 
     healthy: bool = True
@@ -118,8 +116,7 @@ class ServerHealth:
         return time.monotonic() >= self.next_check_time(base_interval, max_interval)
 
 
-@dataclass
-class ServerPool:
+class ServerPool(BaseModel):
     """Manages server health tracking and load-balanced server selection.
 
     This class has two responsibilities:
@@ -158,10 +155,10 @@ class ServerPool:
     servers: list[str]
     base_recovery_interval: float
     max_recovery_interval: float
-    _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
-    _round_robin_counter: int = field(default=0, repr=False)
+    _health: dict[str, ServerHealth] = PrivateAttr(default_factory=dict)
+    _round_robin_counter: int = PrivateAttr(default=0)
 
-    def __post_init__(self) -> None:
+    def model_post_init(self, __context: Any) -> None:
         """Initialize health tracking for all servers."""
         self._health = {server: ServerHealth() for server in self.servers}
         self._round_robin_counter = 0

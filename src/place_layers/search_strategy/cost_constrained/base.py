@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
@@ -71,18 +71,34 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self._progress_estimator = progress_estimator
         self.eval_count = 0
 
+    @overload
     async def search(
         self,
-        problem: BaseProblem[LayerPlacement],
-    ) -> CostConstrainedSearchResult:
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: Literal[False] = ...,
+    ) -> CostConstrainedSearchResult: ...
+
+    @overload
+    async def search(
+        self,
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: Literal[True],
+    ) -> None: ...
+
+    async def search(
+        self,
+        problem: "BaseProblem[LayerPlacement]",
+        dry_run: bool = False,
+    ) -> CostConstrainedSearchResult | None:
         """
         Run cost-constrained search.
 
         Args:
             problem: CostConstrainedProblem with cost model and constraints.
+            dry_run: If True, emit initial events only (for preview) and return None.
 
         Returns:
-            Search results with best configuration and metadata.
+            Search results with best configuration and metadata, or None if dry_run.
         """
         if not isinstance(problem, CostConstrainedProblem):
             raise TypeError(
@@ -132,7 +148,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     min_cost=cost_model.min_cost(num_layers),
                     max_cost=cost_model.max_cost(num_layers),
                     num_layers=num_layers,
-                    mixer_names=mixer_names,
+                    mixer_names=tuple(mixer_names),
                     max_allocations=self.config.max_allocations,
                     total_allocations=cost_model.count_allocations(num_layers),
                     eval_count_lower_bound=eval_lower,
@@ -140,6 +156,20 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     eval_count_expected=eval_expected,
                 )
             )
+
+            # Emit allocation plan if progress estimator is available
+            if self._progress_estimator is not None:
+                from place_layers.search_strategy.progress import AllocationPlanEvent
+
+                self.observer.on_allocation_plan(
+                    AllocationPlanEvent(
+                        allocation_info=self._progress_estimator.allocation_info,
+                        mixer_names=tuple(mixer_names),
+                    )
+                )
+
+        if dry_run:
+            return None
 
         match config:
             case MaxPerformanceProblemConfig(cost_budget=budget):
@@ -226,7 +256,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         total_allocations=self.config.max_allocations,
                         allocation=allocation,
                         allocation_cost=alloc_cost,
-                        mixer_names=mixer_names,
+                        mixer_names=tuple(mixer_names),
                         eval_lower_bound=alloc_lower,
                         eval_upper_bound=alloc_upper,
                         eval_expected=alloc_expected,
@@ -273,6 +303,44 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         )
                     )
 
+            # Emit allocation completed event with final placement
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import (
+                    AllocationCompletedEvent,
+                )
+
+                # Build assignments_by_mixer for display
+                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
+                if best_in_allocation is not None:
+                    mixer_layers: dict[str, list[int]] = {}
+                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
+                        if mixer not in mixer_layers:
+                            mixer_layers[mixer] = []
+                        mixer_layers[mixer].append(layer_idx)
+                    assignments_by_mixer = {
+                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
+                    }
+
+                self.observer.on_allocation_completed(
+                    AllocationCompletedEvent(
+                        allocation_index=allocations_explored,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=tuple(mixer_names),
+                        assignments=(
+                            best_in_allocation.assignments
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        score=(
+                            best_in_allocation.score
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        assignments_by_mixer=assignments_by_mixer,
+                    )
+                )
+
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
                 continue
@@ -316,11 +384,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = self._allocation_to_assignment(
                 min_alloc, num_layers, mixer_names
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
-                assignments=assignments,
+                assignments=tuple(assignments),
                 allocation=min_alloc,
                 cost=cost_model.allocation_cost(min_alloc),
                 score=score,
@@ -389,7 +457,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         total_allocations=self.config.max_allocations,
                         allocation=allocation,
                         allocation_cost=alloc_cost,
-                        mixer_names=mixer_names,
+                        mixer_names=tuple(mixer_names),
                         eval_lower_bound=alloc_lower,
                         eval_upper_bound=alloc_upper,
                         eval_expected=alloc_expected,
@@ -435,6 +503,44 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                             reason="allocation_complete",
                         )
                     )
+
+            # Emit allocation completed event with final placement
+            if self.observer is not None:
+                from place_layers.search_strategy.progress import (
+                    AllocationCompletedEvent,
+                )
+
+                # Build assignments_by_mixer for display
+                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
+                if best_in_allocation is not None:
+                    mixer_layers: dict[str, list[int]] = {}
+                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
+                        if mixer not in mixer_layers:
+                            mixer_layers[mixer] = []
+                        mixer_layers[mixer].append(layer_idx)
+                    assignments_by_mixer = {
+                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
+                    }
+
+                self.observer.on_allocation_completed(
+                    AllocationCompletedEvent(
+                        allocation_index=allocations_explored,
+                        allocation=allocation,
+                        allocation_cost=alloc_cost,
+                        mixer_names=tuple(mixer_names),
+                        assignments=(
+                            best_in_allocation.assignments
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        score=(
+                            best_in_allocation.score
+                            if best_in_allocation is not None
+                            else None
+                        ),
+                        assignments_by_mixer=assignments_by_mixer,
+                    )
+                )
 
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
@@ -489,11 +595,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             assignments = self._allocation_to_assignment(
                 max_alloc, num_layers, mixer_names
             )
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
-                assignments=assignments,
+                assignments=tuple(assignments),
                 allocation=max_alloc,
                 cost=cost_model.allocation_cost(max_alloc),
                 score=score,
