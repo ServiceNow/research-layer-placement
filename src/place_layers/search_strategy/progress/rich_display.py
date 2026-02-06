@@ -19,7 +19,6 @@ which owns the progress estimator and emits events as allocations complete.
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -36,7 +35,6 @@ from place_layers.search_strategy.progress.events import (
     AllocationStartedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
-    BestUpdatedEvent,
     BoundsUpdatedEvent,
     CandidateEvaluatedEvent,
     PhaseCompletedEvent,
@@ -47,6 +45,17 @@ from place_layers.search_strategy.progress.events import (
 
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from place_layers.search_strategy.progress.events import BestUpdatedEvent
+
+
+class LeaderboardEntry(BaseModel):
+    """An entry in the results leaderboard."""
+
+    score: float
+    cost: float
+    allocation: tuple[int, ...]  # e.g., (2, 1, 7) for m0:2, m1:1, m2:7
+    assignments: tuple[str, ...]  # Per-layer mixer assignments
 
 
 class StepData(BaseModel):
@@ -94,7 +103,6 @@ class RichSearchDisplay:
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
-        self._start_time: float | None = None
 
         # State from events
         self._mode: str = ""
@@ -104,27 +112,13 @@ class RichSearchDisplay:
         self._num_layers: int = 0
         self._mixer_names: tuple[str, ...] = ()
         self._max_allocations: int = 0
-        self._total_allocations: int = 0
 
         self._allocation_index: int = 0
         self._current_allocation: tuple[int, ...] = ()
         self._current_allocation_cost: float = 0.0
 
-        self._phase_index: int = 0
-        self._total_phases: int = 0
-        self._phase_mixer: str = ""
-        self._phase_budget: int = 0
-
-        self._beam_step: int = 0
-        self._beam_total_steps: int = 0
-        self._current_beam: tuple[dict, ...] = ()
-        self._current_tried: tuple[dict, ...] = ()
-        self._current_parents: tuple[dict, ...] = ()
-
-        self._best_score: float | None = None
-        self._best_cost: float | None = None
-        self._best_allocation: tuple[int, ...] | None = None
-        self._best_assignments: tuple[str, ...] | None = None
+        # Leaderboard of completed allocation results
+        self._leaderboard: list[LeaderboardEntry] = []
 
         self._eval_count: int = 0
         self._last_eval_update: int = 0
@@ -136,8 +130,6 @@ class RichSearchDisplay:
 
         # Per-allocation progress tracking
         self._alloc_eval_start: int = 0  # eval_count when allocation started
-        self._alloc_lower: int | None = None
-        self._alloc_upper: int | None = None
         self._alloc_expected: int | None = None
 
         # Accumulated state for nested panel rendering
@@ -147,13 +139,11 @@ class RichSearchDisplay:
 
         # Track current step for streaming candidate results
         self._step_results: list[dict] = []  # Accumulated results during step
-        self._step_num_candidates: int = 0
         self._current_step: int = 0
         self._current_total_steps: int = 0
 
     def __enter__(self) -> "RichSearchDisplay":
         """Start the Live display."""
-        self._start_time = time.time()
         self._live = Live(
             self._build_display(),
             console=self._console,
@@ -193,9 +183,9 @@ class RichSearchDisplay:
             )
             components.append(allocation_panel)
 
-        # Best found panel (compact)
-        if self._best_score is not None:
-            components.append(self._render_best_compact())
+        # Leaderboard panel
+        if self._leaderboard:
+            components.append(self._render_leaderboard())
 
         # Progress bar
         components.append(self._render_progress())
@@ -207,10 +197,7 @@ class RichSearchDisplay:
         components: list[Text | Panel] = []
 
         # Allocation summary line
-        alloc_parts = []
-        for name, count in zip(self._mixer_names, self._current_allocation):
-            alloc_parts.append(f"[cyan]{name}[/cyan]:{count}")
-        alloc_str = "  ".join(alloc_parts)
+        alloc_str = self._format_allocation(self._current_allocation)
         components.append(
             Text.from_markup(f"{alloc_str}  [dim]cost={self._current_allocation_cost:.4f}[/dim]")
         )
@@ -262,19 +249,27 @@ class RichSearchDisplay:
             border_style="green" if phase.completion_text else "blue",
         )
 
-    def _render_best_compact(self) -> Panel:
-        """Render a compact best found panel."""
-        content = Text()
-        content.append(f"{self._best_score:.4f}", style="green bold")
-        content.append(" | Cost: ")
-        content.append(f"{self._best_cost:.4f}")
-        if self._best_allocation:
-            alloc_parts = []
-            for name, count in zip(self._mixer_names, self._best_allocation):
-                alloc_parts.append(f"{name}={count}")
-            content.append(f" | {{{', '.join(alloc_parts)}}}")
+    def _render_leaderboard(self) -> Panel:
+        """Render the leaderboard table."""
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Score", justify="right", style="green")
+        table.add_column("Cost", justify="right")
+        table.add_column("Allocation")
+        table.add_column("Placement")
 
-        return Panel(content, title="[green]Best[/green]", border_style="green")
+        for i, entry in enumerate(self._leaderboard[:5], 1):  # Top 5
+            alloc_str = self._format_allocation(entry.allocation)
+            placement_str = self._format_placement(entry.assignments)
+            table.add_row(
+                str(i),
+                f"{entry.score:.4f}",
+                f"{entry.cost:.4f}",
+                alloc_str,
+                placement_str,
+            )
+
+        return Panel(table, title="[bold]Leaderboard[/bold]", border_style="green")
 
     def _render_progress(self) -> Group:
         """Render the dual progress bars (overall and per-allocation)."""
@@ -378,80 +373,169 @@ class RichSearchDisplay:
             self._console.print("[dim]  No valid placement found for this allocation[/dim]")
             return
 
-        # Format assignments by mixer in canonical order (mixer_names)
-        # This ensures consistent display order: FA, SWA, GDN, KDA, etc.
-        ordered_by_mixer = {
-            name: event.assignments_by_mixer[name]
-            for name in event.mixer_names
-            if name in event.assignments_by_mixer
-        }
-        placement_str = self._format_fixed_assignments(ordered_by_mixer)
+        # Format assignments by mixer in canonical order using _format_placement
+        # which accepts dict[str, tuple[int, ...]] format
+        placement_str = self._format_placement(
+            event.assignments_by_mixer, max_layers_per_mixer=8, escape_brackets=True
+        )
 
         self._console.print(
             f"[bold cyan]✓ Allocation {event.allocation_index} complete[/bold cyan]: "
             f"{placement_str} → {event.score:.4g}"
         )
 
-    def _format_fixed_assignments(self, fixed_by_mixer: dict[str, tuple[int, ...]]) -> str:
-        """Format fixed assignments compactly.
+    # =========================================================================
+    # Formatting primitives and building blocks
+    # =========================================================================
 
-        Returns strings like:
-        - Short list (≤8 layers): "FA@[3,7,12,0,15]"
-        - Long list (>8 layers): "FA@[0,1,3,7,...,23]"
-        - Multiple mixers: "FA@[3,7], SWA@[1,2,...,14]"
-        """
-        if not fixed_by_mixer:
-            return ""
-
-        parts = []
-        for mixer, layers in fixed_by_mixer.items():
-            if len(layers) <= 8:
-                layers_str = ",".join(str(l) for l in layers)
-            else:
-                # First 4 + last 1
-                layers_str = ",".join(str(l) for l in layers[:4]) + f",...,{layers[-1]}"
-            parts.append(f"{mixer}@\\[{layers_str}]")
-
-        return ", ".join(parts)
-
-    def _format_prior_context(self, fixed: dict[int, str]) -> str:
-        """Format fixed assignments from prior phases compactly.
+    def _format_layer_list(
+        self, layers: tuple[int, ...] | list[int], max_show: int = 10
+    ) -> str:
+        """Format a list of layer indices compactly.
 
         Args:
-            fixed: Dict mapping layer_idx -> mixer_name for prior phase assignments.
+            layers: Layer indices to format
+            max_show: Maximum layers to show before truncating
 
         Returns:
-            Compact string like "FA@[0,5,9]" or "FA@[0,5], SWA@[3,7]" for multiple mixers.
-            Empty string if no prior assignments.
+            Comma-separated string like "1,2,3" or "1,2,...,9" if truncated
         """
-        if not fixed:
-            return ""
-
-        # Group layers by mixer
-        by_mixer: dict[str, list[int]] = {}
-        for layer, mixer in fixed.items():
-            by_mixer.setdefault(mixer, []).append(layer)
-
-        # Sort layers within each mixer and format
-        parts = []
-        for mixer in sorted(by_mixer.keys()):
-            layers = sorted(by_mixer[mixer])
-            if len(layers) <= 6:
-                layers_str = ",".join(str(l) for l in layers)
-            else:
-                # First 3 + last 1
-                layers_str = ",".join(str(l) for l in layers[:3]) + f",...,{layers[-1]}"
-            parts.append(f"{mixer}@\\[{layers_str}]")
-
-        return ", ".join(parts)
-
-    def _format_layers(self, layers: tuple[int, ...] | list[int], max_show: int = 10) -> str:
-        """Format a list of layers compactly."""
         if len(layers) <= max_show:
             return ",".join(str(l) for l in layers)
+        first_half = max_show // 2
+        return ",".join(str(l) for l in layers[:first_half]) + f",...,{layers[-1]}"
+
+    def _format_layer_assignment(
+        self,
+        mixer: str,
+        layers: tuple[int, ...] | list[int],
+        max_show: int = 10,
+        escape_brackets: bool = False,
+    ) -> str:
+        """Format a single mixer's layer assignment.
+
+        Args:
+            mixer: Mixer name (e.g., "FA", "SWA")
+            layers: Layer indices assigned to this mixer
+            max_show: Maximum layers to show before truncating
+            escape_brackets: Whether to escape brackets for Rich markup
+
+        Returns:
+            String like "FA@[1,2,3]" or "FA@\\[1,2,3]" if escaped
+        """
+        layers_str = self._format_layer_list(layers, max_show)
+        bracket = "\\[" if escape_brackets else "["
+        return f"{mixer}@{bracket}{layers_str}]"
+
+    def _group_layers_by_mixer(
+        self,
+        assignments: tuple[str, ...] | dict[int, str],
+    ) -> dict[str, list[int]]:
+        """Group layer indices by their assigned mixer.
+
+        Args:
+            assignments: Either per-layer tuple or dict mapping layer→mixer
+
+        Returns:
+            Dict mapping mixer name to sorted list of layer indices
+        """
+        by_mixer: dict[str, list[int]] = {}
+
+        if isinstance(assignments, dict):
+            # dict[int, str] format (layer → mixer)
+            for layer, mixer in assignments.items():
+                by_mixer.setdefault(mixer, []).append(layer)
         else:
-            first_half = max_show // 2
-            return ",".join(str(l) for l in layers[:first_half]) + f",...,{layers[-1]}"
+            # tuple[str, ...] format (index = layer, value = mixer)
+            for layer_idx, mixer in enumerate(assignments):
+                by_mixer.setdefault(mixer, []).append(layer_idx)
+
+        # Sort layers within each mixer
+        for layers in by_mixer.values():
+            layers.sort()
+
+        return by_mixer
+
+    def _format_context_string(
+        self,
+        prior_assignments: dict[int, str],
+        current_mixer: str | None,
+        current_layers: tuple[int, ...] | list[int],
+        max_show: int = 6,
+    ) -> str:
+        """Format combined prior and current phase context for display.
+
+        Args:
+            prior_assignments: Dict mapping layer→mixer for prior phase assignments
+            current_mixer: Current phase mixer name (or None)
+            current_layers: Current phase layer indices
+            max_show: Maximum layers to show per mixer before truncating
+
+        Returns:
+            String like " ([dim]FA@[0,5][/dim], SWA@[1,2,3])" or "" if empty.
+        """
+        prior_ctx = ""
+        if prior_assignments:
+            by_mixer = self._group_layers_by_mixer(prior_assignments)
+            parts = [
+                self._format_layer_assignment(m, by_mixer[m], max_show, escape_brackets=True)
+                for m in self._mixer_names
+                if m in by_mixer
+            ]
+            prior_ctx = ", ".join(parts)
+
+        current_ctx = ""
+        if current_mixer and current_layers:
+            current_ctx = self._format_layer_assignment(
+                current_mixer, current_layers, max_show, escape_brackets=True
+            )
+
+        if prior_ctx and current_ctx:
+            return f" ([dim]{prior_ctx}[/dim], {current_ctx})"
+        elif prior_ctx:
+            return f" ([dim]{prior_ctx}[/dim])"
+        elif current_ctx:
+            return f" ({current_ctx})"
+        return ""
+
+    def _format_allocation(self, allocation: tuple[int, ...]) -> str:
+        """Format allocation as 'FA:2 SWA:1 GDN:7'."""
+        parts = [f"{name}:{count}" for name, count in zip(self._mixer_names, allocation)]
+        return " ".join(parts)
+
+    def _format_placement(
+        self,
+        assignments: tuple[str, ...] | dict[str, tuple[int, ...]],
+        max_layers_per_mixer: int = 10,
+        escape_brackets: bool = False,
+    ) -> str:
+        """Format per-layer assignments as grouped placement string.
+
+        Args:
+            assignments: Either per-layer tuple (index=layer, value=mixer)
+                        or dict mapping mixer→layers (for pre-grouped data)
+            max_layers_per_mixer: Max layers to show per mixer before truncating
+            escape_brackets: Whether to escape brackets for Rich markup
+
+        Returns:
+            String like "FA@[0,2], GDN@[1], SWA@[3,4,5]"
+        """
+        # Handle pre-grouped dict format
+        if isinstance(assignments, dict):
+            by_mixer = {mixer: list(layers) for mixer, layers in assignments.items()}
+        else:
+            by_mixer = self._group_layers_by_mixer(assignments)
+
+        # Format in canonical mixer_names order
+        parts = []
+        for mixer in self._mixer_names:
+            if mixer in by_mixer:
+                parts.append(
+                    self._format_layer_assignment(
+                        mixer, by_mixer[mixer], max_layers_per_mixer, escape_brackets
+                    )
+                )
+        return ", ".join(parts)
 
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the expand section of a beam step as text."""
@@ -480,29 +564,11 @@ class RichSearchDisplay:
         # Show each parent and its tried candidates
         for parent_idx, parent in enumerate(event.parents):
             parent_layers = parent.get("layers", [])
-            if len(parent_layers) <= 6:
-                layers_str = ",".join(str(l) for l in parent_layers)
-            else:
-                layers_str = (
-                    ",".join(str(l) for l in parent_layers[:3])
-                    + f",...,{parent_layers[-1]}"
-                )
 
-            # Format prior phase context (if any)
-            prior_ctx = self._format_prior_context(parent.get("fixed", {}))
-
-            # Format current phase assignment
-            current_ctx = f"{event.mixer_name}@\\[{layers_str}]" if parent_layers else ""
-
-            # Combine into single parenthesized string
-            if prior_ctx and current_ctx:
-                context_str = f" ([dim]{prior_ctx}[/dim], {current_ctx})"
-            elif prior_ctx:
-                context_str = f" ([dim]{prior_ctx}[/dim])"
-            elif current_ctx:
-                context_str = f" ({current_ctx})"
-            else:
-                context_str = ""
+            # Use helper to format context string
+            context_str = self._format_context_string(
+                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
+            )
 
             # Format tried candidates for this parent
             tried_list = tried_by_parent.get(parent_idx, [])
@@ -537,30 +603,10 @@ class RichSearchDisplay:
             if added_layer != "?":
                 parent_layers.append(added_layer)
 
-            # Format layers string
-            if len(parent_layers) <= 6:
-                layers_str = ",".join(str(l) for l in parent_layers)
-            else:
-                layers_str = (
-                    ",".join(str(l) for l in parent_layers[:3])
-                    + f",...,{parent_layers[-1]}"
-                )
-
-            # Format prior phase context (if any)
-            prior_ctx = self._format_prior_context(parent.get("fixed", {}))
-
-            # Format current phase assignment
-            current_ctx = f"{event.mixer_name}@\\[{layers_str}]" if parent_layers else ""
-
-            # Combine into single parenthesized string
-            if prior_ctx and current_ctx:
-                context_str = f" ([dim]{prior_ctx}[/dim], {current_ctx})"
-            elif prior_ctx:
-                context_str = f" ([dim]{prior_ctx}[/dim])"
-            elif current_ctx:
-                context_str = f" ({current_ctx})"
-            else:
-                context_str = ""
+            # Use helper to format context string
+            context_str = self._format_context_string(
+                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
+            )
 
             if i == 0:
                 lines.append(f"  [green]B{i}{context_str} → {b['score']:.4g}★[/green]")
@@ -591,15 +637,8 @@ class RichSearchDisplay:
 
         return "\n".join(lines)
 
-    def _print_best_update(self) -> None:
-        """Print new best found as permanent output."""
-        self._console.print(
-            f"  [bold green]★ NEW BEST[/bold green]: {self._best_score:.4f} | "
-            f"cost={self._best_cost:.4f}"
-        )
-
     def _print_search_complete(self, event: SearchCompletedEvent) -> None:
-        """Print search completion as a Rich panel with table."""
+        """Print search completion as a Rich panel with leaderboard."""
         # Summary table
         summary = Table.grid(padding=(0, 2))
         summary.add_column(style="bold")
@@ -610,41 +649,37 @@ class RichSearchDisplay:
         summary.add_row("Evaluations", f"{event.total_evaluations:,}")
         summary.add_row("Allocations explored", str(event.allocations_explored))
 
-        # Final placement table
-        if self._best_assignments:
-            # Group by mixer type
-            mixer_layers: dict[str, list[int]] = {}
-            for i, mixer in enumerate(self._best_assignments):
-                if mixer not in mixer_layers:
-                    mixer_layers[mixer] = []
-                mixer_layers[mixer].append(i)
-
-            placement_table = Table(
+        # Build leaderboard table
+        if self._leaderboard:
+            leaderboard_table = Table(
                 show_header=True,
                 header_style="bold",
                 box=None,
                 padding=(0, 1),
             )
-            placement_table.add_column("Mixer", style="cyan")
-            placement_table.add_column("Count", justify="right")
-            placement_table.add_column("Layers")
+            leaderboard_table.add_column("#", justify="right", style="dim")
+            leaderboard_table.add_column("Score", justify="right", style="green")
+            leaderboard_table.add_column("Cost", justify="right")
+            leaderboard_table.add_column("Allocation")
+            leaderboard_table.add_column("Placement")
 
-            for mixer in self._mixer_names:
-                if mixer in mixer_layers:
-                    layers = mixer_layers[mixer]
-                    if len(layers) <= 8:
-                        layers_str = ",".join(str(l) for l in layers)
-                    else:
-                        layers_str = ",".join(str(l) for l in layers[:4])
-                        layers_str += f",...,{layers[-1]}"
-                    placement_table.add_row(mixer, str(len(layers)), f"[{layers_str}]")
+            for i, entry in enumerate(self._leaderboard, 1):
+                alloc_str = self._format_allocation(entry.allocation)
+                placement_str = self._format_placement(entry.assignments)
+                leaderboard_table.add_row(
+                    str(i),
+                    f"{entry.score:.4f}",
+                    f"{entry.cost:.4f}",
+                    alloc_str,
+                    placement_str,
+                )
 
             # Combine into group
             content = Group(
                 summary,
                 Text(),  # Spacer
-                Text("Final Placement:", style="bold"),
-                placement_table,
+                Text("Final Leaderboard:", style="bold"),
+                leaderboard_table,
             )
         else:
             content = summary
@@ -670,7 +705,6 @@ class RichSearchDisplay:
         self._num_layers = event.num_layers
         self._mixer_names = event.mixer_names
         self._max_allocations = event.max_allocations
-        self._total_allocations = event.total_allocations
 
         # Initialize bounds from event (may be None if not provided)
         self._eval_lower_bound = event.eval_count_lower_bound
@@ -681,6 +715,7 @@ class RichSearchDisplay:
         self._completed_phases = []
         self._current_phase = None
         self._current_step_content = ""
+        self._leaderboard = []
 
         # Print search header using Rich panel
         self._print_search_header()
@@ -700,8 +735,7 @@ class RichSearchDisplay:
         table.add_column("95% CI", justify="right", no_wrap=True)
 
         for i, info in enumerate(event.allocation_info, 1):
-            alloc_dict = dict(zip(event.mixer_names, info.allocation, strict=True))
-            alloc_str = "  ".join(f"{k}:{v}" for k, v in alloc_dict.items())
+            alloc_str = self._format_allocation(info.allocation)
             table.add_row(
                 str(i),
                 alloc_str,
@@ -721,16 +755,6 @@ class RichSearchDisplay:
         self._current_allocation = event.allocation
         self._current_allocation_cost = event.allocation_cost
 
-        # Reset phase state for new allocation
-        self._phase_index = 0
-        self._phase_mixer = ""
-        self._phase_budget = 0
-        self._beam_step = 0
-        self._beam_total_steps = 0
-        self._current_beam = ()
-        self._current_tried = ()
-        self._current_parents = ()
-
         # Reset accumulated state for new allocation
         self._completed_phases = []
         self._current_phase = None
@@ -738,8 +762,6 @@ class RichSearchDisplay:
 
         # Capture per-allocation bounds for progress tracking
         self._alloc_eval_start = self._eval_count
-        self._alloc_lower = event.eval_lower_bound
-        self._alloc_upper = event.eval_upper_bound
         self._alloc_expected = event.eval_expected
 
         self._update_live()
@@ -748,6 +770,18 @@ class RichSearchDisplay:
         """Handle allocation completed event."""
         # Print allocation completion summary
         self._print_allocation_complete(event)
+
+        # Add to leaderboard if valid result
+        if event.score is not None and event.assignments is not None:
+            entry = LeaderboardEntry(
+                score=event.score,
+                cost=event.allocation_cost,
+                allocation=event.allocation,
+                assignments=event.assignments,
+            )
+            self._leaderboard.append(entry)
+            # Sort by score descending
+            self._leaderboard.sort(key=lambda e: e.score, reverse=True)
 
         # Clear phases for next allocation
         self._completed_phases = []
@@ -758,16 +792,6 @@ class RichSearchDisplay:
 
     def on_phase_started(self, event: PhaseStartedEvent) -> None:
         """Handle phase started event."""
-        self._phase_index = event.phase_index
-        self._total_phases = event.total_phases
-        self._phase_mixer = event.mixer_name
-        self._phase_budget = event.budget
-        self._beam_step = 0
-        self._beam_total_steps = event.budget - 1 if event.budget > 1 else 0
-        self._current_beam = ()
-        self._current_tried = ()
-        self._current_parents = ()
-
         # Create new current phase for nested panel display
         self._current_phase = PhaseData(
             phase_index=event.phase_index,
@@ -782,7 +806,6 @@ class RichSearchDisplay:
     def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
         """Handle beam growth step started - set in-progress step content."""
         self._step_results = []
-        self._step_num_candidates = event.num_candidates
         self._current_step = event.step
         self._current_total_steps = event.total_steps
 
@@ -816,12 +839,6 @@ class RichSearchDisplay:
 
     def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
         """Handle beam growth step event."""
-        self._beam_step = event.step
-        self._beam_total_steps = event.total_steps
-        self._current_beam = event.beam
-        self._current_tried = event.tried
-        self._current_parents = event.parents
-
         # Format step content and add to current phase
         expand_content = self._format_expand_section(event)
         prune_content = self._format_prune_section(event)
@@ -845,12 +862,14 @@ class RichSearchDisplay:
     def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
         """Handle phase completed event."""
         if self._current_phase is not None:
-            # Format layers string
-            layers_str = self._format_layers(event.final_layers)
+            # Use building block for consistent formatting
+            assignment_str = self._format_layer_assignment(
+                event.mixer_name, event.final_layers, max_show=10, escape_brackets=True
+            )
             # Set completion text
             self._current_phase.completion_text = (
                 f"[bold green]✓ Complete[/bold green]: "
-                f"{event.mixer_name}@\\[{layers_str}] → {event.final_score:.4g}"
+                f"{assignment_str} → {event.final_score:.4g}"
             )
             # Move to completed
             self._completed_phases.append(self._current_phase)
@@ -858,17 +877,9 @@ class RichSearchDisplay:
 
         self._update_live()
 
-    def on_best_updated(self, event: BestUpdatedEvent) -> None:
-        """Handle best updated event."""
-        self._best_score = event.score
-        self._best_cost = event.cost
-        self._best_allocation = event.allocation
-        self._best_assignments = event.assignments
-
-        # Print new best
-        self._print_best_update()
-
-        self._update_live()
+    def on_best_updated(self, event: "BestUpdatedEvent") -> None:
+        """Handle best updated event (no-op, leaderboard tracks results)."""
+        del event  # Unused - leaderboard tracks results via on_allocation_completed
 
     def on_search_completed(self, event: SearchCompletedEvent) -> None:
         """Handle search completed event."""
