@@ -12,7 +12,7 @@ defaults:
   - /evaluator: extraction
   - /generation: extraction
   - /backend: rest
-  - /task: fda
+  - /task: fda_optimize
   - /problem: cost_apriel_0_5b
   - /search_strategy: cost_constrained_hierarchical
   - /result_handler: json
