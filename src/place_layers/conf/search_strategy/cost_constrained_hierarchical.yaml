@@ -8,7 +8,8 @@
 # This strategy uses a hierarchical phase-by-phase beam search that:
 #   1. Iterates over feasible allocations (how many of each mixer type)
 #   2. For each allocation, greedily assigns layers mixer-by-mixer
-#   3. Uses beam search to maintain multiple promising candidates
+#   3. Uses unified beam search across phases - each beam entry carries its
+#      own fixed_assignments from prior phases
 #
 # KEY ADVANTAGES OVER SIMULATED ANNEALING:
 # ----------------------------------------
@@ -40,16 +41,8 @@ strategy_type: cost_constrained_hierarchical
 # Number of allocations to explore (54 = all feasible for typical problems)
 max_allocations: 50
 
-# Beam width for greedy layer assignment
+# Beam width: number of candidates to keep at each step
 # Higher values explore more candidates per allocation
+# Beam entries carry their own fixed_assignments across phases, so the beam
+# naturally explores different paths without needing separate cross-phase tracking
 beam_width: 5
-
-# Early stopping threshold (fraction of score improvement)
-# Algorithm stops if best score improves less than this fraction
-early_stop_threshold: 0.001
-
-# Cross-phase beam width: number of candidate paths to maintain across phases
-# Set to 1 for greedy (lock in best after each phase), or beam_width to explore
-# phase interactions (finds better solutions when phase choices interact)
-# Note: Uses interpolation so changing beam_width automatically updates this.
-cross_phase_beam_width: ${.beam_width}

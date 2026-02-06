@@ -80,27 +80,6 @@ class PhaseStartedEvent(BaseModel):
     total_phases: int
     mixer_name: str
     budget: int  # Number of layers to assign in this phase
-    num_paths: int = 1  # 1 for greedy, >1 for cross-phase beam
-
-
-class PathStartedEvent(BaseModel):
-    """Emitted when starting to process a cross-phase path within a phase.
-
-    This event provides visibility into cross-phase compounding: what's fixed
-    from prior phases when starting a new phase. Enables display of inheritance
-    and path separation when cross_phase_beam_width > 1.
-    """
-
-    model_config = {"frozen": True}
-
-    phase_index: int
-    path_index: int  # 0-indexed within current phase
-    total_paths: int  # cross_phase_beam_width (or fewer)
-    inherited_score: float  # Score from previous phase
-
-    # Fixed assignments from ALL prior phases, grouped by mixer
-    # Format: {"FA": (0, 3, 7), "SWA": (1, 2, 5)}
-    fixed_by_mixer: dict[str, tuple[int, ...]]
 
 
 class BeamGrowthStepEvent(BaseModel):
@@ -113,6 +92,10 @@ class BeamGrowthStepEvent(BaseModel):
     field contains all beam entries being expanded, and `tried`/`beam` entries include
     provenance information (parent_idx, added_layer) to track which parent produced
     each candidate.
+
+    The `fixed` field in parents/beam entries contains assignments from prior phases,
+    enabling visualization of different paths through the search tree. In phase 2+,
+    different beam entries may have different fixed assignments from phase 1.
     """
 
     model_config = {"frozen": True}
@@ -123,7 +106,8 @@ class BeamGrowthStepEvent(BaseModel):
     mixer_name: str
 
     # All parents being expanded (replaces base_layers)
-    # Format: [{"layers": [...], "score": float | None}, ...]
+    # Format: [{"layers": [...], "score": float | None, "fixed": dict}, ...]
+    # The "fixed" dict maps layer_idx -> mixer_name for prior phase assignments
     parents: tuple[dict, ...]
 
     # All candidates tried with provenance
@@ -131,7 +115,7 @@ class BeamGrowthStepEvent(BaseModel):
     tried: tuple[dict, ...]
 
     # Top-k after selection with provenance
-    # Format: [{"layers": [...], "score": float, "parent_idx": int, "added_layer": int}, ...]
+    # Format: [{"layers": [...], "score": float, "parent_idx": int, "added_layer": int, "fixed": dict}, ...]
     beam: tuple[dict, ...]
 
 
@@ -198,6 +182,47 @@ class AllocationPlanEvent(BaseModel):
 
     allocation_info: tuple["AllocationProgressInfo", ...]
     mixer_names: tuple[str, ...]
+
+
+class BeamGrowthStepStartedEvent(BaseModel):
+    """Emitted when a beam growth step begins (before evaluations).
+
+    This event fires at the START of each step, allowing displays to show
+    a working node that updates as candidates are evaluated.
+    """
+
+    model_config = {"frozen": True}
+
+    step: int
+    total_steps: int
+    phase_index: int
+    mixer_name: str
+    num_candidates: int  # How many candidates will be evaluated
+    # Parents being expanded in this step
+    # Format: [{"layers": [...], "score": float | None, "fixed": dict}, ...]
+    parents: tuple[dict, ...]
+
+
+class CandidateEvaluatedEvent(BaseModel):
+    """Emitted after each candidate evaluation during a step.
+
+    Allows displays to stream results as they come in, showing progress
+    within a step and the current best candidate.
+    """
+
+    model_config = {"frozen": True}
+
+    step: int
+    total_steps: int
+    phase_index: int
+    mixer_name: str
+    # The candidate that was just evaluated
+    layer: int
+    score: float
+    parent_idx: int
+    # Progress within step
+    eval_index: int  # 1-based index of this eval within step
+    total_evals: int  # Total evals expected in this step
 
 
 class SearchCompletedEvent(BaseModel):

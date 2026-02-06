@@ -281,7 +281,6 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         ]
 
         logger.info(f"\nGrowing beam to budget of {budget}...")
-        best_score = beam[0]["score"]
 
         # Grow beam iteratively
         for growth_step in range(1, budget):
@@ -308,12 +307,6 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
             self._log_top_candidates(beam)
-
-            # Check early stopping
-            new_best_score = beam[0]["score"]
-            if self._should_early_stop(best_score, new_best_score):
-                break
-            best_score = new_best_score
 
         return beam
 
@@ -352,21 +345,6 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 f"  {i+1}. {candidate['layers']} - Score: {candidate['score']:.4f}"
             )
 
-    def _should_early_stop(self, best_score: float, new_best_score: float) -> bool:
-        """Check if early stopping criteria is met."""
-        if self.config.higher_is_better:
-            improvement = new_best_score - best_score
-        else:
-            improvement = best_score - new_best_score
-
-        if improvement < self.config.early_stop_threshold:
-            logger.info(
-                f"Early stopping: improvement {improvement:.4f} < "
-                f"threshold {self.config.early_stop_threshold}"
-            )
-            return True
-        return False
-
 
 class HierarchicalBeamSearchConfig(BaseSearchStrategyConfig):
     """Configuration for hierarchical beam search."""
@@ -383,11 +361,6 @@ class HierarchicalBeamSearchConfig(BaseSearchStrategyConfig):
     initial_beam_width: int = Field(
         description="Number of top single-layer configs to seed each phase",
         gt=0,
-    )
-
-    early_stop_threshold: float = Field(
-        description="Stop if best score improvement is below this threshold",
-        ge=0.0,
     )
 
     higher_is_better: bool = Field(

@@ -540,8 +540,11 @@ class RichSearchDisplay:
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the expand section of a beam step as text."""
         lines = []
-        num_parents = len(event.parents)
-        lines.append(f"Expand {num_parents} parent{'s' if num_parents != 1 else ''}:")
+        # Use unified B naming and show step context
+        if event.step == 1:
+            lines.append("Expand initial beam:")
+        else:
+            lines.append(f"Expand beam from step {event.step - 1}:")
 
         # Group tried candidates by parent_idx
         tried_by_parent: dict[int, list[dict]] = {}
@@ -583,7 +586,7 @@ class RichSearchDisplay:
             if len(tried_list) > 5:
                 tried_str += "  [dim]...[/dim]"
 
-            lines.append(f"  P{parent_idx}{context_str}: {tried_str}")
+            lines.append(f"  B{parent_idx}{context_str}: {tried_str}")
 
         return "\n".join(lines)
 
@@ -593,7 +596,7 @@ class RichSearchDisplay:
         beam_size = len(event.beam)
         lines.append(f"Prune to {beam_size}:")
 
-        for i, b in enumerate(event.beam[:3]):
+        for i, b in enumerate(event.beam):
             parent_idx = b.get("parent_idx", 0)
             added_layer = b.get("added_layer", "?")
 
@@ -608,10 +611,13 @@ class RichSearchDisplay:
                 parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
             )
 
+            # Show lineage: B0 ← B{parent}+{layer}
+            lineage = f"← B{parent_idx}+{added_layer}"
+
             if i == 0:
-                lines.append(f"  [green]B{i}{context_str} → {b['score']:.4g}★[/green]")
+                lines.append(f"  [green]B{i} {lineage}{context_str} → {b['score']:.4g}★[/green]")
             else:
-                lines.append(f"  B{i}{context_str} → {b['score']:.4g}")
+                lines.append(f"  B{i} {lineage}{context_str} → {b['score']:.4g}")
 
         # Show runners-up (candidates that just missed the cut)
         beam_keys = {(b.get("parent_idx"), b.get("added_layer")) for b in event.beam}
