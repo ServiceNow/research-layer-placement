@@ -1,0 +1,9 @@
+# @package task
+# FDA extraction task
+
+tasks:
+  - fda
+
+num_fewshot: 2
+max_problems_per_task: 300  # null = full test set
+split: test
