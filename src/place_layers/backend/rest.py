@@ -972,6 +972,17 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         - http://my-service-id-2:8080
         - http://my-service-id-3:8080
 
+    Example with num_servers and server_id_offset:
+        dns_prefix = "my-service"
+        num_servers = 3
+        server_id_offset = 2
+        port = 8080
+
+        Generates:
+        - http://my-service-id-2:8080
+        - http://my-service-id-3:8080
+        - http://my-service-id-4:8080
+
     Example with server_ids:
         dns_prefix = "my-service"
         server_ids = [0, 2, 5]
@@ -990,9 +1001,15 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
     )
     num_servers: int | None = Field(
         default=None,
-        description="Number of servers to generate (creates sequential IDs 0..n-1). "
+        description="Number of servers to generate (creates sequential IDs starting from server_id_offset). "
         "Mutually exclusive with server_ids.",
         ge=1,
+    )
+    server_id_offset: int = Field(
+        default=0,
+        description="Starting ID offset when using num_servers (e.g., offset=2, num_servers=3 generates IDs [2, 3, 4]). "
+        "Ignored when server_ids is specified.",
+        ge=0,
     )
     server_ids: list[int] | None = Field(
         default=None,
@@ -1029,8 +1046,8 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
             # Use explicit server IDs
             ids = self.server_ids
         elif self.num_servers is not None:
-            # Use sequential range
-            ids = list(range(self.num_servers))
+            # Use sequential range with offset
+            ids = list(range(self.server_id_offset, self.server_id_offset + self.num_servers))
         else:
             # Should never reach here due to __init__ validation
             raise ValueError("Either num_servers or server_ids must be specified")

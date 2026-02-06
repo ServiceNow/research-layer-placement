@@ -27,6 +27,10 @@ dns_prefix: ${oc.env:DNS_PREFIX}
 # Number of servers (use this OR server_ids, not both)
 num_servers: ${oc.env:NUM_SERVERS}
 
+# Offset for server IDs when using num_servers (e.g., offset=2, num_servers=3 → IDs [2, 3, 4])
+# Ignored when server_ids is specified
+server_id_offset: 0
+
 # Alternative: Explicit list of server IDs (e.g., [0, 2, 5] for non-sequential IDs)
 # server_ids: ???
 
