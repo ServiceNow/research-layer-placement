@@ -7,7 +7,7 @@ swaps to explore the assignment space within a fixed allocation.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
@@ -43,13 +43,13 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     def __init__(
         self,
         config: "SwapBeamConfig",
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
         progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
-        super().__init__(config, observer, progress_estimator)
+        super().__init__(config, observers, progress_estimator)
         self.config: SwapBeamConfig
 
-        if self.observer is not None:
+        if self.observers:
             raise NotImplementedError(
                 f"{self.__class__.__name__} does not support progress observers."
             )

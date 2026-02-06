@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from itertools import combinations
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
@@ -42,10 +42,12 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
     def __init__(
         self,
         config: "ExhaustiveSearchConfig",
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
+        progress_estimator: None = None,
     ) -> None:
-        super().__init__(config, observer)
-        if self.observer is not None:
+        del progress_estimator  # Not used by this strategy
+        super().__init__(config, observers)
+        if self.observers:
             raise NotImplementedError(
                 f"{self.__class__.__name__} does not support progress observers."
             )

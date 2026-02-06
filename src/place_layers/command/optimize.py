@@ -27,7 +27,10 @@ class OptimizeCommand(BaseCommand):
 
     async def run(self) -> None:
         """Execute optimization."""
-        from place_layers.search_strategy.progress import RichSearchDisplay
+        from place_layers.search_strategy.progress import (
+            EventDiskWriter,
+            RichSearchDisplay,
+        )
 
         # Get output directory from Hydra's runtime config
         hydra_cfg = HydraConfig.get()
@@ -46,9 +49,9 @@ class OptimizeCommand(BaseCommand):
                 problem
             )
 
-            with RichSearchDisplay() as display:
+            with RichSearchDisplay() as display, EventDiskWriter(output_dir) as disk_writer:
                 search_strategy = self.config.search_strategy.create_search_strategy(
-                    observer=display,
+                    observers=[display, disk_writer],
                     progress_estimator=progress_estimator,
                 )
                 result = await search_strategy.search(

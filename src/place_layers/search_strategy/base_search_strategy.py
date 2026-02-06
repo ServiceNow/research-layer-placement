@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, Sequence, overload
 
 
 if TYPE_CHECKING:
@@ -20,17 +20,20 @@ class BaseSearchStrategy[ParametersT]:
     def __init__(
         self,
         config: "BaseSearchStrategyConfig",
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
+        progress_estimator: Any = None,
     ) -> None:
         """
         Initialize the search strategy with configuration.
 
         Args:
             config: Search strategy configuration.
-            observer: Optional observer for progress events.
+            observers: Sequence of observers for progress events.
+            progress_estimator: Optional progress estimator (used by subclasses).
         """
+        del progress_estimator  # Used by subclasses only
         self.config = config
-        self.observer = observer
+        self.observers = tuple(observers)
 
     @overload
     async def search(

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from math import comb
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
@@ -136,10 +136,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
     def __init__(
         self,
         config: "HierarchicalConfig",
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
         progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
-        super().__init__(config, observer=observer, progress_estimator=progress_estimator)
+        super().__init__(config, observers=observers, progress_estimator=progress_estimator)
         self.config: HierarchicalConfig
 
     async def _search_within_allocation(
@@ -197,17 +197,17 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             running_phase_idx += 1
 
             # Emit phase started event
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import PhaseStartedEvent
 
-                self.observer.on_phase_started(
-                    PhaseStartedEvent(
-                        phase_index=running_phase_idx,
-                        total_phases=total_phases,
-                        mixer_name=mixer_name,
-                        budget=budget,
-                    )
+                event = PhaseStartedEvent(
+                    phase_index=running_phase_idx,
+                    total_phases=total_phases,
+                    mixer_name=mixer_name,
+                    budget=budget,
                 )
+                for observer in self.observers:
+                    observer.on_phase_started(event)
 
             # Run phase - returns updated beam entries with new fixed assignments
             beam = await self._run_phase(
@@ -225,7 +225,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 return None
 
             # Emit phase completed event
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import PhaseCompletedEvent
 
                 # Get the layers assigned in this phase from the best entry
@@ -238,16 +238,16 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     ]
                 )
 
-                self.observer.on_phase_completed(
-                    PhaseCompletedEvent(
-                        phase_index=running_phase_idx,
-                        total_phases=total_phases,
-                        mixer_name=mixer_name,
-                        budget=budget,
-                        final_layers=tuple(phase_layers),
-                        final_score=best_entry["score"],
-                    )
+                event = PhaseCompletedEvent(
+                    phase_index=running_phase_idx,
+                    total_phases=total_phases,
+                    mixer_name=mixer_name,
+                    budget=budget,
+                    final_layers=tuple(phase_layers),
+                    final_score=best_entry["score"],
                 )
+                for observer in self.observers:
+                    observer.on_phase_completed(event)
 
         # Take best entry for final assignment
         best_entry = beam[0]
@@ -302,23 +302,23 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             Updated beam entries with new fixed_assignments for this phase.
         """
         # Emit step started event before prescoring
-        if self.observer is not None:
+        if self.observers:
             from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
 
             total_candidates = sum(len(e["unassigned"]) for e in beam)
-            self.observer.on_beam_growth_step_started(
-                BeamGrowthStepStartedEvent(
-                    step=1,
-                    total_steps=budget,
-                    phase_index=phase_index,
-                    mixer_name=mixer_name,
-                    num_candidates=total_candidates,
-                    parents=tuple(
-                        {"layers": [], "score": e.get("score"), "fixed": e.get("fixed", {})}
-                        for e in beam
-                    ),
-                )
+            event = BeamGrowthStepStartedEvent(
+                step=1,
+                total_steps=budget,
+                phase_index=phase_index,
+                mixer_name=mixer_name,
+                num_candidates=total_candidates,
+                parents=tuple(
+                    {"layers": [], "score": e.get("score"), "fixed": e.get("fixed", {})}
+                    for e in beam
+                ),
             )
+            for observer in self.observers:
+                observer.on_beam_growth_step_started(event)
 
         # Pre-score individual layers for each beam entry
         # Creates candidates: each is a single-layer entry inheriting parent's state
@@ -366,7 +366,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         working_beam = prescored[: self.config.beam_width]
 
         # Emit step 1 event for initial beam (from prescoring)
-        if self.observer is not None:
+        if self.observers:
             from place_layers.search_strategy.progress import BeamGrowthStepEvent
 
             # Build parents from input beam (include fixed for provenance display)
@@ -375,26 +375,26 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 for e in beam
             )
 
-            self.observer.on_beam_growth_step(
-                BeamGrowthStepEvent(
-                    step=1,
-                    total_steps=budget,
-                    phase_index=phase_index,
-                    mixer_name=mixer_name,
-                    parents=parents,
-                    tried=tuple(all_tried),
-                    beam=tuple(
-                        {
-                            "layers": b["layers"],
-                            "score": b["score"],
-                            "parent_idx": b["parent_idx"],
-                            "added_layer": b["added_layer"],
-                            "fixed": b.get("fixed", {}),
-                        }
-                        for b in working_beam
-                    ),
-                )
+            event = BeamGrowthStepEvent(
+                step=1,
+                total_steps=budget,
+                phase_index=phase_index,
+                mixer_name=mixer_name,
+                parents=parents,
+                tried=tuple(all_tried),
+                beam=tuple(
+                    {
+                        "layers": b["layers"],
+                        "score": b["score"],
+                        "parent_idx": b["parent_idx"],
+                        "added_layer": b["added_layer"],
+                        "fixed": b.get("fixed", {}),
+                    }
+                    for b in working_beam
+                ),
             )
+            for observer in self.observers:
+                observer.on_beam_growth_step(event)
 
         if budget == 1:
             # Finalize phase: update fixed assignments
@@ -464,26 +464,27 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             score = await problem.evaluate(placement)
             self.eval_count += 1
 
-            # Notify observer of eval completion
-            if self.observer is not None:
-                self.observer.on_eval_completed(self.eval_count)
+            # Notify observers of eval completion
+            if self.observers:
+                for observer in self.observers:
+                    observer.on_eval_completed(self.eval_count)
 
                 # Emit candidate evaluated event
                 from place_layers.search_strategy.progress import CandidateEvaluatedEvent
 
-                self.observer.on_candidate_evaluated(
-                    CandidateEvaluatedEvent(
-                        step=step,
-                        total_steps=total_steps,
-                        phase_index=phase_index,
-                        mixer_name=mixer_name,
-                        layer=layer_idx,
-                        score=score,
-                        parent_idx=parent_idx,
-                        eval_index=eval_idx,
-                        total_evals=total_evals,
-                    )
+                event = CandidateEvaluatedEvent(
+                    step=step,
+                    total_steps=total_steps,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    layer=layer_idx,
+                    score=score,
+                    parent_idx=parent_idx,
+                    eval_index=eval_idx,
+                    total_evals=total_evals,
                 )
+                for observer in self.observers:
+                    observer.on_candidate_evaluated(event)
 
             layer_scores.append((layer_idx, score))
 
@@ -516,22 +517,22 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 break
 
             # Emit step started event before evaluating
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
 
-                self.observer.on_beam_growth_step_started(
-                    BeamGrowthStepStartedEvent(
-                        step=growth_step + 1,  # +1 because step 1 was prescoring
-                        total_steps=budget,
-                        phase_index=phase_index,
-                        mixer_name=mixer_name,
-                        num_candidates=len(candidates),
-                        parents=tuple(
-                            {"layers": b["layers"], "score": b["score"], "fixed": b.get("fixed", {})}
-                            for b in working_beam
-                        ),
-                    )
+                event = BeamGrowthStepStartedEvent(
+                    step=growth_step + 1,  # +1 because step 1 was prescoring
+                    total_steps=budget,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    num_candidates=len(candidates),
+                    parents=tuple(
+                        {"layers": b["layers"], "score": b["score"], "fixed": b.get("fixed", {})}
+                        for b in working_beam
+                    ),
                 )
+                for observer in self.observers:
+                    observer.on_beam_growth_step_started(event)
 
             # Evaluate candidates
             await self._evaluate_candidates_unified(
@@ -551,7 +552,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             )
 
             # Emit beam growth step event with expansion details
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import BeamGrowthStepEvent
 
                 # Build tried list with provenance from candidates
@@ -580,17 +581,17 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     for b in new_beam
                 )
 
-                self.observer.on_beam_growth_step(
-                    BeamGrowthStepEvent(
-                        step=growth_step + 1,  # +1 because step 1 was prescoring
-                        total_steps=budget,
-                        phase_index=phase_index,
-                        mixer_name=mixer_name,
-                        parents=parents,
-                        tried=tuple(tried),
-                        beam=beam_with_provenance,
-                    )
+                event = BeamGrowthStepEvent(
+                    step=growth_step + 1,  # +1 because step 1 was prescoring
+                    total_steps=budget,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    parents=parents,
+                    tried=tuple(tried),
+                    beam=beam_with_provenance,
                 )
+                for observer in self.observers:
+                    observer.on_beam_growth_step(event)
 
             working_beam = new_beam
 
@@ -662,26 +663,28 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             candidate["score"] = await problem.evaluate(placement)
             self.eval_count += 1
 
-            # Notify observer of eval completion
-            if self.observer is not None:
-                self.observer.on_eval_completed(self.eval_count)
+            # Notify observers of eval completion
+            if self.observers:
+                for observer in self.observers:
+                    observer.on_eval_completed(self.eval_count)
 
                 # Emit candidate evaluated event
                 from place_layers.search_strategy.progress import CandidateEvaluatedEvent
 
-                self.observer.on_candidate_evaluated(
-                    CandidateEvaluatedEvent(
-                        step=step,
-                        total_steps=total_steps,
-                        phase_index=phase_index,
-                        mixer_name=mixer_name,
-                        layer=candidate["added_layer"],
-                        score=candidate["score"],
-                        parent_idx=candidate["parent_idx"],
-                        eval_index=eval_idx,
-                        total_evals=total_evals,
-                    )
+                event = CandidateEvaluatedEvent(
+                    step=step,
+                    total_steps=total_steps,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    layer=candidate["added_layer"],
+                    score=candidate["score"],
+                    parent_idx=candidate["parent_idx"],
+                    eval_index=eval_idx,
+                    total_evals=total_evals,
                 )
+                for observer in self.observers:
+                    observer.on_candidate_evaluated(event)
+
 
 class HierarchicalConfig(BaseCostConstrainedConfig):
     """Configuration for hierarchical beam search inner loop."""
