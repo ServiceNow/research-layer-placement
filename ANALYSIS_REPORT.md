@@ -909,7 +909,6 @@ for step in range(allocation_fa):
             score = evaluate(new_config)
             candidates.append((score, new_config))
     beam = top_k(candidates, beam_width)
-    if early_stop(beam): break
 return beam
 ```
 
@@ -927,7 +926,6 @@ for fa_config in phase1_beam:
                 score = evaluate(new_config)
                 candidates.append((score, new_config))
         beam = top_k(candidates, beam_width)
-        if early_stop(beam): break
     # Assign efficient attention to remaining layers
     final_config = complete(beam.best())
     final_configs.append(final_config)
@@ -937,7 +935,6 @@ return best(final_configs)
 **Parameters:**
 
 - `beam_width`: 12
-- `early_stop_threshold`: 0.001 (terminate if best score improves <0.1%)
 
 ### 7.3 Experimental Configuration
 

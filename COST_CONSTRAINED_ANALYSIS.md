@@ -264,7 +264,6 @@ Both methods reach the same maximum score (23.38). But:
 strategy_type: cost_constrained_hierarchical
 max_allocations: 50        # How many allocation mixes to try
 beam_width: 5              # Candidates per phase
-early_stop_threshold: 0.001
 ```
 
 Expected performance:

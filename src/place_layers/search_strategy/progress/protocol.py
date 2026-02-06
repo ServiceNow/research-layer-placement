@@ -14,9 +14,10 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     BeamGrowthStepEvent,
+    BeamGrowthStepStartedEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
-    PathStartedEvent,
+    CandidateEvaluatedEvent,
     PhaseCompletedEvent,
     PhaseStartedEvent,
     SearchCompletedEvent,
@@ -53,12 +54,16 @@ class SearchObserver(Protocol):
         """Called when starting a new phase (hierarchical search only)."""
         ...
 
-    def on_path_started(self, event: PathStartedEvent) -> None:
-        """Called when starting to process a cross-phase path within a phase."""
-        ...
-
     def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
         """Called when a phase completes (hierarchical search only)."""
+        ...
+
+    def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
+        """Called when a beam growth step begins (before evaluations)."""
+        ...
+
+    def on_candidate_evaluated(self, event: CandidateEvaluatedEvent) -> None:
+        """Called after each candidate evaluation during a beam growth step."""
         ...
 
     def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
