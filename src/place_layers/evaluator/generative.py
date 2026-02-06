@@ -32,7 +32,10 @@ from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,
     BaseGenerativeEvaluatorConfig,
 )
-from place_layers.evaluator.lm_eval_utils import check_correctness_all_filters
+from place_layers.evaluator.lm_eval_utils import (
+    apply_all_filters,
+    check_correctness_all_filters,
+)
 from place_layers.evaluator.traces.types import Generation
 
 if TYPE_CHECKING:
@@ -81,11 +84,13 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
         for sample_idx, sample in enumerate(result.samples):
             if sample.truncated and not self.config.evaluate_truncated_samples:
                 # Truncated and we don't evaluate truncated -> mark incorrect
+                # Still populate correct_by_filter so filter metrics count this sample.
                 logger.debug(f"Truncated sample {problem_id}:{sample_idx}")
+                filter_names = list(apply_all_filters(task, "").keys())
                 correct = False
-                correct_by_filter = None
-                filtered_completion_text_by_filter = None
-                primary_filter = None
+                correct_by_filter = {k: False for k in filter_names}
+                filtered_completion_text_by_filter = {k: "" for k in filter_names}
+                primary_filter = filter_names[0]
             else:
                 filter_results = check_correctness_all_filters(task, doc, sample.text)
                 # Choose a primary filter for the scalar `correct` field.
