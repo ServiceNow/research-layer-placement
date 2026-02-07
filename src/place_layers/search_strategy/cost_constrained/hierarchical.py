@@ -142,6 +142,47 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         super().__init__(config, observers=observers, progress_estimator=progress_estimator)
         self.config: HierarchicalConfig
 
+    def _build_partial_placement(
+        self,
+        fixed: dict[int, str],
+        num_layers: int,
+    ) -> tuple[str | None, ...]:
+        """Build a partial placement from fixed assignments.
+
+        Args:
+            fixed: Dict mapping layer index to mixer name for assigned layers.
+            num_layers: Total number of layers.
+
+        Returns:
+            Tuple where index=layer, value=mixer or None if unassigned.
+        """
+        return tuple(fixed.get(i) for i in range(num_layers))
+
+    def _build_partial_placement_with_current(
+        self,
+        fixed: dict[int, str],
+        current_layers: list[int],
+        current_mixer: str,
+        num_layers: int,
+    ) -> tuple[str | None, ...]:
+        """Build a partial placement including current phase assignments.
+
+        Args:
+            fixed: Dict mapping layer index to mixer name for prior phases.
+            current_layers: Layers assigned in current phase.
+            current_mixer: Mixer being assigned in current phase.
+            num_layers: Total number of layers.
+
+        Returns:
+            Tuple where index=layer, value=mixer or None if unassigned.
+        """
+        result: list[str | None] = [None] * num_layers
+        for layer_idx, mixer in fixed.items():
+            result[layer_idx] = mixer
+        for layer_idx in current_layers:
+            result[layer_idx] = current_mixer
+        return tuple(result)
+
     async def _search_within_allocation(
         self,
         problem: CostConstrainedProblem,
@@ -194,9 +235,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 # Skip phases with no layers to assign
                 continue
 
-            running_phase_idx += 1
-
-            # Emit phase started event
+            # Emit phase started event (running_phase_idx is 0-based)
             if self.observers:
                 from place_layers.search_strategy.progress import PhaseStartedEvent
 
@@ -248,6 +287,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 )
                 for observer in self.observers:
                     observer.on_phase_completed(event)
+
+            # Increment after phase completes (0-based indexing)
+            running_phase_idx += 1
 
         # Take best entry for final assignment
         best_entry = beam[0]
@@ -304,18 +346,28 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         # Emit step started event before prescoring
         if self.observers:
             from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
+            from place_layers.search_strategy.progress.events import BeamEntry as EventBeamEntry
 
             total_candidates = sum(len(e["unassigned"]) for e in beam)
+
+            # Build partial placements for parents
+            parent_entries = tuple(
+                EventBeamEntry(
+                    partial_placement=self._build_partial_placement(
+                        e.get("fixed", {}), num_layers
+                    ),
+                    score=e.get("score"),
+                )
+                for e in beam
+            )
+
             event = BeamGrowthStepStartedEvent(
                 step=1,
                 total_steps=budget,
                 phase_index=phase_index,
                 mixer_name=mixer_name,
                 num_candidates=total_candidates,
-                parents=tuple(
-                    {"layers": [], "score": e.get("score"), "fixed": e.get("fixed", {})}
-                    for e in beam
-                ),
+                parents=parent_entries,
             )
             for observer in self.observers:
                 observer.on_beam_growth_step_started(event)
@@ -343,12 +395,17 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 phase_index=phase_index,
             )
 
-            # Track all layer scores with parent_idx for event reporting
-            for layer_idx, score in layer_scores:
-                all_tried.append({"layer": layer_idx, "score": score, "parent_idx": parent_idx})
+            # Track all layer scores with parent_idx and placement for event reporting
+            for layer_idx, score, placement in layer_scores:
+                all_tried.append({
+                    "layer": layer_idx,
+                    "score": score,
+                    "parent_idx": parent_idx,
+                    "placement": placement,
+                })
 
             # Create single-layer candidates from prescoring
-            for layer_idx, score in layer_scores:
+            for layer_idx, score, placement in layer_scores:
                 prescored.append({
                     "fixed": entry["fixed"],
                     "unassigned": entry["unassigned"],
@@ -356,6 +413,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     "score": score,
                     "parent_idx": parent_idx,
                     "added_layer": layer_idx,
+                    "placement": placement,
                 })
 
         if not prescored:
@@ -368,11 +426,53 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         # Emit step 1 event for initial beam (from prescoring)
         if self.observers:
             from place_layers.search_strategy.progress import BeamGrowthStepEvent
+            from place_layers.search_strategy.progress.events import (
+                BeamEntry as EventBeamEntry,
+                EvaluatedCandidate,
+                SelectedEntry,
+            )
 
-            # Build parents from input beam (include fixed for provenance display)
+            # Build parents from input beam
             parents = tuple(
-                {"layers": [], "score": e.get("score"), "fixed": e.get("fixed", {})}
+                EventBeamEntry(
+                    partial_placement=self._build_partial_placement(
+                        e.get("fixed", {}), num_layers
+                    ),
+                    score=e.get("score"),
+                )
                 for e in beam
+            )
+
+            # Build tried candidates (sorted by score descending)
+            sorted_all_tried = sorted(all_tried, key=lambda x: x["score"], reverse=True)
+            tried = tuple(
+                EvaluatedCandidate(
+                    layer=t["layer"],
+                    score=t["score"],
+                    parent_idx=t["parent_idx"],
+                    placement=t["placement"],
+                )
+                for t in sorted_all_tried
+            )
+
+            # Build beam entries
+            beam_entries = tuple(
+                SelectedEntry(
+                    partial_placement=self._build_partial_placement_with_current(
+                        b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                    ),
+                    score=b["score"],
+                    parent_idx=b["parent_idx"],
+                    added_layer=b["added_layer"],
+                )
+                for b in working_beam
+            )
+
+            # Compute best_candidate and cut_candidates for observers
+            best_candidate = tried[0] if tried else None
+            beam_keys = {(b["parent_idx"], b["added_layer"]) for b in working_beam}
+            cut_candidates = tuple(
+                t for t in tried if (t.parent_idx, t.layer) not in beam_keys
             )
 
             event = BeamGrowthStepEvent(
@@ -381,17 +481,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 phase_index=phase_index,
                 mixer_name=mixer_name,
                 parents=parents,
-                tried=tuple(all_tried),
-                beam=tuple(
-                    {
-                        "layers": b["layers"],
-                        "score": b["score"],
-                        "parent_idx": b["parent_idx"],
-                        "added_layer": b["added_layer"],
-                        "fixed": b.get("fixed", {}),
-                    }
-                    for b in working_beam
-                ),
+                tried=tried,
+                beam=beam_entries,
+                best_candidate=best_candidate,
+                cut_candidates=cut_candidates,
             )
             for observer in self.observers:
                 observer.on_beam_growth_step(event)
@@ -446,9 +539,13 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         step: int = 1,
         total_steps: int = 1,
         phase_index: int = 1,
-    ) -> list[tuple[int, float]]:
-        """Pre-score individual layers to seed the beam."""
-        layer_scores = []
+    ) -> list[tuple[int, float, tuple[str, ...]]]:
+        """Pre-score individual layers to seed the beam.
+
+        Returns:
+            List of (layer_idx, score, complete_placement) tuples, sorted by score.
+        """
+        layer_scores: list[tuple[int, float, tuple[str, ...]]] = []
         total_evals = len(unassigned)
 
         for eval_idx, layer_idx in enumerate(unassigned, 1):
@@ -460,7 +557,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=tuple(assignments))
+            complete_placement = tuple(assignments)
+            placement = LayerPlacement(assignments=complete_placement)
             score = await problem.evaluate(placement)
             self.eval_count += 1
 
@@ -480,13 +578,14 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     layer=layer_idx,
                     score=score,
                     parent_idx=parent_idx,
+                    placement=complete_placement,
                     eval_index=eval_idx,
                     total_evals=total_evals,
                 )
                 for observer in self.observers:
                     observer.on_candidate_evaluated(event)
 
-            layer_scores.append((layer_idx, score))
+            layer_scores.append((layer_idx, score, complete_placement))
 
         # Sort by score (higher is better)
         layer_scores.sort(key=lambda x: x[1], reverse=True)
@@ -519,6 +618,19 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             # Emit step started event before evaluating
             if self.observers:
                 from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
+                from place_layers.search_strategy.progress.events import (
+                    BeamEntry as EventBeamEntry,
+                )
+
+                parent_entries = tuple(
+                    EventBeamEntry(
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                    )
+                    for b in working_beam
+                )
 
                 event = BeamGrowthStepStartedEvent(
                     step=growth_step + 1,  # +1 because step 1 was prescoring
@@ -526,10 +638,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     phase_index=phase_index,
                     mixer_name=mixer_name,
                     num_candidates=len(candidates),
-                    parents=tuple(
-                        {"layers": b["layers"], "score": b["score"], "fixed": b.get("fixed", {})}
-                        for b in working_beam
-                    ),
+                    parents=parent_entries,
                 )
                 for observer in self.observers:
                     observer.on_beam_growth_step_started(event)
@@ -554,31 +663,56 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             # Emit beam growth step event with expansion details
             if self.observers:
                 from place_layers.search_strategy.progress import BeamGrowthStepEvent
+                from place_layers.search_strategy.progress.events import (
+                    BeamEntry as EventBeamEntry,
+                    EvaluatedCandidate,
+                    SelectedEntry,
+                )
 
                 # Build tried list with provenance from candidates
-                tried = [
-                    {"layer": c["added_layer"], "score": c["score"], "parent_idx": c["parent_idx"]}
-                    for c in candidates
-                ]
                 # Sort by score descending for display
-                tried.sort(key=lambda x: x["score"], reverse=True)
+                sorted_candidates = sorted(
+                    candidates, key=lambda x: x["score"], reverse=True
+                )
+                tried = tuple(
+                    EvaluatedCandidate(
+                        layer=c["added_layer"],
+                        score=c["score"],
+                        parent_idx=c["parent_idx"],
+                        placement=c["placement"],
+                    )
+                    for c in sorted_candidates
+                )
 
-                # Build parents list from previous beam (include fixed for provenance display)
+                # Build parents list from previous beam
                 parents = tuple(
-                    {"layers": b["layers"], "score": b["score"], "fixed": b.get("fixed", {})}
+                    EventBeamEntry(
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                    )
                     for b in working_beam
                 )
 
-                # Build beam with provenance (include fixed for provenance display)
-                beam_with_provenance = tuple(
-                    {
-                        "layers": b["layers"],
-                        "score": b["score"],
-                        "parent_idx": b["parent_idx"],
-                        "added_layer": b["added_layer"],
-                        "fixed": b.get("fixed", {}),
-                    }
+                # Build beam with provenance
+                beam_entries = tuple(
+                    SelectedEntry(
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                        parent_idx=b["parent_idx"],
+                        added_layer=b["added_layer"],
+                    )
                     for b in new_beam
+                )
+
+                # Compute best_candidate and cut_candidates for observers
+                best_candidate = tried[0] if tried else None
+                beam_keys = {(b["parent_idx"], b["added_layer"]) for b in new_beam}
+                cut_candidates = tuple(
+                    t for t in tried if (t.parent_idx, t.layer) not in beam_keys
                 )
 
                 event = BeamGrowthStepEvent(
@@ -587,8 +721,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     phase_index=phase_index,
                     mixer_name=mixer_name,
                     parents=parents,
-                    tried=tuple(tried),
-                    beam=beam_with_provenance,
+                    tried=tried,
+                    beam=beam_entries,
+                    best_candidate=best_candidate,
+                    cut_candidates=cut_candidates,
                 )
                 for observer in self.observers:
                     observer.on_beam_growth_step(event)
@@ -659,8 +795,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=tuple(assignments))
+            complete_placement = tuple(assignments)
+            placement = LayerPlacement(assignments=complete_placement)
             candidate["score"] = await problem.evaluate(placement)
+            candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
 
             # Notify observers of eval completion
@@ -679,6 +817,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     layer=candidate["added_layer"],
                     score=candidate["score"],
                     parent_idx=candidate["parent_idx"],
+                    placement=complete_placement,
                     eval_index=eval_idx,
                     total_evals=total_evals,
                 )

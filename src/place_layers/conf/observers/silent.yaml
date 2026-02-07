@@ -1,0 +1,8 @@
+# @package observers
+# Silent preset: No terminal output, only disk logging
+
+defaults:
+  - /observer@log.0: disk
+  - _self_
+
+display: null

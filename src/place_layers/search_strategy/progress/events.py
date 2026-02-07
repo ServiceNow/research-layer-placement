@@ -3,6 +3,20 @@
 These events form the contract between search strategies and display observers.
 Each event captures a specific point in the search process with all relevant data.
 
+Placement Representation
+------------------------
+
+All placements use the canonical tuple representation where index=layer:
+
+- **Complete placement**: ``tuple[str, ...]`` - all layers assigned to a mixer
+- **Partial placement**: ``tuple[str | None, ...]`` - None for unassigned layers
+
+Helper types for beam search events:
+
+- ``BeamEntry``: Partial placement being expanded (parents in a step)
+- ``EvaluatedCandidate``: Complete placement that was scored
+- ``SelectedEntry``: Partial placement selected for next step
+
 Event Emission Contract
 -----------------------
 
@@ -65,6 +79,54 @@ from pydantic import BaseModel, Field
 from place_layers.search_strategy.progress.estimator import AllocationProgressInfo
 
 
+# =============================================================================
+# Beam entry types for strongly-typed events
+# =============================================================================
+
+
+class BeamEntry(BaseModel):
+    """A partial placement state in the beam.
+
+    Represents an entry being expanded during beam search. The partial_placement
+    uses None for unassigned layers.
+    """
+
+    model_config = {"frozen": True}
+
+    partial_placement: tuple[str | None, ...]  # None for unassigned layers
+    score: float | None
+
+
+class EvaluatedCandidate(BaseModel):
+    """A candidate that was evaluated.
+
+    Contains the complete placement (all layers assigned) that was scored,
+    along with provenance information.
+    """
+
+    model_config = {"frozen": True}
+
+    layer: int  # Layer added in this step
+    score: float
+    parent_idx: int
+    placement: tuple[str, ...]  # Complete placement (no None values)
+
+
+class SelectedEntry(BaseModel):
+    """Selected for next step after pruning.
+
+    Represents a beam entry that survived pruning, with provenance
+    showing which parent it came from and which layer was added.
+    """
+
+    model_config = {"frozen": True}
+
+    partial_placement: tuple[str | None, ...]  # None for unassigned
+    score: float
+    parent_idx: int
+    added_layer: int
+
+
 class SearchStartedEvent(BaseModel):
     """Emitted when search begins."""
 
@@ -107,8 +169,7 @@ class AllocationStartedEvent(BaseModel):
 class AllocationCompletedEvent(BaseModel):
     """Emitted when search within an allocation completes.
 
-    Contains the final placement found for this allocation, with all mixer
-    assignments grouped by type for display.
+    Contains the final placement found for this allocation.
     """
 
     model_config = {"frozen": True}
@@ -121,9 +182,6 @@ class AllocationCompletedEvent(BaseModel):
     # Final assignments - tuple of mixer names, one per layer
     assignments: tuple[str, ...] | None  # None if no valid assignment found
     score: float | None  # None if no valid assignment found
-    # Assignments grouped by mixer for compact display
-    # Format: {"FA": (0, 3, 7), "SWA": (1, 2, 5), ...}
-    assignments_by_mixer: dict[str, tuple[int, ...]]
 
 
 class PhaseStartedEvent(BaseModel):
@@ -149,9 +207,9 @@ class BeamGrowthStepEvent(BaseModel):
     provenance information (parent_idx, added_layer) to track which parent produced
     each candidate.
 
-    The `fixed` field in parents/beam entries contains assignments from prior phases,
-    enabling visualization of different paths through the search tree. In phase 2+,
-    different beam entries may have different fixed assignments from phase 1.
+    All placements use the canonical representation:
+    - Complete: tuple[str, ...] where index=layer, value=mixer
+    - Partial: tuple[str | None, ...] where None means unassigned
     """
 
     model_config = {"frozen": True}
@@ -162,18 +220,20 @@ class BeamGrowthStepEvent(BaseModel):
     phase_index: int
     mixer_name: str
 
-    # All parents being expanded (replaces base_layers)
-    # Format: [{"layers": [...], "score": float | None, "fixed": dict}, ...]
-    # The "fixed" dict maps layer_idx -> mixer_name for prior phase assignments
-    parents: tuple[dict, ...]
+    # All parents being expanded
+    parents: tuple[BeamEntry, ...]
 
-    # All candidates tried with provenance
-    # Format: [{"layer": int, "score": float, "parent_idx": int}, ...]
-    tried: tuple[dict, ...]
+    # All candidates tried with complete placement
+    tried: tuple[EvaluatedCandidate, ...]
 
     # Top-k after selection with provenance
-    # Format: [{"layers": [...], "score": float, "parent_idx": int, "added_layer": int, "fixed": dict}, ...]
-    beam: tuple[dict, ...]
+    beam: tuple[SelectedEntry, ...]
+
+    # Global best candidate (for highlighting) - None if tried is empty
+    best_candidate: EvaluatedCandidate | None
+
+    # Candidates that were pruned (not selected for beam), sorted by score descending
+    cut_candidates: tuple[EvaluatedCandidate, ...]
 
 
 class BestUpdatedEvent(BaseModel):
@@ -261,8 +321,7 @@ class BeamGrowthStepStartedEvent(BaseModel):
     mixer_name: str
     num_candidates: int  # How many candidates will be evaluated
     # Parents being expanded in this step
-    # Format: [{"layers": [...], "score": float | None, "fixed": dict}, ...]
-    parents: tuple[dict, ...]
+    parents: tuple[BeamEntry, ...]
 
 
 class CandidateEvaluatedEvent(BaseModel):
@@ -270,6 +329,10 @@ class CandidateEvaluatedEvent(BaseModel):
 
     Allows displays to stream results as they come in, showing progress
     within a step and the current best candidate.
+
+    The `placement` field contains the complete placement (all layers assigned)
+    that was evaluated, using the canonical representation where index=layer
+    and value=mixer name.
     """
 
     model_config = {"frozen": True}
@@ -283,6 +346,8 @@ class CandidateEvaluatedEvent(BaseModel):
     layer: int
     score: float
     parent_idx: int
+    # Complete placement that was scored
+    placement: tuple[str, ...]
     # Progress within step
     eval_index: int  # 1-based index of this eval within step
     total_evals: int  # Total evals expected in this step
@@ -315,4 +380,25 @@ AnySearchEvent = Annotated[
     | BoundsUpdatedEvent
     | SearchCompletedEvent,
     Field(discriminator="event_type"),
+]
+
+# Re-export beam entry types for use by search strategies
+__all__ = [
+    "BeamEntry",
+    "EvaluatedCandidate",
+    "SelectedEntry",
+    "AnySearchEvent",
+    # Event types
+    "SearchStartedEvent",
+    "AllocationStartedEvent",
+    "AllocationCompletedEvent",
+    "AllocationPlanEvent",
+    "PhaseStartedEvent",
+    "PhaseCompletedEvent",
+    "BeamGrowthStepStartedEvent",
+    "CandidateEvaluatedEvent",
+    "BeamGrowthStepEvent",
+    "BestUpdatedEvent",
+    "BoundsUpdatedEvent",
+    "SearchCompletedEvent",
 ]

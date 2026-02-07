@@ -42,6 +42,7 @@ from place_layers.search_strategy.progress.events import (
     SearchCompletedEvent,
     SearchStartedEvent,
 )
+from place_layers.search_strategy.progress.formatter import PlacementFormatterMixin
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -78,7 +79,7 @@ class PhaseData(BaseModel):
     completion_text: str | None = None  # Set when phase completes
 
 
-class RichSearchDisplay:
+class RichSearchDisplay(PlacementFormatterMixin):
     """Rich Live display for search progress.
 
     Uses the observer pattern to receive events from the search strategy
@@ -103,14 +104,15 @@ class RichSearchDisplay:
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
+        # Mixin attributes (set in on_search_started)
+        self._mixer_names: tuple[str, ...] = ()
+        self._num_layers: int = 0
 
         # State from events
         self._mode: str = ""
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._num_layers: int = 0
-        self._mixer_names: tuple[str, ...] = ()
         self._max_allocations: int = 0
 
         self._allocation_index: int = 0
@@ -260,7 +262,8 @@ class RichSearchDisplay:
 
         for i, entry in enumerate(self._leaderboard[:5], 1):  # Top 5
             alloc_str = self._format_allocation(entry.allocation)
-            placement_str = self._format_placement(entry.assignments)
+            by_mixer = self._group_layers_by_mixer(entry.assignments)
+            placement_str = self._format_placement(by_mixer)
             table.add_row(
                 str(i),
                 f"{entry.score:.4f}",
@@ -373,10 +376,10 @@ class RichSearchDisplay:
             self._console.print("[dim]  No valid placement found for this allocation[/dim]")
             return
 
-        # Format assignments by mixer in canonical order using _format_placement
-        # which accepts dict[str, tuple[int, ...]] format
+        # Format assignments by mixer in canonical order
+        by_mixer = self._group_layers_by_mixer(event.assignments)
         placement_str = self._format_placement(
-            event.assignments_by_mixer, max_layers_per_mixer=8, escape_brackets=True
+            by_mixer, max_layers_per_mixer=8, escape_brackets=True
         )
 
         self._console.print(
@@ -384,161 +387,10 @@ class RichSearchDisplay:
             f"{placement_str} → {event.score:.4g}"
         )
 
-    # =========================================================================
-    # Formatting primitives and building blocks
-    # =========================================================================
-
-    def _format_layer_list(
-        self, layers: tuple[int, ...] | list[int], max_show: int = 10
-    ) -> str:
-        """Format a list of layer indices compactly.
-
-        Args:
-            layers: Layer indices to format
-            max_show: Maximum layers to show before truncating
-
-        Returns:
-            Comma-separated string like "1,2,3" or "1,2,...,9" if truncated
-        """
-        if len(layers) <= max_show:
-            return ",".join(str(l) for l in layers)
-        first_half = max_show // 2
-        return ",".join(str(l) for l in layers[:first_half]) + f",...,{layers[-1]}"
-
-    def _format_layer_assignment(
-        self,
-        mixer: str,
-        layers: tuple[int, ...] | list[int],
-        max_show: int = 10,
-        escape_brackets: bool = False,
-    ) -> str:
-        """Format a single mixer's layer assignment.
-
-        Args:
-            mixer: Mixer name (e.g., "FA", "SWA")
-            layers: Layer indices assigned to this mixer
-            max_show: Maximum layers to show before truncating
-            escape_brackets: Whether to escape brackets for Rich markup
-
-        Returns:
-            String like "FA@[1,2,3]" or "FA@\\[1,2,3]" if escaped
-        """
-        layers_str = self._format_layer_list(layers, max_show)
-        bracket = "\\[" if escape_brackets else "["
-        return f"{mixer}@{bracket}{layers_str}]"
-
-    def _group_layers_by_mixer(
-        self,
-        assignments: tuple[str, ...] | dict[int, str],
-    ) -> dict[str, list[int]]:
-        """Group layer indices by their assigned mixer.
-
-        Args:
-            assignments: Either per-layer tuple or dict mapping layer→mixer
-
-        Returns:
-            Dict mapping mixer name to sorted list of layer indices
-        """
-        by_mixer: dict[str, list[int]] = {}
-
-        if isinstance(assignments, dict):
-            # dict[int, str] format (layer → mixer)
-            for layer, mixer in assignments.items():
-                by_mixer.setdefault(mixer, []).append(layer)
-        else:
-            # tuple[str, ...] format (index = layer, value = mixer)
-            for layer_idx, mixer in enumerate(assignments):
-                by_mixer.setdefault(mixer, []).append(layer_idx)
-
-        # Sort layers within each mixer
-        for layers in by_mixer.values():
-            layers.sort()
-
-        return by_mixer
-
-    def _format_context_string(
-        self,
-        prior_assignments: dict[int, str],
-        current_mixer: str | None,
-        current_layers: tuple[int, ...] | list[int],
-        max_show: int = 6,
-    ) -> str:
-        """Format combined prior and current phase context for display.
-
-        Args:
-            prior_assignments: Dict mapping layer→mixer for prior phase assignments
-            current_mixer: Current phase mixer name (or None)
-            current_layers: Current phase layer indices
-            max_show: Maximum layers to show per mixer before truncating
-
-        Returns:
-            String like " ([dim]FA@[0,5][/dim], SWA@[1,2,3])" or "" if empty.
-        """
-        prior_ctx = ""
-        if prior_assignments:
-            by_mixer = self._group_layers_by_mixer(prior_assignments)
-            parts = [
-                self._format_layer_assignment(m, by_mixer[m], max_show, escape_brackets=True)
-                for m in self._mixer_names
-                if m in by_mixer
-            ]
-            prior_ctx = ", ".join(parts)
-
-        current_ctx = ""
-        if current_mixer and current_layers:
-            current_ctx = self._format_layer_assignment(
-                current_mixer, current_layers, max_show, escape_brackets=True
-            )
-
-        if prior_ctx and current_ctx:
-            return f" ([dim]{prior_ctx}[/dim], {current_ctx})"
-        elif prior_ctx:
-            return f" ([dim]{prior_ctx}[/dim])"
-        elif current_ctx:
-            return f" ({current_ctx})"
-        return ""
-
-    def _format_allocation(self, allocation: tuple[int, ...]) -> str:
-        """Format allocation as 'FA:2 SWA:1 GDN:7'."""
-        parts = [f"{name}:{count}" for name, count in zip(self._mixer_names, allocation)]
-        return " ".join(parts)
-
-    def _format_placement(
-        self,
-        assignments: tuple[str, ...] | dict[str, tuple[int, ...]],
-        max_layers_per_mixer: int = 10,
-        escape_brackets: bool = False,
-    ) -> str:
-        """Format per-layer assignments as grouped placement string.
-
-        Args:
-            assignments: Either per-layer tuple (index=layer, value=mixer)
-                        or dict mapping mixer→layers (for pre-grouped data)
-            max_layers_per_mixer: Max layers to show per mixer before truncating
-            escape_brackets: Whether to escape brackets for Rich markup
-
-        Returns:
-            String like "FA@[0,2], GDN@[1], SWA@[3,4,5]"
-        """
-        # Handle pre-grouped dict format
-        if isinstance(assignments, dict):
-            by_mixer = {mixer: list(layers) for mixer, layers in assignments.items()}
-        else:
-            by_mixer = self._group_layers_by_mixer(assignments)
-
-        # Format in canonical mixer_names order
-        parts = []
-        for mixer in self._mixer_names:
-            if mixer in by_mixer:
-                parts.append(
-                    self._format_layer_assignment(
-                        mixer, by_mixer[mixer], max_layers_per_mixer, escape_brackets
-                    )
-                )
-        return ", ".join(parts)
-
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the expand section of a beam step as text."""
+        from place_layers.search_strategy.progress.events import EvaluatedCandidate
+
         lines = []
         # Use unified B naming and show step context
         if event.step == 1:
@@ -547,46 +399,42 @@ class RichSearchDisplay:
             lines.append(f"Expand beam from step {event.step - 1}:")
 
         # Group tried candidates by parent_idx
-        tried_by_parent: dict[int, list[dict]] = {}
+        tried_by_parent: dict[int, list[EvaluatedCandidate]] = {}
         for t in event.tried:
-            parent_idx = t.get("parent_idx", 0)
-            if parent_idx not in tried_by_parent:
-                tried_by_parent[parent_idx] = []
-            tried_by_parent[parent_idx].append(t)
+            if t.parent_idx not in tried_by_parent:
+                tried_by_parent[t.parent_idx] = []
+            tried_by_parent[t.parent_idx].append(t)
 
         # Sort each parent's tried list by score descending
         for parent_idx in tried_by_parent:
-            tried_by_parent[parent_idx].sort(key=lambda x: x["score"], reverse=True)
+            tried_by_parent[parent_idx].sort(key=lambda x: x.score, reverse=True)
 
-        # Find global best across all tried candidates
-        global_best = max(event.tried, key=lambda x: x["score"]) if event.tried else None
-        global_best_key = (
-            (global_best["parent_idx"], global_best["layer"]) if global_best else None
-        )
+        # Use best_candidate from event for highlighting
+        best = event.best_candidate
+        global_best_key = (best.parent_idx, best.layer) if best else None
 
         # Show each parent and its tried candidates
         for parent_idx, parent in enumerate(event.parents):
-            parent_layers = parent.get("layers", [])
-
-            # Use helper to format context string
-            context_str = self._format_context_string(
-                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
+            # Format parent's partial placement
+            by_mixer = self._group_layers_by_mixer(parent.partial_placement)
+            parent_placement_str = self._format_placement(
+                by_mixer, max_layers_per_mixer=6, escape_brackets=True
             )
+            context_str = f" ({parent_placement_str})" if parent_placement_str else ""
 
-            # Format tried candidates for this parent
+            lines.append(f"  B{parent_idx}{context_str}:")
+
+            # Format tried candidates for this parent, one per line
             tried_list = tried_by_parent.get(parent_idx, [])
-            tried_parts = []
             for t in tried_list[:5]:
-                is_global_best = (parent_idx, t["layer"]) == global_best_key
+                is_global_best = (parent_idx, t.layer) == global_best_key
+                diff = self._format_placement_diff(parent.partial_placement, t.placement)
                 if is_global_best:
-                    tried_parts.append(f"[green]+{t['layer']}→{t['score']:.4g}★[/green]")
+                    lines.append(f"    [green]B{parent_idx} + {diff} ({t.score:.4g})★[/green]")
                 else:
-                    tried_parts.append(f"+{t['layer']}→{t['score']:.4g}")
-            tried_str = "  ".join(tried_parts)
+                    lines.append(f"    B{parent_idx} + {diff} ({t.score:.4g})")
             if len(tried_list) > 5:
-                tried_str += "  [dim]...[/dim]"
-
-            lines.append(f"  B{parent_idx}{context_str}: {tried_str}")
+                lines.append(f"    [dim]...+{len(tried_list) - 5} more[/dim]")
 
         return "\n".join(lines)
 
@@ -597,42 +445,22 @@ class RichSearchDisplay:
         lines.append(f"Prune to {beam_size}:")
 
         for i, b in enumerate(event.beam):
-            parent_idx = b.get("parent_idx", 0)
-            added_layer = b.get("added_layer", "?")
-
-            # Get parent's layers and append the added layer
-            parent = event.parents[parent_idx] if parent_idx < len(event.parents) else {}
-            parent_layers = list(parent.get("layers", []))
-            if added_layer != "?":
-                parent_layers.append(added_layer)
-
-            # Use helper to format context string
-            context_str = self._format_context_string(
-                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
-            )
-
-            # Show lineage: B0 ← B{parent}+{layer}
-            lineage = f"← B{parent_idx}+{added_layer}"
+            # Show lineage using diff from parent: B0 ← B0 + FA@6 (score)
+            parent_partial = event.parents[b.parent_idx].partial_placement
+            diff = self._format_placement_diff(parent_partial, b.partial_placement)
 
             if i == 0:
-                lines.append(f"  [green]B{i} {lineage}{context_str} → {b['score']:.4g}★[/green]")
+                lines.append(f"  [green]B{i} ← B{b.parent_idx} + {diff} ({b.score:.4g})★[/green]")
             else:
-                lines.append(f"  B{i} {lineage}{context_str} → {b['score']:.4g}")
+                lines.append(f"  B{i} ← B{b.parent_idx} + {diff} ({b.score:.4g})")
 
-        # Show runners-up (candidates that just missed the cut)
-        beam_keys = {(b.get("parent_idx"), b.get("added_layer")) for b in event.beam}
-        cut_candidates = [
-            t
-            for t in event.tried
-            if (t.get("parent_idx"), t["layer"]) not in beam_keys
-        ]
-        # Sort by score descending to show runners-up first
-        cut_candidates.sort(key=lambda x: x["score"], reverse=True)
+        # Use cut_candidates from event (already sorted by score descending)
+        cut_candidates = event.cut_candidates
 
         if cut_candidates:
             # Show top 2-3 runners-up in compact format
             shown = cut_candidates[:3]
-            cut_parts = [f"+{c['layer']}→{c['score']:.4g}" for c in shown]
+            cut_parts = [f"+{c.layer}→{c.score:.4g}" for c in shown]
             cut_str = ", ".join(cut_parts)
 
             remaining = len(cut_candidates) - len(shown)
@@ -671,7 +499,8 @@ class RichSearchDisplay:
 
             for i, entry in enumerate(self._leaderboard, 1):
                 alloc_str = self._format_allocation(entry.allocation)
-                placement_str = self._format_placement(entry.assignments)
+                by_mixer = self._group_layers_by_mixer(entry.assignments)
+                placement_str = self._format_placement(by_mixer)
                 leaderboard_table.add_row(
                     str(i),
                     f"{entry.score:.4f}",
@@ -704,12 +533,12 @@ class RichSearchDisplay:
 
     def on_search_started(self, event: SearchStartedEvent) -> None:
         """Handle search started event."""
+        self._mixer_names = event.mixer_names
+        self._num_layers = event.num_layers
         self._mode = event.mode
         self._constraint_value = event.constraint_value
         self._min_cost = event.min_cost
         self._max_cost = event.max_cost
-        self._num_layers = event.num_layers
-        self._mixer_names = event.mixer_names
         self._max_allocations = event.max_allocations
 
         # Initialize bounds from event (may be None if not provided)
@@ -868,7 +697,7 @@ class RichSearchDisplay:
     def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
         """Handle phase completed event."""
         if self._current_phase is not None:
-            # Use building block for consistent formatting
+            # Use formatter for consistent formatting
             assignment_str = self._format_layer_assignment(
                 event.mixer_name, event.final_layers, max_show=10, escape_brackets=True
             )
