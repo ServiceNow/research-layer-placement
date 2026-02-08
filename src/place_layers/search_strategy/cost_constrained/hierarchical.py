@@ -378,6 +378,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         # Track all tried candidates with parent_idx for event reporting
         all_tried: list[dict] = []
 
+        # Calculate total evals across all parents for progress reporting
+        total_evals = sum(len(e["unassigned"]) for e in beam)
+        eval_offset = 0
+
         for parent_idx, entry in enumerate(beam):
             if not entry["unassigned"]:
                 continue
@@ -393,7 +397,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 step=1,
                 total_steps=budget,
                 phase_index=phase_index,
+                eval_offset=eval_offset,
+                total_evals=total_evals,
             )
+            eval_offset += len(entry["unassigned"])
 
             # Track all layer scores with parent_idx and placement for event reporting
             for layer_idx, score, placement in layer_scores:
@@ -539,6 +546,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         step: int = 1,
         total_steps: int = 1,
         phase_index: int = 1,
+        eval_offset: int = 0,
+        total_evals: int | None = None,
     ) -> list[tuple[int, float, tuple[str, ...]]]:
         """Pre-score individual layers to seed the beam.
 
@@ -546,9 +555,11 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             List of (layer_idx, score, complete_placement) tuples, sorted by score.
         """
         layer_scores: list[tuple[int, float, tuple[str, ...]]] = []
-        total_evals = len(unassigned)
+        if total_evals is None:
+            total_evals = len(unassigned)
 
-        for eval_idx, layer_idx in enumerate(unassigned, 1):
+        for local_idx, layer_idx in enumerate(unassigned, 1):
+            eval_idx = eval_offset + local_idx
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],

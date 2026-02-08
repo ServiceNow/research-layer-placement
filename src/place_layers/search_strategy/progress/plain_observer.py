@@ -15,8 +15,8 @@ Output format (with phases/steps/leaderboard enabled):
     [14:30:23]       B0: (no assignments)
     [14:30:23]     Step 1/12: Evaluating 48 candidates...
     [14:30:23]     Step 1/12: [10/48] B0 + FA@1 + GDN@[0,2,...,47] (5.1), ...
-    [14:30:23]     Step 1/12: [48/48] done B0 + FA@45 + GDN@[0,1,...,44] (4.9), ...
-    [14:30:23]     Step 1/12: Prune ->
+    [14:30:23]     Step 1/12: [48/48] B0 + FA@45 + GDN@[0,1,...,44] (4.9), ...
+    [14:30:23]     Step 1/12: Prune
     [14:30:23]       B0 <- B0 + FA@6 (5.2)*
     [14:30:23]       B1 <- B0 + FA@16 (4.8)
     [14:30:45]   PHASE 1/2 COMPLETE: FA@[0,2,4,6,...] -> 0.8234
@@ -302,10 +302,9 @@ class PlainObserver(PlacementFormatterMixin):
                 candidate_strs.append(f"B{parent_idx} + {diff} ({score:.3g})")
             candidates_str = ", ".join(candidate_strs)
 
-            status = "done " if at_end else ""
             self._print_line(
                 f"Step {event.step}/{event.total_steps}: "
-                f"[{event.eval_index}/{event.total_evals}] {status}{candidates_str}",
+                f"[{event.eval_index}/{event.total_evals}] {candidates_str}",
                 indent=2,
             )
             # Clear buffer after printing
@@ -319,7 +318,7 @@ class PlainObserver(PlacementFormatterMixin):
         # Print all beam entries, one per line (no limit)
         if event.beam:
             self._print_line(
-                f"Step {event.step}/{event.total_steps}: Prune ->",
+                f"Step {event.step}/{event.total_steps}: Prune",
                 indent=2,
             )
             for i, entry in enumerate(event.beam):
