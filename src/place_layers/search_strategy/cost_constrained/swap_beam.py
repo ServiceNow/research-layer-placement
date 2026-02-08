@@ -60,12 +60,16 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation using swap-based beam search.
 
         Uses beam search to explore different ways of assigning layers to mixers
         while maintaining the same allocation (counts per mixer).
+
+        Returns:
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names
@@ -134,8 +138,11 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
 
             beam = new_beam
 
-        # Return best entry found
-        return max(beam, key=lambda e: e.score) if beam else None
+        # Return all beam entries sorted by score descending
+        if not beam:
+            return []
+        beam.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        return beam
 
     def _generate_allocation_preserving_swaps(
         self,

@@ -189,7 +189,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation using unified beam search.
 
@@ -199,6 +199,10 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         eliminated regardless of their history.
 
         Phase order is determined by the order of keys in mixer_costs config, not alphabetical.
+
+        Returns:
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names  # Canonical order for allocations
@@ -261,7 +265,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
             if not beam:
                 # No valid entries remain
-                return None
+                return []
 
             # Emit phase completed event
             if self.observers:
@@ -291,28 +295,35 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             # Increment after phase completes (0-based indexing)
             running_phase_idx += 1
 
-        # Take best entry for final assignment
-        best_entry = beam[0]
-
-        # Assign remaining layers to the last mixer (last in phase_order)
+        # Finalize ALL beam entries for the leaderboard
         last_mixer = phase_order[-1]
-        for layer_idx in best_entry["unassigned"]:
-            best_entry["fixed"][layer_idx] = last_mixer
+        results: list[BeamEntry] = []
 
-        # Build final assignment list
-        assignments = [best_entry["fixed"][i] for i in range(num_layers)]
+        for entry in beam:
+            # Assign remaining layers to the last mixer (last in phase_order)
+            for layer_idx in entry["unassigned"]:
+                entry["fixed"][layer_idx] = last_mixer
 
-        # Final evaluation
-        placement = LayerPlacement(assignments=tuple(assignments))
-        final_score = await problem.evaluate(placement)
-        self.eval_count += 1
+            # Build final assignment list
+            assignments = [entry["fixed"][i] for i in range(num_layers)]
 
-        return BeamEntry(
-            assignments=tuple(assignments),
-            allocation=allocation,
-            cost=alloc_cost,
-            score=final_score,
-        )
+            # Final evaluation
+            placement = LayerPlacement(assignments=tuple(assignments))
+            final_score = await problem.evaluate(placement)
+            self.eval_count += 1
+
+            results.append(
+                BeamEntry(
+                    assignments=tuple(assignments),
+                    allocation=allocation,
+                    cost=alloc_cost,
+                    score=final_score,
+                )
+            )
+
+        # Sort by score descending (higher is better)
+        results.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        return results
 
     async def _run_phase(
         self,

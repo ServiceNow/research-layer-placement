@@ -3,5 +3,5 @@
 
 defaults:
   - /observer@display: rich
-  - /observer@log.0: disk
+  - /observer@log.disk: disk
   - _self_

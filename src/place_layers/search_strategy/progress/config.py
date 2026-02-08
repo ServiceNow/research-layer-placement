@@ -36,9 +36,33 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Annotated, Any, Generator, Literal
+from types import TracebackType
+from typing import TYPE_CHECKING, Annotated, ClassVar, Generator, Literal, Protocol, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from place_layers.search_strategy.progress.event_disk_writer import EventDiskWriter
+    from place_layers.search_strategy.progress.layermap_display import LayermapDisplay
+    from place_layers.search_strategy.progress.plain_display import PlainDisplay
+    from place_layers.search_strategy.progress.protocol import SearchObserver
+    from place_layers.search_strategy.progress.rich_display import RichDisplay
+
+
+class ObserverContextManager(Protocol):
+    """Protocol for observers that are also context managers.
+
+    Observers must implement both the SearchObserver protocol and be usable
+    as context managers for proper lifecycle management.
+    """
+
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...
 
 
 class BaseObserverConfig(BaseModel):
@@ -48,16 +72,14 @@ class BaseObserverConfig(BaseModel):
 
     observer_type: str = Field(description="Type identifier for observer")
 
-    def create_observer(self) -> Any:
+    # Subclasses must set this to their implementation class
+    _impl_class: ClassVar[type[ObserverContextManager]]
+
+    def create_observer(self) -> "SearchObserver":
         """Smart constructor. No args - all config-driven.
 
-        Returns an object that implements both SearchObserver protocol
+        Returns an object that implements the SearchObserver protocol
         and the context manager protocol (__enter__/__exit__).
-
-        Note: Return type is Any because the concrete types implement both
-        SearchObserver (a Protocol) and context manager, but there's no
-        way to express this intersection in Python's type system without
-        creating a combined Protocol.
         """
         raise NotImplementedError
 
@@ -71,16 +93,49 @@ class RichDisplayConfig(BaseObserverConfig):
 
     observer_type: Literal["rich"] = "rich"
 
-    def create_observer(self) -> Any:
-        """Create RichSearchDisplay instance."""
+    def create_observer(self) -> "RichDisplay":
+        """Create RichDisplay instance."""
         from place_layers.search_strategy.progress.rich_display import (
-            RichSearchDisplay,
+            RichDisplay,
         )
 
-        return RichSearchDisplay()
+        return RichDisplay()
 
 
-class PlainObserverConfig(BaseObserverConfig):
+class LayermapDisplayConfig(BaseObserverConfig):
+    """Layermap ASCII visualization of placement search.
+
+    Displays layer placements as character grids with animation during
+    evaluation. Each layer is shown as a character, with color indicating
+    mixer type and highlighting for the layer being evaluated.
+
+    Two character styles are available:
+    - blocks: Dense visual using block characters (default)
+    - letters: Explicit mixer names using first letter of each mixer
+
+    Example output (blocks mode):
+        Allocation 1/10: FA:5 SWA:3 GDN:40  |  Phase 1/2: +FA  |  Step 3/5
+        ────────────────────────────────────────────────────────────────────
+        B0: ██░░██░░░░██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  -4.52
+        B1: ██░░░░██░░██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  -4.38 ★
+        B2: ░░██░░██░░██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  -4.61
+                 ▲ evaluating
+    """
+
+    observer_type: Literal["layermap"] = "layermap"
+    char_style: Literal["blocks", "letters"] = Field(
+        default="blocks",
+        description="Character style: 'blocks' (solid/dim) or 'letters' (F/S/G)",
+    )
+
+    def create_observer(self) -> "LayermapDisplay":
+        """Create LayermapDisplay instance."""
+        from place_layers.search_strategy.progress.layermap_display import LayermapDisplay
+
+        return LayermapDisplay(config=self)
+
+
+class PlainDisplayConfig(BaseObserverConfig):
     """Plain text output for headless jobs.
 
     Produces simple timestamped log lines without cursor manipulation,
@@ -142,11 +197,11 @@ class PlainObserverConfig(BaseObserverConfig):
         description="strftime format for timestamps",
     )
 
-    def create_observer(self) -> Any:
-        """Create PlainObserver instance."""
-        from place_layers.search_strategy.progress.plain_observer import PlainObserver
+    def create_observer(self) -> "PlainDisplay":
+        """Create PlainDisplay instance."""
+        from place_layers.search_strategy.progress.plain_display import PlainDisplay
 
-        return PlainObserver(config=self)
+        return PlainDisplay(config=self)
 
 
 class DiskWriterConfig(BaseObserverConfig):
@@ -163,7 +218,7 @@ class DiskWriterConfig(BaseObserverConfig):
         description="Name of the output file",
     )
 
-    def create_observer(self) -> Any:
+    def create_observer(self) -> "EventDiskWriter":
         """Create EventDiskWriter instance."""
         from place_layers.search_strategy.progress.event_disk_writer import (
             EventDiskWriter,
@@ -175,10 +230,10 @@ class DiskWriterConfig(BaseObserverConfig):
 # === Typed unions per semantic role ===
 
 DisplayObserverConfig = Annotated[
-    RichDisplayConfig | PlainObserverConfig,
+    RichDisplayConfig | PlainDisplayConfig | LayermapDisplayConfig,
     Field(discriminator="observer_type"),
 ]
-"""Union of display observer configs (rich | plain).
+"""Union of display observer configs (rich | plain | layermap).
 
 Display observers provide terminal output for interactive use.
 Only one display observer should be active at a time.
@@ -202,8 +257,8 @@ class ObserversConfig(BaseModel):
     """Container for all observer configurations.
 
     Enforces semantics via typed fields:
-    - display: single optional display observer (rich or plain)
-    - log: sequence of log observers (disk, etc.)
+    - display: single optional display observer (rich, plain, or layermap)
+    - log: dict of named log observers (e.g. {"disk": DiskWriterConfig(...)})
 
     All observers are context managers by contract.
 
@@ -215,28 +270,10 @@ class ObserversConfig(BaseModel):
     model_config = {"frozen": True}
 
     display: DisplayObserverConfig | None = None
-    log: list[LogObserverConfig] = []
-
-    @field_validator("log", mode="before")
-    @classmethod
-    def convert_log_dict_to_list(cls, v: Any) -> Any:
-        """Convert dict with numeric string keys to list.
-
-        Hydra converts YAML lists with @package notation to dicts with
-        keys like {'0': {...}, '1': {...}}. This validator handles that.
-        """
-        if isinstance(v, dict):
-            # Sort by numeric key to maintain order
-            try:
-                sorted_items = sorted(v.items(), key=lambda x: int(x[0]))
-                return [item[1] for item in sorted_items]
-            except (ValueError, TypeError):
-                # Keys aren't numeric, let Pydantic handle the error
-                return v
-        return v
+    log: dict[str, LogObserverConfig] = {}
 
     @contextmanager
-    def create_observers(self) -> Generator[list[Any], None, None]:
+    def create_observers(self) -> Generator[list["SearchObserver"], None, None]:
         """Context manager: creates all observers and manages their lifecycle.
 
         All observers are context managers by contract. This method handles
@@ -256,9 +293,9 @@ class ObserversConfig(BaseModel):
                 result = await search_strategy.search(problem)
         """
         with ExitStack() as stack:
-            observers: list[Any] = []
+            observers: list[SearchObserver] = []
             if self.display is not None:
                 observers.append(stack.enter_context(self.display.create_observer()))
-            for log_config in self.log:
+            for log_config in self.log.values():
                 observers.append(stack.enter_context(log_config.create_observer()))
             yield observers

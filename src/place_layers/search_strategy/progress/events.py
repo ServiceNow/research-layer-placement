@@ -169,7 +169,8 @@ class AllocationStartedEvent(BaseModel):
 class AllocationCompletedEvent(BaseModel):
     """Emitted when search within an allocation completes.
 
-    Contains the final placement found for this allocation.
+    Contains the final placement found for this allocation, plus all top
+    placements from the beam for global leaderboard tracking.
     """
 
     model_config = {"frozen": True}
@@ -182,6 +183,9 @@ class AllocationCompletedEvent(BaseModel):
     # Final assignments - tuple of mixer names, one per layer
     assignments: tuple[str, ...] | None  # None if no valid assignment found
     score: float | None  # None if no valid assignment found
+    # All top placements from this allocation (sorted by score descending)
+    # Each entry is (assignments, score)
+    top_placements: tuple[tuple[tuple[str, ...], float], ...] = ()
 
 
 class PhaseStartedEvent(BaseModel):

@@ -79,7 +79,7 @@ class PhaseData(BaseModel):
     completion_text: str | None = None  # Set when phase completes
 
 
-class RichSearchDisplay(PlacementFormatterMixin):
+class RichDisplay(PlacementFormatterMixin):
     """Rich Live display for search progress.
 
     Uses the observer pattern to receive events from the search strategy
@@ -90,7 +90,7 @@ class RichSearchDisplay(PlacementFormatterMixin):
     - Current state is shown in a live display at the bottom
 
     Usage:
-        with RichSearchDisplay() as display:
+        with RichDisplay() as display:
             search_strategy = create_search_strategy(observer=display)
             await search_strategy.search(problem)
     """
@@ -144,7 +144,7 @@ class RichSearchDisplay(PlacementFormatterMixin):
         self._current_step: int = 0
         self._current_total_steps: int = 0
 
-    def __enter__(self) -> "RichSearchDisplay":
+    def __enter__(self) -> "RichDisplay":
         """Start the Live display."""
         self._live = Live(
             self._build_display(),
@@ -606,17 +606,21 @@ class RichSearchDisplay(PlacementFormatterMixin):
         # Print allocation completion summary
         self._print_allocation_complete(event)
 
-        # Add to leaderboard if valid result
-        if event.score is not None and event.assignments is not None:
+        # Add ALL placements from this allocation to leaderboard
+        for assignments, score in event.top_placements:
             entry = LeaderboardEntry(
-                score=event.score,
+                score=score,
                 cost=event.allocation_cost,
                 allocation=event.allocation,
-                assignments=event.assignments,
+                assignments=assignments,
             )
             self._leaderboard.append(entry)
-            # Sort by score descending
-            self._leaderboard.sort(key=lambda e: e.score, reverse=True)
+
+        # Sort globally by score descending
+        self._leaderboard.sort(key=lambda e: e.score, reverse=True)
+
+        # Trim to bound memory (keep top 50)
+        self._leaderboard = self._leaderboard[:50]
 
         # Clear phases for next allocation
         self._completed_phases = []

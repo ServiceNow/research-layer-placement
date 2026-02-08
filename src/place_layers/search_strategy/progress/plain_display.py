@@ -1,7 +1,7 @@
-"""Plain text observer for headless search jobs.
+"""Plain text display for headless search jobs.
 
-This module provides a simple observer that prints timestamped log lines
-for search progress. Unlike RichSearchDisplay, it uses no cursor manipulation,
+This module provides a simple display that prints timestamped log lines
+for search progress. Unlike RichDisplay, it uses no cursor manipulation,
 spinners, or progress bars - just plain print statements suitable for
 CI/CD pipelines, batch jobs, and log files.
 
@@ -33,9 +33,9 @@ Notation:
 - Prune outputs show lineage: `B0 <- B1 + FA@6`
 
 Usage:
-    from place_layers.search_strategy.progress import PlainObserver, PlainObserverConfig
+    from place_layers.search_strategy.progress import PlainDisplay, PlainDisplayConfig
 
-    config = PlainObserverConfig(
+    config = PlainDisplayConfig(
         show_allocation_start=True,
         show_allocation_complete=True,
         show_best_updated=True,
@@ -59,7 +59,7 @@ from place_layers.search_strategy.progress.formatter import PlacementFormatterMi
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from place_layers.search_strategy.progress.config import PlainObserverConfig
+    from place_layers.search_strategy.progress.config import PlainDisplayConfig
     from place_layers.search_strategy.progress.events import (
         AllocationCompletedEvent,
         AllocationPlanEvent,
@@ -76,8 +76,8 @@ if TYPE_CHECKING:
     )
 
 
-class PlainObserver(PlacementFormatterMixin):
-    """Plain text observer for headless search jobs.
+class PlainDisplay(PlacementFormatterMixin):
+    """Plain text display for headless search jobs.
 
     Produces simple timestamped log lines without terminal manipulation.
     Implements the SearchObserver protocol and context manager protocol.
@@ -90,8 +90,8 @@ class PlainObserver(PlacementFormatterMixin):
     The show_* config options control which events are printed.
     """
 
-    def __init__(self, config: "PlainObserverConfig") -> None:
-        """Initialize the plain observer.
+    def __init__(self, config: "PlainDisplayConfig") -> None:
+        """Initialize the plain display.
 
         Args:
             config: Configuration controlling which events to show.
@@ -117,7 +117,7 @@ class PlainObserver(PlacementFormatterMixin):
         # Parent placements for current step (for diff formatting)
         self._step_parents: tuple[tuple[str | None, ...], ...] = ()
 
-    def __enter__(self) -> "PlainObserver":
+    def __enter__(self) -> "PlainDisplay":
         """Enter context manager (no-op)."""
         return self
 
@@ -180,7 +180,7 @@ class PlainObserver(PlacementFormatterMixin):
             self._print_line(f"Mixers: {mixer_str}", indent=1)
 
     def on_allocation_plan(self, event: "AllocationPlanEvent") -> None:
-        """Handle allocation plan event (no-op for plain observer)."""
+        """Handle allocation plan event (no-op for plain display)."""
         del event  # Not displayed in plain mode
 
     def on_allocation_started(self, event: "AllocationStartedEvent") -> None:
@@ -195,17 +195,18 @@ class PlainObserver(PlacementFormatterMixin):
 
     def on_allocation_completed(self, event: "AllocationCompletedEvent") -> None:
         """Handle allocation completed event."""
-        # Track for leaderboard
-        if event.score is not None and event.assignments is not None:
-            by_mixer = self._group_layers_by_mixer(event.assignments)
+        # Add ALL placements from this allocation to leaderboard
+        for assignments, score in event.top_placements:
+            by_mixer = self._group_layers_by_mixer(assignments)
             placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
             self._leaderboard.append(
-                (event.score, event.allocation_cost, event.allocation, placement_str)
+                (score, event.allocation_cost, event.allocation, placement_str)
             )
-            # Keep sorted by score descending
-            self._leaderboard.sort(key=lambda x: x[0], reverse=True)
-            # Keep only top 5
-            self._leaderboard = self._leaderboard[:5]
+
+        # Sort globally by score descending
+        self._leaderboard.sort(key=lambda x: x[0], reverse=True)
+        # Trim to bound memory (keep top 50)
+        self._leaderboard = self._leaderboard[:50]
 
         if self._config.show_allocation_complete:
             alloc_str = self._format_allocation(event.allocation)
@@ -342,7 +343,7 @@ class PlainObserver(PlacementFormatterMixin):
             )
 
     def on_bounds_updated(self, event: "BoundsUpdatedEvent") -> None:
-        """Handle bounds updated event (no-op for plain observer)."""
+        """Handle bounds updated event (no-op for plain display)."""
         del event  # Not displayed in plain mode
 
     def on_search_completed(self, event: "SearchCompletedEvent") -> None:
@@ -366,5 +367,5 @@ class PlainObserver(PlacementFormatterMixin):
                 )
 
     def on_eval_completed(self, eval_count: int) -> None:
-        """Handle evaluation completed (no-op for plain observer)."""
+        """Handle evaluation completed (no-op for plain display)."""
         del eval_count  # Not displayed in plain mode

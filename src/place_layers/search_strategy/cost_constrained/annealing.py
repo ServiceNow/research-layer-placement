@@ -73,12 +73,16 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation using simulated annealing.
 
         Performs a random walk through assignment space, accepting moves based
         on the Metropolis criterion.
+
+        Returns:
+            List containing a single BeamEntry result (SA only tracks best),
+            or empty list if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names
@@ -93,12 +97,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
-            return BeamEntry(
-                assignments=tuple(assignments),
-                allocation=allocation,
-                cost=alloc_cost,
-                score=score,
-            )
+            return [
+                BeamEntry(
+                    assignments=tuple(assignments),
+                    allocation=allocation,
+                    cost=alloc_cost,
+                    score=score,
+                )
+            ]
 
         # Initialize with canonical assignment
         current = list(self._allocation_to_assignment(allocation, num_layers, mixer_names))
@@ -151,12 +157,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             if temperature < self.config.min_temperature:
                 break
 
-        return BeamEntry(
-            assignments=tuple(best),
-            allocation=allocation,
-            cost=alloc_cost,
-            score=best_score,
-        )
+        return [
+            BeamEntry(
+                assignments=tuple(best),
+                allocation=allocation,
+                cost=alloc_cost,
+                score=best_score,
+            )
+        ]
 
     def _group_layers_by_mixer(
         self, allocation: Allocation, mixer_names: list[str]

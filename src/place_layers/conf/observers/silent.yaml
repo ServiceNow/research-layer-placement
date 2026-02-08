@@ -2,7 +2,7 @@
 # Silent preset: No terminal output, only disk logging
 
 defaults:
-  - /observer@log.0: disk
+  - /observer@log.disk: disk
   - _self_
 
 display: null

@@ -267,12 +267,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             evals_before = self.eval_count
 
             # Search for best assignment within this allocation
-            best_in_allocation = await self._search_within_allocation(
+            beam_results = await self._search_within_allocation(
                 problem=problem,
                 cost_model=cost_model,
                 allocation=allocation,
                 num_layers=num_layers,
             )
+            best_in_allocation = beam_results[0] if beam_results else None
 
             # Emit bounds update if progress estimator is present
             if self._progress_estimator is not None and self.observers:
@@ -309,6 +310,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     AllocationCompletedEvent,
                 )
 
+                # Build top_placements from all beam entries with valid scores
+                top_placements = tuple(
+                    (entry.assignments, entry.score)
+                    for entry in beam_results
+                    if entry.score is not None
+                )
+
                 event = AllocationCompletedEvent(
                     allocation_index=allocations_explored,
                     allocation=allocation,
@@ -324,6 +332,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         if best_in_allocation is not None
                         else None
                     ),
+                    top_placements=top_placements,
                 )
                 for observer in self.observers:
                     observer.on_allocation_completed(event)
@@ -455,12 +464,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             evals_before = self.eval_count
 
             # Search for best assignment within this allocation
-            best_in_allocation = await self._search_within_allocation(
+            beam_results = await self._search_within_allocation(
                 problem=problem,
                 cost_model=cost_model,
                 allocation=allocation,
                 num_layers=num_layers,
             )
+            best_in_allocation = beam_results[0] if beam_results else None
 
             # Emit bounds update if progress estimator is present
             if self._progress_estimator is not None and self.observers:
@@ -497,6 +507,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     AllocationCompletedEvent,
                 )
 
+                # Build top_placements from all beam entries with valid scores
+                top_placements = tuple(
+                    (entry.assignments, entry.score)
+                    for entry in beam_results
+                    if entry.score is not None
+                )
+
                 event = AllocationCompletedEvent(
                     allocation_index=allocations_explored,
                     allocation=allocation,
@@ -512,6 +529,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         if best_in_allocation is not None
                         else None
                     ),
+                    top_placements=top_placements,
                 )
                 for observer in self.observers:
                     observer.on_allocation_completed(event)
@@ -597,7 +615,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation.
 
@@ -611,7 +629,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             num_layers: Total number of layers.
 
         Returns:
-            Best BeamEntry found, or None if no valid assignments exist.
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         pass
 
