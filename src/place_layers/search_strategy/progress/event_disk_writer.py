@@ -115,7 +115,7 @@ class EventDiskWriter:
             record = EventRecord.model_validate_json(line)
             if record.event.event_type == "beam_growth_step":
                 for entry in record.event.beam:
-                    print(f"Step {record.event.step}: {entry['layers']} (parent={entry['parent_idx']})")
+                    print(f"Step {record.event.step}: id={entry.id} parent_id={entry.parent_id}")
     """
 
     def __init__(

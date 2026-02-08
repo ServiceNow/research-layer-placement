@@ -389,7 +389,11 @@ class RichDisplay(PlacementFormatterMixin):
 
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the expand section of a beam step as text."""
-        from place_layers.search_strategy.progress.events import EvaluatedCandidate
+        from place_layers.search_strategy.progress.events import (
+            BeamEntry,
+            BeamNodeId,
+            EvaluatedCandidate,
+        )
 
         lines = []
         # Use unified B naming and show step context
@@ -398,20 +402,29 @@ class RichDisplay(PlacementFormatterMixin):
         else:
             lines.append(f"Expand beam from step {event.step - 1}:")
 
-        # Group tried candidates by parent_idx
-        tried_by_parent: dict[int, list[EvaluatedCandidate]] = {}
+        # Build lookup from parent ID to index and parent entry
+        parent_id_to_idx: dict[BeamNodeId, int] = {}
+        parent_id_to_entry: dict[BeamNodeId, BeamEntry] = {}
+        for idx, parent in enumerate(event.parents):
+            parent_id_to_idx[parent.id] = idx
+            parent_id_to_entry[parent.id] = parent
+
+        # Group tried candidates by parent_id
+        tried_by_parent: dict[BeamNodeId, list[EvaluatedCandidate]] = {}
         for t in event.tried:
-            if t.parent_idx not in tried_by_parent:
-                tried_by_parent[t.parent_idx] = []
-            tried_by_parent[t.parent_idx].append(t)
+            if t.parent_id is None:
+                continue
+            if t.parent_id not in tried_by_parent:
+                tried_by_parent[t.parent_id] = []
+            tried_by_parent[t.parent_id].append(t)
 
         # Sort each parent's tried list by score descending
-        for parent_idx in tried_by_parent:
-            tried_by_parent[parent_idx].sort(key=lambda x: x.score, reverse=True)
+        for parent_id in tried_by_parent:
+            tried_by_parent[parent_id].sort(key=lambda x: x.score, reverse=True)
 
         # Use best_candidate from event for highlighting
         best = event.best_candidate
-        global_best_key = (best.parent_idx, best.layer) if best else None
+        global_best_id = best.id if best else None
 
         # Show each parent and its tried candidates
         for parent_idx, parent in enumerate(event.parents):
@@ -425,9 +438,9 @@ class RichDisplay(PlacementFormatterMixin):
             lines.append(f"  B{parent_idx}{context_str}:")
 
             # Format tried candidates for this parent, one per line
-            tried_list = tried_by_parent.get(parent_idx, [])
+            tried_list = tried_by_parent.get(parent.id, [])
             for t in tried_list[:5]:
-                is_global_best = (parent_idx, t.layer) == global_best_key
+                is_global_best = t.id == global_best_id
                 diff = self._format_placement_diff(parent.partial_placement, t.placement)
                 if is_global_best:
                     lines.append(f"    [green]B{parent_idx} + {diff} ({t.score:.4g})★[/green]")
@@ -440,19 +453,30 @@ class RichDisplay(PlacementFormatterMixin):
 
     def _format_prune_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the prune section of a beam step as text."""
+        from place_layers.search_strategy.progress.events import BeamEntry, BeamNodeId
+
         lines = []
         beam_size = len(event.beam)
         lines.append(f"Prune to {beam_size}:")
 
+        # Build lookup from parent ID to index
+        parent_id_to_idx: dict[BeamNodeId, int] = {}
+        parent_id_to_entry: dict[BeamNodeId, BeamEntry] = {}
+        for idx, parent in enumerate(event.parents):
+            parent_id_to_idx[parent.id] = idx
+            parent_id_to_entry[parent.id] = parent
+
         for i, b in enumerate(event.beam):
             # Show lineage using diff from parent: B0 ← B0 + FA@6 (score)
-            parent_partial = event.parents[b.parent_idx].partial_placement
+            parent_idx = parent_id_to_idx.get(b.parent_id, 0) if b.parent_id else 0
+            parent_entry = parent_id_to_entry.get(b.parent_id) if b.parent_id else None
+            parent_partial = parent_entry.partial_placement if parent_entry else ()
             diff = self._format_placement_diff(parent_partial, b.partial_placement)
 
             if i == 0:
-                lines.append(f"  [green]B{i} ← B{b.parent_idx} + {diff} ({b.score:.4g})★[/green]")
+                lines.append(f"  [green]B{i} ← B{parent_idx} + {diff} ({b.score:.4g})★[/green]")
             else:
-                lines.append(f"  B{i} ← B{b.parent_idx} + {diff} ({b.score:.4g})")
+                lines.append(f"  B{i} ← B{parent_idx} + {diff} ({b.score:.4g})")
 
         # Use cut_candidates from event (already sorted by score descending)
         cut_candidates = event.cut_candidates
@@ -658,7 +682,8 @@ class RichDisplay(PlacementFormatterMixin):
         self._step_results.append({
             "layer": event.layer,
             "score": event.score,
-            "parent_idx": event.parent_idx,
+            "id": event.id,
+            "parent_id": event.parent_id,
         })
 
         # Sort by score to find current best

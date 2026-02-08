@@ -80,6 +80,36 @@ from place_layers.search_strategy.progress.estimator import AllocationProgressIn
 
 
 # =============================================================================
+# Beam node ID for graph reconstruction
+# =============================================================================
+
+
+class BeamNodeId(BaseModel):
+    """Stable identifier for beam search nodes.
+
+    Uses actual values (not indices) so IDs are self-describing without
+    needing external context to interpret. Enables full graph reconstruction
+    across steps and phases.
+
+    Fields:
+        allocation: Counts per mixer, e.g., (4, 2, 2) for FA:4, SWA:2, GDN:2.
+        mixer: The mixer being placed in this phase, e.g., "SWA".
+            None for root node (before any phase starts).
+        step: Step number within the phase (0-based, 0=prescoring).
+            None for root node.
+        seq: Sequence number within the step (0-based, disambiguator).
+            None for root node.
+    """
+
+    model_config = {"frozen": True}
+
+    allocation: tuple[int, ...]
+    mixer: str | None
+    step: int | None
+    seq: int | None
+
+
+# =============================================================================
 # Beam entry types for strongly-typed events
 # =============================================================================
 
@@ -89,10 +119,14 @@ class BeamEntry(BaseModel):
 
     Represents an entry being expanded during beam search. The partial_placement
     uses None for unassigned layers.
+
+    The `id` field is a structured BeamNodeId that enables graph reconstruction
+    across steps and phases.
     """
 
     model_config = {"frozen": True}
 
+    id: BeamNodeId
     partial_placement: tuple[str | None, ...]  # None for unassigned layers
     score: float | None
 
@@ -102,13 +136,17 @@ class EvaluatedCandidate(BaseModel):
 
     Contains the complete placement (all layers assigned) that was scored,
     along with provenance information.
+
+    The `id` field is a structured BeamNodeId and `parent_id` links to the parent
+    BeamEntry that was expanded to produce this candidate.
     """
 
     model_config = {"frozen": True}
 
+    id: BeamNodeId
+    parent_id: BeamNodeId | None  # ID of parent BeamEntry (None only for root)
     layer: int  # Layer added in this step
     score: float
-    parent_idx: int
     placement: tuple[str, ...]  # Complete placement (no None values)
 
 
@@ -117,13 +155,17 @@ class SelectedEntry(BaseModel):
 
     Represents a beam entry that survived pruning, with provenance
     showing which parent it came from and which layer was added.
+
+    The `id` field is a structured BeamNodeId and `parent_id` links to the parent
+    BeamEntry that was expanded to produce this entry.
     """
 
     model_config = {"frozen": True}
 
+    id: BeamNodeId
+    parent_id: BeamNodeId | None  # ID of parent BeamEntry (None only for root)
     partial_placement: tuple[str | None, ...]  # None for unassigned
     score: float
-    parent_idx: int
     added_layer: int
 
 
@@ -208,7 +250,7 @@ class BeamGrowthStepEvent(BaseModel):
 
     When beam_width > 1, multiple parents are expanded simultaneously. The `parents`
     field contains all beam entries being expanded, and `tried`/`beam` entries include
-    provenance information (parent_idx, added_layer) to track which parent produced
+    provenance information (parent_id, added_layer) to track which parent produced
     each candidate.
 
     All placements use the canonical representation:
@@ -337,19 +379,21 @@ class CandidateEvaluatedEvent(BaseModel):
     The `placement` field contains the complete placement (all layers assigned)
     that was evaluated, using the canonical representation where index=layer
     and value=mixer name.
+
+    The `id` and `parent_id` fields are structured BeamNodeIds for graph
+    reconstruction. Step can be accessed via `id.step`, mixer via `id.mixer`.
     """
 
     model_config = {"frozen": True}
 
     event_type: Literal["candidate_evaluated"] = "candidate_evaluated"
-    step: int
     total_steps: int
-    phase_index: int
     mixer_name: str
     # The candidate that was just evaluated
+    id: BeamNodeId
+    parent_id: BeamNodeId | None  # None only for root
     layer: int
     score: float
-    parent_idx: int
     # Complete placement that was scored
     placement: tuple[str, ...]
     # Progress within step
@@ -388,6 +432,7 @@ AnySearchEvent = Annotated[
 
 # Re-export beam entry types for use by search strategies
 __all__ = [
+    "BeamNodeId",
     "BeamEntry",
     "EvaluatedCandidate",
     "SelectedEntry",

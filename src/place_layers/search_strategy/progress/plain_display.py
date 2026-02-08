@@ -112,10 +112,12 @@ class PlainDisplay(PlacementFormatterMixin):
         # State tracking for live progress
         self._step_eval_count: int = 0
         self._step_total_evals: int = 0
-        # Buffer for evaluated candidates since last print: (parent_idx, placement, score)
-        self._step_candidates: list[tuple[int, tuple[str, ...], float]] = []
-        # Parent placements for current step (for diff formatting)
-        self._step_parents: tuple[tuple[str | None, ...], ...] = ()
+        # Buffer for evaluated candidates since last print: (parent_id, placement, score)
+        self._step_candidates: list[tuple["BeamNodeId | None", tuple[str, ...], float]] = []
+        # Parent entries for current step, keyed by ID (for diff formatting and lookup)
+        from place_layers.search_strategy.progress.events import BeamEntry, BeamNodeId
+        self._step_parents_by_id: dict[BeamNodeId, BeamEntry] = {}
+        self._step_parent_id_to_idx: dict[BeamNodeId, int] = {}
 
     def __enter__(self) -> "PlainDisplay":
         """Enter context manager (no-op)."""
@@ -252,7 +254,9 @@ class PlainDisplay(PlacementFormatterMixin):
     def on_beam_growth_step_started(self, event: "BeamGrowthStepStartedEvent") -> None:
         """Handle beam growth step started - show initial beam and progress."""
         # Always capture parent placements for diff formatting (used by on_candidate_evaluated)
-        self._step_parents = tuple(p.partial_placement for p in event.parents)
+        # Build lookups from parent ID to index and parent entry
+        self._step_parents_by_id = {p.id: p for p in event.parents}
+        self._step_parent_id_to_idx = {p.id: i for i, p in enumerate(event.parents)}
 
         if not self._config.show_steps:
             return
@@ -286,8 +290,8 @@ class PlainDisplay(PlacementFormatterMixin):
 
         self._step_eval_count = event.eval_index
 
-        # Buffer evaluated candidate with parent index and complete placement
-        self._step_candidates.append((event.parent_idx, event.placement, event.score))
+        # Buffer evaluated candidate with parent ID and complete placement
+        self._step_candidates.append((event.parent_id, event.placement, event.score))
 
         # Print progress at intervals or at end
         interval = self._config.eval_progress_interval
@@ -297,14 +301,18 @@ class PlainDisplay(PlacementFormatterMixin):
         if at_interval or at_end:
             # Format all buffered candidates with parent context and diff notation
             candidate_strs = []
-            for parent_idx, placement, score in self._step_candidates:
-                parent_placement = self._step_parents[parent_idx]
+            for parent_id, placement, score in self._step_candidates:
+                parent_idx = self._step_parent_id_to_idx.get(parent_id, 0) if parent_id else 0
+                parent_entry = self._step_parents_by_id.get(parent_id) if parent_id else None
+                parent_placement = parent_entry.partial_placement if parent_entry else ()
                 diff = self._format_placement_diff(parent_placement, placement)
                 candidate_strs.append(f"B{parent_idx} + {diff} ({score:.3g})")
             candidates_str = ", ".join(candidate_strs)
 
+            # step is always set for evaluated candidates (only root has step=None)
+            step = event.id.step if event.id.step is not None else 0
             self._print_line(
-                f"Step {event.step}/{event.total_steps}: "
+                f"Step {step + 1}/{event.total_steps}: "
                 f"[{event.eval_index}/{event.total_evals}] {candidates_str}",
                 indent=2,
             )
@@ -326,10 +334,12 @@ class PlainDisplay(PlacementFormatterMixin):
                 marker = "*" if i == 0 else ""
                 # Format: B0 <- B1 + FA@6 (5.2)*
                 # Use diff formatter to show what changed from parent
-                parent_partial = self._step_parents[entry.parent_idx]
+                parent_idx = self._step_parent_id_to_idx.get(entry.parent_id, 0) if entry.parent_id else 0
+                parent_entry = self._step_parents_by_id.get(entry.parent_id) if entry.parent_id else None
+                parent_partial = parent_entry.partial_placement if parent_entry else ()
                 diff = self._format_placement_diff(parent_partial, entry.partial_placement)
                 self._print_line(
-                    f"B{i} <- B{entry.parent_idx} + {diff} "
+                    f"B{i} <- B{parent_idx} + {diff} "
                     f"({entry.score:.3g}){marker}",
                     indent=3,
                 )
