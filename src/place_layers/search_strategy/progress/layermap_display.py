@@ -112,7 +112,7 @@ class LeaderboardEntry(BaseModel):
 
     score: float
     cost: float
-    allocation: tuple[int, ...]
+    allocation: dict[str, int]
     assignments: tuple[str, ...]
 
 
@@ -161,7 +161,7 @@ class LayermapDisplay(PlacementFormatterMixin):
 
         # Current allocation state
         self._allocation_index: int = 0
-        self._current_allocation: tuple[int, ...] = ()
+        self._current_allocation: dict[str, int] = {}
         self._current_allocation_cost: float = 0.0
 
         # Current phase state

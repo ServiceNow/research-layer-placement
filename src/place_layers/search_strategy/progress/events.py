@@ -92,7 +92,12 @@ class BeamNodeId(BaseModel):
     across steps and phases.
 
     Fields:
-        allocation: Counts per mixer, e.g., (4, 2, 2) for FA:4, SWA:2, GDN:2.
+        allocation: Counts per mixer as tuple in phase_order,
+            e.g., (("FA", 4), ("SWA", 2), ("GDN", 2)).
+            IMPORTANT: The allocation dict MUST be in phase_order before
+            conversion. This is guaranteed when the dict comes from
+            cost_model methods (allocation_at_cost_bound, allocations_by_cost).
+            Convert with tuple(allocation.items()) - do NOT sort.
         mixer: The mixer being placed in this phase, e.g., "SWA".
             None for root node (before any phase starts).
         step: Step number within the phase (0-based, 0=prescoring).
@@ -103,7 +108,7 @@ class BeamNodeId(BaseModel):
 
     model_config = {"frozen": True}
 
-    allocation: tuple[int, ...]
+    allocation: tuple[tuple[str, int], ...]
     mixer: str | None
     step: int | None
     seq: int | None
@@ -204,7 +209,7 @@ class AllocationStartedEvent(BaseModel):
     event_type: Literal["allocation_started"] = "allocation_started"
     allocation_index: int
     total_allocations: int  # max_allocations limit
-    allocation: tuple[int, ...]
+    allocation: dict[str, int]
     allocation_cost: float
     mixer_names: tuple[str, ...]
     # Per-allocation evaluation bounds (from progress estimator)
@@ -224,7 +229,7 @@ class AllocationCompletedEvent(BaseModel):
 
     event_type: Literal["allocation_completed"] = "allocation_completed"
     allocation_index: int
-    allocation: tuple[int, ...]
+    allocation: dict[str, int]
     allocation_cost: float
     mixer_names: tuple[str, ...]
     # Final assignments - tuple of mixer names, one per layer
@@ -243,7 +248,7 @@ class BestUpdatedEvent(BaseModel):
     event_type: Literal["best_updated"] = "best_updated"
     score: float
     cost: float
-    allocation: tuple[int, ...]
+    allocation: dict[str, int]
     assignments: tuple[str, ...]
 
 
@@ -435,14 +440,18 @@ class SwapBeamNodeId(BaseModel):
     always works with complete placements. IDs track iteration and sequence.
 
     Fields:
-        allocation: Counts per mixer, e.g., (4, 2, 2) for FA:4, SWA:2, GDN:2.
+        allocation: Counts per mixer as tuple in phase_order,
+            e.g., (("FA", 4), ("SWA", 2), ("GDN", 2)).
+            IMPORTANT: The allocation dict MUST be in phase_order before
+            conversion. This is guaranteed when the dict comes from
+            cost_model methods. Convert with tuple(allocation.items()).
         iteration: Iteration number (0 = initial evaluation).
         seq: Sequence number within the iteration (0-based).
     """
 
     model_config = {"frozen": True}
 
-    allocation: tuple[int, ...]
+    allocation: tuple[tuple[str, int], ...]
     iteration: int
     seq: int
 

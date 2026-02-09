@@ -111,8 +111,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         config = problem.config
         cost_model = problem.cost_model
         num_layers = problem.evaluator.num_layers
-        num_mixers = problem.evaluator.num_mixers
-        mixer_names = problem.evaluator.mixer_names
+        num_mixers = cost_model.num_mixers
+        mixer_names = cost_model.phase_order
 
         self._log_config(config, cost_model, num_layers, num_mixers)
 
@@ -197,6 +197,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_budget: float,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
+        # Get mixer names from cost model (this is THE source of truth for ordering)
+        mixer_names = cost_model.phase_order
+
         logger.info("\n" + "=" * 60)
         logger.info("MODE: MAX_PERFORMANCE (maximize perf, cost <= budget)")
         logger.info("=" * 60)
@@ -229,7 +232,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 continue
 
             allocations_explored += 1
-            mixer_names = problem.evaluator.mixer_names
 
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
@@ -349,8 +351,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             # Update global best
             if best_entry is None or best_in_allocation.score > (best_entry.score or float("-inf")):
                 best_entry = best_in_allocation
+                best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  NEW BEST: score={best_in_allocation.score:.4f}, cost={best_entry.cost:.4f}"
+                    f"  NEW BEST: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -359,7 +362,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
                     event = BestUpdatedEvent(
                         score=best_in_allocation.score,
-                        cost=best_entry.cost,
+                        cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
                     )
@@ -376,22 +379,19 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if best_entry is None:
             # Fallback to minimum cost allocation
             min_alloc = cost_model.min_cost_allocation(num_layers)
-            mixer_names = problem.evaluator.mixer_names
-            assignments = self._allocation_to_assignment(
-                min_alloc, num_layers, mixer_names
-            )
+            assignments = self._allocation_to_assignment(min_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=min_alloc,
-                cost=cost_model.allocation_cost(min_alloc),
                 score=score,
             )
 
         return self._create_result(
             best_entry=best_entry,
+            cost_model=cost_model,
             mode="max_performance",
             constraint_value=cost_budget,
             allocations_explored=allocations_explored,
@@ -405,6 +405,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         performance_target: float,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
+        # Get mixer names from cost model (this is THE source of truth for ordering)
+        mixer_names = cost_model.phase_order
+
         logger.info("\n" + "=" * 60)
         logger.info("MODE: MIN_COST (minimize cost, perf >= target)")
         logger.info("=" * 60)
@@ -426,7 +429,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             num_layers, direction="decreasing"
         ):
             allocations_explored += 1
-            mixer_names = problem.evaluator.mixer_names
 
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")
             logger.info(f"Allocation cost: {alloc_cost:.4f}")
@@ -547,8 +549,9 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             if best_in_allocation.score >= performance_target:
                 # This allocation meets the target - it's the best (lowest cost) so far
                 best_entry = best_in_allocation
+                best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  MEETS TARGET: score={best_in_allocation.score:.4f}, cost={best_entry.cost:.4f}"
+                    f"  MEETS TARGET: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -557,7 +560,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
                     event = BestUpdatedEvent(
                         score=best_in_allocation.score,
-                        cost=best_entry.cost,
+                        cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
                     )
@@ -583,17 +586,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if best_entry is None:
             # No allocation met the target - return the most expensive as best effort
             max_alloc = cost_model.max_cost_allocation(num_layers)
-            mixer_names = problem.evaluator.mixer_names
-            assignments = self._allocation_to_assignment(
-                max_alloc, num_layers, mixer_names
-            )
+            assignments = self._allocation_to_assignment(max_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=max_alloc,
-                cost=cost_model.allocation_cost(max_alloc),
                 score=score,
             )
             logger.warning(
@@ -603,6 +602,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         return self._create_result(
             best_entry=best_entry,
+            cost_model=cost_model,
             mode="min_cost",
             constraint_value=performance_target,
             allocations_explored=allocations_explored,
@@ -638,35 +638,34 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
     def _allocation_to_assignment(
         allocation: Allocation,
         num_layers: int,
-        mixer_names: list[str],
     ) -> list[str]:
         """
         Convert an allocation to a canonical assignment.
 
         Creates a deterministic assignment that achieves the given allocation.
-        Layers are assigned to mixers in order (first n_0 layers to mixer_names[0],
-        next n_1 layers to mixer_names[1], etc.).
+        Layer ordering is determined by allocation dict iteration order,
+        which comes from config.mixer_costs key order (phase_order).
 
         Args:
-            allocation: Counts per mixer.
+            allocation: Dict mapping mixer name to layer count.
             num_layers: Total number of layers.
-            mixer_names: Ordered mixer names from the evaluator.
 
         Returns:
             List of mixer names (length = num_layers).
         """
         assignments: list[str] = []
-        for mixer_idx, count in enumerate(allocation):
-            assignments.extend([mixer_names[mixer_idx]] * count)
+        for mixer, count in allocation.items():
+            assignments.extend([mixer] * count)
 
         assert (
             len(assignments) == num_layers
-        ), f"Allocation sum {sum(allocation)} != num_layers {num_layers}"
+        ), f"Allocation sum {sum(allocation.values())} != num_layers {num_layers}"
         return assignments
 
     def _create_result(
         self,
         best_entry: BeamEntry,
+        cost_model: BaseCostModel,
         mode: Literal["max_performance", "min_cost"],
         constraint_value: float,
         allocations_explored: int,
@@ -674,11 +673,14 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         """Create the final search result."""
         assert best_entry.score is not None
 
+        # Compute cost from allocation (never stored, always computed fresh)
+        final_cost = cost_model.allocation_cost(best_entry.allocation)
+
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
         logger.info(f"Best score: {best_entry.score:.4f}")
-        logger.info(f"Best cost: {best_entry.cost:.4f}")
+        logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")
         logger.info(f"Total evaluations: {self.eval_count}")
@@ -689,7 +691,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
             event = SearchCompletedEvent(
                 best_score=best_entry.score,
-                best_cost=best_entry.cost,
+                best_cost=final_cost,
                 total_evaluations=self.eval_count,
                 allocations_explored=allocations_explored,
             )
@@ -700,7 +702,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             best_parameters=LayerPlacement(assignments=best_entry.assignments),
             best_score=best_entry.score,
             total_evaluations=self.eval_count,
-            final_cost=best_entry.cost,
+            final_cost=final_cost,
             mode=mode,
             constraint_value=constraint_value,
             allocations_explored=allocations_explored,

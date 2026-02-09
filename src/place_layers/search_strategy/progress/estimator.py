@@ -55,7 +55,7 @@ class AllocationProgressInfo(BaseModel):
     progressive refinement.
 
     Attributes:
-        allocation: The allocation tuple (counts per mixer).
+        allocation: The allocation dict (counts per mixer, keyed by name).
         budgets: Phase budgets (layers to assign per phase).
         cost: The cost of this allocation.
         expected: Expected evaluations for this allocation.
@@ -66,7 +66,7 @@ class AllocationProgressInfo(BaseModel):
 
     model_config = {"frozen": True}
 
-    allocation: tuple[int, ...]
+    allocation: dict[str, int]
     budgets: tuple[int, ...]
     cost: float
     expected: float

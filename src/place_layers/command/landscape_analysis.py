@@ -48,7 +48,8 @@ class LandscapeAnalysisCommand(BaseCommand):
 
         num_layers = evaluator.num_layers
         num_mixers = evaluator.num_mixers
-        mixer_names = evaluator.mixer_names
+        # Convert frozenset to sorted list for indexable access
+        mixer_names = sorted(evaluator.mixer_names)
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")

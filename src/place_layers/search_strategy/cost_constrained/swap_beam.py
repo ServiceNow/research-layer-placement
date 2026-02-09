@@ -74,12 +74,10 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             SwapEvaluatedEvent,
         )
 
-        alloc_cost = cost_model.allocation_cost(allocation)
-        mixer_names = problem.evaluator.mixer_names
         max_iterations = self.config.max_iterations_per_allocation
 
         # Generate initial assignment (canonical assignment for this allocation)
-        initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
+        initial_assignments = self._allocation_to_assignment(allocation, num_layers)
         initial_placement = LayerPlacement(assignments=tuple(initial_assignments))
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
@@ -89,7 +87,9 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             observer.on_eval_completed(self.eval_count)
 
         # Create initial beam entry and swap candidate
-        initial_id = SwapBeamNodeId(allocation=allocation, iteration=0, seq=0)
+        initial_id = SwapBeamNodeId(
+            allocation=tuple(allocation.items()), iteration=0, seq=0
+        )
         initial_candidate = SwapCandidate(
             id=initial_id,
             parent_id=None,
@@ -102,7 +102,6 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             BeamEntry(
                 assignments=tuple(initial_assignments),
                 allocation=allocation,
-                cost=alloc_cost,
                 score=initial_score,
             )
         ]
@@ -120,15 +119,13 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
                 observer.on_swap_beam_iteration_started(event)
 
         # Run beam search within this allocation
+        alloc_tuple = tuple(allocation.items())
         for iteration in range(1, max_iterations + 1):
             # Generate swap candidates (swaps that preserve allocation)
             all_candidates: list[tuple[BeamEntry, int, tuple[int, int]]] = []  # (entry, parent_seq, swap)
 
             for parent_seq, entry in enumerate(beam):
-                candidates = self._generate_allocation_preserving_swaps(
-                    entry=entry,
-                    mixer_names=mixer_names,
-                )
+                candidates = self._generate_allocation_preserving_swaps(entry=entry)
                 for candidate in candidates:
                     # Track parent and the swap that was made
                     swap = self._find_swap(entry.assignments, candidate.assignments)
@@ -188,19 +185,18 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
                     evaluated_entry = BeamEntry(
                         assignments=candidate.assignments,
                         allocation=candidate.allocation,
-                        cost=candidate.cost,
                         score=score,
                     )
                     evaluated.append(evaluated_entry)
 
                     # Create SwapCandidate for event
                     parent_id = SwapBeamNodeId(
-                        allocation=allocation,
+                        allocation=alloc_tuple,
                         iteration=iteration - 1,
                         seq=parent_seq,
                     )
                     candidate_id = SwapBeamNodeId(
-                        allocation=allocation,
+                        allocation=alloc_tuple,
                         iteration=iteration,
                         seq=len(tried_candidates),
                     )
@@ -244,7 +240,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
                 for tc in tried_candidates:
                     if tc.assignments == entry.assignments:
                         new_beam_candidates.append(SwapCandidate(
-                            id=SwapBeamNodeId(allocation=allocation, iteration=iteration, seq=seq),
+                            id=SwapBeamNodeId(allocation=alloc_tuple, iteration=iteration, seq=seq),
                             parent_id=tc.parent_id,
                             swap=tc.swap,
                             assignments=tc.assignments,
@@ -300,7 +296,6 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     def _generate_allocation_preserving_swaps(
         self,
         entry: BeamEntry,
-        mixer_names: list[str],
     ) -> list[BeamEntry]:
         """
         Generate candidate swaps that preserve the allocation.
@@ -310,13 +305,13 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         """
         candidates = []
 
-        # Group layers by their mixer name
-        layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
+        # Group layers by their mixer name (use allocation keys as mixer names)
+        layers_by_mixer: dict[str, list[int]] = {name: [] for name in entry.allocation}
         for layer_idx, mixer_name in enumerate(entry.assignments):
             layers_by_mixer[mixer_name].append(layer_idx)
 
         # Generate swaps between different mixers
-        mixer_list = list(mixer_names)
+        mixer_list = list(entry.allocation.keys())
         for i, mixer_a in enumerate(mixer_list):
             for mixer_b in mixer_list[i + 1:]:
                 for layer_a in layers_by_mixer[mixer_a]:
@@ -330,7 +325,6 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
                             BeamEntry(
                                 assignments=tuple(new_assignments),
                                 allocation=entry.allocation,
-                                cost=entry.cost,  # Cost unchanged
                                 score=None,
                             )
                         )

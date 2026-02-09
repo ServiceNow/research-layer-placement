@@ -28,15 +28,15 @@ class TestAllocationNavigation:
     def test_allocation_cost(self, model: LinearCostModel) -> None:
         """Test allocation cost computation."""
         # All on most expensive
-        alloc = (5, 0, 0)
+        alloc = {"mixer_0": 5, "mixer_1": 0, "mixer_2": 0}
         assert model.allocation_cost(alloc) == 5 * 1.0
 
         # All on cheapest
-        alloc = (0, 0, 5)
+        alloc = {"mixer_0": 0, "mixer_1": 0, "mixer_2": 5}
         assert model.allocation_cost(alloc) == 5 * 0.2
 
         # Mixed
-        alloc = (2, 1, 2)
+        alloc = {"mixer_0": 2, "mixer_1": 1, "mixer_2": 2}
         assert model.allocation_cost(alloc) == 2 * 1.0 + 1 * 0.5 + 2 * 0.2
 
     def test_min_max_allocation(self, model: LinearCostModel) -> None:
@@ -44,12 +44,12 @@ class TestAllocationNavigation:
         min_alloc = model.min_cost_allocation(10)
         max_alloc = model.max_cost_allocation(10)
 
-        # Min allocation should put all on cheapest mixer (index 2)
-        assert min_alloc == (0, 0, 10)
+        # Min allocation should put all on cheapest mixer (mixer_2)
+        assert min_alloc == {"mixer_0": 0, "mixer_1": 0, "mixer_2": 10}
         assert model.allocation_cost(min_alloc) == 10 * 0.2
 
-        # Max allocation should put all on most expensive mixer (index 0)
-        assert max_alloc == (10, 0, 0)
+        # Max allocation should put all on most expensive mixer (mixer_0)
+        assert max_alloc == {"mixer_0": 10, "mixer_1": 0, "mixer_2": 0}
         assert model.allocation_cost(max_alloc) == 10 * 1.0
 
     def test_allocation_at_cost_bound_from_above(self, model: LinearCostModel) -> None:
@@ -61,7 +61,7 @@ class TestAllocationNavigation:
 
         # At max cost, should return max allocation
         alloc = model.allocation_at_cost_bound(num_layers, 10.0, from_above=True)
-        assert alloc == (10, 0, 0)
+        assert alloc == {"mixer_0": 10, "mixer_1": 0, "mixer_2": 0}
         assert model.allocation_cost(alloc) == 10.0
 
         # At min cost exactly, should return min allocation
@@ -69,15 +69,15 @@ class TestAllocationNavigation:
         alloc = model.allocation_at_cost_bound(num_layers, 2.0, from_above=True)
         assert alloc is not None
         assert model.allocation_cost(alloc) <= 2.0
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # At intermediate cost (e.g., 5.0)
-        # mixer_costs = [1.0, 0.5, 0.2]
-        # (0, 10, 0) has cost 5.0 exactly - this should be the optimal!
+        # mixer_costs = {"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}
+        # {"mixer_0": 0, "mixer_1": 10, "mixer_2": 0} has cost 5.0 exactly - this should be the optimal!
         alloc = model.allocation_at_cost_bound(num_layers, 5.0, from_above=True)
         assert alloc is not None
         assert model.allocation_cost(alloc) == 5.0  # Should hit exactly
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # Below min should return None
         alloc = model.allocation_at_cost_bound(num_layers, 1.0, from_above=True)
@@ -133,20 +133,20 @@ class TestAllocationNavigation:
 
         # At min cost, should return min allocation
         alloc = model.allocation_at_cost_bound(num_layers, 2.0, from_above=False)
-        assert alloc == (0, 0, 10)
+        assert alloc == {"mixer_0": 0, "mixer_1": 0, "mixer_2": 10}
         assert model.allocation_cost(alloc) == 2.0
 
         # At max cost, should return allocation with cost >= max_cost
         alloc = model.allocation_at_cost_bound(num_layers, 10.0, from_above=False)
         assert alloc is not None
         assert model.allocation_cost(alloc) >= 10.0
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # At intermediate cost (e.g., 3.0)
         alloc = model.allocation_at_cost_bound(num_layers, 3.0, from_above=False)
         assert alloc is not None
         assert model.allocation_cost(alloc) >= 3.0
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # Above max should return None
         alloc = model.allocation_at_cost_bound(num_layers, 15.0, from_above=False)
@@ -154,7 +154,7 @@ class TestAllocationNavigation:
 
     def test_allocation_neighbors_increasing(self, model: LinearCostModel) -> None:
         """Test generating increasing cost neighbors."""
-        alloc = (0, 5, 5)  # 5 on medium, 5 on cheap
+        alloc = {"mixer_0": 0, "mixer_1": 5, "mixer_2": 5}  # 5 on medium, 5 on cheap
 
         neighbors = list(model.allocation_neighbors(alloc, "increasing"))
 
@@ -167,7 +167,7 @@ class TestAllocationNavigation:
             assert delta > 0
             assert model.allocation_cost(neighbor) > base_cost
             # Counts should still sum to 10
-            assert sum(neighbor) == 10
+            assert sum(neighbor.values()) == 10
 
         # Neighbors should be in order of increasing delta
         deltas = [d for _, d in neighbors]
@@ -175,7 +175,7 @@ class TestAllocationNavigation:
 
     def test_allocation_neighbors_decreasing(self, model: LinearCostModel) -> None:
         """Test generating decreasing cost neighbors."""
-        alloc = (5, 5, 0)  # 5 on expensive, 5 on medium
+        alloc = {"mixer_0": 5, "mixer_1": 5, "mixer_2": 0}  # 5 on expensive, 5 on medium
 
         neighbors = list(model.allocation_neighbors(alloc, "decreasing"))
 
@@ -188,7 +188,7 @@ class TestAllocationNavigation:
             assert delta < 0
             assert model.allocation_cost(neighbor) < base_cost
             # Counts should still sum to 10
-            assert sum(neighbor) == 10
+            assert sum(neighbor.values()) == 10
 
         # Neighbors should be in order of smallest |delta| first
         abs_deltas = [abs(d) for _, d in neighbors]
@@ -214,7 +214,7 @@ class TestAllocationNavigation:
 
         # All allocations should sum to num_layers
         for _, alloc in allocations:
-            assert sum(alloc) == num_layers
+            assert sum(alloc.values()) == num_layers
 
     def test_allocations_by_cost_decreasing(self, model: LinearCostModel) -> None:
         """Test iterating allocations in decreasing cost order."""
@@ -281,15 +281,15 @@ class TestLinearCostModel:
         config = LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2})
         model = config.create_cost_model()
 
-        assert model.cheapest_mixer == 2
-        assert model.most_expensive_mixer == 0
+        assert model.cheapest_mixer == "mixer_2"
+        assert model.most_expensive_mixer == "mixer_0"
 
         # Different ordering
         config2 = LinearCostModelConfig(mixer_costs={"mixer_0": 0.3, "mixer_1": 0.9, "mixer_2": 0.1})
         model2 = config2.create_cost_model()
 
-        assert model2.cheapest_mixer == 2
-        assert model2.most_expensive_mixer == 1
+        assert model2.cheapest_mixer == "mixer_2"
+        assert model2.most_expensive_mixer == "mixer_1"
 
 
 class TestCostConstrainedProblem:
@@ -539,7 +539,7 @@ class TestAllocationBoundStress:
 
             alloc_cost = model.allocation_cost(alloc)
             assert alloc_cost <= bound + 1e-9, f"Cost {alloc_cost} exceeds bound {bound}"
-            assert sum(alloc) == num_layers, f"Allocation sum {sum(alloc)} != {num_layers}"
+            assert sum(alloc.values()) == num_layers, f"Allocation sum {sum(alloc.values())} != {num_layers}"
 
             # Verify optimality via exhaustive enumeration
             best_cost_found = -float("inf")
@@ -572,7 +572,7 @@ class TestAllocationBoundStress:
 
             alloc_cost = model.allocation_cost(alloc)
             assert alloc_cost >= bound - 1e-9, f"Cost {alloc_cost} below bound {bound}"
-            assert sum(alloc) == num_layers, f"Allocation sum {sum(alloc)} != {num_layers}"
+            assert sum(alloc.values()) == num_layers, f"Allocation sum {sum(alloc.values())} != {num_layers}"
 
             # Verify optimality via exhaustive enumeration
             best_cost_found = float("inf")
@@ -599,13 +599,13 @@ class TestAllocationBoundStress:
         alloc = model.allocation_at_cost_bound(num_layers, bound, from_above=True)
         assert alloc is not None
         assert model.allocation_cost(alloc) <= bound + 1e-9
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # from_below
         alloc = model.allocation_at_cost_bound(num_layers, bound, from_above=False)
         assert alloc is not None
         assert model.allocation_cost(alloc) >= bound - 1e-9
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
     def test_edge_case_equal_costs(self) -> None:
         """Test with some mixers having equal costs."""
@@ -619,7 +619,7 @@ class TestAllocationBoundStress:
         alloc = model.allocation_at_cost_bound(num_layers, bound, from_above=True)
         assert alloc is not None
         assert model.allocation_cost(alloc) <= bound + 1e-9
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
     def test_edge_case_exact_bound_hit(self) -> None:
         """Test when exact bound can be achieved."""
@@ -702,7 +702,7 @@ class TestAllocationBoundStress:
             alloc = model.allocation_at_cost_bound(num_layers, bound, from_above=True)
             assert alloc is not None
             assert model.allocation_cost(alloc) <= bound + 1e-9
-            assert sum(alloc) == num_layers
+            assert sum(alloc.values()) == num_layers
 
     def test_large_k_small_n(self) -> None:
         """Test with many mixers but few layers."""
@@ -718,7 +718,7 @@ class TestAllocationBoundStress:
         alloc = model.allocation_at_cost_bound(num_layers, bound, from_above=True)
         assert alloc is not None
         assert model.allocation_cost(alloc) <= bound + 1e-9
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
     @pytest.mark.parametrize("seed", range(10))
     def test_random_costs(self, seed: int) -> None:
@@ -740,7 +740,7 @@ class TestAllocationBoundStress:
         assert alloc is not None
         alloc_cost = model.allocation_cost(alloc)
         assert alloc_cost <= bound + 1e-9
-        assert sum(alloc) == num_layers
+        assert sum(alloc.values()) == num_layers
 
         # Verify optimality
         for cost, _ in model.allocations_by_cost(num_layers, "decreasing"):
