@@ -30,6 +30,7 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model import CostModelConfig
+from place_layers.cost_model.base_cost_model import Allocation
 from place_layers.cost_model.linear_cost_model import (
     LinearCostModel,
     LinearCostModelConfig,
@@ -85,6 +86,10 @@ class CalibrateSACommand(BaseCommand):
         allocation = cost_model.allocation_at_cost_bound(
             num_layers, self.config.cost_budget, from_above=True
         )
+
+        if allocation is None:
+            logger.error("Could not find allocation at cost bound.")
+            return
 
         logger.info(f"\nUsing representative allocation: {allocation}")
         logger.info(f"Allocation cost: {cost_model.allocation_cost(allocation):.4f}")
@@ -174,17 +179,18 @@ min_temperature: {self.config.min_temperature}
     async def _sample_deltas(
         self,
         problem: CostConstrainedProblem,
-        allocation: tuple[int, ...],
+        allocation: Allocation,
     ) -> list[float]:
         """Sample random allocation-preserving swaps and return delta distribution."""
         random.seed(self.config.seed)
 
-        mixer_names = problem.evaluator.mixer_names
+        # Get mixer names from allocation keys (already in phase order)
+        mixer_names = list(allocation.keys())
 
         # Start from canonical assignment (mixer names, not indices)
         current: list[str] = []
-        for mixer_idx, count in enumerate(allocation):
-            current.extend([mixer_names[mixer_idx]] * count)
+        for mixer_name, count in allocation.items():
+            current.extend([mixer_name] * count)
 
         placement = LayerPlacement(assignments=tuple(current))
         current_score = await problem.evaluate(placement)

@@ -84,14 +84,12 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         return self.config.num_layers
 
     @property
-    def num_mixers(self) -> int:
-        """Number of mixer types (derived from config)."""
-        return len(self.config.mixer_names)
+    def mixer_names(self) -> frozenset[str]:
+        """Mixer names from config.
 
-    @property
-    def mixer_names(self) -> list[str]:
-        """Mixer names from config."""
-        return self.config.mixer_names
+        This is for validation only. For ordering, use cost_model.phase_order.
+        """
+        return frozenset(self.config.mixer_names)
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """

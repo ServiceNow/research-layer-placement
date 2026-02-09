@@ -47,21 +47,20 @@ class BaseEvaluator[ParametersT]:
 
     @property
     @abstractmethod
-    def num_mixers(self) -> int:
-        """Number of mixer types per layer.
+    def mixer_names(self) -> frozenset[str]:
+        """Available mixer types (e.g., {'attention', 'gdn', 'kda'}).
 
-        Implementations should derive this from the actual model or config.
-        """
-        ...
-
-    @property
-    @abstractmethod
-    def mixer_names(self) -> list[str]:
-        """Available mixer types (e.g., ['attention', 'gdn', 'kda']).
+        This is discovered from the model and used only for validation.
+        For ordering, use cost_model.phase_order.
 
         Implementations should derive this from the actual model or backend.
         """
         ...
+
+    @property
+    def num_mixers(self) -> int:
+        """Number of mixer types."""
+        return len(self.mixer_names)
 
     async def evaluate(self, parameters: ParametersT) -> float:
         """

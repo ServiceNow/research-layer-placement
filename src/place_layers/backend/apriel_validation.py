@@ -20,7 +20,7 @@ class Apriel2Structure(BaseModel):
     model_config = {"frozen": True}
 
     num_layers: int
-    mixer_names: tuple[str, ...]
+    mixer_names: frozenset[str]
     stochastic_block_name: str
     pattern_type: str
 
@@ -61,7 +61,7 @@ def _validate_fixed(decoder: dict, num_blocks: int) -> Apriel2Structure:
 
     return Apriel2Structure(
         num_layers=num_blocks,
-        mixer_names=tuple(sorted(mixer["mixers"].keys())),
+        mixer_names=frozenset(mixer["mixers"].keys()),
         stochastic_block_name="block",
         pattern_type="fixed",
     )
@@ -95,7 +95,7 @@ def _validate_pattern(decoder: dict, num_blocks: int) -> Apriel2Structure:
 
     return Apriel2Structure(
         num_layers=full_cycles * count_per_cycle + remainder_count,
-        mixer_names=tuple(sorted(mixer["mixers"].keys())),
+        mixer_names=frozenset(mixer["mixers"].keys()),
         stochastic_block_name=block_name,
         pattern_type="pattern",
     )

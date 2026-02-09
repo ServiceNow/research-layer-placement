@@ -79,7 +79,8 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         # Get dimensions from evaluator
         num_layers = problem.evaluator.num_layers
         num_mixers = problem.evaluator.num_mixers
-        mixer_names = problem.evaluator.mixer_names
+        # Convert frozenset to sorted list for indexable access
+        mixer_names = sorted(problem.evaluator.mixer_names)
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")

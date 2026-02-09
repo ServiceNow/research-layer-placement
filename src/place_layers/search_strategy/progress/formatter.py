@@ -7,7 +7,7 @@ observer implementations (RichSearchDisplay, PlainObserver, etc.).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 class PlacementFormatterMixin:
@@ -85,7 +85,7 @@ class PlacementFormatterMixin:
 
     def _format_placement(
         self,
-        by_mixer: dict[str, Sequence[int]],
+        by_mixer: Mapping[str, Sequence[int]],
         *,
         max_layers_per_mixer: int = 10,
         escape_brackets: bool = False,
@@ -115,11 +115,12 @@ class PlacementFormatterMixin:
                 )
         return ", ".join(parts)
 
-    def _format_allocation(self, allocation: tuple[int, ...]) -> str:
+    def _format_allocation(self, allocation: dict[str, int]) -> str:
         """Format allocation as 'FA:2 SWA:1 GDN:7'."""
         if not self._mixer_names:
             return str(allocation)
-        parts = [f"{name}:{count}" for name, count in zip(self._mixer_names, allocation)]
+        # Format in _mixer_names order for consistent display
+        parts = [f"{name}:{allocation[name]}" for name in self._mixer_names]
         return " ".join(parts)
 
     def _format_placement_diff(

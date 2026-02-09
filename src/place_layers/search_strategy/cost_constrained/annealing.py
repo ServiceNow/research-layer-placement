@@ -84,17 +84,15 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             AnnealingStepEvent,
         )
 
-        alloc_cost = cost_model.allocation_cost(allocation)
-        mixer_names = problem.evaluator.mixer_names
         max_steps = self.config.max_steps
 
         # Group layers by mixer for efficient swap generation
-        layers_by_mixer = self._group_layers_by_mixer(allocation, mixer_names)
+        layers_by_mixer = self._group_layers_by_mixer(allocation)
 
         # Check if any swaps are possible
         if not self._can_swap(layers_by_mixer):
             # All layers on one mixer - just return canonical
-            assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
+            assignments = self._allocation_to_assignment(allocation, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
@@ -119,13 +117,12 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    cost=alloc_cost,
                     score=score,
                 )
             ]
 
         # Initialize with canonical assignment
-        current = list(self._allocation_to_assignment(allocation, num_layers, mixer_names))
+        current = list(self._allocation_to_assignment(allocation, num_layers))
         placement = LayerPlacement(assignments=tuple(current))
         current_score = await problem.evaluate(placement)
         self.eval_count += 1
@@ -145,7 +142,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         # Main annealing loop
         for step in range(max_steps):
             # Propose a random swap
-            layer_a, layer_b = self._random_swap(current, mixer_names)
+            layer_a, layer_b = self._random_swap(current, allocation)
             if layer_a is None or layer_b is None:
                 # No valid swap possible (shouldn't happen if can_swap returned True)
                 termination_reason = "no_swaps"
@@ -231,13 +228,12 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             BeamEntry(
                 assignments=tuple(best),
                 allocation=allocation,
-                cost=alloc_cost,
                 score=best_score,
             )
         ]
 
     def _group_layers_by_mixer(
-        self, allocation: Allocation, mixer_names: list[str]
+        self, allocation: Allocation
     ) -> dict[str, list[int]]:
         """
         Create a canonical grouping of layers by mixer name.
@@ -246,8 +242,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         """
         layers_by_mixer: dict[str, list[int]] = {}
         layer_idx = 0
-        for i, count in enumerate(allocation):
-            mixer_name = mixer_names[i]
+        for mixer_name, count in allocation.items():
             layers_by_mixer[mixer_name] = list(range(layer_idx, layer_idx + count))
             layer_idx += count
         return layers_by_mixer
@@ -258,7 +253,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         return len(non_empty) >= 2
 
     def _random_swap(
-        self, assignments: list[str], mixer_names: list[str]
+        self, assignments: list[str], allocation: Allocation
     ) -> tuple[int | None, int | None]:
         """
         Generate a random allocation-preserving swap.
@@ -267,7 +262,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         Returns (None, None) if no swap is possible.
         """
         # Group current layers by their mixer name
-        layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
+        layers_by_mixer: dict[str, list[int]] = {name: [] for name in allocation}
         for layer_idx, mixer_name in enumerate(assignments):
             layers_by_mixer[mixer_name].append(layer_idx)
 
