@@ -57,6 +57,11 @@ class BaseEvaluator[ParametersT]:
         """
         ...
 
+    @property
+    def num_mixers(self) -> int:
+        """Number of mixer types."""
+        return len(self.mixer_names)
+
     async def evaluate(self, parameters: ParametersT) -> float:
         """
         Evaluate parameters and return a score.

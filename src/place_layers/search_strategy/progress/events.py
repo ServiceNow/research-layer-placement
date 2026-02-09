@@ -94,7 +94,10 @@ class BeamNodeId(BaseModel):
     Fields:
         allocation: Counts per mixer as tuple in phase_order,
             e.g., (("FA", 4), ("SWA", 2), ("GDN", 2)).
-            Convert from dict with tuple(d.items()).
+            IMPORTANT: The allocation dict MUST be in phase_order before
+            conversion. This is guaranteed when the dict comes from
+            cost_model methods (allocation_at_cost_bound, allocations_by_cost).
+            Convert with tuple(allocation.items()) - do NOT sort.
         mixer: The mixer being placed in this phase, e.g., "SWA".
             None for root node (before any phase starts).
         step: Step number within the phase (0-based, 0=prescoring).
@@ -439,7 +442,9 @@ class SwapBeamNodeId(BaseModel):
     Fields:
         allocation: Counts per mixer as tuple in phase_order,
             e.g., (("FA", 4), ("SWA", 2), ("GDN", 2)).
-            Convert from dict with tuple(d.items()).
+            IMPORTANT: The allocation dict MUST be in phase_order before
+            conversion. This is guaranteed when the dict comes from
+            cost_model methods. Convert with tuple(allocation.items()).
         iteration: Iteration number (0 = initial evaluation).
         seq: Sequence number within the iteration (0-based).
     """

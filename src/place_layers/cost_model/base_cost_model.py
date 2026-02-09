@@ -268,13 +268,15 @@ class BaseCostModel(ABC):
         start_cost = self.allocation_cost(start)
         # Use frozenset of items for hashing since dict is not hashable
         start_key = frozenset(start.items())
-        frontier: list[tuple[float, frozenset[tuple[str, int]], Allocation]] = [
-            (heap_sign * start_cost, start_key, start)
+        # Counter for heap tie-breaking (frozenset is not orderable)
+        counter = 0
+        frontier: list[tuple[float, int, frozenset[tuple[str, int]], Allocation]] = [
+            (heap_sign * start_cost, counter, start_key, start)
         ]
         visited: set[frozenset[tuple[str, int]]] = {start_key}
 
         while frontier:
-            signed_cost, _key, alloc = heapq.heappop(frontier)
+            signed_cost, _cnt, _key, alloc = heapq.heappop(frontier)
             cost = heap_sign * signed_cost
             yield cost, alloc
 
@@ -283,6 +285,7 @@ class BaseCostModel(ABC):
                 if neighbor_key not in visited:
                     visited.add(neighbor_key)
                     neighbor_cost = self.allocation_cost(neighbor)
+                    counter += 1
                     heapq.heappush(
-                        frontier, (heap_sign * neighbor_cost, neighbor_key, neighbor)
+                        frontier, (heap_sign * neighbor_cost, counter, neighbor_key, neighbor)
                     )
