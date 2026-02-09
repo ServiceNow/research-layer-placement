@@ -48,6 +48,7 @@ class LandscapeAnalysisCommand(BaseCommand):
 
         num_layers = evaluator.num_layers
         num_mixers = evaluator.num_mixers
+        mixer_names = evaluator.mixer_names
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -70,12 +71,12 @@ class LandscapeAnalysisCommand(BaseCommand):
                 sample_size = 10_000
             else:
                 logger.info(f"Generating all {search_space_size:,} configurations...")
-                configs = self._generate_all_configs(num_layers, num_mixers, budgets)
+                configs = self._generate_all_configs(num_layers, num_mixers, budgets, mixer_names)
                 is_exhaustive = True
 
         if sample_size is not None:
             logger.info(f"Sampling {sample_size:,} random configurations...")
-            configs = self._sample_configs(num_layers, num_mixers, budgets, sample_size)
+            configs = self._sample_configs(num_layers, num_mixers, budgets, mixer_names, sample_size)
 
         # Evaluate all configs
         logger.info(f"Evaluating {len(configs):,} configurations...")
@@ -165,38 +166,36 @@ class LandscapeAnalysisCommand(BaseCommand):
         return size
 
     def _generate_all_configs(
-        self, num_layers: int, num_mixers: int, budgets: list[int]
+        self, num_layers: int, num_mixers: int, budgets: list[int], mixer_names: list[str]
     ) -> list[LayerPlacement]:
         """Generate all valid configurations."""
-        configs = []
+        configs: list[LayerPlacement] = []
 
         def enumerate_recursive(
-            current_assignment: list[int],
+            current_assignment: dict[int, str],
             available_layers: list[int],
             phase_idx: int,
         ) -> None:
             if phase_idx >= len(budgets):
-                final_assignment = current_assignment.copy()
-                for layer in available_layers:
-                    final_assignment[layer] = num_mixers - 1
-                configs.append(LayerPlacement(assignments=tuple(final_assignment)))
+                # Fill remaining layers with last mixer
+                last_mixer = mixer_names[num_mixers - 1]
+                final = current_assignment | {layer: last_mixer for layer in available_layers}
+                configs.append(LayerPlacement(
+                    assignments=tuple(final[i] for i in range(num_layers))
+                ))
                 return
 
             budget = budgets[phase_idx]
-            mixer_idx = phase_idx
+            mixer_name = mixer_names[phase_idx]
 
             for selected_layers in combinations(available_layers, budget):
-                new_assignment = current_assignment.copy()
-                for layer in selected_layers:
-                    new_assignment[layer] = mixer_idx
+                new_assignment = current_assignment | {layer: mixer_name for layer in selected_layers}
                 new_available = [
                     layer for layer in available_layers if layer not in selected_layers
                 ]
                 enumerate_recursive(new_assignment, new_available, phase_idx + 1)
 
-        initial_assignment = [-1] * num_layers
-        initial_available = list(range(num_layers))
-        enumerate_recursive(initial_assignment, initial_available, 0)
+        enumerate_recursive({}, list(range(num_layers)), 0)
 
         return configs
 
@@ -205,6 +204,7 @@ class LandscapeAnalysisCommand(BaseCommand):
         num_layers: int,
         num_mixers: int,
         budgets: list[int],
+        mixer_names: list[str],
         sample_size: int,
         seed: int = 42,
     ) -> list[LayerPlacement]:
@@ -212,22 +212,27 @@ class LandscapeAnalysisCommand(BaseCommand):
         import random
 
         rng = random.Random(seed)
-        configs = []
+        configs: list[LayerPlacement] = []
 
         for _ in range(sample_size):
-            assignment = [-1] * num_layers
+            assignment: dict[int, str] = {}
             available = list(range(num_layers))
 
             for phase_idx, budget in enumerate(budgets):
                 selected = rng.sample(available, budget)
+                mixer_name = mixer_names[phase_idx]
                 for layer in selected:
-                    assignment[layer] = phase_idx
+                    assignment[layer] = mixer_name
                     available.remove(layer)
 
+            # Fill remaining layers with last mixer
+            last_mixer = mixer_names[num_mixers - 1]
             for layer in available:
-                assignment[layer] = num_mixers - 1
+                assignment[layer] = last_mixer
 
-            configs.append(LayerPlacement(assignments=tuple(assignment)))
+            configs.append(LayerPlacement(
+                assignments=tuple(assignment[i] for i in range(num_layers))
+            ))
 
         return configs
 

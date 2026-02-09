@@ -7,7 +7,7 @@ swaps to explore the assignment space within a fixed allocation.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
@@ -22,6 +22,8 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 logger = logging.getLogger(__name__)
@@ -38,9 +40,19 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     Evaluation complexity is O(beam_width × iterations × swaps_per_state).
     """
 
-    def __init__(self, config: "SwapBeamConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "SwapBeamConfig",
+        observers: "Sequence[SearchObserver]" = (),
+        progress_estimator: "SearchProgressEstimator | None" = None,
+    ) -> None:
+        super().__init__(config, observers, progress_estimator)
         self.config: SwapBeamConfig
+
+        if self.observers:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support progress observers."
+            )
 
     async def _search_within_allocation(
         self,
@@ -48,24 +60,29 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation using swap-based beam search.
 
         Uses beam search to explore different ways of assigning layers to mixers
         while maintaining the same allocation (counts per mixer).
+
+        Returns:
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
+        mixer_names = problem.evaluator.mixer_names
 
         # Generate initial assignment (canonical assignment for this allocation)
-        initial_assignments = self._allocation_to_assignment(allocation, num_layers)
-        initial_placement = LayerPlacement(assignments=initial_assignments)
+        initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
+        initial_placement = LayerPlacement(assignments=tuple(initial_assignments))
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
 
         beam = [
             BeamEntry(
-                assignments=initial_assignments,
+                assignments=tuple(initial_assignments),
                 allocation=allocation,
                 cost=alloc_cost,
                 score=initial_score,
@@ -80,8 +97,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             for entry in beam:
                 candidates = self._generate_allocation_preserving_swaps(
                     entry=entry,
-                    cost_model=cost_model,
-                    num_layers=num_layers,
+                    mixer_names=mixer_names,
                 )
                 all_candidates.extend(candidates)
 
@@ -122,14 +138,16 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
 
             beam = new_beam
 
-        # Return best entry found
-        return max(beam, key=lambda e: e.score) if beam else None
+        # Return all beam entries sorted by score descending
+        if not beam:
+            return []
+        beam.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        return beam
 
     def _generate_allocation_preserving_swaps(
         self,
         entry: BeamEntry,
-        cost_model: BaseCostModel,
-        num_layers: int,
+        mixer_names: list[str],
     ) -> list[BeamEntry]:
         """
         Generate candidate swaps that preserve the allocation.
@@ -138,16 +156,16 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         We only generate swaps where the two layers have different mixers.
         """
         candidates = []
-        num_mixers = cost_model.num_mixers
 
-        # Group layers by their mixer
-        layers_by_mixer: list[list[int]] = [[] for _ in range(num_mixers)]
-        for layer_idx, mixer in enumerate(entry.assignments):
-            layers_by_mixer[mixer].append(layer_idx)
+        # Group layers by their mixer name
+        layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
+        for layer_idx, mixer_name in enumerate(entry.assignments):
+            layers_by_mixer[mixer_name].append(layer_idx)
 
         # Generate swaps between different mixers
-        for mixer_a in range(num_mixers):
-            for mixer_b in range(mixer_a + 1, num_mixers):
+        mixer_list = list(mixer_names)
+        for i, mixer_a in enumerate(mixer_list):
+            for mixer_b in mixer_list[i + 1:]:
                 for layer_a in layers_by_mixer[mixer_a]:
                     for layer_b in layers_by_mixer[mixer_b]:
                         # Swap layer_a and layer_b's mixers
@@ -169,13 +187,14 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
     def _deduplicate_candidates(
         self, candidates: list[BeamEntry]
     ) -> list[BeamEntry]:
-        """Remove duplicate candidates by assignment tuple."""
-        seen: set[tuple[int, ...]] = set()
+        """Remove duplicate candidates by assignment."""
+        seen: set[tuple[str, ...]] = set()
         unique = []
 
         for candidate in candidates:
-            if candidate.assignments not in seen:
-                seen.add(candidate.assignments)
+            key = tuple(candidate.assignments)
+            if key not in seen:
+                seen.add(key)
                 unique.append(candidate)
 
         return unique

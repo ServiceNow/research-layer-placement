@@ -1,0 +1,13 @@
+# @package _group_
+# Plain text output for headless jobs
+# Shows detailed phase/step output similar to RichSearchDisplay
+
+observer_type: plain
+show_allocation_start: true
+show_allocation_complete: true
+show_best_updated: true
+show_phases: true
+show_steps: true
+show_leaderboard: true
+eval_progress_interval: 10
+timestamp_format: "%H:%M:%S"

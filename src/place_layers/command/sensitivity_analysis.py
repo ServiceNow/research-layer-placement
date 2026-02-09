@@ -1,6 +1,5 @@
 """Sensitivity analysis command."""
 
-from dataclasses import dataclass
 import logging
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -9,7 +8,7 @@ from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import BaseModel, Field
 import seaborn as sns
 
 from place_layers.command.base_command import BaseCommand
@@ -27,8 +26,7 @@ from place_layers.search_strategy import SearchStrategyConfig
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ConvergenceMetrics:
+class ConvergenceMetrics(BaseModel):
     """Metrics for a single beam search run."""
 
     final_score: float

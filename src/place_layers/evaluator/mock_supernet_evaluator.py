@@ -1,5 +1,6 @@
 """Mock supernet evaluator for layer placement optimization."""
 
+import asyncio
 import hashlib
 import json
 import random
@@ -60,9 +61,13 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         # This represents the supernet's learned preferences
         rng = random.Random(self.config.seed)
 
-        # Unary potentials: Each layer's preferred implementation
+        # Build name-to-index mapping for O(1) lookup in evaluate()
+        self._name_to_idx = {name: i for i, name in enumerate(self.config.mixer_names)}
+
+        # Unary potentials: Each layer's preferred implementation (stored as index)
+        num_mixers = len(self.config.mixer_names)
         self.layer_needs = [
-            rng.randint(0, self.config.num_mixers - 1)
+            rng.randint(0, num_mixers - 1)
             for _ in range(self.config.num_layers)
         ]
 
@@ -80,13 +85,13 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
 
     @property
     def num_mixers(self) -> int:
-        """Number of mixer types (from config, since this is a mock evaluator)."""
-        return self.config.num_mixers
+        """Number of mixer types (derived from config)."""
+        return len(self.config.mixer_names)
 
     @property
     def mixer_names(self) -> list[str]:
-        """Mixer names (generated from num_mixers, since this is a mock evaluator)."""
-        return [f"mixer_{i}" for i in range(self.config.num_mixers)]
+        """Mixer names from config."""
+        return self.config.mixer_names
 
     async def evaluate(self, parameters: LayerPlacement) -> float:
         """
@@ -95,7 +100,7 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         Score = Σᵢ unary(i) + Σᵢ pairwise(i, i+1) + noise
 
         Args:
-            parameters: Parameters to evaluate.
+            parameters: Parameters to evaluate (assignments are mixer names).
 
         Returns:
             Score (higher is better).
@@ -103,7 +108,8 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         total_score = 0.0
 
         # UNARY POTENTIALS: Does mixer match layer's intrinsic need?
-        for layer_idx, mixer_idx in enumerate(parameters.assignments):
+        for layer_idx, mixer_name in enumerate(parameters.assignments):
+            mixer_idx = self._name_to_idx[mixer_name]
             if mixer_idx == self.layer_needs[layer_idx]:
                 # Correct mixer for this layer
                 total_score += self.config.unary_bonus
@@ -133,6 +139,10 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         noise_rng = random.Random(noise_seed)
         total_score += noise_rng.gauss(0.0, self.config.noise_sigma)
 
+        # Optional delay for testing display dynamics
+        if self.config.eval_delay_seconds > 0:
+            await asyncio.sleep(self.config.eval_delay_seconds)
+
         return total_score
 
 
@@ -147,8 +157,8 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
         description="Number of layers (must match problem config)", gt=0
     )
 
-    num_mixers: int = Field(
-        description="Number of mixers (must match problem config)", gt=1
+    mixer_names: list[str] = Field(
+        description="Mixer names (e.g., ['FA', 'SWA', 'GDN', 'KDA'])",
     )
 
     seed: int = Field(
@@ -174,5 +184,10 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
 
     noise_sigma: float = Field(
         description="Standard deviation of configuration-specific Gaussian noise",
+        ge=0.0,
+    )
+
+    eval_delay_seconds: float = Field(
+        description="Artificial delay per evaluation (seconds) for testing display dynamics",
         ge=0.0,
     )

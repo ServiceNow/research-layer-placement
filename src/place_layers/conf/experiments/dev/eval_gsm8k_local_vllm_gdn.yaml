@@ -1,0 +1,29 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on GSM8K with local vLLM and GDN placement
+#
+# Usage:
+#   python -m place_layers +experiments=eval_gsm8k_local_vllm_gdn
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: local_vllm
+  - /model: apriel2_0_5b_dev
+  - /task: gsm8k
+  - /generation: greedy
+  - /placement: every2nd-gdn
+  - _self_
+
+model:
+  model_path: /tmp/apriel2-0.5b-dev
+
+backend:
+  client:
+    gpu_memory_utilization: 0.7
+
+# Override for short context model (2048 tokens)
+task:
+  num_fewshot: 2  # Reduce from 5 to fit in context
+
+generation:
+  max_new_tokens: 512  # GSM8K answers are short

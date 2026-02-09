@@ -1,0 +1,39 @@
+# @package problem
+# Cost-constrained problem for Apriel 15B (48 layers)
+# Maximize performance subject to latency budget
+
+problem_type: cost_max_performance
+
+# Cost model derived from empirical speedup measurements:
+#   All FA (48 layers):  baseline (1.0x speedup)
+#   All SWA (48 layers): 6.4x speedup -> cost = 1/6.4 = 0.156
+#   All GDN (48 layers): 11.1x speedup -> cost = 1/11.1 = 0.09
+#   All KDA (48 layers): ~9x speedup -> cost = 0.11
+#
+# KDA estimate: With 3 FA + 3 SWA, adding GDN layers would allow ~2 more
+# layers than KDA at same budget. This implies c_KDA ≈ 0.11 (slightly
+# higher than GDN's 0.09).
+#
+# Note: Mixed configurations show ~10% deviation from linear model.
+# This is expected given R^2 = 0.98 for underlying regression.
+#
+# Mixer names must match the model's mixer_names from the evaluator.
+# Key order determines hierarchical search phase order:
+#   FA assigned first, then SWA, then GDN, then KDA gets remainder.
+cost_model:
+  cost_model_type: linear
+  mixer_costs:
+    FA: 1.0      # Phase 0
+    SWA: 0.156   # Phase 1
+    GDN: 0.09    # Phase 2
+    KDA: 0.11    # Remainder
+
+# Budget: normalized cost units (FA layer = 1.0)
+# Examples:
+#   All FA (48):   cost = 48.0  -> 1.0x speedup
+#   All SWA (48):  cost = 7.5   -> 6.4x speedup
+#   All GDN (48):  cost = 4.32  -> 11.1x speedup
+#   7.5x speedup:  cost = 6.4   (48/7.5)
+#
+# Default: 7.5x speedup target
+cost_budget: 6.4

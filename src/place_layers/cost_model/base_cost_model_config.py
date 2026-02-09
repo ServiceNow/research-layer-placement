@@ -23,4 +23,4 @@ class BaseCostModelConfig(BaseModel):
 
     def create_cost_model(self) -> "BaseCostModel":
         """Smart constructor: instantiate cost model from config."""
-        return self._impl_class(config=self)
+        return self._impl_class(config=self)  # type: ignore[call-arg]

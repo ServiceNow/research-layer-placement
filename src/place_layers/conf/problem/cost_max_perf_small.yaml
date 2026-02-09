@@ -6,12 +6,19 @@ problem_type: cost_max_performance
 
 # Cost model: linear in mixer assignments
 # Mixer costs represent relative time per layer (e.g., from profiling)
-# mixer[0] = full attention (slowest, most powerful)
-# mixer[1] = sliding window (medium)
-# mixer[2] = SSM/linear (fastest, least powerful)
+# mixer_0 = full attention (slowest, most powerful)
+# mixer_1 = sliding window (medium)
+# mixer_2 = SSM/linear (fastest, least powerful)
+#
+# Mixer names must match MockSupernetEvaluator's generated names (mixer_0, mixer_1, etc.)
+# Key order determines hierarchical search phase order:
+#   mixer_0 assigned first, then mixer_1, then mixer_2 gets remainder.
 cost_model:
   cost_model_type: linear
-  mixer_costs: [1.0, 0.5, 0.2]
+  mixer_costs:
+    mixer_0: 1.0  # Phase 0 (full attention)
+    mixer_1: 0.5  # Phase 1 (sliding window)
+    mixer_2: 0.2  # Remainder (SSM/linear)
 
 # Budget: allow up to this total cost
 # With 20 layers:

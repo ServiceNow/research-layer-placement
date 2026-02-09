@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
 from pydantic import Field, model_validator
@@ -14,6 +15,9 @@ from place_layers.problem.base_problem_config import BaseProblemConfig
 
 if TYPE_CHECKING:
     from place_layers.evaluator.base_evaluator import BaseEvaluator
+
+
+logger = logging.getLogger(__name__)
 
 
 class LayerPlacementProblem(BaseProblem[LayerPlacement]):
@@ -88,16 +92,20 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         super().__init__(evaluator, config)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
-        # Create cost model
-        self.cost_model = config.cost_model.create_cost_model()
+        # Get mixer names from evaluator
+        mixer_names = evaluator.mixer_names
 
-        # Validate dimensions
-        num_mixers = evaluator.num_mixers
-        if len(config.cost_model.mixer_costs) != num_mixers:
+        # Validate mixer_costs keys match evaluator mixer names
+        config_mixer_names = set(config.cost_model.mixer_costs.keys())
+        evaluator_mixer_names = set(mixer_names)
+        if config_mixer_names != evaluator_mixer_names:
             raise ValueError(
-                f"Number of mixer costs ({len(config.cost_model.mixer_costs)}) "
-                f"must match number of mixers ({num_mixers})"
+                f"Cost model mixer names {config_mixer_names} "
+                f"must match evaluator mixer names {evaluator_mixer_names}"
             )
+
+        # Create cost model (mixer names come from config.cost_model.mixer_costs)
+        self.cost_model = config.cost_model.create_cost_model()
 
         # Validate constraint based on problem type
         num_layers = evaluator.num_layers
@@ -114,6 +122,19 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
                 raise ValueError(
                     f"cost_budget ({config.cost_budget}) exceeds maximum "
                     f"possible cost ({max_cost}). This constraint is trivially satisfied."
+                )
+
+        if isinstance(config, MinCostProblemConfig):
+            # Warn if performance_target seems unreasonable
+            if config.performance_target > 1.0:
+                logger.warning(
+                    f"performance_target ({config.performance_target}) exceeds 1.0, "
+                    "which may be impossible to achieve."
+                )
+            if config.performance_target <= 0.0:
+                logger.warning(
+                    f"performance_target ({config.performance_target}) is <= 0.0, "
+                    "which is trivially satisfied by any configuration."
                 )
 
     def compute_cost(self, placement: LayerPlacement) -> float:

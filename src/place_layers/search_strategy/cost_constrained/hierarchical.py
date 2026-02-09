@@ -7,7 +7,8 @@ approach: phase-by-phase assignment of layers to mixers.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar, Literal
+from math import comb
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
@@ -16,7 +17,6 @@ from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.search_strategy.beam_core import (
     create_layer_assignment,
-    generate_beam_candidates,
     select_top_beam,
 )
 from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
@@ -26,20 +26,104 @@ from place_layers.search_strategy.cost_constrained.base_config import (
 from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
+    from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
+    from place_layers.search_strategy.progress.events import BeamNodeId
 
 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------------------------
+# Evaluation count calculation for progress estimation
+# -----------------------------------------------------------------------------
+
+
+def phase_eval_count(
+    budget: int, unassigned: int, beam_width: int, is_first_phase: bool
+) -> int:
+    """Expected evaluation count for a phase.
+
+    Args:
+        budget: Number of layers to assign in this phase.
+        unassigned: Number of unassigned layers at phase start.
+        beam_width: Beam width parameter (B).
+        is_first_phase: Whether this is the first phase (single beam entry input).
+
+    Returns:
+        Expected number of evaluations for this phase.
+    """
+    if budget <= 0:
+        return 0
+
+    # Prescore: for first phase there's 1 beam entry, otherwise B entries
+    # Each entry prescores all its unassigned layers
+    if is_first_phase:
+        prescore_count = unassigned
+    else:
+        prescore_count = beam_width * unassigned
+
+    if budget == 1:
+        # Prescore only
+        return prescore_count
+
+    # Growth steps
+    growth_count = 0
+    for s in range(1, budget):
+        # Each growth step: B parents * (unassigned - s) candidates
+        # But capped by C(unassigned, s+1) unique combinations (deduplication)
+        growth_count += min(beam_width * (unassigned - s), comb(unassigned, s + 1))
+
+    return prescore_count + growth_count
+
+
+def allocation_eval_count(
+    budgets: list[int],
+    num_layers: int,
+    beam_width: int,
+) -> int:
+    """Calculate expected evaluation count for a single allocation.
+
+    Aggregates phase counts across all phases.
+
+    Args:
+        budgets: Phase budgets (layers to assign in each phase, excluding last).
+        num_layers: Total number of layers (N).
+        beam_width: Beam width parameter (B).
+
+    Returns:
+        Expected number of evaluations for this allocation.
+    """
+    # Final evaluation always happens
+    count = 1
+    unassigned = num_layers
+    is_first = True
+
+    for budget in budgets:
+        if budget == 0:
+            continue
+
+        count += phase_eval_count(budget, unassigned, beam_width, is_first)
+        unassigned -= budget
+        is_first = False
+
+    return count
 
 
 class HierarchicalSearch(BaseCostConstrainedSearch):
     """
     Cost-constrained search using hierarchical beam search for the inner loop.
 
-    Within each allocation, uses the hierarchical approach:
+    Within each allocation, uses the hierarchical approach with unified beam:
     - Phase 1: Find best layers for mixer 0 (e.g., FA)
     - Phase 2: Given fixed mixer 0 positions, find best layers for mixer 1 (e.g., SWA)
     - Phase 3: Remaining layers get mixer 2 (e.g., GDN)
+
+    Each beam entry carries its own fixed_assignments from prior phases, allowing
+    different "paths" to emerge naturally through competition. Entries with weak
+    histories get eliminated as the beam evolves.
 
     This is much faster than swap-based search (~10x fewer evaluations) but
     has a different search bias - it cannot reconsider early phase decisions.
@@ -50,9 +134,57 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
     - Only assignment (which layers) needs to be found
     """
 
-    def __init__(self, config: "HierarchicalConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "HierarchicalConfig",
+        observers: "Sequence[SearchObserver]" = (),
+        progress_estimator: "SearchProgressEstimator | None" = None,
+    ) -> None:
+        super().__init__(config, observers=observers, progress_estimator=progress_estimator)
         self.config: HierarchicalConfig
+        # Sequence counter for unique IDs within a step (reset at each step start)
+        self._step_seq: int = 0
+
+    def _build_partial_placement(
+        self,
+        fixed: dict[int, str],
+        num_layers: int,
+    ) -> tuple[str | None, ...]:
+        """Build a partial placement from fixed assignments.
+
+        Args:
+            fixed: Dict mapping layer index to mixer name for assigned layers.
+            num_layers: Total number of layers.
+
+        Returns:
+            Tuple where index=layer, value=mixer or None if unassigned.
+        """
+        return tuple(fixed.get(i) for i in range(num_layers))
+
+    def _build_partial_placement_with_current(
+        self,
+        fixed: dict[int, str],
+        current_layers: list[int],
+        current_mixer: str,
+        num_layers: int,
+    ) -> tuple[str | None, ...]:
+        """Build a partial placement including current phase assignments.
+
+        Args:
+            fixed: Dict mapping layer index to mixer name for prior phases.
+            current_layers: Layers assigned in current phase.
+            current_mixer: Mixer being assigned in current phase.
+            num_layers: Total number of layers.
+
+        Returns:
+            Tuple where index=layer, value=mixer or None if unassigned.
+        """
+        result: list[str | None] = [None] * num_layers
+        for layer_idx, mixer in fixed.items():
+            result[layer_idx] = mixer
+        for layer_idx in current_layers:
+            result[layer_idx] = current_mixer
+        return tuple(result)
 
     async def _search_within_allocation(
         self,
@@ -60,169 +192,460 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
-        Search for the best assignment within a fixed allocation using hierarchical beam search.
+        Search for the best assignment within a fixed allocation using unified beam search.
 
-        Runs phases sequentially, each phase finding the best layers for one mixer type.
+        Uses a single unified beam throughout all phases. Each beam entry carries its own
+        fixed_assignments from prior phases, so different "paths" emerge naturally through
+        competition. Entries compete at every step and across phases - weak entries get
+        eliminated regardless of their history.
 
-        When cross_phase_beam_width > 1, maintains multiple candidate paths across phases,
-        allowing exploration of phase interactions at higher computational cost.
+        Phase order is determined by the order of keys in mixer_costs config, not alphabetical.
+
+        Returns:
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
-        num_mixers = len(allocation)
-        cross_phase_k = self.config.cross_phase_beam_width
+        mixer_names = problem.evaluator.mixer_names  # Canonical order for allocations
+        phase_order = cost_model.phase_order  # User-specified order for phases
 
-        # Start with a single path
-        paths: list[dict] = [{
-            "fixed": {},
-            "unassigned": list(range(num_layers)),
-            "score": 0.0,
-        }]
+        # Build mapping from mixer name to allocation index
+        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
 
-        # Extract budgets (counts per mixer, excluding the last one which gets remainder)
-        budgets = list(allocation[:-1])  # e.g., [1, 17] from (1, 17, 30)
+        # Generate root ID for the initial beam entry (before any phase starts)
+        from place_layers.search_strategy.progress.events import BeamNodeId
 
-        # Run phases for each mixer type except the last
-        for phase_idx, budget in enumerate(budgets):
-            mixer_idx = phase_idx
-            fallback_mixer = phase_idx + 1  # Unassigned go to next mixer during evaluation
+        root_id = BeamNodeId(allocation=allocation, mixer=None, step=None, seq=None)
+
+        # Start with a single beam entry (no fixed assignments yet)
+        beam: list[dict] = [
+            {
+                "fixed": {},
+                "unassigned": list(range(num_layers)),
+                "score": 0.0,
+                "id": root_id,
+                "parent_id": None,
+            }
+        ]
+
+        # Build phase budgets in phase_order (excluding the last which gets remainder)
+        # Each phase assigns layers to one mixer type
+        phase_budgets = [
+            (phase_order[i], allocation[name_to_alloc_idx[phase_order[i]]])
+            for i in range(len(phase_order) - 1)
+        ]
+
+        # Total phases is the number of phases we'll actually run (non-zero budgets)
+        total_phases = sum(1 for _, b in phase_budgets if b > 0)
+        running_phase_idx = 0
+
+        # Run phases for each mixer type except the last (in phase_order)
+        for phase_idx, (mixer_name, budget) in enumerate(phase_budgets):
+            fallback_mixer = phase_order[phase_idx + 1]
 
             if budget == 0:
                 # Skip phases with no layers to assign
                 continue
 
-            new_paths: list[dict] = []
+            # Emit phase started event (running_phase_idx is 0-based)
+            if self.observers:
+                from place_layers.search_strategy.progress import PhaseStartedEvent
 
-            for path in paths:
-                if not path["unassigned"]:
-                    # No more layers to assign for this path
-                    continue
-
-                # Find best layers for this mixer, given this path's state
-                beam = await self._run_phase(
-                    problem=problem,
+                event = PhaseStartedEvent(
+                    phase_index=running_phase_idx,
+                    total_phases=total_phases,
+                    mixer_name=mixer_name,
                     budget=budget,
-                    mixer_idx=mixer_idx,
-                    fallback_mixer=fallback_mixer,
-                    unassigned=path["unassigned"],
-                    fixed_assignments=path["fixed"],
-                    num_layers=num_layers,
+                )
+                for observer in self.observers:
+                    observer.on_phase_started(event)
+
+            # Run phase - returns updated beam entries with new fixed assignments
+            beam = await self._run_phase(
+                problem=problem,
+                beam=beam,
+                budget=budget,
+                mixer_name=mixer_name,
+                fallback_mixer=fallback_mixer,
+                num_layers=num_layers,
+                phase_index=running_phase_idx,
+                allocation=allocation,
+            )
+
+            if not beam:
+                # No valid entries remain
+                return []
+
+            # Emit phase completed event
+            if self.observers:
+                from place_layers.search_strategy.progress import PhaseCompletedEvent
+
+                # Get the layers assigned in this phase from the best entry
+                best_entry = beam[0]
+                phase_layers = sorted(
+                    [
+                        layer_idx
+                        for layer_idx, mixer in best_entry["fixed"].items()
+                        if mixer == mixer_name
+                    ]
                 )
 
-                # Create new paths for each beam entry
-                for entry in beam:
-                    new_fixed = dict(path["fixed"])
-                    new_unassigned = list(path["unassigned"])
-                    for layer_idx in entry["layers"]:
-                        new_fixed[layer_idx] = mixer_idx
-                        new_unassigned.remove(layer_idx)
-                    new_paths.append({
-                        "fixed": new_fixed,
-                        "unassigned": new_unassigned,
-                        "score": entry["score"],
-                    })
+                event = PhaseCompletedEvent(
+                    phase_index=running_phase_idx,
+                    total_phases=total_phases,
+                    mixer_name=mixer_name,
+                    budget=budget,
+                    final_layers=tuple(phase_layers),
+                    final_score=best_entry["score"],
+                )
+                for observer in self.observers:
+                    observer.on_phase_completed(event)
 
-            # Prune to top cross_phase_k paths
-            new_paths.sort(key=lambda p: p["score"], reverse=True)
-            paths = new_paths[:cross_phase_k]
+            # Increment after phase completes (0-based indexing)
+            running_phase_idx += 1
 
-            if not paths:
-                # No valid paths remain
-                return None
+        # Finalize ALL beam entries for the leaderboard
+        last_mixer = phase_order[-1]
+        results: list[BeamEntry] = []
 
-        # Take best path for final assignment
-        best_path = paths[0]
+        for entry in beam:
+            # Assign remaining layers to the last mixer (last in phase_order)
+            for layer_idx in entry["unassigned"]:
+                entry["fixed"][layer_idx] = last_mixer
 
-        # Assign remaining layers to the last mixer
-        last_mixer = num_mixers - 1
-        for layer_idx in best_path["unassigned"]:
-            best_path["fixed"][layer_idx] = last_mixer
+            # Build final assignment list
+            assignments = [entry["fixed"][i] for i in range(num_layers)]
 
-        # Build final assignment tuple
-        assignments = tuple(best_path["fixed"][i] for i in range(num_layers))
+            # Final evaluation
+            placement = LayerPlacement(assignments=tuple(assignments))
+            final_score = await problem.evaluate(placement)
+            self.eval_count += 1
 
-        # Final evaluation
-        placement = LayerPlacement(assignments=assignments)
-        final_score = await problem.evaluate(placement)
-        self.eval_count += 1
+            results.append(
+                BeamEntry(
+                    assignments=tuple(assignments),
+                    allocation=allocation,
+                    cost=alloc_cost,
+                    score=final_score,
+                )
+            )
 
-        return BeamEntry(
-            assignments=assignments,
-            allocation=allocation,
-            cost=alloc_cost,
-            score=final_score,
-        )
+        # Sort by score descending (higher is better)
+        results.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        return results
 
     async def _run_phase(
         self,
         problem: CostConstrainedProblem,
+        beam: list[dict],
         budget: int,
-        mixer_idx: int,
-        fallback_mixer: int,
-        unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
+        phase_index: int,
+        allocation: Allocation,
     ) -> list[dict]:
         """
-        Run one phase: find best 'budget' layers for mixer_idx.
+        Run one phase with unified beam: find best 'budget' layers for mixer_name.
 
-        Returns beam of candidates, each with "layers" and "score" keys.
+        Each beam entry carries its own fixed/unassigned state from prior phases.
+        The phase prescores all unassigned layers for each entry, then grows the
+        beam to budget size. Finally, updates fixed_assignments for each entry.
+
+        Args:
+            problem: The optimization problem.
+            beam: Current beam entries, each with "fixed", "unassigned", "score" keys.
+            budget: Number of layers to assign to mixer_name in this phase.
+            mixer_name: The mixer type to assign layers to.
+            fallback_mixer: Mixer for remaining unassigned layers during evaluation.
+            num_layers: Total number of layers.
+            phase_index: Current phase index for progress reporting.
+            allocation: The allocation being searched (for ID generation).
+
+        Returns:
+            Updated beam entries with new fixed_assignments for this phase.
         """
-        # Pre-score individual layers
-        layer_scores = await self._prescore_layers(
-            problem=problem,
-            unassigned=unassigned,
-            mixer_idx=mixer_idx,
-            fallback_mixer=fallback_mixer,
-            fixed_assignments=fixed_assignments,
-            num_layers=num_layers,
-        )
+        # Reset sequence counter for prescoring step (step 0)
+        self._step_seq = 0
+
+        # Emit step started event before prescoring
+        if self.observers:
+            from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
+            from place_layers.search_strategy.progress.events import BeamEntry as EventBeamEntry
+
+            total_candidates = sum(len(e["unassigned"]) for e in beam)
+
+            # Build partial placements for parents
+            parent_entries = tuple(
+                EventBeamEntry(
+                    id=e["id"],
+                    partial_placement=self._build_partial_placement(
+                        e.get("fixed", {}), num_layers
+                    ),
+                    score=e.get("score"),
+                )
+                for e in beam
+            )
+
+            event = BeamGrowthStepStartedEvent(
+                step=0,
+                total_steps=budget,
+                phase_index=phase_index,
+                mixer_name=mixer_name,
+                num_candidates=total_candidates,
+                parents=parent_entries,
+            )
+            for observer in self.observers:
+                observer.on_beam_growth_step_started(event)
+
+        # Pre-score individual layers for each beam entry
+        # Creates candidates: each is a single-layer entry inheriting parent's state
+        prescored: list[dict] = []
+        # Track all tried candidates with IDs for event reporting
+        all_tried: list[dict] = []
+
+        # Calculate total evals across all parents for progress reporting
+        total_evals = sum(len(e["unassigned"]) for e in beam)
+        eval_offset = 0
+
+        for entry in beam:
+            if not entry["unassigned"]:
+                continue
+
+            parent_id = entry["id"]
+            layer_scores = await self._prescore_layers(
+                problem=problem,
+                unassigned=entry["unassigned"],
+                mixer_name=mixer_name,
+                fallback_mixer=fallback_mixer,
+                fixed_assignments=entry["fixed"],
+                num_layers=num_layers,
+                parent_id=parent_id,
+                total_steps=budget,
+                eval_offset=eval_offset,
+                total_evals=total_evals,
+                allocation=allocation,
+            )
+            eval_offset += len(entry["unassigned"])
+
+            # Track all layer scores with IDs and placement for event reporting
+            for layer_idx, score, placement, candidate_id in layer_scores:
+                all_tried.append({
+                    "layer": layer_idx,
+                    "score": score,
+                    "id": candidate_id,
+                    "parent_id": parent_id,
+                    "placement": placement,
+                })
+
+            # Create single-layer candidates from prescoring
+            for layer_idx, score, placement, candidate_id in layer_scores:
+                prescored.append({
+                    "fixed": entry["fixed"],
+                    "unassigned": entry["unassigned"],
+                    "layers": [layer_idx],
+                    "score": score,
+                    "id": candidate_id,
+                    "parent_id": parent_id,
+                    "added_layer": layer_idx,
+                    "placement": placement,
+                })
+
+        if not prescored:
+            return []
+
+        # Select top B entries from prescoring
+        prescored.sort(key=lambda x: x["score"], reverse=True)
+        working_beam = prescored[: self.config.beam_width]
+
+        # Emit step 1 event for initial beam (from prescoring)
+        if self.observers:
+            from place_layers.search_strategy.progress import BeamGrowthStepEvent
+            from place_layers.search_strategy.progress.events import (
+                BeamEntry as EventBeamEntry,
+                EvaluatedCandidate,
+                SelectedEntry,
+            )
+
+            # Build parents from input beam
+            parents = tuple(
+                EventBeamEntry(
+                    id=e["id"],
+                    partial_placement=self._build_partial_placement(
+                        e.get("fixed", {}), num_layers
+                    ),
+                    score=e.get("score"),
+                )
+                for e in beam
+            )
+
+            # Build tried candidates (sorted by score descending)
+            sorted_all_tried = sorted(all_tried, key=lambda x: x["score"], reverse=True)
+            tried = tuple(
+                EvaluatedCandidate(
+                    id=t["id"],
+                    parent_id=t["parent_id"],
+                    layer=t["layer"],
+                    score=t["score"],
+                    placement=t["placement"],
+                )
+                for t in sorted_all_tried
+            )
+
+            # Build beam entries
+            beam_entries = tuple(
+                SelectedEntry(
+                    id=b["id"],
+                    parent_id=b["parent_id"],
+                    partial_placement=self._build_partial_placement_with_current(
+                        b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                    ),
+                    score=b["score"],
+                    added_layer=b["added_layer"],
+                )
+                for b in working_beam
+            )
+
+            # Compute best_candidate and cut_candidates for observers
+            best_candidate = tried[0] if tried else None
+            # Use IDs to determine which candidates were selected
+            beam_ids = {b["id"] for b in working_beam}
+            cut_candidates = tuple(
+                t for t in tried if t.id not in beam_ids
+            )
+
+            event = BeamGrowthStepEvent(
+                step=0,
+                total_steps=budget,
+                phase_index=phase_index,
+                mixer_name=mixer_name,
+                parents=parents,
+                tried=tried,
+                beam=beam_entries,
+                best_candidate=best_candidate,
+                cut_candidates=cut_candidates,
+            )
+            for observer in self.observers:
+                observer.on_beam_growth_step(event)
 
         if budget == 1:
-            # Simple case: just take the best single layer
-            best_layer, best_score = layer_scores[0]
-            return [{"layers": [best_layer], "score": best_score}]
+            # Finalize phase: update fixed assignments
+            return self._finalize_phase(working_beam, mixer_name)
 
-        # Grow beam from best single layers to budget size
-        beam = await self._grow_beam(
+        # Grow beam to budget size
+        working_beam = await self._grow_beam(
             problem=problem,
-            layer_scores=layer_scores,
+            working_beam=working_beam,
             budget=budget,
-            mixer_idx=mixer_idx,
+            mixer_name=mixer_name,
             fallback_mixer=fallback_mixer,
-            unassigned=unassigned,
-            fixed_assignments=fixed_assignments,
             num_layers=num_layers,
+            phase_index=phase_index,
+            allocation=allocation,
         )
 
-        return beam
+        # Finalize phase: update fixed assignments
+        return self._finalize_phase(working_beam, mixer_name)
+
+    def _finalize_phase(self, beam: list[dict], mixer_name: str) -> list[dict]:
+        """Update fixed assignments for phase completion.
+
+        Takes working beam entries with "layers" (layers assigned in this phase)
+        and updates their fixed/unassigned state to reflect the new assignments.
+        Preserves IDs for graph reconstruction.
+        """
+        result = []
+        for entry in beam:
+            new_fixed = dict(entry["fixed"])
+            new_unassigned = list(entry["unassigned"])
+            for layer_idx in entry["layers"]:
+                new_fixed[layer_idx] = mixer_name
+                new_unassigned.remove(layer_idx)
+            result.append({
+                "fixed": new_fixed,
+                "unassigned": new_unassigned,
+                "score": entry["score"],
+                "id": entry["id"],
+                "parent_id": entry.get("parent_id"),
+            })
+        return result
 
     async def _prescore_layers(
         self,
         problem: CostConstrainedProblem,
         unassigned: list[int],
-        mixer_idx: int,
-        fallback_mixer: int,
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
+        fixed_assignments: dict[int, str],
         num_layers: int,
-    ) -> list[tuple[int, float]]:
-        """Pre-score individual layers to seed the beam."""
-        layer_scores = []
+        parent_id: "BeamNodeId",
+        total_steps: int = 1,
+        eval_offset: int = 0,
+        total_evals: int | None = None,
+        allocation: Allocation | None = None,
+    ) -> list[tuple[int, float, tuple[str, ...], "BeamNodeId"]]:
+        """Pre-score individual layers to seed the beam.
 
-        for layer_idx in unassigned:
+        Returns:
+            List of (layer_idx, score, complete_placement, id) tuples, sorted by score.
+        """
+        from place_layers.search_strategy.progress.events import BeamNodeId
+
+        # Use parent's allocation if not provided
+        alloc_tuple = allocation if allocation is not None else parent_id.allocation
+        layer_scores: list[tuple[int, float, tuple[str, ...], BeamNodeId]] = []
+        if total_evals is None:
+            total_evals = len(unassigned)
+
+        for local_idx, layer_idx in enumerate(unassigned):
+            eval_idx = eval_offset + local_idx + 1  # 1-based eval index
             assignments = create_layer_assignment(
                 fixed_assignments=fixed_assignments,
                 target_layers=[layer_idx],
-                target_mixer_idx=mixer_idx,
+                target_mixer=mixer_name,
                 unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer,
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            complete_placement = tuple(assignments)
+            placement = LayerPlacement(assignments=complete_placement)
             score = await problem.evaluate(placement)
             self.eval_count += 1
-            layer_scores.append((layer_idx, score))
+
+            # Generate ID for this candidate (step=0 for prescoring)
+            candidate_id = BeamNodeId(
+                allocation=alloc_tuple,
+                mixer=mixer_name,
+                step=0,
+                seq=self._step_seq,
+            )
+            self._step_seq += 1
+
+            # Notify observers of eval completion
+            if self.observers:
+                for observer in self.observers:
+                    observer.on_eval_completed(self.eval_count)
+
+                # Emit candidate evaluated event
+                from place_layers.search_strategy.progress import CandidateEvaluatedEvent
+
+                event = CandidateEvaluatedEvent(
+                    total_steps=total_steps,
+                    mixer_name=mixer_name,
+                    id=candidate_id,
+                    parent_id=parent_id,
+                    layer=layer_idx,
+                    score=score,
+                    placement=complete_placement,
+                    eval_index=eval_idx,
+                    total_evals=total_evals,
+                )
+                for observer in self.observers:
+                    observer.on_candidate_evaluated(event)
+
+            layer_scores.append((layer_idx, score, complete_placement, candidate_id))
 
         # Sort by score (higher is better)
         layer_scores.sort(key=lambda x: x[1], reverse=True)
@@ -231,76 +654,258 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
     async def _grow_beam(
         self,
         problem: CostConstrainedProblem,
-        layer_scores: list[tuple[int, float]],
+        working_beam: list[dict],
         budget: int,
-        mixer_idx: int,
-        fallback_mixer: int,
-        unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
+        phase_index: int,
+        allocation: Allocation,
     ) -> list[dict]:
-        """Grow the beam from seed to budget size."""
-        # Initialize beam with single-layer candidates
-        beam = [
-            {"layers": [layer_idx], "score": score}
-            for layer_idx, score in layer_scores[: self.config.beam_width]
-        ]
+        """Grow the beam from prescored single-layer entries to budget size.
 
-        best_score = beam[0]["score"]
-
-        # Grow beam iteratively
+        Each beam entry carries its own fixed/unassigned state from prior phases.
+        Candidates are generated by expanding each entry with layers from its
+        own unassigned list.
+        """
+        # Grow beam iteratively (step 0 was prescoring, handled in _run_phase)
         for growth_step in range(1, budget):
-            # Generate candidates using shared function
-            candidates = generate_beam_candidates(beam, unassigned)
+            step_num = growth_step
+            # Reset sequence counter for this step
+            self._step_seq = 0
+
+            # Generate candidates - each entry uses its own unassigned list
+            candidates = self._generate_candidates_unified(working_beam)
 
             if not candidates:
                 break
 
+            # Emit step started event before evaluating
+            if self.observers:
+                from place_layers.search_strategy.progress import BeamGrowthStepStartedEvent
+                from place_layers.search_strategy.progress.events import (
+                    BeamEntry as EventBeamEntry,
+                )
+
+                parent_entries = tuple(
+                    EventBeamEntry(
+                        id=b["id"],
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                    )
+                    for b in working_beam
+                )
+
+                event = BeamGrowthStepStartedEvent(
+                    step=step_num,
+                    total_steps=budget,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    num_candidates=len(candidates),
+                    parents=parent_entries,
+                )
+                for observer in self.observers:
+                    observer.on_beam_growth_step_started(event)
+
             # Evaluate candidates
-            await self._evaluate_candidates(
+            await self._evaluate_candidates_unified(
                 problem=problem,
                 candidates=candidates,
-                mixer_idx=mixer_idx,
+                mixer_name=mixer_name,
                 fallback_mixer=fallback_mixer,
-                unassigned=unassigned,
-                fixed_assignments=fixed_assignments,
                 num_layers=num_layers,
+                total_steps=budget,
+                step=step_num,
+                allocation=allocation,
             )
 
             # Select top candidates using shared function (higher is better)
-            beam = select_top_beam(candidates, self.config.beam_width, higher_is_better=True)
+            new_beam = select_top_beam(
+                candidates, self.config.beam_width, higher_is_better=True
+            )
 
-            # Check early stopping
-            new_best_score = beam[0]["score"]
-            if new_best_score <= best_score + self.config.early_stop_threshold:
-                break
-            best_score = new_best_score
+            # Emit beam growth step event with expansion details
+            if self.observers:
+                from place_layers.search_strategy.progress import BeamGrowthStepEvent
+                from place_layers.search_strategy.progress.events import (
+                    BeamEntry as EventBeamEntry,
+                    EvaluatedCandidate,
+                    SelectedEntry,
+                )
 
-        return beam
+                # Build tried list with provenance from candidates
+                # Sort by score descending for display
+                sorted_candidates = sorted(
+                    candidates, key=lambda x: x["score"], reverse=True
+                )
+                tried = tuple(
+                    EvaluatedCandidate(
+                        id=c["id"],
+                        parent_id=c["parent_id"],
+                        layer=c["added_layer"],
+                        score=c["score"],
+                        placement=c["placement"],
+                    )
+                    for c in sorted_candidates
+                )
 
-    async def _evaluate_candidates(
+                # Build parents list from previous beam
+                parents = tuple(
+                    EventBeamEntry(
+                        id=b["id"],
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                    )
+                    for b in working_beam
+                )
+
+                # Build beam with provenance
+                beam_entries = tuple(
+                    SelectedEntry(
+                        id=b["id"],
+                        parent_id=b["parent_id"],
+                        partial_placement=self._build_partial_placement_with_current(
+                            b.get("fixed", {}), b["layers"], mixer_name, num_layers
+                        ),
+                        score=b["score"],
+                        added_layer=b["added_layer"],
+                    )
+                    for b in new_beam
+                )
+
+                # Compute best_candidate and cut_candidates for observers
+                best_candidate = tried[0] if tried else None
+                beam_ids = {b["id"] for b in new_beam}
+                cut_candidates = tuple(
+                    t for t in tried if t.id not in beam_ids
+                )
+
+                event = BeamGrowthStepEvent(
+                    step=step_num,  # 0-based (0=prescoring, 1,2,...=growth)
+                    total_steps=budget,
+                    phase_index=phase_index,
+                    mixer_name=mixer_name,
+                    parents=parents,
+                    tried=tried,
+                    beam=beam_entries,
+                    best_candidate=best_candidate,
+                    cut_candidates=cut_candidates,
+                )
+                for observer in self.observers:
+                    observer.on_beam_growth_step(event)
+
+            working_beam = new_beam
+
+        return working_beam
+
+    def _generate_candidates_unified(self, beam: list[dict]) -> list[dict]:
+        """Generate candidates for unified beam where each entry has its own unassigned list.
+
+        For each entry, tries adding each unassigned layer that isn't already in its layers.
+        Candidates inherit the parent's fixed/unassigned state and ID as parent_id.
+        """
+        candidates = []
+        seen: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+
+        for entry in beam:
+            existing = set(entry["layers"])
+            # Use the entry's own unassigned list
+            parent_unassigned = entry["unassigned"]
+            parent_id = entry["id"]
+
+            for layer_idx in parent_unassigned:
+                if layer_idx in existing:
+                    continue
+
+                new_layers = tuple(sorted(entry["layers"] + [layer_idx]))
+
+                # Deduplicate based on (fixed_key, layers) - entries with same fixed
+                # context and same layers are duplicates
+                fixed_key = tuple(sorted(entry["fixed"].items()))
+                dedup_key = (fixed_key, new_layers)
+
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                candidates.append({
+                    "fixed": entry["fixed"],
+                    "unassigned": parent_unassigned,
+                    "layers": list(new_layers),
+                    "score": None,
+                    "parent_id": parent_id,
+                    "added_layer": layer_idx,
+                })
+
+        return candidates
+
+    async def _evaluate_candidates_unified(
         self,
         problem: CostConstrainedProblem,
         candidates: list[dict],
-        mixer_idx: int,
-        fallback_mixer: int,
-        unassigned: list[int],
-        fixed_assignments: dict[int, int],
+        mixer_name: str,
+        fallback_mixer: str,
         num_layers: int,
+        total_steps: int = 1,
+        step: int = 0,
+        allocation: Allocation | None = None,
     ) -> None:
-        """Evaluate all candidates and store scores."""
-        for candidate in candidates:
+        """Evaluate candidates where each has its own fixed/unassigned context."""
+        from place_layers.search_strategy.progress.events import BeamNodeId
+
+        total_evals = len(candidates)
+        for eval_idx, candidate in enumerate(candidates, 1):
             assignments = create_layer_assignment(
-                fixed_assignments=fixed_assignments,
+                fixed_assignments=candidate["fixed"],
                 target_layers=candidate["layers"],
-                target_mixer_idx=mixer_idx,
-                unassigned=unassigned,
-                fallback_mixer_idx=fallback_mixer,
+                target_mixer=mixer_name,
+                unassigned=candidate["unassigned"],
+                fallback_mixer=fallback_mixer,
                 num_layers=num_layers,
             )
-            placement = LayerPlacement(assignments=assignments)
+            complete_placement = tuple(assignments)
+            placement = LayerPlacement(assignments=complete_placement)
             candidate["score"] = await problem.evaluate(placement)
+            candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
+
+            # Generate ID for this candidate
+            # Use parent's allocation if not provided
+            alloc_tuple = allocation if allocation is not None else candidate["parent_id"].allocation
+            candidate_id = BeamNodeId(
+                allocation=alloc_tuple,
+                mixer=mixer_name,
+                step=step,
+                seq=self._step_seq,
+            )
+            self._step_seq += 1
+            candidate["id"] = candidate_id
+
+            # Notify observers of eval completion
+            if self.observers:
+                for observer in self.observers:
+                    observer.on_eval_completed(self.eval_count)
+
+                # Emit candidate evaluated event
+                from place_layers.search_strategy.progress import CandidateEvaluatedEvent
+
+                event = CandidateEvaluatedEvent(
+                    total_steps=total_steps,
+                    mixer_name=mixer_name,
+                    id=candidate_id,
+                    parent_id=candidate["parent_id"],
+                    layer=candidate["added_layer"],
+                    score=candidate["score"],
+                    placement=complete_placement,
+                    eval_index=eval_idx,
+                    total_evals=total_evals,
+                )
+                for observer in self.observers:
+                    observer.on_candidate_evaluated(event)
 
 
 class HierarchicalConfig(BaseCostConstrainedConfig):
@@ -308,23 +913,127 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
 
     _impl_class: ClassVar[type["BaseSearchStrategy"]] = HierarchicalSearch
 
-    strategy_type: Literal["cost_constrained_hierarchical"] = "cost_constrained_hierarchical"
+    strategy_type: Literal["cost_constrained_hierarchical"] = (
+        "cost_constrained_hierarchical"
+    )
 
     beam_width: int = Field(
         description="Number of top candidates to keep at each growth step",
         gt=0,
     )
 
-    early_stop_threshold: float = Field(
-        description="Stop growing beam if best score improvement is below this threshold",
-        ge=0.0,
-    )
+    def create_progress_estimator(
+        self, problem: "BaseProblem"
+    ) -> "SearchProgressEstimator | None":
+        """Create progress estimator for hierarchical beam search.
 
-    cross_phase_beam_width: int = Field(
-        description=(
-            "Number of candidate paths to maintain across phases. "
-            "Default 1 = greedy (lock in best after each phase). "
-            "Set to beam_width to explore phase interactions at k× cost."
-        ),
-        gt=0,
-    )
+        Uses expected evaluation counts with variance bounds to account for
+        deduplication effects during beam growth (which depends on which
+        specific layers are selected at each step).
+
+        Args:
+            problem: The optimization problem (must be CostConstrainedProblem).
+
+        Returns:
+            Configured SearchProgressEstimator, or None if not applicable.
+        """
+        import math
+
+        from place_layers.problem.layer_placement import (
+            MaxPerformanceProblemConfig,
+            MinCostProblemConfig,
+        )
+        from place_layers.search_strategy.progress.estimator import (
+            AllocationProgressInfo,
+            ProgressEstimate,
+            SearchProgressEstimator,
+        )
+
+        # Only works with cost-constrained problems
+        if not isinstance(problem, CostConstrainedProblem):
+            return None
+
+        config = problem.config
+        cost_model = problem.cost_model
+        num_layers = problem.evaluator.num_layers
+        mixer_names = problem.evaluator.mixer_names
+        phase_order = cost_model.phase_order
+
+        # Build name-to-allocation-index mapping
+        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
+
+        # Enumerate allocations in the same order as search will use
+        allocations: list[tuple[float, tuple[int, ...]]] = []
+        for alloc_cost, allocation in cost_model.allocations_by_cost(
+            num_layers, direction="decreasing"
+        ):
+            # Filter by cost_budget for max_performance only
+            match config:
+                case MaxPerformanceProblemConfig(cost_budget=budget):
+                    if alloc_cost > budget:
+                        continue
+                case MinCostProblemConfig():
+                    pass  # No filtering - enumerate all allocations
+
+            if len(allocations) >= self.max_allocations:
+                break
+            allocations.append((alloc_cost, allocation))
+
+        if not allocations:
+            return None
+
+        # Model uncertainty coefficient of variation (~15%)
+        # Accounts for deduplication variance in growth steps and
+        # multi-phase beam carryover effects
+        model_cv = 0.15
+
+        # Compute counts for each allocation
+        total_expected = 0.0
+        total_variance = 0.0
+        allocation_info: list[AllocationProgressInfo] = []
+
+        for alloc_cost, allocation in allocations:
+            # Get phase budgets in phase_order (excluding last which gets remainder)
+            budgets = tuple(
+                allocation[name_to_alloc_idx[phase_order[i]]]
+                for i in range(len(phase_order) - 1)
+            )
+
+            # Compute expected evaluation count
+            alloc_count = allocation_eval_count(
+                budgets=list(budgets),
+                num_layers=num_layers,
+                beam_width=self.beam_width,
+            )
+
+            # Add model uncertainty variance
+            alloc_variance = (model_cv * alloc_count) ** 2
+            alloc_std = math.sqrt(alloc_variance)
+
+            total_expected += alloc_count
+            total_variance += alloc_variance
+
+            allocation_info.append(
+                AllocationProgressInfo(
+                    allocation=allocation,
+                    budgets=budgets,
+                    cost=alloc_cost,
+                    expected=float(alloc_count),
+                    variance=alloc_variance,
+                    estimated_lower=int(alloc_count - 2 * alloc_std),
+                    estimated_upper=int(alloc_count + 2 * alloc_std),
+                )
+            )
+
+        # Compute total bounds (95% CI)
+        total_std = math.sqrt(total_variance)
+
+        return SearchProgressEstimator(
+            initial=ProgressEstimate(
+                lower=int(total_expected - 2 * total_std),
+                upper=int(total_expected + 2 * total_std),
+                expected=int(total_expected),
+                std_dev=total_std,
+            ),
+            allocation_info=tuple(allocation_info),
+        )

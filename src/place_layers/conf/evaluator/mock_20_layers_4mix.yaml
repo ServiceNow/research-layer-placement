@@ -1,0 +1,11 @@
+# @package evaluator
+# Medium mock evaluator with 4 mixers (20 layers)
+evaluator_type: mock_supernet
+num_layers: 20
+mixer_names: [m0, m1, m2, m3]
+seed: 42
+unary_bonus: 1.0
+unary_penalty: 0.5
+pairwise_scale: 0.3
+noise_sigma: 0.2
+eval_delay_seconds: 0.0

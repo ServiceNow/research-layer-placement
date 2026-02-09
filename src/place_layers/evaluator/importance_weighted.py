@@ -38,11 +38,10 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal, Self, Sequence
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from place_layers.backend import BackendError, ScoreTokensRequest
 from place_layers.core.types import LayerPlacement
@@ -121,25 +120,23 @@ def compute_is_estimate(
     return (tuple(raw_log_weights), is_correct_estimate, ess, weight_sum, weight_range)
 
 
-@dataclass
-class ProblemTraces:
+class ProblemTraces(BaseModel):
     """Traces for a single problem, grouped for IS computation."""
 
     problem_id: str
     task_name: str
-    traces: list[Trace] = field(default_factory=list)
+    traces: list[Trace] = Field(default_factory=list)
 
     @property
     def num_samples(self) -> int:
         return len(self.traces)
 
 
-@dataclass
-class MergedTraces:
+class MergedTraces(BaseModel):
     """Traces merged from all sources, grouped by task_name."""
 
     # task_name -> problem_id -> ProblemTraces
-    by_task: dict[str, dict[str, ProblemTraces]] = field(default_factory=dict)
+    by_task: dict[str, dict[str, ProblemTraces]] = Field(default_factory=dict)
 
     def add_trace(self, trace: "Trace") -> None:
         """Add a trace to the merged collection."""

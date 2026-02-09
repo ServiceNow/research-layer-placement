@@ -28,8 +28,8 @@ class LayerPlacement(BaseModel):
 
     model_config = {"frozen": True}
 
-    assignments: tuple[int, ...] = Field(
-        description="Mapping from layer index to mixer index"
+    assignments: tuple[str, ...] = Field(
+        description="Mapping from layer index to mixer name"
     )
 
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -13,9 +14,10 @@ class Apriel2ValidationError(ValueError):
     """Model is not a valid Apriel2 supernet."""
 
 
-@dataclass(frozen=True)
-class Apriel2Structure:
+class Apriel2Structure(BaseModel):
     """Extracted structure from Apriel2 supernet config."""
+
+    model_config = {"frozen": True}
 
     num_layers: int
     mixer_names: tuple[str, ...]

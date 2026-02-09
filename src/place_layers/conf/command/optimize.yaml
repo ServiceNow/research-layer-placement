@@ -1,3 +1,8 @@
 # @package _global_
 
+defaults:
+  - /observers: default
+  - _self_
+
 command: optimize
+dry_run: false

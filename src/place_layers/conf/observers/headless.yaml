@@ -1,0 +1,7 @@
+# @package observers
+# Headless preset: Plain text output + JSONL disk logging
+
+defaults:
+  - /observer@display: plain
+  - /observer@log.disk: disk
+  - _self_

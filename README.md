@@ -221,7 +221,7 @@ cost_model:
 cost_budget: 6.4  # 48 layers / 7.5x target
 ```
 
-See `conf/problem/cost_apriel_15b.yaml` for a complete example.
+See `conf/problem/cost_max_perf_apriel_15b.yaml` for a complete example.
 
 #### Step 3: Optimize
 
@@ -404,8 +404,6 @@ Allocation: (2, 2, 2) ✅
 |-----------|---------|--------|
 | `search_strategy.beam_width` | 5 | Wider beam explores more candidates per phase |
 | `search_strategy.max_allocations` | 50 | More allocations = better cost-performance coverage |
-| `search_strategy.early_stop_threshold` | 0.001 | Stop allocation early if best score improves by less than this; ~70% eval reduction |
-| `search_strategy.cross_phase_beam_width` | 1 | Candidate paths across phases; 1=greedy (default), k=explore phase interactions at ~c× cost |
 
 **Evaluation count:**
 

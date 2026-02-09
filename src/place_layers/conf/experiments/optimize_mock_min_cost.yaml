@@ -1,0 +1,20 @@
+# @package _global_
+# Min-cost optimization using mock evaluator for testing/development
+# Problem: Minimize cost subject to performance >= performance_target
+# Simulates Apriel-H 1.5 15B with 48 layers and 4 mixer types (FA, SWA, GDN, KDA)
+#
+# Usage:
+#   python -m place_layers +experiments=optimize_mock_min_cost
+
+defaults:
+  - /command: optimize
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_min_cost_apriel_15b
+  - /search_strategy: cost_constrained_hierarchical
+  - /result_handler: json
+  - _self_
+
+# Settings for demo/testing
+search_strategy:
+  max_allocations: 10
+  beam_width: 3

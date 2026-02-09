@@ -24,12 +24,16 @@ def generate_beam_candidates(
         unassigned: Layer indices available for assignment.
 
     Returns:
-        List of candidate dicts with "layers" (sorted list) and "score" (None).
+        List of candidate dicts with:
+        - "layers": sorted list of layer indices
+        - "score": None (to be filled in by evaluation)
+        - "parent_idx": index of the beam entry this candidate was expanded from
+        - "added_layer": the layer index that was added to create this candidate
     """
     candidates = []
     seen: set[tuple[int, ...]] = set()
 
-    for beam_entry in beam:
+    for parent_idx, beam_entry in enumerate(beam):
         existing = set(beam_entry["layers"])
 
         for layer_idx in unassigned:
@@ -42,20 +46,25 @@ def generate_beam_candidates(
                 continue
             seen.add(new_layers)
 
-            candidates.append({"layers": list(new_layers), "score": None})
+            candidates.append({
+                "layers": list(new_layers),
+                "score": None,
+                "parent_idx": parent_idx,
+                "added_layer": layer_idx,
+            })
 
     return candidates
 
 
 def create_layer_assignment(
-    fixed_assignments: dict[int, int],
+    fixed_assignments: dict[int, str],
     target_layers: list[int],
-    target_mixer_idx: int,
+    target_mixer: str,
     unassigned: list[int],
-    fallback_mixer_idx: int,
+    fallback_mixer: str,
     num_layers: int,
-) -> tuple[int, ...]:
-    """Create a complete layer-to-mixer assignment tuple.
+) -> list[str]:
+    """Create a complete layer-to-mixer assignment list.
 
     Combines three sources of assignments:
     1. Fixed assignments from previous phases (already decided)
@@ -63,28 +72,28 @@ def create_layer_assignment(
     3. Remaining unassigned layers assigned to fallback mixer
 
     Args:
-        fixed_assignments: Layer -> mixer mapping from previous phases.
-        target_layers: Layers to assign to target_mixer_idx for this evaluation.
-        target_mixer_idx: Mixer index for target layers.
+        fixed_assignments: Layer -> mixer name mapping from previous phases.
+        target_layers: Layers to assign to target_mixer for this evaluation.
+        target_mixer: Mixer name for target layers.
         unassigned: All layers not yet permanently assigned.
-        fallback_mixer_idx: Mixer for unassigned layers not in target_layers.
+        fallback_mixer: Mixer name for unassigned layers not in target_layers.
         num_layers: Total number of layers (determines tuple length).
 
     Returns:
-        Tuple of mixer indices, one per layer.
+        List of mixer names, one per layer.
     """
     assignment = dict(fixed_assignments)
 
     # Assign target layers to target mixer
     for layer_idx in target_layers:
-        assignment[layer_idx] = target_mixer_idx
+        assignment[layer_idx] = target_mixer
 
     # Assign remaining unassigned layers to fallback
     for layer_idx in unassigned:
         if layer_idx not in assignment:
-            assignment[layer_idx] = fallback_mixer_idx
+            assignment[layer_idx] = fallback_mixer
 
-    return tuple(assignment[i] for i in range(num_layers))
+    return [assignment[i] for i in range(num_layers)]
 
 
 def select_top_beam(
