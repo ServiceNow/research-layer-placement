@@ -1237,7 +1237,7 @@ class TestSyncBackendAdapterIntegration:
                 if req is None:
                     continue  # Skip heartbeats
                 yield GenerationResult(
-                    request_id=req.key,
+                    key=req.key,
                     samples=[
                         GeneratedSample(
                             text=f"response for {req.key}",
@@ -1269,7 +1269,7 @@ class TestSyncBackendAdapterIntegration:
             )
             result = await adapter.generate_chat_one(request)
 
-            assert result.request_id == "test-1"
+            assert result.key == "test-1"
             assert len(result.samples) == 1
             assert result.samples[0].text == "response for test-1"
 
@@ -1291,7 +1291,7 @@ class TestSyncBackendAdapterIntegration:
                 if req is None:
                     continue
                 yield GenerationResult(
-                    request_id=req.key,
+                    key=req.key,
                     samples=[
                         GeneratedSample(
                             text=f"result-{req.key}",
@@ -1329,7 +1329,7 @@ class TestSyncBackendAdapterIntegration:
             results = await asyncio.gather(*tasks)
 
             # All should complete with correct IDs
-            result_ids = sorted(r.request_id for r in results)
+            result_ids = sorted(r.key for r in results)
             assert result_ids == ["req-0", "req-1", "req-2", "req-3", "req-4"]
 
     @pytest.mark.asyncio
