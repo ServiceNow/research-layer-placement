@@ -64,15 +64,20 @@ if TYPE_CHECKING:
         AllocationCompletedEvent,
         AllocationPlanEvent,
         AllocationStartedEvent,
+        AnnealingCompletedEvent,
+        AnnealingStepEvent,
+        BeamCandidateEvaluatedEvent,
         BeamGrowthStepEvent,
         BeamGrowthStepStartedEvent,
+        BeamPhaseCompletedEvent,
+        BeamPhaseStartedEvent,
         BestUpdatedEvent,
         BoundsUpdatedEvent,
-        CandidateEvaluatedEvent,
-        PhaseCompletedEvent,
-        PhaseStartedEvent,
         SearchCompletedEvent,
         SearchStartedEvent,
+        SwapBeamIterationEvent,
+        SwapBeamIterationStartedEvent,
+        SwapEvaluatedEvent,
     )
 
 
@@ -147,7 +152,7 @@ class PlainDisplay(PlacementFormatterMixin):
         print(f"[{self._timestamp()}] {indent_str}{message}")
 
     # =========================================================================
-    # Observer interface methods
+    # Common/outer-loop event handlers (all strategies)
     # =========================================================================
 
     def on_search_started(self, event: "SearchStartedEvent") -> None:
@@ -230,8 +235,52 @@ class PlainDisplay(PlacementFormatterMixin):
                     f"{alloc_str} -> (no valid placement)",
                 )
 
-    def on_phase_started(self, event: "PhaseStartedEvent") -> None:
-        """Handle phase started event."""
+    # =========================================================================
+    # Global best tracking event handlers (all strategies)
+    # =========================================================================
+
+    def on_best_updated(self, event: "BestUpdatedEvent") -> None:
+        """Handle best updated event."""
+        if self._config.show_best_updated:
+            self._print(
+                "BEST_UPDATED",
+                f"score={event.score:.4g}, cost={event.cost:.4f}",
+            )
+
+    def on_bounds_updated(self, event: "BoundsUpdatedEvent") -> None:
+        """Handle bounds updated event (no-op for plain display)."""
+        del event  # Not displayed in plain mode
+
+    def on_search_completed(self, event: "SearchCompletedEvent") -> None:
+        """Handle search completed event."""
+        self._print(
+            "SEARCH_COMPLETE",
+            f"best={event.best_score:.4g}, evals={event.total_evaluations}, "
+            f"allocations={event.allocations_explored}",
+        )
+
+        # Print leaderboard if enabled and we have results
+        if self._config.show_leaderboard and self._leaderboard:
+            self._print_line("Leaderboard:", indent=1)
+            for rank, (score, cost, allocation, _placement_str) in enumerate(
+                self._leaderboard, start=1
+            ):
+                alloc_str = self._format_allocation(allocation)
+                self._print_line(
+                    f"{rank}. {score:.4g} (cost={cost:.2f}) {alloc_str}",
+                    indent=2,
+                )
+
+    def on_eval_completed(self, eval_count: int) -> None:
+        """Handle evaluation completed (no-op for plain display)."""
+        del eval_count  # Not displayed in plain mode
+
+    # =========================================================================
+    # Hierarchical beam search event handlers
+    # =========================================================================
+
+    def on_beam_phase_started(self, event: "BeamPhaseStartedEvent") -> None:
+        """Handle beam phase started event."""
         if self._config.show_phases:
             self._print(
                 f"PHASE {event.phase_index + 1}/{event.total_phases}",
@@ -239,8 +288,8 @@ class PlainDisplay(PlacementFormatterMixin):
                 indent=1,
             )
 
-    def on_phase_completed(self, event: "PhaseCompletedEvent") -> None:
-        """Handle phase completed event."""
+    def on_beam_phase_completed(self, event: "BeamPhaseCompletedEvent") -> None:
+        """Handle beam phase completed event."""
         if self._config.show_phases:
             layers_str = self._format_layer_assignment(
                 event.mixer_name, event.final_layers, max_show=10
@@ -253,7 +302,7 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_beam_growth_step_started(self, event: "BeamGrowthStepStartedEvent") -> None:
         """Handle beam growth step started - show initial beam and progress."""
-        # Always capture parent placements for diff formatting (used by on_candidate_evaluated)
+        # Always capture parent placements for diff formatting (used by on_beam_candidate_evaluated)
         # Build lookups from parent ID to index and parent entry
         self._step_parents_by_id = {p.id: p for p in event.parents}
         self._step_parent_id_to_idx = {p.id: i for i, p in enumerate(event.parents)}
@@ -283,8 +332,8 @@ class PlainDisplay(PlacementFormatterMixin):
             indent=2,
         )
 
-    def on_candidate_evaluated(self, event: "CandidateEvaluatedEvent") -> None:
-        """Handle candidate evaluated - show all candidates at intervals."""
+    def on_beam_candidate_evaluated(self, event: "BeamCandidateEvaluatedEvent") -> None:
+        """Handle beam candidate evaluated - show all candidates at intervals."""
         if not self._config.show_steps:
             return
 
@@ -344,38 +393,88 @@ class PlainDisplay(PlacementFormatterMixin):
                     indent=3,
                 )
 
-    def on_best_updated(self, event: "BestUpdatedEvent") -> None:
-        """Handle best updated event."""
-        if self._config.show_best_updated:
-            self._print(
-                "BEST_UPDATED",
-                f"score={event.score:.4g}, cost={event.cost:.4f}",
+    # =========================================================================
+    # Swap-beam search event handlers
+    # =========================================================================
+
+    def on_swap_beam_iteration_started(
+        self, event: "SwapBeamIterationStartedEvent"
+    ) -> None:
+        """Handle swap-beam iteration started event."""
+        if not self._config.show_steps:
+            return
+
+        if event.iteration == 0:
+            # Initial state - show beam
+            by_mixer = self._group_layers_by_mixer(event.beam[0].assignments)
+            placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+            self._print_line(
+                f"Initial: {placement_str} (score={event.beam[0].score:.4g})",
+                indent=1,
+            )
+        else:
+            self._print_line(
+                f"Iteration {event.iteration}/{event.max_iterations}: "
+                f"Evaluating {event.num_candidates} swaps...",
+                indent=1,
             )
 
-    def on_bounds_updated(self, event: "BoundsUpdatedEvent") -> None:
-        """Handle bounds updated event (no-op for plain display)."""
-        del event  # Not displayed in plain mode
+    def on_swap_evaluated(self, event: "SwapEvaluatedEvent") -> None:
+        """Handle swap evaluated event (no-op for plain display)."""
+        # Could be made configurable to show per-swap progress
+        del event
 
-    def on_search_completed(self, event: "SearchCompletedEvent") -> None:
-        """Handle search completed event."""
-        self._print(
-            "SEARCH_COMPLETE",
-            f"best={event.best_score:.4g}, evals={event.total_evaluations}, "
-            f"allocations={event.allocations_explored}",
+    def on_swap_beam_iteration(self, event: "SwapBeamIterationEvent") -> None:
+        """Handle swap-beam iteration completed event."""
+        if not self._config.show_steps:
+            return
+
+        if event.iteration == 0:
+            return  # Already shown in iteration_started
+
+        best = event.best_candidate
+        status = "converged" if event.converged else ("improved" if event.improved else "no change")
+        best_str = f"best={best.score:.4g}" if best else "no candidates"
+        self._print_line(
+            f"Iteration {event.iteration}/{event.max_iterations}: "
+            f"{status}, {best_str}",
+            indent=1,
         )
 
-        # Print leaderboard if enabled and we have results
-        if self._config.show_leaderboard and self._leaderboard:
-            self._print_line("Leaderboard:", indent=1)
-            for rank, (score, cost, allocation, _placement_str) in enumerate(
-                self._leaderboard, start=1
-            ):
-                alloc_str = self._format_allocation(allocation)
-                self._print_line(
-                    f"{rank}. {score:.4g} (cost={cost:.2f}) {alloc_str}",
-                    indent=2,
-                )
+    # =========================================================================
+    # Annealing search event handlers
+    # =========================================================================
 
-    def on_eval_completed(self, eval_count: int) -> None:
-        """Handle evaluation completed (no-op for plain display)."""
-        del eval_count  # Not displayed in plain mode
+    def on_annealing_step(self, event: "AnnealingStepEvent") -> None:
+        """Handle annealing step event (show at intervals)."""
+        if not self._config.show_steps:
+            return
+
+        # Show every N steps (configurable via eval_progress_interval)
+        interval = max(1, self._config.eval_progress_interval)
+        at_interval = (event.step + 1) % interval == 0
+        at_end = event.step + 1 == event.max_steps
+
+        if at_interval or at_end:
+            accept_str = "accepted" if event.accepted else "rejected"
+            self._print_line(
+                f"Step {event.step + 1}/{event.max_steps}: "
+                f"T={event.temperature:.3g}, delta={event.delta:+.4g}, "
+                f"{accept_str}, best={event.best_score:.4g}",
+                indent=1,
+            )
+
+    def on_annealing_completed(self, event: "AnnealingCompletedEvent") -> None:
+        """Handle annealing completed event."""
+        if not self._config.show_steps:
+            return
+
+        by_mixer = self._group_layers_by_mixer(event.best_assignments)
+        placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+        self._print_line(
+            f"Annealing complete ({event.termination_reason}): "
+            f"{event.steps_taken} steps, best={event.best_score:.4g}",
+            indent=1,
+        )
+        if self._config.show_phases:
+            self._print_line(f"Best: {placement_str}", indent=2)

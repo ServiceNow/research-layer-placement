@@ -49,11 +49,6 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         super().__init__(config, observers, progress_estimator)
         self.config: SwapBeamConfig
 
-        if self.observers:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not support progress observers."
-            )
-
     async def _search_within_allocation(
         self,
         problem: CostConstrainedProblem,
@@ -71,14 +66,37 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
             List of BeamEntry results sorted by score descending, or empty list
             if no valid assignments exist.
         """
+        from place_layers.search_strategy.progress.events import (
+            SwapBeamIterationEvent,
+            SwapBeamIterationStartedEvent,
+            SwapBeamNodeId,
+            SwapCandidate,
+            SwapEvaluatedEvent,
+        )
+
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names
+        max_iterations = self.config.max_iterations_per_allocation
 
         # Generate initial assignment (canonical assignment for this allocation)
         initial_assignments = self._allocation_to_assignment(allocation, num_layers, mixer_names)
         initial_placement = LayerPlacement(assignments=tuple(initial_assignments))
         initial_score = await problem.evaluate(initial_placement)
         self.eval_count += 1
+
+        # Notify observers of eval completion
+        for observer in self.observers:
+            observer.on_eval_completed(self.eval_count)
+
+        # Create initial beam entry and swap candidate
+        initial_id = SwapBeamNodeId(allocation=allocation, iteration=0, seq=0)
+        initial_candidate = SwapCandidate(
+            id=initial_id,
+            parent_id=None,
+            swap=(-1, -1),  # No swap for initial
+            assignments=tuple(initial_assignments),
+            score=initial_score,
+        )
 
         beam = [
             BeamEntry(
@@ -88,61 +106,196 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
                 score=initial_score,
             )
         ]
+        beam_candidates = [initial_candidate]
+
+        # Emit iteration 0 started event (initial state)
+        if self.observers:
+            event = SwapBeamIterationStartedEvent(
+                iteration=0,
+                max_iterations=max_iterations,
+                num_candidates=0,  # No candidates to evaluate in iteration 0
+                beam=tuple(beam_candidates),
+            )
+            for observer in self.observers:
+                observer.on_swap_beam_iteration_started(event)
 
         # Run beam search within this allocation
-        for iteration in range(self.config.max_iterations_per_allocation):
+        for iteration in range(1, max_iterations + 1):
             # Generate swap candidates (swaps that preserve allocation)
-            all_candidates: list[BeamEntry] = []
+            all_candidates: list[tuple[BeamEntry, int, tuple[int, int]]] = []  # (entry, parent_seq, swap)
 
-            for entry in beam:
+            for parent_seq, entry in enumerate(beam):
                 candidates = self._generate_allocation_preserving_swaps(
                     entry=entry,
                     mixer_names=mixer_names,
                 )
-                all_candidates.extend(candidates)
+                for candidate in candidates:
+                    # Track parent and the swap that was made
+                    swap = self._find_swap(entry.assignments, candidate.assignments)
+                    all_candidates.append((candidate, parent_seq, swap))
 
             if not all_candidates:
+                # No swaps possible - emit completion event and break
+                if self.observers:
+                    event = SwapBeamIterationEvent(
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                        tried=(),
+                        beam=tuple(beam_candidates),
+                        best_candidate=beam_candidates[0] if beam_candidates else None,
+                        improved=False,
+                        converged=True,
+                    )
+                    for observer in self.observers:
+                        observer.on_swap_beam_iteration(event)
                 break
 
-            # Deduplicate
-            unique_candidates = self._deduplicate_candidates(all_candidates)
+            # Deduplicate by assignments
+            seen: set[tuple[str, ...]] = set()
+            unique_candidates: list[tuple[BeamEntry, int, tuple[int, int]]] = []
+            for candidate, parent_seq, swap in all_candidates:
+                key = tuple(candidate.assignments)
+                if key not in seen:
+                    seen.add(key)
+                    unique_candidates.append((candidate, parent_seq, swap))
+
+            # Emit iteration started event
+            if self.observers:
+                event = SwapBeamIterationStartedEvent(
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    num_candidates=len(unique_candidates),
+                    beam=tuple(beam_candidates),
+                )
+                for observer in self.observers:
+                    observer.on_swap_beam_iteration_started(event)
 
             # Evaluate candidates
             evaluated: list[BeamEntry] = []
-            for candidate in unique_candidates:
+            tried_candidates: list[SwapCandidate] = []
+            total_evals = len(unique_candidates)
+
+            for eval_idx, (candidate, parent_seq, swap) in enumerate(unique_candidates):
                 if candidate.score is None:
                     placement = LayerPlacement(assignments=candidate.assignments)
                     score = await problem.evaluate(placement)
                     self.eval_count += 1
-                    evaluated.append(
-                        BeamEntry(
-                            assignments=candidate.assignments,
-                            allocation=candidate.allocation,
-                            cost=candidate.cost,
-                            score=score,
-                        )
+
+                    # Notify observers of eval completion
+                    for observer in self.observers:
+                        observer.on_eval_completed(self.eval_count)
+
+                    evaluated_entry = BeamEntry(
+                        assignments=candidate.assignments,
+                        allocation=candidate.allocation,
+                        cost=candidate.cost,
+                        score=score,
                     )
+                    evaluated.append(evaluated_entry)
+
+                    # Create SwapCandidate for event
+                    parent_id = SwapBeamNodeId(
+                        allocation=allocation,
+                        iteration=iteration - 1,
+                        seq=parent_seq,
+                    )
+                    candidate_id = SwapBeamNodeId(
+                        allocation=allocation,
+                        iteration=iteration,
+                        seq=len(tried_candidates),
+                    )
+                    swap_candidate = SwapCandidate(
+                        id=candidate_id,
+                        parent_id=parent_id,
+                        swap=swap,
+                        assignments=candidate.assignments,
+                        score=score,
+                    )
+                    tried_candidates.append(swap_candidate)
+
+                    # Emit swap evaluated event
+                    if self.observers:
+                        event = SwapEvaluatedEvent(
+                            iteration=iteration,
+                            id=candidate_id,
+                            parent_id=parent_id,
+                            swap=swap,
+                            assignments=candidate.assignments,
+                            score=score,
+                            eval_index=eval_idx + 1,
+                            total_evals=total_evals,
+                        )
+                        for observer in self.observers:
+                            observer.on_swap_evaluated(event)
                 else:
                     evaluated.append(candidate)
 
             # Sort by score (higher is better)
-            evaluated.sort(key=lambda e: e.score, reverse=True)
+            evaluated.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+            tried_candidates.sort(key=lambda c: c.score, reverse=True)
 
             # Update beam
             new_beam = evaluated[: self.config.beam_width]
 
+            # Build new beam candidates
+            new_beam_candidates: list[SwapCandidate] = []
+            for seq, entry in enumerate(new_beam):
+                # Find the corresponding tried candidate
+                for tc in tried_candidates:
+                    if tc.assignments == entry.assignments:
+                        new_beam_candidates.append(SwapCandidate(
+                            id=SwapBeamNodeId(allocation=allocation, iteration=iteration, seq=seq),
+                            parent_id=tc.parent_id,
+                            swap=tc.swap,
+                            assignments=tc.assignments,
+                            score=tc.score,
+                        ))
+                        break
+
             # Check for convergence
-            if beam[0].score >= new_beam[0].score:
-                # No improvement
+            new_best = new_beam[0].score if new_beam and new_beam[0].score is not None else float("-inf")
+            old_best = beam[0].score if beam and beam[0].score is not None else float("-inf")
+            improved = new_best > old_best
+            converged = not improved
+
+            # Emit iteration completed event
+            if self.observers:
+                best = tried_candidates[0] if tried_candidates else None
+                event = SwapBeamIterationEvent(
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    tried=tuple(tried_candidates),
+                    beam=tuple(new_beam_candidates),
+                    best_candidate=best,
+                    improved=improved,
+                    converged=converged,
+                )
+                for observer in self.observers:
+                    observer.on_swap_beam_iteration(event)
+
+            if converged:
                 break
 
             beam = new_beam
+            beam_candidates = new_beam_candidates
 
         # Return all beam entries sorted by score descending
         if not beam:
             return []
         beam.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
         return beam
+
+    def _find_swap(
+        self, old_assignments: tuple[str, ...], new_assignments: tuple[str, ...]
+    ) -> tuple[int, int]:
+        """Find the two layers that were swapped between old and new assignments."""
+        changed = []
+        for i, (old, new) in enumerate(zip(old_assignments, new_assignments)):
+            if old != new:
+                changed.append(i)
+        if len(changed) == 2:
+            return (changed[0], changed[1])
+        return (-1, -1)  # No swap or unexpected change
 
     def _generate_allocation_preserving_swaps(
         self,

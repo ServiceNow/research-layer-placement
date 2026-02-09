@@ -36,24 +36,24 @@ This is the semantic contract that search strategies must follow.
 - ``BestUpdatedEvent``: When allocation result improves global best (0-1 per alloc).
 - ``BoundsUpdatedEvent``: When progress bounds are refined (0-1 per alloc).
 
-**Per-phase events (emitted once per phase per allocation):**
+**Per-phase events (emitted once per phase per allocation, hierarchical only):**
 
 Phases are the hierarchical search stages (one per mixer except the last).
 Phases with budget=0 are skipped and emit no events.
 
-- ``PhaseStartedEvent``: When beginning a phase within an allocation.
-- ``PhaseCompletedEvent``: When a phase finishes.
+- ``BeamPhaseStartedEvent``: When beginning a phase within an allocation.
+- ``BeamPhaseCompletedEvent``: When a phase finishes.
 
-**Per-step events (emitted once per beam growth step):**
+**Per-step events (emitted once per beam growth step, hierarchical only):**
 
 Each phase has ``budget`` steps (step 1 is prescoring, steps 2..budget are growth).
 
 - ``BeamGrowthStepStartedEvent``: Before evaluating candidates in a step.
 - ``BeamGrowthStepEvent``: After step completes, with tried/pruned candidates.
 
-**Per-evaluation events (emitted once per model evaluation):**
+**Per-evaluation events (emitted once per model evaluation, hierarchical only):**
 
-- ``CandidateEvaluatedEvent``: After each candidate placement is scored.
+- ``BeamCandidateEvaluatedEvent``: After each candidate placement is scored.
   This is by far the most frequent event (~93-99% of all events).
 
 Scaling Formula
@@ -169,6 +169,11 @@ class SelectedEntry(BaseModel):
     added_layer: int
 
 
+# =============================================================================
+# Common/outer-loop events (all strategies)
+# =============================================================================
+
+
 class SearchStartedEvent(BaseModel):
     """Emitted when search begins."""
 
@@ -230,12 +235,84 @@ class AllocationCompletedEvent(BaseModel):
     top_placements: tuple[tuple[tuple[str, ...], float], ...] = ()
 
 
-class PhaseStartedEvent(BaseModel):
+class BestUpdatedEvent(BaseModel):
+    """Emitted when a new global best is found."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["best_updated"] = "best_updated"
+    score: float
+    cost: float
+    allocation: tuple[int, ...]
+    assignments: tuple[str, ...]
+
+
+class BoundsUpdatedEvent(BaseModel):
+    """Emitted when evaluation bounds are refined during search.
+
+    This event is emitted after each allocation completes, allowing
+    observers to track how bounds narrow as actual evaluations
+    replace estimates.
+
+    Attributes:
+        previous_lower: Lower bound before update.
+        previous_upper: Upper bound before update.
+        new_lower: Lower bound after update.
+        new_upper: Upper bound after update.
+        completed: Total evaluations done so far.
+        remaining_allocations: Number of allocations left to explore.
+        reason: Why bounds were updated (e.g., "allocation_complete").
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["bounds_updated"] = "bounds_updated"
+    previous_lower: int
+    previous_upper: int
+    new_lower: int
+    new_upper: int
+    completed: int
+    remaining_allocations: int
+    reason: str
+
+
+class AllocationPlanEvent(BaseModel):
+    """Emitted after search starts to show planned allocations.
+
+    Contains the list of allocations that will be explored, with estimated
+    evaluation counts for each. Useful for dry_run preview and live search.
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["allocation_plan"] = "allocation_plan"
+    allocation_info: tuple["AllocationProgressInfo", ...]
+    mixer_names: tuple[str, ...]
+
+
+class SearchCompletedEvent(BaseModel):
+    """Emitted when search finishes."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["search_completed"] = "search_completed"
+    best_score: float
+    best_cost: float
+    total_evaluations: int
+    allocations_explored: int
+
+
+# =============================================================================
+# Hierarchical beam search events
+# =============================================================================
+
+
+class BeamPhaseStartedEvent(BaseModel):
     """Emitted when starting a new phase within hierarchical search."""
 
     model_config = {"frozen": True}
 
-    event_type: Literal["phase_started"] = "phase_started"
+    event_type: Literal["beam_phase_started"] = "beam_phase_started"
     phase_index: int
     total_phases: int
     mixer_name: str
@@ -282,73 +359,18 @@ class BeamGrowthStepEvent(BaseModel):
     cut_candidates: tuple[EvaluatedCandidate, ...]
 
 
-class BestUpdatedEvent(BaseModel):
-    """Emitted when a new global best is found."""
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["best_updated"] = "best_updated"
-    score: float
-    cost: float
-    allocation: tuple[int, ...]
-    assignments: tuple[str, ...]
-
-
-class PhaseCompletedEvent(BaseModel):
+class BeamPhaseCompletedEvent(BaseModel):
     """Emitted when a phase within hierarchical search completes."""
 
     model_config = {"frozen": True}
 
-    event_type: Literal["phase_completed"] = "phase_completed"
+    event_type: Literal["beam_phase_completed"] = "beam_phase_completed"
     phase_index: int
     total_phases: int
     mixer_name: str
     budget: int  # Number of layers assigned in this phase
     final_layers: tuple[int, ...]  # Layer indices assigned to this mixer
     final_score: float
-
-
-class BoundsUpdatedEvent(BaseModel):
-    """Emitted when evaluation bounds are refined during search.
-
-    This event is emitted after each allocation completes, allowing
-    observers to track how bounds narrow as actual evaluations
-    replace estimates.
-
-    Attributes:
-        previous_lower: Lower bound before update.
-        previous_upper: Upper bound before update.
-        new_lower: Lower bound after update.
-        new_upper: Upper bound after update.
-        completed: Total evaluations done so far.
-        remaining_allocations: Number of allocations left to explore.
-        reason: Why bounds were updated (e.g., "allocation_complete").
-    """
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["bounds_updated"] = "bounds_updated"
-    previous_lower: int
-    previous_upper: int
-    new_lower: int
-    new_upper: int
-    completed: int
-    remaining_allocations: int
-    reason: str
-
-
-class AllocationPlanEvent(BaseModel):
-    """Emitted after search starts to show planned allocations.
-
-    Contains the list of allocations that will be explored, with estimated
-    evaluation counts for each. Useful for dry_run preview and live search.
-    """
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["allocation_plan"] = "allocation_plan"
-    allocation_info: tuple["AllocationProgressInfo", ...]
-    mixer_names: tuple[str, ...]
 
 
 class BeamGrowthStepStartedEvent(BaseModel):
@@ -370,7 +392,7 @@ class BeamGrowthStepStartedEvent(BaseModel):
     parents: tuple[BeamEntry, ...]
 
 
-class CandidateEvaluatedEvent(BaseModel):
+class BeamCandidateEvaluatedEvent(BaseModel):
     """Emitted after each candidate evaluation during a step.
 
     Allows displays to stream results as they come in, showing progress
@@ -386,7 +408,7 @@ class CandidateEvaluatedEvent(BaseModel):
 
     model_config = {"frozen": True}
 
-    event_type: Literal["candidate_evaluated"] = "candidate_evaluated"
+    event_type: Literal["beam_candidate_evaluated"] = "beam_candidate_evaluated"
     total_steps: int
     mixer_name: str
     # The candidate that was just evaluated
@@ -401,32 +423,165 @@ class CandidateEvaluatedEvent(BaseModel):
     total_evals: int  # Total evals expected in this step
 
 
-class SearchCompletedEvent(BaseModel):
-    """Emitted when search finishes."""
+# =============================================================================
+# Swap-beam search events
+# =============================================================================
+
+
+class SwapBeamNodeId(BaseModel):
+    """Stable identifier for swap-beam search nodes.
+
+    Unlike hierarchical search (which builds partial placements), swap-beam
+    always works with complete placements. IDs track iteration and sequence.
+
+    Fields:
+        allocation: Counts per mixer, e.g., (4, 2, 2) for FA:4, SWA:2, GDN:2.
+        iteration: Iteration number (0 = initial evaluation).
+        seq: Sequence number within the iteration (0-based).
+    """
 
     model_config = {"frozen": True}
 
-    event_type: Literal["search_completed"] = "search_completed"
+    allocation: tuple[int, ...]
+    iteration: int
+    seq: int
+
+
+class SwapCandidate(BaseModel):
+    """A swap candidate in swap-beam search.
+
+    Represents either an initial state or a state reached via a swap.
+    All placements are complete (no None values).
+    """
+
+    model_config = {"frozen": True}
+
+    id: SwapBeamNodeId
+    parent_id: SwapBeamNodeId | None  # None for initial state
+    swap: tuple[int, int]  # (layer_a, layer_b), or (-1, -1) for initial
+    assignments: tuple[str, ...]  # Complete placement
+    score: float
+
+
+class SwapBeamIterationStartedEvent(BaseModel):
+    """Emitted before evaluating candidates in a swap-beam iteration.
+
+    For iteration 0, this fires after the initial evaluation is complete
+    and shows the beam before any swaps. For subsequent iterations,
+    it shows the beam at the start of that iteration.
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["swap_beam_iteration_started"] = "swap_beam_iteration_started"
+    iteration: int  # 0 = initial, 1+ = swap iterations
+    max_iterations: int
+    num_candidates: int  # How many candidates will be evaluated
+    beam: tuple[SwapCandidate, ...]  # Current beam state
+
+
+class SwapEvaluatedEvent(BaseModel):
+    """Emitted after each swap is evaluated.
+
+    Allows displays to stream results as they come in.
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["swap_evaluated"] = "swap_evaluated"
+    iteration: int
+    id: SwapBeamNodeId
+    parent_id: SwapBeamNodeId
+    swap: tuple[int, int]  # (layer_a, layer_b)
+    assignments: tuple[str, ...]  # Complete placement after swap
+    score: float
+    eval_index: int  # 1-based index within iteration
+    total_evals: int  # Total evals expected in this iteration
+
+
+class SwapBeamIterationEvent(BaseModel):
+    """Emitted after a swap-beam iteration completes.
+
+    Contains the candidates tried and the resulting beam after selection.
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["swap_beam_iteration"] = "swap_beam_iteration"
+    iteration: int
+    max_iterations: int
+    tried: tuple[SwapCandidate, ...]  # All candidates evaluated
+    beam: tuple[SwapCandidate, ...]  # Top-k after selection
+    best_candidate: SwapCandidate | None  # Best from this iteration
+    improved: bool  # Whether beam improved over previous iteration
+    converged: bool  # True if no improvement (early termination)
+
+
+# =============================================================================
+# Annealing search events
+# =============================================================================
+
+
+class AnnealingStepEvent(BaseModel):
+    """Emitted after each annealing step.
+
+    Contains full state information for analysis and replay.
+    """
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["annealing_step"] = "annealing_step"
+    step: int  # 0-based step number
+    max_steps: int
+    swap: tuple[int, int]  # (layer_a, layer_b) that was tried
+    proposed_assignments: tuple[str, ...]  # Placement after swap
+    proposed_score: float
+    temperature: float  # Temperature before this step
+    delta: float  # proposed_score - current_score
+    acceptance_probability: float  # exp(delta/T) if delta < 0, else 1.0
+    accepted: bool  # Whether the swap was accepted
+    current_assignments: tuple[str, ...]  # Current state after decision
+    current_score: float  # Current score after decision
+    best_assignments: tuple[str, ...]  # Best seen so far
+    best_score: float  # Best score seen so far
+
+
+class AnnealingCompletedEvent(BaseModel):
+    """Emitted when annealing within an allocation completes."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["annealing_completed"] = "annealing_completed"
+    steps_taken: int
+    final_temperature: float
+    termination_reason: Literal["max_steps", "min_temperature", "no_swaps"]
+    best_assignments: tuple[str, ...]
     best_score: float
-    best_cost: float
-    total_evaluations: int
-    allocations_explored: int
 
 
 # Discriminated union of all search events
 AnySearchEvent = Annotated[
+    # Common/outer-loop events
     SearchStartedEvent
     | AllocationStartedEvent
     | AllocationCompletedEvent
     | AllocationPlanEvent
-    | PhaseStartedEvent
-    | PhaseCompletedEvent
-    | BeamGrowthStepStartedEvent
-    | CandidateEvaluatedEvent
-    | BeamGrowthStepEvent
     | BestUpdatedEvent
     | BoundsUpdatedEvent
-    | SearchCompletedEvent,
+    | SearchCompletedEvent
+    # Hierarchical beam search events
+    | BeamPhaseStartedEvent
+    | BeamPhaseCompletedEvent
+    | BeamGrowthStepStartedEvent
+    | BeamGrowthStepEvent
+    | BeamCandidateEvaluatedEvent
+    # Swap-beam events
+    | SwapBeamIterationStartedEvent
+    | SwapEvaluatedEvent
+    | SwapBeamIterationEvent
+    # Annealing events
+    | AnnealingStepEvent
+    | AnnealingCompletedEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -437,17 +592,27 @@ __all__ = [
     "EvaluatedCandidate",
     "SelectedEntry",
     "AnySearchEvent",
-    # Event types
+    # Common/outer-loop events
     "SearchStartedEvent",
     "AllocationStartedEvent",
     "AllocationCompletedEvent",
     "AllocationPlanEvent",
-    "PhaseStartedEvent",
-    "PhaseCompletedEvent",
-    "BeamGrowthStepStartedEvent",
-    "CandidateEvaluatedEvent",
-    "BeamGrowthStepEvent",
     "BestUpdatedEvent",
     "BoundsUpdatedEvent",
     "SearchCompletedEvent",
+    # Hierarchical beam search events
+    "BeamPhaseStartedEvent",
+    "BeamPhaseCompletedEvent",
+    "BeamGrowthStepStartedEvent",
+    "BeamGrowthStepEvent",
+    "BeamCandidateEvaluatedEvent",
+    # Swap-beam types
+    "SwapBeamNodeId",
+    "SwapCandidate",
+    "SwapBeamIterationStartedEvent",
+    "SwapEvaluatedEvent",
+    "SwapBeamIterationEvent",
+    # Annealing types
+    "AnnealingStepEvent",
+    "AnnealingCompletedEvent",
 ]

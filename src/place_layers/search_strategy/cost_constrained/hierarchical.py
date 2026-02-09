@@ -251,16 +251,16 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
             # Emit phase started event (running_phase_idx is 0-based)
             if self.observers:
-                from place_layers.search_strategy.progress import PhaseStartedEvent
+                from place_layers.search_strategy.progress import BeamPhaseStartedEvent
 
-                event = PhaseStartedEvent(
+                event = BeamPhaseStartedEvent(
                     phase_index=running_phase_idx,
                     total_phases=total_phases,
                     mixer_name=mixer_name,
                     budget=budget,
                 )
                 for observer in self.observers:
-                    observer.on_phase_started(event)
+                    observer.on_beam_phase_started(event)
 
             # Run phase - returns updated beam entries with new fixed assignments
             beam = await self._run_phase(
@@ -280,7 +280,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
 
             # Emit phase completed event
             if self.observers:
-                from place_layers.search_strategy.progress import PhaseCompletedEvent
+                from place_layers.search_strategy.progress import BeamPhaseCompletedEvent
 
                 # Get the layers assigned in this phase from the best entry
                 best_entry = beam[0]
@@ -292,7 +292,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     ]
                 )
 
-                event = PhaseCompletedEvent(
+                event = BeamPhaseCompletedEvent(
                     phase_index=running_phase_idx,
                     total_phases=total_phases,
                     mixer_name=mixer_name,
@@ -301,7 +301,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     final_score=best_entry["score"],
                 )
                 for observer in self.observers:
-                    observer.on_phase_completed(event)
+                    observer.on_beam_phase_completed(event)
 
             # Increment after phase completes (0-based indexing)
             running_phase_idx += 1
@@ -629,9 +629,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     observer.on_eval_completed(self.eval_count)
 
                 # Emit candidate evaluated event
-                from place_layers.search_strategy.progress import CandidateEvaluatedEvent
+                from place_layers.search_strategy.progress import BeamCandidateEvaluatedEvent
 
-                event = CandidateEvaluatedEvent(
+                event = BeamCandidateEvaluatedEvent(
                     total_steps=total_steps,
                     mixer_name=mixer_name,
                     id=candidate_id,
@@ -643,7 +643,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     total_evals=total_evals,
                 )
                 for observer in self.observers:
-                    observer.on_candidate_evaluated(event)
+                    observer.on_beam_candidate_evaluated(event)
 
             layer_scores.append((layer_idx, score, complete_placement, candidate_id))
 
@@ -891,9 +891,9 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     observer.on_eval_completed(self.eval_count)
 
                 # Emit candidate evaluated event
-                from place_layers.search_strategy.progress import CandidateEvaluatedEvent
+                from place_layers.search_strategy.progress import BeamCandidateEvaluatedEvent
 
-                event = CandidateEvaluatedEvent(
+                event = BeamCandidateEvaluatedEvent(
                     total_steps=total_steps,
                     mixer_name=mixer_name,
                     id=candidate_id,
@@ -905,7 +905,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     total_evals=total_evals,
                 )
                 for observer in self.observers:
-                    observer.on_candidate_evaluated(event)
+                    observer.on_beam_candidate_evaluated(event)
 
 
 class HierarchicalConfig(BaseCostConstrainedConfig):

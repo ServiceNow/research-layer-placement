@@ -32,16 +32,21 @@ from place_layers.search_strategy.progress.events import (
     AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
+    AnnealingCompletedEvent,
+    AnnealingStepEvent,
     AnySearchEvent,
+    BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
+    BeamPhaseCompletedEvent,
+    BeamPhaseStartedEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
-    CandidateEvaluatedEvent,
-    PhaseCompletedEvent,
-    PhaseStartedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SwapBeamIterationEvent,
+    SwapBeamIterationStartedEvent,
+    SwapEvaluatedEvent,
 )
 
 if TYPE_CHECKING:
@@ -172,7 +177,7 @@ class EventDiskWriter:
         self._file.flush()  # Ensure durability on crash
 
     # =========================================================================
-    # Observer interface methods
+    # Common/outer-loop event handlers (all strategies)
     # =========================================================================
 
     def on_search_started(self, event: SearchStartedEvent) -> None:
@@ -191,26 +196,6 @@ class EventDiskWriter:
         """Handle allocation completed event."""
         self._write_event(event)
 
-    def on_phase_started(self, event: PhaseStartedEvent) -> None:
-        """Handle phase started event."""
-        self._write_event(event)
-
-    def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
-        """Handle phase completed event."""
-        self._write_event(event)
-
-    def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
-        """Handle beam growth step started event."""
-        self._write_event(event)
-
-    def on_candidate_evaluated(self, event: CandidateEvaluatedEvent) -> None:
-        """Handle candidate evaluated event."""
-        self._write_event(event)
-
-    def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
-        """Handle beam growth step event."""
-        self._write_event(event)
-
     def on_best_updated(self, event: BestUpdatedEvent) -> None:
         """Handle best updated event."""
         self._write_event(event)
@@ -227,6 +212,60 @@ class EventDiskWriter:
         """Handle evaluation completed - skip writing.
 
         This is a throttled counter event; detailed info is already
-        captured in CandidateEvaluatedEvent.
+        captured in BeamCandidateEvaluatedEvent.
         """
         del eval_count  # Not written to disk
+
+    # =========================================================================
+    # Hierarchical beam search event handlers
+    # =========================================================================
+
+    def on_beam_phase_started(self, event: BeamPhaseStartedEvent) -> None:
+        """Handle beam phase started event."""
+        self._write_event(event)
+
+    def on_beam_phase_completed(self, event: BeamPhaseCompletedEvent) -> None:
+        """Handle beam phase completed event."""
+        self._write_event(event)
+
+    def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
+        """Handle beam growth step started event."""
+        self._write_event(event)
+
+    def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
+        """Handle beam growth step event."""
+        self._write_event(event)
+
+    def on_beam_candidate_evaluated(self, event: BeamCandidateEvaluatedEvent) -> None:
+        """Handle beam candidate evaluated event."""
+        self._write_event(event)
+
+    # =========================================================================
+    # Swap-beam search event handlers
+    # =========================================================================
+
+    def on_swap_beam_iteration_started(
+        self, event: SwapBeamIterationStartedEvent
+    ) -> None:
+        """Handle swap-beam iteration started event."""
+        self._write_event(event)
+
+    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
+        """Handle swap evaluated event."""
+        self._write_event(event)
+
+    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
+        """Handle swap-beam iteration completed event."""
+        self._write_event(event)
+
+    # =========================================================================
+    # Annealing search event handlers
+    # =========================================================================
+
+    def on_annealing_step(self, event: AnnealingStepEvent) -> None:
+        """Handle annealing step event."""
+        self._write_event(event)
+
+    def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
+        """Handle annealing completed event."""
+        self._write_event(event)

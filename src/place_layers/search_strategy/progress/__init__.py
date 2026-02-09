@@ -55,16 +55,23 @@ from place_layers.search_strategy.progress.events import (
     AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
+    AnnealingCompletedEvent,
+    AnnealingStepEvent,
     AnySearchEvent,
+    BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
+    BeamPhaseCompletedEvent,
+    BeamPhaseStartedEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
-    CandidateEvaluatedEvent,
-    PhaseCompletedEvent,
-    PhaseStartedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SwapBeamIterationEvent,
+    SwapBeamIterationStartedEvent,
+    SwapBeamNodeId,
+    SwapCandidate,
+    SwapEvaluatedEvent,
 )
 from place_layers.search_strategy.progress.layermap_display import LayermapDisplay
 from place_layers.search_strategy.progress.plain_display import PlainDisplay
@@ -72,20 +79,30 @@ from place_layers.search_strategy.progress.protocol import SearchObserver
 from place_layers.search_strategy.progress.rich_display import RichDisplay
 
 __all__ = [
-    # Events
+    # Common/outer-loop events (all strategies)
     "AllocationCompletedEvent",
     "AllocationPlanEvent",
     "AllocationStartedEvent",
     "AnySearchEvent",
-    "BeamGrowthStepEvent",
-    "BeamGrowthStepStartedEvent",
     "BestUpdatedEvent",
     "BoundsUpdatedEvent",
-    "CandidateEvaluatedEvent",
-    "PhaseCompletedEvent",
-    "PhaseStartedEvent",
     "SearchCompletedEvent",
     "SearchStartedEvent",
+    # Hierarchical beam search events
+    "BeamCandidateEvaluatedEvent",
+    "BeamGrowthStepEvent",
+    "BeamGrowthStepStartedEvent",
+    "BeamPhaseCompletedEvent",
+    "BeamPhaseStartedEvent",
+    # Swap-beam events
+    "SwapBeamNodeId",
+    "SwapCandidate",
+    "SwapBeamIterationStartedEvent",
+    "SwapEvaluatedEvent",
+    "SwapBeamIterationEvent",
+    # Annealing events
+    "AnnealingStepEvent",
+    "AnnealingCompletedEvent",
     # Protocol
     "SearchObserver",
     # Formatting

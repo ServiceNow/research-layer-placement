@@ -58,11 +58,6 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         super().__init__(config, observers, progress_estimator)
         self.config: AnnealingConfig
 
-        if self.observers:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not support progress observers."
-            )
-
         # Seed RNG for reproducibility if specified
         if self.config.seed is not None:
             random.seed(self.config.seed)
@@ -84,8 +79,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             List containing a single BeamEntry result (SA only tracks best),
             or empty list if no valid assignments exist.
         """
+        from place_layers.search_strategy.progress.events import (
+            AnnealingCompletedEvent,
+            AnnealingStepEvent,
+        )
+
         alloc_cost = cost_model.allocation_cost(allocation)
         mixer_names = problem.evaluator.mixer_names
+        max_steps = self.config.max_steps
 
         # Group layers by mixer for efficient swap generation
         layers_by_mixer = self._group_layers_by_mixer(allocation, mixer_names)
@@ -97,6 +98,23 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
+
+            # Notify observers
+            for observer in self.observers:
+                observer.on_eval_completed(self.eval_count)
+
+            # Emit completed event with no_swaps reason
+            if self.observers:
+                event = AnnealingCompletedEvent(
+                    steps_taken=0,
+                    final_temperature=self.config.initial_temperature,
+                    termination_reason="no_swaps",
+                    best_assignments=tuple(assignments),
+                    best_score=score,
+                )
+                for observer in self.observers:
+                    observer.on_annealing_completed(event)
+
             return [
                 BeamEntry(
                     assignments=tuple(assignments),
@@ -112,50 +130,102 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         current_score = await problem.evaluate(placement)
         self.eval_count += 1
 
+        # Notify observers
+        for observer in self.observers:
+            observer.on_eval_completed(self.eval_count)
+
         best = current.copy()
         best_score = current_score
 
         # Initialize temperature
         temperature = self.config.initial_temperature
+        termination_reason: str = "max_steps"
+        steps_taken = 0
 
         # Main annealing loop
-        for step in range(self.config.max_steps):
+        for step in range(max_steps):
             # Propose a random swap
             layer_a, layer_b = self._random_swap(current, mixer_names)
-            if layer_a is None:
+            if layer_a is None or layer_b is None:
                 # No valid swap possible (shouldn't happen if can_swap returned True)
+                termination_reason = "no_swaps"
                 break
 
-            # Apply swap
-            current[layer_a], current[layer_b] = current[layer_b], current[layer_a]
+            # Apply swap to get proposed state
+            proposed = current.copy()
+            proposed[layer_a], proposed[layer_b] = proposed[layer_b], proposed[layer_a]
 
             # Evaluate
-            placement = LayerPlacement(assignments=tuple(current))
-            new_score = await problem.evaluate(placement)
+            placement = LayerPlacement(assignments=tuple(proposed))
+            proposed_score = await problem.evaluate(placement)
             self.eval_count += 1
 
+            # Notify observers
+            for observer in self.observers:
+                observer.on_eval_completed(self.eval_count)
+
             # Metropolis criterion
-            delta = new_score - current_score
+            delta = proposed_score - current_score
 
             if delta > 0:
                 # Better: always accept
-                current_score = new_score
-                if new_score > best_score:
-                    best = current.copy()
-                    best_score = new_score
-            elif temperature > 0 and random.random() < math.exp(delta / temperature):
-                # Worse but accepted with probability
-                current_score = new_score
+                acceptance_prob = 1.0
+                accepted = True
+            elif temperature > 0:
+                acceptance_prob = math.exp(delta / temperature)
+                accepted = random.random() < acceptance_prob
             else:
-                # Rejected: undo swap
-                current[layer_a], current[layer_b] = current[layer_b], current[layer_a]
+                acceptance_prob = 0.0
+                accepted = False
+
+            if accepted:
+                current = proposed
+                current_score = proposed_score
+                if proposed_score > best_score:
+                    best = current.copy()
+                    best_score = proposed_score
+
+            steps_taken = step + 1
+
+            # Emit step event
+            if self.observers:
+                event = AnnealingStepEvent(
+                    step=step,
+                    max_steps=max_steps,
+                    swap=(layer_a, layer_b),
+                    proposed_assignments=tuple(proposed),
+                    proposed_score=proposed_score,
+                    temperature=temperature,
+                    delta=delta,
+                    acceptance_probability=acceptance_prob,
+                    accepted=accepted,
+                    current_assignments=tuple(current),
+                    current_score=current_score,
+                    best_assignments=tuple(best),
+                    best_score=best_score,
+                )
+                for observer in self.observers:
+                    observer.on_annealing_step(event)
 
             # Cool down
             temperature *= self.config.cooling_rate
 
             # Early termination if temperature is too low
             if temperature < self.config.min_temperature:
+                termination_reason = "min_temperature"
                 break
+
+        # Emit completed event
+        if self.observers:
+            event = AnnealingCompletedEvent(
+                steps_taken=steps_taken,
+                final_temperature=temperature,
+                termination_reason=termination_reason,  # type: ignore[arg-type]
+                best_assignments=tuple(best),
+                best_score=best_score,
+            )
+            for observer in self.observers:
+                observer.on_annealing_completed(event)
 
         return [
             BeamEntry(

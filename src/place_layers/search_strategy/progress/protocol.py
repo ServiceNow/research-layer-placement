@@ -13,15 +13,20 @@ from place_layers.search_strategy.progress.events import (
     AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
+    AnnealingCompletedEvent,
+    AnnealingStepEvent,
+    BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
+    BeamPhaseCompletedEvent,
+    BeamPhaseStartedEvent,
     BestUpdatedEvent,
     BoundsUpdatedEvent,
-    CandidateEvaluatedEvent,
-    PhaseCompletedEvent,
-    PhaseStartedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SwapBeamIterationEvent,
+    SwapBeamIterationStartedEvent,
+    SwapEvaluatedEvent,
 )
 
 
@@ -33,6 +38,10 @@ class SearchObserver(Protocol):
     All methods have default no-op behavior, so observers can choose which
     events to handle.
     """
+
+    # =========================================================================
+    # Common/outer-loop events (all strategies)
+    # =========================================================================
 
     def on_search_started(self, event: SearchStartedEvent) -> None:
         """Called when search begins."""
@@ -50,28 +59,12 @@ class SearchObserver(Protocol):
         """Called when search within an allocation completes."""
         ...
 
-    def on_phase_started(self, event: PhaseStartedEvent) -> None:
-        """Called when starting a new phase (hierarchical search only)."""
-        ...
-
-    def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
-        """Called when a phase completes (hierarchical search only)."""
-        ...
-
-    def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
-        """Called when a beam growth step begins (before evaluations)."""
-        ...
-
-    def on_candidate_evaluated(self, event: CandidateEvaluatedEvent) -> None:
-        """Called after each candidate evaluation during a beam growth step."""
-        ...
-
-    def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
-        """Called after each beam growth step."""
-        ...
-
     def on_best_updated(self, event: BestUpdatedEvent) -> None:
         """Called when a new global best is found."""
+        ...
+
+    def on_bounds_updated(self, event: BoundsUpdatedEvent) -> None:
+        """Called when evaluation bounds are refined during search."""
         ...
 
     def on_search_completed(self, event: SearchCompletedEvent) -> None:
@@ -79,9 +72,59 @@ class SearchObserver(Protocol):
         ...
 
     def on_eval_completed(self, eval_count: int) -> None:
-        """Called after each evaluation completes."""
+        """Called after each evaluation completes (throttled counter)."""
         ...
 
-    def on_bounds_updated(self, event: BoundsUpdatedEvent) -> None:
-        """Called when evaluation bounds are refined during search."""
+    # =========================================================================
+    # Hierarchical beam search events
+    # =========================================================================
+
+    def on_beam_phase_started(self, event: BeamPhaseStartedEvent) -> None:
+        """Called when starting a new phase (hierarchical search only)."""
+        ...
+
+    def on_beam_phase_completed(self, event: BeamPhaseCompletedEvent) -> None:
+        """Called when a phase completes (hierarchical search only)."""
+        ...
+
+    def on_beam_growth_step_started(self, event: BeamGrowthStepStartedEvent) -> None:
+        """Called when a beam growth step begins (before evaluations)."""
+        ...
+
+    def on_beam_growth_step(self, event: BeamGrowthStepEvent) -> None:
+        """Called after each beam growth step."""
+        ...
+
+    def on_beam_candidate_evaluated(self, event: BeamCandidateEvaluatedEvent) -> None:
+        """Called after each candidate evaluation during a beam growth step."""
+        ...
+
+    # =========================================================================
+    # Swap-beam search events
+    # =========================================================================
+
+    def on_swap_beam_iteration_started(
+        self, event: SwapBeamIterationStartedEvent
+    ) -> None:
+        """Called when a swap-beam iteration begins (before evaluations)."""
+        ...
+
+    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
+        """Called after each swap is evaluated during swap-beam search."""
+        ...
+
+    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
+        """Called after a swap-beam iteration completes."""
+        ...
+
+    # =========================================================================
+    # Annealing search events
+    # =========================================================================
+
+    def on_annealing_step(self, event: AnnealingStepEvent) -> None:
+        """Called after each annealing step."""
+        ...
+
+    def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
+        """Called when annealing within an allocation completes."""
         ...
