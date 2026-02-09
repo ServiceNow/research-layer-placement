@@ -60,7 +60,7 @@ class LeaderboardEntry(BaseModel):
 
     score: float
     cost: float
-    allocation: tuple[int, ...]  # e.g., (2, 1, 7) for m0:2, m1:1, m2:7
+    allocation: dict[str, int]  # e.g., {"FA": 2, "SWA": 1, "GDN": 7}
     assignments: tuple[str, ...]  # Per-layer mixer assignments
 
 
@@ -142,7 +142,7 @@ class RichDisplay(PlacementFormatterMixin):
         self._max_allocations: int = 0
 
         self._allocation_index: int = 0
-        self._current_allocation: tuple[int, ...] = ()
+        self._current_allocation: dict[str, int] = {}
         self._current_allocation_cost: float = 0.0
 
         # Leaderboard of completed allocation results

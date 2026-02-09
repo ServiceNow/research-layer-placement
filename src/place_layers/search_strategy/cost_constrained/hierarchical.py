@@ -208,16 +208,15 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             if no valid assignments exist.
         """
         alloc_cost = cost_model.allocation_cost(allocation)
-        mixer_names = problem.evaluator.mixer_names  # Canonical order for allocations
-        phase_order = cost_model.phase_order  # User-specified order for phases
-
-        # Build mapping from mixer name to allocation index
-        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
+        # Allocation dict order IS the phase order (from config.mixer_costs keys)
+        mixer_order = list(allocation.keys())
 
         # Generate root ID for the initial beam entry (before any phase starts)
         from place_layers.search_strategy.progress.events import BeamNodeId
 
-        root_id = BeamNodeId(allocation=allocation, mixer=None, step=None, seq=None)
+        root_id = BeamNodeId(
+            allocation=tuple(allocation.items()), mixer=None, step=None, seq=None
+        )
 
         # Start with a single beam entry (no fixed assignments yet)
         beam: list[dict] = [
@@ -230,20 +229,20 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             }
         ]
 
-        # Build phase budgets in phase_order (excluding the last which gets remainder)
+        # Build phase budgets in mixer_order (excluding the last which gets remainder)
         # Each phase assigns layers to one mixer type
         phase_budgets = [
-            (phase_order[i], allocation[name_to_alloc_idx[phase_order[i]]])
-            for i in range(len(phase_order) - 1)
+            (mixer_order[i], allocation[mixer_order[i]])
+            for i in range(len(mixer_order) - 1)
         ]
 
         # Total phases is the number of phases we'll actually run (non-zero budgets)
         total_phases = sum(1 for _, b in phase_budgets if b > 0)
         running_phase_idx = 0
 
-        # Run phases for each mixer type except the last (in phase_order)
+        # Run phases for each mixer type except the last (in mixer_order)
         for phase_idx, (mixer_name, budget) in enumerate(phase_budgets):
-            fallback_mixer = phase_order[phase_idx + 1]
+            fallback_mixer = mixer_order[phase_idx + 1]
 
             if budget == 0:
                 # Skip phases with no layers to assign
@@ -307,11 +306,11 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             running_phase_idx += 1
 
         # Finalize ALL beam entries for the leaderboard
-        last_mixer = phase_order[-1]
+        last_mixer = mixer_order[-1]
         results: list[BeamEntry] = []
 
         for entry in beam:
-            # Assign remaining layers to the last mixer (last in phase_order)
+            # Assign remaining layers to the last mixer (last in mixer_order)
             for layer_idx in entry["unassigned"]:
                 entry["fixed"][layer_idx] = last_mixer
 
@@ -327,7 +326,6 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    cost=alloc_cost,
                     score=final_score,
                 )
             )
@@ -593,8 +591,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
         """
         from place_layers.search_strategy.progress.events import BeamNodeId
 
-        # Use parent's allocation if not provided
-        alloc_tuple = allocation if allocation is not None else parent_id.allocation
+        # Use parent's allocation if not provided (convert dict to tuple for BeamNodeId)
+        alloc_tuple = tuple(allocation.items()) if allocation is not None else parent_id.allocation
         layer_scores: list[tuple[int, float, tuple[str, ...], BeamNodeId]] = []
         if total_evals is None:
             total_evals = len(unassigned)
@@ -874,8 +872,8 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
             self.eval_count += 1
 
             # Generate ID for this candidate
-            # Use parent's allocation if not provided
-            alloc_tuple = allocation if allocation is not None else candidate["parent_id"].allocation
+            # Use parent's allocation if not provided (convert dict to tuple for BeamNodeId)
+            alloc_tuple = tuple(allocation.items()) if allocation is not None else candidate["parent_id"].allocation
             candidate_id = BeamNodeId(
                 allocation=alloc_tuple,
                 mixer=mixer_name,
@@ -956,14 +954,9 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         config = problem.config
         cost_model = problem.cost_model
         num_layers = problem.evaluator.num_layers
-        mixer_names = problem.evaluator.mixer_names
-        phase_order = cost_model.phase_order
-
-        # Build name-to-allocation-index mapping
-        name_to_alloc_idx = {name: i for i, name in enumerate(mixer_names)}
 
         # Enumerate allocations in the same order as search will use
-        allocations: list[tuple[float, tuple[int, ...]]] = []
+        allocations: list[tuple[float, Allocation]] = []
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
         ):
@@ -993,10 +986,12 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         allocation_info: list[AllocationProgressInfo] = []
 
         for alloc_cost, allocation in allocations:
-            # Get phase budgets in phase_order (excluding last which gets remainder)
+            # Get phase budgets from allocation (excluding last which gets remainder)
+            # Allocation dict order is phase_order from config.mixer_costs
+            mixer_order = list(allocation.keys())
             budgets = tuple(
-                allocation[name_to_alloc_idx[phase_order[i]]]
-                for i in range(len(phase_order) - 1)
+                allocation[mixer_order[i]]
+                for i in range(len(mixer_order) - 1)
             )
 
             # Compute expected evaluation count

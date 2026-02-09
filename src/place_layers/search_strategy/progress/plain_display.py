@@ -113,7 +113,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._current_allocation_index: int = 0
         self._max_allocations: int = 0
         # Leaderboard: list of (score, cost, allocation, placement_str)
-        self._leaderboard: list[tuple[float, float, tuple[int, ...], str]] = []
+        self._leaderboard: list[tuple[float, float, dict[str, int], str]] = []
         # State tracking for live progress
         self._step_eval_count: int = 0
         self._step_total_evals: int = 0

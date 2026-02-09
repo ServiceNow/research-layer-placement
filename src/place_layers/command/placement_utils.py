@@ -64,10 +64,11 @@ def resolve_placement(
     logger.info(f"Model: {num_layers} layers, mixers: {list(mixer_names)}")
 
     # Check if model supports placement (multiple mixer types)
-    if len(set(mixer_names)) == 1:
+    if len(mixer_names) == 1:
+        only_mixer = next(iter(mixer_names))
         raise ValueError(
             f"Placement specified but model only has one mixer type "
-            f"({mixer_names[0]}). Use placement=null for non-supernet models."
+            f"({only_mixer}). Use placement=null for non-supernet models."
         )
 
     # Build valid mixer names set for validation
