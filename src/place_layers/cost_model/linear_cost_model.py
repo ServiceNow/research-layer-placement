@@ -406,10 +406,11 @@ class LinearCostModel(BaseCostModel):
 
                 delta = mixer_costs[to_mixer] - mixer_costs[from_mixer]
 
-                # Filter by direction
-                if direction == "increasing" and delta <= 0:
+                # Filter by direction (use strict inequality to allow zero-delta moves
+                # when mixer costs are equal)
+                if direction == "increasing" and delta < 0:
                     continue
-                if direction == "decreasing" and delta >= 0:
+                if direction == "decreasing" and delta > 0:
                     continue
 
                 moves.append((abs(delta), from_mixer, to_mixer))
