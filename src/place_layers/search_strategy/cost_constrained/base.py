@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Literal, Sequence, overload
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
@@ -63,10 +63,10 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
     def __init__(
         self,
         config: "BaseCostConstrainedConfig",
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
         progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> None:
-        super().__init__(config, observer)
+        super().__init__(config, observers)
         self.config: BaseCostConstrainedConfig
         self._progress_estimator = progress_estimator
         self.eval_count = 0
@@ -126,7 +126,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             case _:
                 raise TypeError(f"Unexpected config type: {type(config)}")
 
-        if self.observer is not None:
+        if self.observers:
             from place_layers.search_strategy.progress import SearchStartedEvent
 
             # Get initial bounds from progress estimator if available
@@ -141,32 +141,32 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 eval_upper = estimate.upper
                 eval_expected = estimate.expected
 
-            self.observer.on_search_started(
-                SearchStartedEvent(
-                    mode=mode,
-                    constraint_value=constraint_value,
-                    min_cost=cost_model.min_cost(num_layers),
-                    max_cost=cost_model.max_cost(num_layers),
-                    num_layers=num_layers,
-                    mixer_names=tuple(mixer_names),
-                    max_allocations=self.config.max_allocations,
-                    total_allocations=cost_model.count_allocations(num_layers),
-                    eval_count_lower_bound=eval_lower,
-                    eval_count_upper_bound=eval_upper,
-                    eval_count_expected=eval_expected,
-                )
+            event = SearchStartedEvent(
+                mode=mode,
+                constraint_value=constraint_value,
+                min_cost=cost_model.min_cost(num_layers),
+                max_cost=cost_model.max_cost(num_layers),
+                num_layers=num_layers,
+                mixer_names=tuple(mixer_names),
+                max_allocations=self.config.max_allocations,
+                total_allocations=cost_model.count_allocations(num_layers),
+                eval_count_lower_bound=eval_lower,
+                eval_count_upper_bound=eval_upper,
+                eval_count_expected=eval_expected,
             )
+            for observer in self.observers:
+                observer.on_search_started(event)
 
             # Emit allocation plan if progress estimator is available
             if self._progress_estimator is not None:
                 from place_layers.search_strategy.progress import AllocationPlanEvent
 
-                self.observer.on_allocation_plan(
-                    AllocationPlanEvent(
-                        allocation_info=self._progress_estimator.allocation_info,
-                        mixer_names=tuple(mixer_names),
-                    )
+                plan_event = AllocationPlanEvent(
+                    allocation_info=self._progress_estimator.allocation_info,
+                    mixer_names=tuple(mixer_names),
                 )
+                for observer in self.observers:
+                    observer.on_allocation_plan(plan_event)
 
         if dry_run:
             return None
@@ -247,35 +247,36 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 alloc_expected = int(alloc_info.expected)
 
             # Emit allocation started event
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import AllocationStartedEvent
 
-                self.observer.on_allocation_started(
-                    AllocationStartedEvent(
-                        allocation_index=allocations_explored,
-                        total_allocations=self.config.max_allocations,
-                        allocation=allocation,
-                        allocation_cost=alloc_cost,
-                        mixer_names=tuple(mixer_names),
-                        eval_lower_bound=alloc_lower,
-                        eval_upper_bound=alloc_upper,
-                        eval_expected=alloc_expected,
-                    )
+                event = AllocationStartedEvent(
+                    allocation_index=allocations_explored,
+                    total_allocations=self.config.max_allocations,
+                    allocation=allocation,
+                    allocation_cost=alloc_cost,
+                    mixer_names=tuple(mixer_names),
+                    eval_lower_bound=alloc_lower,
+                    eval_upper_bound=alloc_upper,
+                    eval_expected=alloc_expected,
                 )
+                for observer in self.observers:
+                    observer.on_allocation_started(event)
 
             # Track eval count before allocation for progress estimation
             evals_before = self.eval_count
 
             # Search for best assignment within this allocation
-            best_in_allocation = await self._search_within_allocation(
+            beam_results = await self._search_within_allocation(
                 problem=problem,
                 cost_model=cost_model,
                 allocation=allocation,
                 num_layers=num_layers,
             )
+            best_in_allocation = beam_results[0] if beam_results else None
 
             # Emit bounds update if progress estimator is present
-            if self._progress_estimator is not None and self.observer is not None:
+            if self._progress_estimator is not None and self.observers:
                 from place_layers.search_strategy.progress import BoundsUpdatedEvent
 
                 previous = self._progress_estimator.bounds_after(
@@ -288,58 +289,53 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 )
 
                 if previous.lower != current.lower or previous.upper != current.upper:
-                    self.observer.on_bounds_updated(
-                        BoundsUpdatedEvent(
-                            previous_lower=previous.lower,
-                            previous_upper=previous.upper,
-                            new_lower=current.lower,
-                            new_upper=current.upper,
-                            completed=self.eval_count,
-                            remaining_allocations=(
-                                len(self._progress_estimator.allocation_info)
-                                - allocations_explored
-                            ),
-                            reason="allocation_complete",
-                        )
+                    event = BoundsUpdatedEvent(
+                        previous_lower=previous.lower,
+                        previous_upper=previous.upper,
+                        new_lower=current.lower,
+                        new_upper=current.upper,
+                        completed=self.eval_count,
+                        remaining_allocations=(
+                            len(self._progress_estimator.allocation_info)
+                            - allocations_explored
+                        ),
+                        reason="allocation_complete",
                     )
+                    for observer in self.observers:
+                        observer.on_bounds_updated(event)
 
             # Emit allocation completed event with final placement
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import (
                     AllocationCompletedEvent,
                 )
 
-                # Build assignments_by_mixer for display
-                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
-                if best_in_allocation is not None:
-                    mixer_layers: dict[str, list[int]] = {}
-                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
-                        if mixer not in mixer_layers:
-                            mixer_layers[mixer] = []
-                        mixer_layers[mixer].append(layer_idx)
-                    assignments_by_mixer = {
-                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
-                    }
-
-                self.observer.on_allocation_completed(
-                    AllocationCompletedEvent(
-                        allocation_index=allocations_explored,
-                        allocation=allocation,
-                        allocation_cost=alloc_cost,
-                        mixer_names=tuple(mixer_names),
-                        assignments=(
-                            best_in_allocation.assignments
-                            if best_in_allocation is not None
-                            else None
-                        ),
-                        score=(
-                            best_in_allocation.score
-                            if best_in_allocation is not None
-                            else None
-                        ),
-                        assignments_by_mixer=assignments_by_mixer,
-                    )
+                # Build top_placements from all beam entries with valid scores
+                top_placements = tuple(
+                    (entry.assignments, entry.score)
+                    for entry in beam_results
+                    if entry.score is not None
                 )
+
+                event = AllocationCompletedEvent(
+                    allocation_index=allocations_explored,
+                    allocation=allocation,
+                    allocation_cost=alloc_cost,
+                    mixer_names=tuple(mixer_names),
+                    assignments=(
+                        best_in_allocation.assignments
+                        if best_in_allocation is not None
+                        else None
+                    ),
+                    score=(
+                        best_in_allocation.score
+                        if best_in_allocation is not None
+                        else None
+                    ),
+                    top_placements=top_placements,
+                )
+                for observer in self.observers:
+                    observer.on_allocation_completed(event)
 
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
@@ -358,17 +354,17 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 )
 
                 # Emit best updated event
-                if self.observer is not None:
+                if self.observers:
                     from place_layers.search_strategy.progress import BestUpdatedEvent
 
-                    self.observer.on_best_updated(
-                        BestUpdatedEvent(
-                            score=best_in_allocation.score,
-                            cost=best_entry.cost,
-                            allocation=best_entry.allocation,
-                            assignments=best_entry.assignments,
-                        )
+                    event = BestUpdatedEvent(
+                        score=best_in_allocation.score,
+                        cost=best_entry.cost,
+                        allocation=best_entry.allocation,
+                        assignments=best_entry.assignments,
                     )
+                    for observer in self.observers:
+                        observer.on_best_updated(event)
 
             # Check for max allocations limit
             if allocations_explored >= self.config.max_allocations:
@@ -448,35 +444,36 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 alloc_expected = int(alloc_info.expected)
 
             # Emit allocation started event
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import AllocationStartedEvent
 
-                self.observer.on_allocation_started(
-                    AllocationStartedEvent(
-                        allocation_index=allocations_explored,
-                        total_allocations=self.config.max_allocations,
-                        allocation=allocation,
-                        allocation_cost=alloc_cost,
-                        mixer_names=tuple(mixer_names),
-                        eval_lower_bound=alloc_lower,
-                        eval_upper_bound=alloc_upper,
-                        eval_expected=alloc_expected,
-                    )
+                event = AllocationStartedEvent(
+                    allocation_index=allocations_explored,
+                    total_allocations=self.config.max_allocations,
+                    allocation=allocation,
+                    allocation_cost=alloc_cost,
+                    mixer_names=tuple(mixer_names),
+                    eval_lower_bound=alloc_lower,
+                    eval_upper_bound=alloc_upper,
+                    eval_expected=alloc_expected,
                 )
+                for observer in self.observers:
+                    observer.on_allocation_started(event)
 
             # Track eval count before allocation for progress estimation
             evals_before = self.eval_count
 
             # Search for best assignment within this allocation
-            best_in_allocation = await self._search_within_allocation(
+            beam_results = await self._search_within_allocation(
                 problem=problem,
                 cost_model=cost_model,
                 allocation=allocation,
                 num_layers=num_layers,
             )
+            best_in_allocation = beam_results[0] if beam_results else None
 
             # Emit bounds update if progress estimator is present
-            if self._progress_estimator is not None and self.observer is not None:
+            if self._progress_estimator is not None and self.observers:
                 from place_layers.search_strategy.progress import BoundsUpdatedEvent
 
                 previous = self._progress_estimator.bounds_after(
@@ -489,58 +486,53 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 )
 
                 if previous.lower != current.lower or previous.upper != current.upper:
-                    self.observer.on_bounds_updated(
-                        BoundsUpdatedEvent(
-                            previous_lower=previous.lower,
-                            previous_upper=previous.upper,
-                            new_lower=current.lower,
-                            new_upper=current.upper,
-                            completed=self.eval_count,
-                            remaining_allocations=(
-                                len(self._progress_estimator.allocation_info)
-                                - allocations_explored
-                            ),
-                            reason="allocation_complete",
-                        )
+                    event = BoundsUpdatedEvent(
+                        previous_lower=previous.lower,
+                        previous_upper=previous.upper,
+                        new_lower=current.lower,
+                        new_upper=current.upper,
+                        completed=self.eval_count,
+                        remaining_allocations=(
+                            len(self._progress_estimator.allocation_info)
+                            - allocations_explored
+                        ),
+                        reason="allocation_complete",
                     )
+                    for observer in self.observers:
+                        observer.on_bounds_updated(event)
 
             # Emit allocation completed event with final placement
-            if self.observer is not None:
+            if self.observers:
                 from place_layers.search_strategy.progress import (
                     AllocationCompletedEvent,
                 )
 
-                # Build assignments_by_mixer for display
-                assignments_by_mixer: dict[str, tuple[int, ...]] = {}
-                if best_in_allocation is not None:
-                    mixer_layers: dict[str, list[int]] = {}
-                    for layer_idx, mixer in enumerate(best_in_allocation.assignments):
-                        if mixer not in mixer_layers:
-                            mixer_layers[mixer] = []
-                        mixer_layers[mixer].append(layer_idx)
-                    assignments_by_mixer = {
-                        k: tuple(sorted(v)) for k, v in mixer_layers.items()
-                    }
-
-                self.observer.on_allocation_completed(
-                    AllocationCompletedEvent(
-                        allocation_index=allocations_explored,
-                        allocation=allocation,
-                        allocation_cost=alloc_cost,
-                        mixer_names=tuple(mixer_names),
-                        assignments=(
-                            best_in_allocation.assignments
-                            if best_in_allocation is not None
-                            else None
-                        ),
-                        score=(
-                            best_in_allocation.score
-                            if best_in_allocation is not None
-                            else None
-                        ),
-                        assignments_by_mixer=assignments_by_mixer,
-                    )
+                # Build top_placements from all beam entries with valid scores
+                top_placements = tuple(
+                    (entry.assignments, entry.score)
+                    for entry in beam_results
+                    if entry.score is not None
                 )
+
+                event = AllocationCompletedEvent(
+                    allocation_index=allocations_explored,
+                    allocation=allocation,
+                    allocation_cost=alloc_cost,
+                    mixer_names=tuple(mixer_names),
+                    assignments=(
+                        best_in_allocation.assignments
+                        if best_in_allocation is not None
+                        else None
+                    ),
+                    score=(
+                        best_in_allocation.score
+                        if best_in_allocation is not None
+                        else None
+                    ),
+                    top_placements=top_placements,
+                )
+                for observer in self.observers:
+                    observer.on_allocation_completed(event)
 
             if best_in_allocation is None:
                 logger.info("  No valid assignments found for this allocation")
@@ -560,17 +552,17 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                 )
 
                 # Emit best updated event
-                if self.observer is not None:
+                if self.observers:
                     from place_layers.search_strategy.progress import BestUpdatedEvent
 
-                    self.observer.on_best_updated(
-                        BestUpdatedEvent(
-                            score=best_in_allocation.score,
-                            cost=best_entry.cost,
-                            allocation=best_entry.allocation,
-                            assignments=best_entry.assignments,
-                        )
+                    event = BestUpdatedEvent(
+                        score=best_in_allocation.score,
+                        cost=best_entry.cost,
+                        allocation=best_entry.allocation,
+                        assignments=best_entry.assignments,
                     )
+                    for observer in self.observers:
+                        observer.on_best_updated(event)
             else:
                 # Performance dropped below target - stop searching
                 logger.info(
@@ -623,7 +615,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation.
 
@@ -637,7 +629,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             num_layers: Total number of layers.
 
         Returns:
-            Best BeamEntry found, or None if no valid assignments exist.
+            List of BeamEntry results sorted by score descending, or empty list
+            if no valid assignments exist.
         """
         pass
 
@@ -691,17 +684,17 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Total evaluations: {self.eval_count}")
 
         # Emit search completed event
-        if self.observer is not None:
+        if self.observers:
             from place_layers.search_strategy.progress import SearchCompletedEvent
 
-            self.observer.on_search_completed(
-                SearchCompletedEvent(
-                    best_score=best_entry.score,
-                    best_cost=best_entry.cost,
-                    total_evaluations=self.eval_count,
-                    allocations_explored=allocations_explored,
-                )
+            event = SearchCompletedEvent(
+                best_score=best_entry.score,
+                best_cost=best_entry.cost,
+                total_evaluations=self.eval_count,
+                allocations_explored=allocations_explored,
             )
+            for observer in self.observers:
+                observer.on_search_completed(event)
 
         return CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=best_entry.assignments),

@@ -33,15 +33,21 @@ from place_layers.search_strategy.progress.events import (
     AllocationCompletedEvent,
     AllocationPlanEvent,
     AllocationStartedEvent,
+    AnnealingCompletedEvent,
+    AnnealingStepEvent,
+    BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
+    BeamPhaseCompletedEvent,
+    BeamPhaseStartedEvent,
     BoundsUpdatedEvent,
-    CandidateEvaluatedEvent,
-    PhaseCompletedEvent,
-    PhaseStartedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SwapBeamIterationEvent,
+    SwapBeamIterationStartedEvent,
+    SwapEvaluatedEvent,
 )
+from place_layers.search_strategy.progress.formatter import PlacementFormatterMixin
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -78,7 +84,28 @@ class PhaseData(BaseModel):
     completion_text: str | None = None  # Set when phase completes
 
 
-class RichSearchDisplay:
+class SwapBeamIterationData(BaseModel):
+    """Data for a completed swap-beam iteration."""
+
+    iteration: int
+    max_iterations: int
+    num_tried: int
+    best_score: float | None
+    improved: bool
+    converged: bool
+
+
+class AnnealingStepSample(BaseModel):
+    """Sampled annealing step data for history display."""
+
+    step: int
+    temperature: float
+    best_score: float
+    accepted: bool
+    delta: float
+
+
+class RichDisplay(PlacementFormatterMixin):
     """Rich Live display for search progress.
 
     Uses the observer pattern to receive events from the search strategy
@@ -89,7 +116,7 @@ class RichSearchDisplay:
     - Current state is shown in a live display at the bottom
 
     Usage:
-        with RichSearchDisplay() as display:
+        with RichDisplay() as display:
             search_strategy = create_search_strategy(observer=display)
             await search_strategy.search(problem)
     """
@@ -103,14 +130,15 @@ class RichSearchDisplay:
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
+        # Mixin attributes (set in on_search_started)
+        self._mixer_names: tuple[str, ...] = ()
+        self._num_layers: int = 0
 
         # State from events
         self._mode: str = ""
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._num_layers: int = 0
-        self._mixer_names: tuple[str, ...] = ()
         self._max_allocations: int = 0
 
         self._allocation_index: int = 0
@@ -142,7 +170,26 @@ class RichSearchDisplay:
         self._current_step: int = 0
         self._current_total_steps: int = 0
 
-    def __enter__(self) -> "RichSearchDisplay":
+        # Swap-beam search state
+        self._swap_beam_iterations: list[SwapBeamIterationData] = []
+        self._swap_beam_current_iteration: int = 0
+        self._swap_beam_max_iterations: int = 0
+        self._swap_beam_best_score: float | None = None
+        self._swap_beam_eval_count: int = 0
+        self._swap_beam_total_evals: int = 0
+
+        # Annealing search state
+        self._annealing_steps: list[AnnealingStepSample] = []
+        self._annealing_current_step: int = 0
+        self._annealing_max_steps: int = 0
+        self._annealing_temperature: float = 0.0
+        self._annealing_acceptance_count: int = 0
+        self._annealing_best_score: float | None = None
+
+        # Track which search strategy is active (for display selection)
+        self._active_strategy: str | None = None  # "hierarchical", "swap_beam", "annealing"
+
+    def __enter__(self) -> "RichDisplay":
         """Start the Live display."""
         self._live = Live(
             self._build_display(),
@@ -193,7 +240,13 @@ class RichSearchDisplay:
         return Group(*components)
 
     def _build_allocation_content(self) -> Group:
-        """Build content for allocation panel: phases with nested steps."""
+        """Build content for allocation panel: phases with nested steps.
+
+        Detects the active strategy and renders the appropriate visualization:
+        - Hierarchical: Phase panels with nested step panels
+        - Swap-beam: Iteration history and current progress
+        - Annealing: Temperature decay and acceptance tracking
+        """
         components: list[Text | Panel] = []
 
         # Allocation summary line
@@ -202,15 +255,28 @@ class RichSearchDisplay:
             Text.from_markup(f"{alloc_str}  [dim]cost={self._current_allocation_cost:.4f}[/dim]")
         )
 
-        # Completed phases
-        for phase in self._completed_phases:
-            phase_panel = self._build_phase_panel(phase, is_current=False)
-            components.append(phase_panel)
+        # Render based on active strategy
+        if self._active_strategy == "swap_beam":
+            # Swap-beam visualization
+            swap_panel = self._build_swap_beam_panel()
+            if swap_panel:
+                components.append(swap_panel)
+        elif self._active_strategy == "annealing":
+            # Annealing visualization
+            annealing_panel = self._build_annealing_panel()
+            if annealing_panel:
+                components.append(annealing_panel)
+        else:
+            # Hierarchical beam search (default)
+            # Completed phases
+            for phase in self._completed_phases:
+                phase_panel = self._build_phase_panel(phase, is_current=False)
+                components.append(phase_panel)
 
-        # Current phase (in progress)
-        if self._current_phase is not None:
-            phase_panel = self._build_phase_panel(self._current_phase, is_current=True)
-            components.append(phase_panel)
+            # Current phase (in progress)
+            if self._current_phase is not None:
+                phase_panel = self._build_phase_panel(self._current_phase, is_current=True)
+                components.append(phase_panel)
 
         return Group(*components)
 
@@ -249,6 +315,89 @@ class RichSearchDisplay:
             border_style="green" if phase.completion_text else "blue",
         )
 
+    def _build_swap_beam_panel(self) -> Panel | None:
+        """Build swap-beam search visualization panel."""
+        if not self._swap_beam_iterations and self._swap_beam_current_iteration == 0:
+            return None
+
+        lines: list[Text] = []
+
+        # Current progress
+        if self._swap_beam_current_iteration > 0:
+            progress_text = (
+                f"[dim]Iteration {self._swap_beam_current_iteration}/"
+                f"{self._swap_beam_max_iterations}: "
+                f"evaluating {self._swap_beam_eval_count}/{self._swap_beam_total_evals}[/dim]"
+            )
+            if self._swap_beam_best_score is not None:
+                progress_text += f" [green]best: {self._swap_beam_best_score:.4g}[/green]"
+            lines.append(Text.from_markup(progress_text))
+
+        # Iteration history
+        if self._swap_beam_iterations:
+            lines.append(Text.from_markup("\n[bold]Iterations:[/bold]"))
+            for iter_data in self._swap_beam_iterations[-5:]:  # Show last 5
+                if iter_data.converged:
+                    status = "[green]✓ converged[/green]"
+                elif iter_data.improved:
+                    status = "[green]✓ improved[/green]"
+                else:
+                    status = "[dim]no improvement[/dim]"
+
+                score_str = f"{iter_data.best_score:.4g}" if iter_data.best_score else "N/A"
+                lines.append(
+                    Text.from_markup(
+                        f"  {iter_data.iteration}. {status} → {score_str}"
+                    )
+                )
+
+        return Panel(
+            Group(*lines) if lines else Text(""),
+            title="[bold cyan]Swap-Beam Search[/bold cyan]",
+            border_style="cyan",
+        )
+
+    def _build_annealing_panel(self) -> Panel | None:
+        """Build annealing search visualization panel."""
+        if self._annealing_max_steps == 0:
+            return None
+
+        lines: list[Text] = []
+
+        # Current step progress
+        progress_pct = (self._annealing_current_step + 1) / self._annealing_max_steps * 100
+        accept_rate = (
+            self._annealing_acceptance_count / (self._annealing_current_step + 1) * 100
+            if self._annealing_current_step > 0
+            else 0
+        )
+
+        lines.append(
+            Text.from_markup(
+                f"[dim]Step {self._annealing_current_step + 1}/{self._annealing_max_steps}[/dim] | "
+                f"T={self._annealing_temperature:.3g} | "
+                f"Accept: {accept_rate:.0f}%"
+            )
+        )
+
+        # Temperature decay bar
+        bar_width = 20
+        filled = int(progress_pct / 100 * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        lines.append(Text.from_markup(f"  {bar} ({progress_pct:.0f}%)"))
+
+        # Best score
+        if self._annealing_best_score is not None:
+            lines.append(
+                Text.from_markup(f"  [green]Best: {self._annealing_best_score:.4g}[/green]")
+            )
+
+        return Panel(
+            Group(*lines) if lines else Text(""),
+            title="[bold magenta]Simulated Annealing[/bold magenta]",
+            border_style="magenta",
+        )
+
     def _render_leaderboard(self) -> Panel:
         """Render the leaderboard table."""
         table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
@@ -260,7 +409,8 @@ class RichSearchDisplay:
 
         for i, entry in enumerate(self._leaderboard[:5], 1):  # Top 5
             alloc_str = self._format_allocation(entry.allocation)
-            placement_str = self._format_placement(entry.assignments)
+            by_mixer = self._group_layers_by_mixer(entry.assignments)
+            placement_str = self._format_placement(by_mixer)
             table.add_row(
                 str(i),
                 f"{entry.score:.4f}",
@@ -373,10 +523,10 @@ class RichSearchDisplay:
             self._console.print("[dim]  No valid placement found for this allocation[/dim]")
             return
 
-        # Format assignments by mixer in canonical order using _format_placement
-        # which accepts dict[str, tuple[int, ...]] format
+        # Format assignments by mixer in canonical order
+        by_mixer = self._group_layers_by_mixer(event.assignments)
         placement_str = self._format_placement(
-            event.assignments_by_mixer, max_layers_per_mixer=8, escape_brackets=True
+            by_mixer, max_layers_per_mixer=8, escape_brackets=True
         )
 
         self._console.print(
@@ -384,161 +534,14 @@ class RichSearchDisplay:
             f"{placement_str} → {event.score:.4g}"
         )
 
-    # =========================================================================
-    # Formatting primitives and building blocks
-    # =========================================================================
-
-    def _format_layer_list(
-        self, layers: tuple[int, ...] | list[int], max_show: int = 10
-    ) -> str:
-        """Format a list of layer indices compactly.
-
-        Args:
-            layers: Layer indices to format
-            max_show: Maximum layers to show before truncating
-
-        Returns:
-            Comma-separated string like "1,2,3" or "1,2,...,9" if truncated
-        """
-        if len(layers) <= max_show:
-            return ",".join(str(l) for l in layers)
-        first_half = max_show // 2
-        return ",".join(str(l) for l in layers[:first_half]) + f",...,{layers[-1]}"
-
-    def _format_layer_assignment(
-        self,
-        mixer: str,
-        layers: tuple[int, ...] | list[int],
-        max_show: int = 10,
-        escape_brackets: bool = False,
-    ) -> str:
-        """Format a single mixer's layer assignment.
-
-        Args:
-            mixer: Mixer name (e.g., "FA", "SWA")
-            layers: Layer indices assigned to this mixer
-            max_show: Maximum layers to show before truncating
-            escape_brackets: Whether to escape brackets for Rich markup
-
-        Returns:
-            String like "FA@[1,2,3]" or "FA@\\[1,2,3]" if escaped
-        """
-        layers_str = self._format_layer_list(layers, max_show)
-        bracket = "\\[" if escape_brackets else "["
-        return f"{mixer}@{bracket}{layers_str}]"
-
-    def _group_layers_by_mixer(
-        self,
-        assignments: tuple[str, ...] | dict[int, str],
-    ) -> dict[str, list[int]]:
-        """Group layer indices by their assigned mixer.
-
-        Args:
-            assignments: Either per-layer tuple or dict mapping layer→mixer
-
-        Returns:
-            Dict mapping mixer name to sorted list of layer indices
-        """
-        by_mixer: dict[str, list[int]] = {}
-
-        if isinstance(assignments, dict):
-            # dict[int, str] format (layer → mixer)
-            for layer, mixer in assignments.items():
-                by_mixer.setdefault(mixer, []).append(layer)
-        else:
-            # tuple[str, ...] format (index = layer, value = mixer)
-            for layer_idx, mixer in enumerate(assignments):
-                by_mixer.setdefault(mixer, []).append(layer_idx)
-
-        # Sort layers within each mixer
-        for layers in by_mixer.values():
-            layers.sort()
-
-        return by_mixer
-
-    def _format_context_string(
-        self,
-        prior_assignments: dict[int, str],
-        current_mixer: str | None,
-        current_layers: tuple[int, ...] | list[int],
-        max_show: int = 6,
-    ) -> str:
-        """Format combined prior and current phase context for display.
-
-        Args:
-            prior_assignments: Dict mapping layer→mixer for prior phase assignments
-            current_mixer: Current phase mixer name (or None)
-            current_layers: Current phase layer indices
-            max_show: Maximum layers to show per mixer before truncating
-
-        Returns:
-            String like " ([dim]FA@[0,5][/dim], SWA@[1,2,3])" or "" if empty.
-        """
-        prior_ctx = ""
-        if prior_assignments:
-            by_mixer = self._group_layers_by_mixer(prior_assignments)
-            parts = [
-                self._format_layer_assignment(m, by_mixer[m], max_show, escape_brackets=True)
-                for m in self._mixer_names
-                if m in by_mixer
-            ]
-            prior_ctx = ", ".join(parts)
-
-        current_ctx = ""
-        if current_mixer and current_layers:
-            current_ctx = self._format_layer_assignment(
-                current_mixer, current_layers, max_show, escape_brackets=True
-            )
-
-        if prior_ctx and current_ctx:
-            return f" ([dim]{prior_ctx}[/dim], {current_ctx})"
-        elif prior_ctx:
-            return f" ([dim]{prior_ctx}[/dim])"
-        elif current_ctx:
-            return f" ({current_ctx})"
-        return ""
-
-    def _format_allocation(self, allocation: tuple[int, ...]) -> str:
-        """Format allocation as 'FA:2 SWA:1 GDN:7'."""
-        parts = [f"{name}:{count}" for name, count in zip(self._mixer_names, allocation)]
-        return " ".join(parts)
-
-    def _format_placement(
-        self,
-        assignments: tuple[str, ...] | dict[str, tuple[int, ...]],
-        max_layers_per_mixer: int = 10,
-        escape_brackets: bool = False,
-    ) -> str:
-        """Format per-layer assignments as grouped placement string.
-
-        Args:
-            assignments: Either per-layer tuple (index=layer, value=mixer)
-                        or dict mapping mixer→layers (for pre-grouped data)
-            max_layers_per_mixer: Max layers to show per mixer before truncating
-            escape_brackets: Whether to escape brackets for Rich markup
-
-        Returns:
-            String like "FA@[0,2], GDN@[1], SWA@[3,4,5]"
-        """
-        # Handle pre-grouped dict format
-        if isinstance(assignments, dict):
-            by_mixer = {mixer: list(layers) for mixer, layers in assignments.items()}
-        else:
-            by_mixer = self._group_layers_by_mixer(assignments)
-
-        # Format in canonical mixer_names order
-        parts = []
-        for mixer in self._mixer_names:
-            if mixer in by_mixer:
-                parts.append(
-                    self._format_layer_assignment(
-                        mixer, by_mixer[mixer], max_layers_per_mixer, escape_brackets
-                    )
-                )
-        return ", ".join(parts)
-
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the expand section of a beam step as text."""
+        from place_layers.search_strategy.progress.events import (
+            BeamEntry,
+            BeamNodeId,
+            EvaluatedCandidate,
+        )
+
         lines = []
         # Use unified B naming and show step context
         if event.step == 1:
@@ -546,93 +549,89 @@ class RichSearchDisplay:
         else:
             lines.append(f"Expand beam from step {event.step - 1}:")
 
-        # Group tried candidates by parent_idx
-        tried_by_parent: dict[int, list[dict]] = {}
+        # Build lookup from parent ID to index and parent entry
+        parent_id_to_idx: dict[BeamNodeId, int] = {}
+        parent_id_to_entry: dict[BeamNodeId, BeamEntry] = {}
+        for idx, parent in enumerate(event.parents):
+            parent_id_to_idx[parent.id] = idx
+            parent_id_to_entry[parent.id] = parent
+
+        # Group tried candidates by parent_id
+        tried_by_parent: dict[BeamNodeId, list[EvaluatedCandidate]] = {}
         for t in event.tried:
-            parent_idx = t.get("parent_idx", 0)
-            if parent_idx not in tried_by_parent:
-                tried_by_parent[parent_idx] = []
-            tried_by_parent[parent_idx].append(t)
+            if t.parent_id is None:
+                continue
+            if t.parent_id not in tried_by_parent:
+                tried_by_parent[t.parent_id] = []
+            tried_by_parent[t.parent_id].append(t)
 
         # Sort each parent's tried list by score descending
-        for parent_idx in tried_by_parent:
-            tried_by_parent[parent_idx].sort(key=lambda x: x["score"], reverse=True)
+        for parent_id in tried_by_parent:
+            tried_by_parent[parent_id].sort(key=lambda x: x.score, reverse=True)
 
-        # Find global best across all tried candidates
-        global_best = max(event.tried, key=lambda x: x["score"]) if event.tried else None
-        global_best_key = (
-            (global_best["parent_idx"], global_best["layer"]) if global_best else None
-        )
+        # Use best_candidate from event for highlighting
+        best = event.best_candidate
+        global_best_id = best.id if best else None
 
         # Show each parent and its tried candidates
         for parent_idx, parent in enumerate(event.parents):
-            parent_layers = parent.get("layers", [])
-
-            # Use helper to format context string
-            context_str = self._format_context_string(
-                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
+            # Format parent's partial placement
+            by_mixer = self._group_layers_by_mixer(parent.partial_placement)
+            parent_placement_str = self._format_placement(
+                by_mixer, max_layers_per_mixer=6, escape_brackets=True
             )
+            context_str = f" ({parent_placement_str})" if parent_placement_str else ""
 
-            # Format tried candidates for this parent
-            tried_list = tried_by_parent.get(parent_idx, [])
-            tried_parts = []
+            lines.append(f"  B{parent_idx}{context_str}:")
+
+            # Format tried candidates for this parent, one per line
+            tried_list = tried_by_parent.get(parent.id, [])
             for t in tried_list[:5]:
-                is_global_best = (parent_idx, t["layer"]) == global_best_key
+                is_global_best = t.id == global_best_id
+                diff = self._format_placement_diff(parent.partial_placement, t.placement)
                 if is_global_best:
-                    tried_parts.append(f"[green]+{t['layer']}→{t['score']:.4g}★[/green]")
+                    lines.append(f"    [green]B{parent_idx} + {diff} ({t.score:.4g})★[/green]")
                 else:
-                    tried_parts.append(f"+{t['layer']}→{t['score']:.4g}")
-            tried_str = "  ".join(tried_parts)
+                    lines.append(f"    B{parent_idx} + {diff} ({t.score:.4g})")
             if len(tried_list) > 5:
-                tried_str += "  [dim]...[/dim]"
-
-            lines.append(f"  B{parent_idx}{context_str}: {tried_str}")
+                lines.append(f"    [dim]...+{len(tried_list) - 5} more[/dim]")
 
         return "\n".join(lines)
 
     def _format_prune_section(self, event: BeamGrowthStepEvent) -> str:
         """Format the prune section of a beam step as text."""
+        from place_layers.search_strategy.progress.events import BeamEntry, BeamNodeId
+
         lines = []
         beam_size = len(event.beam)
         lines.append(f"Prune to {beam_size}:")
 
+        # Build lookup from parent ID to index
+        parent_id_to_idx: dict[BeamNodeId, int] = {}
+        parent_id_to_entry: dict[BeamNodeId, BeamEntry] = {}
+        for idx, parent in enumerate(event.parents):
+            parent_id_to_idx[parent.id] = idx
+            parent_id_to_entry[parent.id] = parent
+
         for i, b in enumerate(event.beam):
-            parent_idx = b.get("parent_idx", 0)
-            added_layer = b.get("added_layer", "?")
-
-            # Get parent's layers and append the added layer
-            parent = event.parents[parent_idx] if parent_idx < len(event.parents) else {}
-            parent_layers = list(parent.get("layers", []))
-            if added_layer != "?":
-                parent_layers.append(added_layer)
-
-            # Use helper to format context string
-            context_str = self._format_context_string(
-                parent.get("fixed", {}), event.mixer_name, parent_layers, max_show=6
-            )
-
-            # Show lineage: B0 ← B{parent}+{layer}
-            lineage = f"← B{parent_idx}+{added_layer}"
+            # Show lineage using diff from parent: B0 ← B0 + FA@6 (score)
+            parent_idx = parent_id_to_idx.get(b.parent_id, 0) if b.parent_id else 0
+            parent_entry = parent_id_to_entry.get(b.parent_id) if b.parent_id else None
+            parent_partial = parent_entry.partial_placement if parent_entry else ()
+            diff = self._format_placement_diff(parent_partial, b.partial_placement)
 
             if i == 0:
-                lines.append(f"  [green]B{i} {lineage}{context_str} → {b['score']:.4g}★[/green]")
+                lines.append(f"  [green]B{i} ← B{parent_idx} + {diff} ({b.score:.4g})★[/green]")
             else:
-                lines.append(f"  B{i} {lineage}{context_str} → {b['score']:.4g}")
+                lines.append(f"  B{i} ← B{parent_idx} + {diff} ({b.score:.4g})")
 
-        # Show runners-up (candidates that just missed the cut)
-        beam_keys = {(b.get("parent_idx"), b.get("added_layer")) for b in event.beam}
-        cut_candidates = [
-            t
-            for t in event.tried
-            if (t.get("parent_idx"), t["layer"]) not in beam_keys
-        ]
-        # Sort by score descending to show runners-up first
-        cut_candidates.sort(key=lambda x: x["score"], reverse=True)
+        # Use cut_candidates from event (already sorted by score descending)
+        cut_candidates = event.cut_candidates
 
         if cut_candidates:
             # Show top 2-3 runners-up in compact format
             shown = cut_candidates[:3]
-            cut_parts = [f"+{c['layer']}→{c['score']:.4g}" for c in shown]
+            cut_parts = [f"+{c.layer}→{c.score:.4g}" for c in shown]
             cut_str = ", ".join(cut_parts)
 
             remaining = len(cut_candidates) - len(shown)
@@ -671,7 +670,8 @@ class RichSearchDisplay:
 
             for i, entry in enumerate(self._leaderboard, 1):
                 alloc_str = self._format_allocation(entry.allocation)
-                placement_str = self._format_placement(entry.assignments)
+                by_mixer = self._group_layers_by_mixer(entry.assignments)
+                placement_str = self._format_placement(by_mixer)
                 leaderboard_table.add_row(
                     str(i),
                     f"{entry.score:.4f}",
@@ -699,17 +699,17 @@ class RichSearchDisplay:
         self._console.print(panel)
 
     # =========================================================================
-    # Observer interface methods
+    # Common/outer-loop event handlers (all strategies)
     # =========================================================================
 
     def on_search_started(self, event: SearchStartedEvent) -> None:
         """Handle search started event."""
+        self._mixer_names = event.mixer_names
+        self._num_layers = event.num_layers
         self._mode = event.mode
         self._constraint_value = event.constraint_value
         self._min_cost = event.min_cost
         self._max_cost = event.max_cost
-        self._num_layers = event.num_layers
-        self._mixer_names = event.mixer_names
         self._max_allocations = event.max_allocations
 
         # Initialize bounds from event (may be None if not provided)
@@ -766,6 +766,25 @@ class RichSearchDisplay:
         self._current_phase = None
         self._current_step_content = ""
 
+        # Reset swap-beam state
+        self._swap_beam_iterations = []
+        self._swap_beam_current_iteration = 0
+        self._swap_beam_max_iterations = 0
+        self._swap_beam_best_score = None
+        self._swap_beam_eval_count = 0
+        self._swap_beam_total_evals = 0
+
+        # Reset annealing state
+        self._annealing_steps = []
+        self._annealing_current_step = 0
+        self._annealing_max_steps = 0
+        self._annealing_temperature = 0.0
+        self._annealing_acceptance_count = 0
+        self._annealing_best_score = None
+
+        # Reset active strategy (will be set by first inner-loop event)
+        self._active_strategy = None
+
         # Capture per-allocation bounds for progress tracking
         self._alloc_eval_start = self._eval_count
         self._alloc_expected = event.eval_expected
@@ -777,17 +796,21 @@ class RichSearchDisplay:
         # Print allocation completion summary
         self._print_allocation_complete(event)
 
-        # Add to leaderboard if valid result
-        if event.score is not None and event.assignments is not None:
+        # Add ALL placements from this allocation to leaderboard
+        for assignments, score in event.top_placements:
             entry = LeaderboardEntry(
-                score=event.score,
+                score=score,
                 cost=event.allocation_cost,
                 allocation=event.allocation,
-                assignments=event.assignments,
+                assignments=assignments,
             )
             self._leaderboard.append(entry)
-            # Sort by score descending
-            self._leaderboard.sort(key=lambda e: e.score, reverse=True)
+
+        # Sort globally by score descending
+        self._leaderboard.sort(key=lambda e: e.score, reverse=True)
+
+        # Trim to bound memory (keep top 50)
+        self._leaderboard = self._leaderboard[:50]
 
         # Clear phases for next allocation
         self._completed_phases = []
@@ -796,8 +819,47 @@ class RichSearchDisplay:
 
         self._update_live()
 
-    def on_phase_started(self, event: PhaseStartedEvent) -> None:
-        """Handle phase started event."""
+    # =========================================================================
+    # Global best tracking event handlers (all strategies)
+    # =========================================================================
+
+    def on_best_updated(self, event: "BestUpdatedEvent") -> None:
+        """Handle best updated event (no-op, leaderboard tracks results)."""
+        del event  # Unused - leaderboard tracks results via on_allocation_completed
+
+    def on_bounds_updated(self, event: BoundsUpdatedEvent) -> None:
+        """Handle bounds refinement during search.
+
+        Updates the progress bar to reflect more accurate bounds as
+        search progresses and actual eval counts replace estimates.
+        """
+        self._eval_lower_bound = event.new_lower
+        self._eval_upper_bound = event.new_upper
+        self._update_live()
+
+    def on_search_completed(self, event: SearchCompletedEvent) -> None:
+        """Handle search completed event."""
+        self._eval_count = event.total_evaluations
+
+        # Print search completion summary
+        self._print_search_complete(event)
+
+        self._update_live()
+
+    def on_eval_completed(self, eval_count: int) -> None:
+        """Handle evaluation completed - throttled to avoid flicker."""
+        self._eval_count = eval_count
+        # Only update display every N evals
+        if eval_count - self._last_eval_update >= self._EVAL_UPDATE_INTERVAL:
+            self._last_eval_update = eval_count
+            self._update_live()
+
+    # =========================================================================
+    # Hierarchical beam search event handlers
+    # =========================================================================
+
+    def on_beam_phase_started(self, event: BeamPhaseStartedEvent) -> None:
+        """Handle beam phase started event."""
         # Create new current phase for nested panel display
         self._current_phase = PhaseData(
             phase_index=event.phase_index,
@@ -819,13 +881,14 @@ class RichSearchDisplay:
         self._current_step_content = f"[dim]evaluating 0/{event.num_candidates}...[/dim]"
         self._update_live()
 
-    def on_candidate_evaluated(self, event: CandidateEvaluatedEvent) -> None:
+    def on_beam_candidate_evaluated(self, event: BeamCandidateEvaluatedEvent) -> None:
         """Handle individual candidate result - stream into display."""
         # Accumulate result
         self._step_results.append({
             "layer": event.layer,
             "score": event.score,
-            "parent_idx": event.parent_idx,
+            "id": event.id,
+            "parent_id": event.parent_id,
         })
 
         # Sort by score to find current best
@@ -865,10 +928,10 @@ class RichSearchDisplay:
 
         self._update_live()
 
-    def on_phase_completed(self, event: PhaseCompletedEvent) -> None:
-        """Handle phase completed event."""
+    def on_beam_phase_completed(self, event: BeamPhaseCompletedEvent) -> None:
+        """Handle beam phase completed event."""
         if self._current_phase is not None:
-            # Use building block for consistent formatting
+            # Use formatter for consistent formatting
             assignment_str = self._format_layer_assignment(
                 event.mixer_name, event.final_layers, max_show=10, escape_brackets=True
             )
@@ -883,33 +946,124 @@ class RichSearchDisplay:
 
         self._update_live()
 
-    def on_best_updated(self, event: "BestUpdatedEvent") -> None:
-        """Handle best updated event (no-op, leaderboard tracks results)."""
-        del event  # Unused - leaderboard tracks results via on_allocation_completed
+    # =========================================================================
+    # Swap-beam search event handlers
+    # =========================================================================
 
-    def on_search_completed(self, event: SearchCompletedEvent) -> None:
-        """Handle search completed event."""
-        self._eval_count = event.total_evaluations
+    def on_swap_beam_iteration_started(
+        self, event: SwapBeamIterationStartedEvent
+    ) -> None:
+        """Handle swap-beam iteration started - initialize iteration tracking."""
+        self._active_strategy = "swap_beam"
+        self._swap_beam_current_iteration = event.iteration
+        self._swap_beam_max_iterations = event.max_iterations
+        self._swap_beam_total_evals = event.num_candidates
+        self._swap_beam_eval_count = 0
 
-        # Print search completion summary
-        self._print_search_complete(event)
+        # Set initial best score from beam if available
+        if event.beam:
+            self._swap_beam_best_score = event.beam[0].score
 
         self._update_live()
 
-    def on_eval_completed(self, eval_count: int) -> None:
-        """Handle evaluation completed - throttled to avoid flicker."""
-        self._eval_count = eval_count
-        # Only update display every N evals
-        if eval_count - self._last_eval_update >= self._EVAL_UPDATE_INTERVAL:
-            self._last_eval_update = eval_count
+    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
+        """Handle swap evaluated - track progress and best score."""
+        self._swap_beam_eval_count = event.eval_index
+
+        # Track best score seen
+        if self._swap_beam_best_score is None or event.score > self._swap_beam_best_score:
+            self._swap_beam_best_score = event.score
+
+        # Throttle updates
+        if event.eval_index % self._EVAL_UPDATE_INTERVAL == 0:
             self._update_live()
 
-    def on_bounds_updated(self, event: BoundsUpdatedEvent) -> None:
-        """Handle bounds refinement during search.
+    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
+        """Handle swap-beam iteration completed - add to history and print summary."""
+        # Get best score for this iteration
+        best_score = event.best_candidate.score if event.best_candidate else None
 
-        Updates the progress bar to reflect more accurate bounds as
-        search progresses and actual eval counts replace estimates.
-        """
-        self._eval_lower_bound = event.new_lower
-        self._eval_upper_bound = event.new_upper
+        # Add to history
+        iter_data = SwapBeamIterationData(
+            iteration=event.iteration,
+            max_iterations=event.max_iterations,
+            num_tried=len(event.tried),
+            best_score=best_score,
+            improved=event.improved,
+            converged=event.converged,
+        )
+        self._swap_beam_iterations.append(iter_data)
+
+        # Print permanent summary line
+        if event.iteration > 0:  # Skip iteration 0 (initial eval)
+            if event.converged:
+                status = "[green]✓ converged[/green]"
+            elif event.improved:
+                status = "[green]✓ improved[/green]"
+            else:
+                status = "[dim]no improvement[/dim]"
+
+            score_str = f"{best_score:.4g}" if best_score else "N/A"
+            self._console.print(
+                f"  [cyan]Iter {event.iteration}[/cyan]: {status} → {score_str}"
+            )
+
+        # Reset for next iteration
+        self._swap_beam_eval_count = 0
+        self._swap_beam_total_evals = 0
+
+        self._update_live()
+
+    # =========================================================================
+    # Annealing search event handlers
+    # =========================================================================
+
+    def on_annealing_step(self, event: AnnealingStepEvent) -> None:
+        """Handle annealing step - track temperature and acceptance."""
+        self._active_strategy = "annealing"
+        self._annealing_current_step = event.step
+        self._annealing_max_steps = event.max_steps
+        self._annealing_temperature = event.temperature
+        self._annealing_best_score = event.best_score
+
+        if event.accepted:
+            self._annealing_acceptance_count += 1
+
+        # Sample steps for history (every 10% of total)
+        sample_interval = max(1, event.max_steps // 10)
+        if event.step % sample_interval == 0:
+            self._annealing_steps.append(
+                AnnealingStepSample(
+                    step=event.step,
+                    temperature=event.temperature,
+                    best_score=event.best_score,
+                    accepted=event.accepted,
+                    delta=event.delta,
+                )
+            )
+
+        # Throttle display updates
+        if event.step % self._EVAL_UPDATE_INTERVAL == 0:
+            self._update_live()
+
+    def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
+        """Handle annealing completed - print summary."""
+        accept_rate = (
+            self._annealing_acceptance_count / event.steps_taken * 100
+            if event.steps_taken > 0
+            else 0
+        )
+
+        self._console.print(
+            f"  [magenta]Annealing[/magenta] ({event.termination_reason}): "
+            f"{event.steps_taken} steps, {accept_rate:.0f}% accepted → "
+            f"[green]{event.best_score:.4g}[/green]"
+        )
+
+        # Reset state for next allocation
+        self._annealing_steps = []
+        self._annealing_acceptance_count = 0
+        self._annealing_current_step = 0
+        self._annealing_max_steps = 0
+
         self._update_live()

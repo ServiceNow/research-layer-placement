@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -26,15 +26,15 @@ class BaseSearchStrategyConfig(BaseModel):
 
     def create_search_strategy(
         self,
-        observer: "SearchObserver | None" = None,
+        observers: "Sequence[SearchObserver]" = (),
         progress_estimator: "SearchProgressEstimator | None" = None,
     ) -> "BaseSearchStrategy":
         """Smart constructor: instantiate search strategy from config.
 
         Args:
-            observer: Optional observer to receive progress events during search.
-                If provided but the strategy doesn't support observers,
-                raises NotImplementedError.
+            observers: Sequence of observers to receive progress events during
+                search. If any observers are provided but the strategy doesn't
+                support them, raises NotImplementedError.
             progress_estimator: Optional progress estimator for tracking search
                 progress and refining bounds as allocations complete.
 
@@ -42,11 +42,11 @@ class BaseSearchStrategyConfig(BaseModel):
             Instantiated search strategy.
 
         Raises:
-            NotImplementedError: If observer is provided but the strategy doesn't
-                support progress events.
+            NotImplementedError: If observers are provided but the strategy
+                doesn't support progress events.
         """
         return self._impl_class(
-            config=self, observer=observer, progress_estimator=progress_estimator
+            config=self, observers=observers, progress_estimator=progress_estimator
         )
 
     def create_progress_estimator(

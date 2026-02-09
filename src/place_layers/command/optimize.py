@@ -15,6 +15,7 @@ from place_layers.evaluator import EvaluatorConfig
 from place_layers.problem import ProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.search_strategy import SearchStrategyConfig
+from place_layers.search_strategy.progress import ObserversConfig
 
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,6 @@ class OptimizeCommand(BaseCommand):
 
     async def run(self) -> None:
         """Execute optimization."""
-        from place_layers.search_strategy.progress import RichSearchDisplay
-
         # Get output directory from Hydra's runtime config
         hydra_cfg = HydraConfig.get()
         output_dir = Path(hydra_cfg.runtime.output_dir)
@@ -46,9 +45,10 @@ class OptimizeCommand(BaseCommand):
                 problem
             )
 
-            with RichSearchDisplay() as display:
+            # Create observers from config (context manager handles lifecycle)
+            with self.config.observers.create_observers() as observers:
                 search_strategy = self.config.search_strategy.create_search_strategy(
-                    observer=display,
+                    observers=observers,
                     progress_estimator=progress_estimator,
                 )
                 result = await search_strategy.search(
@@ -82,6 +82,10 @@ class OptimizeCommandConfig(BaseCommandConfig):
 
     result_handler: ResultHandlerConfig = Field(
         description="Result handler configuration"
+    )
+
+    observers: ObserversConfig = Field(
+        description="Search progress observers (display + logging)"
     )
 
     dry_run: bool = Field(

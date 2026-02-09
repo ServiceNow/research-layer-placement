@@ -1,0 +1,7 @@
+# @package observers
+# Layermap letters preset: ASCII layermap with letter characters + JSONL disk logging
+
+defaults:
+  - /observer@display: layermap_letters
+  - /observer@log.disk: disk
+  - _self_

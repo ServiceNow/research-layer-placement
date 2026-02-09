@@ -1,0 +1,6 @@
+# @package _group_
+# Layermap ASCII visualization with block characters
+# Shows layer placements as animated character grids
+
+observer_type: layermap
+char_style: blocks
