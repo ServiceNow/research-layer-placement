@@ -118,25 +118,25 @@ class EvaluatorInstances[ParametersT]:
         self.aggregation = aggregation
         self._stack = stack
 
-        # Cache properties from first evaluator
-        first_evaluator = next(iter(evaluators.values()))
-        self._num_layers = first_evaluator.num_layers
-        self._mixer_names = first_evaluator.mixer_names
+        # Properties are lazily accessed from first evaluator
+        # (can't cache in __init__ because evaluators haven't entered context yet)
 
     @property
     def num_layers(self) -> int:
         """Number of layers in the model (from first evaluator)."""
-        return self._num_layers
+        first_evaluator = next(iter(self.evaluators.values()))
+        return first_evaluator.num_layers
 
     @property
     def mixer_names(self) -> frozenset[str]:
         """Available mixer types (from first evaluator)."""
-        return self._mixer_names
+        first_evaluator = next(iter(self.evaluators.values()))
+        return first_evaluator.mixer_names
 
     @property
     def num_mixers(self) -> int:
         """Number of mixer types."""
-        return len(self._mixer_names)
+        return len(self.mixer_names)
 
     async def evaluate(self, parameters: ParametersT) -> float:
         """Evaluate parameters using all evaluators and aggregate.
