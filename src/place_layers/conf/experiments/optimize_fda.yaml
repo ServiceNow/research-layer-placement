@@ -1,0 +1,24 @@
+# @package _global_
+# Cost-constrained layer placement optimization on MMLU
+#
+# Optimizes layer placement for Apriel supernet models using likelihood-based
+# evaluation on FDA. Uses hierarchical beam search for deterministic, efficient search.
+#
+# Usage:
+#   python -m place_layers +experiments=optimize_fda +model=apriel2_0_5b_dev
+
+defaults:
+  - /command: optimize
+  - /evaluator: extraction
+  - /generation: extraction
+  - /backend: rest
+  - /task: fda_optimize
+  - /problem: cost_apriel_0_5b
+  - /search_strategy: cost_constrained_hierarchical
+  - /result_handler: json
+  - _self_
+
+# Quick search settings (override for thorough search)
+search_strategy:
+  max_allocations: 10  # Start small
+  beam_width: 3
