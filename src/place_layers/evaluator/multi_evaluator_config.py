@@ -62,7 +62,7 @@ Code usage:
 
 from __future__ import annotations
 
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
@@ -70,9 +70,10 @@ from typing import TYPE_CHECKING, AsyncGenerator, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+# Import at runtime for Pydantic (no circular import - this module isn't imported by evaluator/__init__.py)
+from place_layers.evaluator import EvaluatorConfig
 
 if TYPE_CHECKING:
-    from place_layers.evaluator import EvaluatorConfig
     from place_layers.evaluator.base_evaluator import BaseEvaluator
 
 
@@ -102,7 +103,7 @@ class EvaluatorInstances[ParametersT]:
         evaluators: Dict of named evaluators
         weights: Dict of weights for each evaluator (for weighted_average)
         aggregation: Strategy for combining scores
-        _stack: ExitStack managing evaluator lifecycles
+        _stack: AsyncExitStack managing evaluator lifecycles
     """
 
     def __init__(
@@ -110,7 +111,7 @@ class EvaluatorInstances[ParametersT]:
         evaluators: dict[str, BaseEvaluator[ParametersT]],
         weights: dict[str, float],
         aggregation: AggregationStrategy,
-        stack: ExitStack,
+        stack: AsyncExitStack,
     ) -> None:
         self.evaluators = evaluators
         self.weights = weights
@@ -228,7 +229,7 @@ class EvaluatorsConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    evaluators_dict: dict[str, "EvaluatorConfig"] = Field(
+    evaluators_dict: dict[str, EvaluatorConfig] = Field(
         description="Dict of named evaluator configurations"
     )
 
@@ -302,7 +303,7 @@ class EvaluatorsConfig(BaseModel):
                     individual_score = await evaluator.evaluate(placement)
                     logger.info(f"{name}: {individual_score:.4f}")
         """
-        async with ExitStack() as stack:
+        async with AsyncExitStack() as stack:
             # Create output directories
             evals_dir = output_dir / "evals"
             evals_dir.mkdir(parents=True, exist_ok=True)
