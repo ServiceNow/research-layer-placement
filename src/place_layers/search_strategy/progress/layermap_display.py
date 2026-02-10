@@ -584,23 +584,48 @@ class LayermapDisplay(PlacementFormatterMixin):
         return result
 
     def _render_leaderboard(self) -> Panel:
-        """Render the leaderboard table."""
+        """Render the unified summary + leaderboard panel."""
+        components = []
+
+        # Summary stats
+        if self._leaderboard:
+            best = self._leaderboard[0]
+            summary = Table.grid(padding=(0, 2))
+            summary.add_column(style="bold")
+            summary.add_column(style="green")
+
+            summary.add_row("Best score", f"{best.score:.4g}")
+            summary.add_row("Best cost", f"{best.cost:.4g}")
+            summary.add_row("Evaluations", f"{self._eval_count:,}")
+            summary.add_row("Allocations explored", str(self._allocation_index))
+
+            components.append(summary)
+            components.append(Text())  # Spacer
+
+        # Leaderboard table
         table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
         table.add_column("#", justify="right", style="dim")
         table.add_column("Score", justify="right", style="green")
         table.add_column("Cost", justify="right")
         table.add_column("Allocation")
+        table.add_column("Placement")
 
-        for i, entry in enumerate(self._leaderboard[:5], 1):  # Top 5
+        for i, entry in enumerate(self._leaderboard[:5], 1):
             alloc_str = self._format_allocation(entry.allocation)
+            viz = Text()
+            for mixer in entry.assignments:
+                viz.append_text(self._render_layer(mixer, is_evaluating=False))
             table.add_row(
                 str(i),
-                f"{entry.score:.4f}",
-                f"{entry.cost:.4f}",
+                f"{entry.score:.4g}",
+                f"{entry.cost:.4g}",
                 alloc_str,
+                viz,
             )
 
-        return Panel(table, title="[bold]Leaderboard[/bold]", border_style="green")
+        components.append(table)
+
+        return Panel(Group(*components), title="[bold]Leaderboard[/bold]", border_style="green")
 
     def _render_progress(self) -> Group:
         """Render the dual progress bars (overall and per-allocation)."""
@@ -731,56 +756,12 @@ class LayermapDisplay(PlacementFormatterMixin):
 
     def _print_search_complete(self, event: SearchCompletedEvent) -> None:
         """Print search completion summary."""
-        # Summary table
-        summary = Table.grid(padding=(0, 2))
-        summary.add_column(style="bold")
-        summary.add_column(style="green" if event.best_score else "")
+        # Update final counts from event
+        self._eval_count = event.total_evaluations
+        self._allocation_index = event.allocations_explored
 
-        summary.add_row("Best score", f"{event.best_score:.4f}")
-        summary.add_row("Best cost", f"{event.best_cost:.4f}")
-        summary.add_row("Evaluations", f"{event.total_evaluations:,}")
-        summary.add_row("Allocations explored", str(event.allocations_explored))
-
-        # Leaderboard with layermap viz
-        if self._leaderboard:
-            leaderboard_table = Table(
-                show_header=True,
-                header_style="bold",
-                box=None,
-                padding=(0, 1),
-            )
-            leaderboard_table.add_column("#", justify="right", style="dim")
-            leaderboard_table.add_column("Score", justify="right", style="green")
-            leaderboard_table.add_column("Cost", justify="right")
-            leaderboard_table.add_column("Placement")
-
-            for i, entry in enumerate(self._leaderboard, 1):
-                # Build layermap visualization
-                viz = Text()
-                for mixer in entry.assignments:
-                    viz.append_text(self._render_layer(mixer, is_evaluating=False))
-
-                leaderboard_table.add_row(
-                    str(i),
-                    f"{entry.score:.4f}",
-                    f"{entry.cost:.4f}",
-                    viz,
-                )
-
-            content = Group(
-                summary,
-                Text(),
-                Text("Final Leaderboard:", style="bold"),
-                leaderboard_table,
-            )
-        else:
-            content = summary
-
-        panel = Panel(
-            content,
-            title="[bold green]Search Complete[/bold green]",
-            border_style="green",
-        )
+        # Reuse the unified leaderboard render
+        panel = self._render_leaderboard()
         self._console.print()
         self._console.print(panel)
 
