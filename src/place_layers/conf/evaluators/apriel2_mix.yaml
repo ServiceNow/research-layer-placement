@@ -1,0 +1,43 @@
+# @package evaluators
+# Multi-evaluator config for Apriel2 optimization
+# Combines MMLU (likelihood), FDA (generative extraction), and SWDE (generative extraction)
+
+defaults:
+  - /task@_mmlu_task: mmlu_optimize
+  - /task@_fda_task: fda_optimize
+  - /task@_swde_task: swde_optimize
+
+evaluators_dict:
+  mmlu:
+    evaluator_type: likelihood
+    backend: ${backend}
+    tasks: ${_mmlu_task.tasks}
+    num_fewshot: ${_mmlu_task.num_fewshot}
+    max_problems_per_task: ${_mmlu_task.max_problems_per_task}
+    split: ${_mmlu_task.split}
+    use_chat_template: true
+
+  fda:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${_fda_task.tasks}
+    generation: ${generation}
+    num_fewshot: ${_fda_task.num_fewshot}
+    max_problems_per_task: ${_fda_task.max_problems_per_task}
+    split: ${_fda_task.split}
+
+  swde:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${_swde_task.tasks}
+    generation: ${generation}
+    num_fewshot: ${_swde_task.num_fewshot}
+    max_problems_per_task: ${_swde_task.max_problems_per_task}
+    split: ${_swde_task.split}
+
+weights:
+  mmlu: 0.33
+  fda: 0.33
+  swde: 0.34
+
+aggregation: weighted_average
