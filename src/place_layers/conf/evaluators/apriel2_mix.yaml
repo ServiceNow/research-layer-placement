@@ -19,19 +19,31 @@ evaluators_dict:
     evaluator_type: generative
     backend: ${backend}
     tasks: ${_fda_task.tasks}
-    generation: ${generation}
     num_fewshot: ${_fda_task.num_fewshot}
     max_problems_per_task: ${_fda_task.max_problems_per_task}
     split: ${_fda_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: true
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
   swde:
     evaluator_type: generative
     backend: ${backend}
     tasks: ${_swde_task.tasks}
-    generation: ${generation}
     num_fewshot: ${_swde_task.num_fewshot}
     max_problems_per_task: ${_swde_task.max_problems_per_task}
     split: ${_swde_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: true
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
 weights:
   mmlu: 0.33
