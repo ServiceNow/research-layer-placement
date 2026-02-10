@@ -1,0 +1,12 @@
+# @package evaluators
+# Single evaluator example (backwards compatible with old 'evaluator' field)
+
+evaluators_dict:
+  gsm8k:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${task.tasks}
+    generation: ${generation}
+
+# Weights and aggregation are optional for single evaluator
+# Default: uniform weights (1.0) with weighted_average (which is just the score)
