@@ -1,11 +1,9 @@
 # @package evaluators
 # Multi-evaluator config for Apriel2 optimization
 # Combines MMLU (likelihood), FDA (generative extraction), and SWDE (generative extraction)
-
-defaults:
-  - /task@_mmlu_task: mmlu_optimize
-  - /task@_fda_task: fda_optimize
-  - /task@_swde_task: swde_optimize
+#
+# Note: This config expects _mmlu_task, _fda_task, _swde_task to be loaded
+# at the global level by the experiment config.
 
 evaluators_dict:
   mmlu:
