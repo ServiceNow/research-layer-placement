@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -62,11 +63,16 @@ class OptimizeCommand(BaseCommand):
             if result is None:
                 return
 
-            # Optionally log individual evaluator scores for best result
+            # Optionally log individual evaluator scores for best result (in parallel)
             if len(evaluator_instances.evaluators) > 1 and result.best_placement is not None:
                 logger.info("Best result breakdown:")
-                for name, evaluator in evaluator_instances.evaluators.items():
-                    score = await evaluator.evaluate(result.best_placement)
+                evaluator_tasks = [
+                    evaluator.evaluate(result.best_placement)
+                    for evaluator in evaluator_instances.evaluators.values()
+                ]
+                scores = await asyncio.gather(*evaluator_tasks)
+
+                for name, score in zip(evaluator_instances.evaluators.keys(), scores):
                     logger.info(f"  {name}: {score:.6f}")
 
             result_handler = self.config.result_handler.create_result_handler()

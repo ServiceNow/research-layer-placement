@@ -20,6 +20,7 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -78,13 +79,22 @@ class EvaluateCommand(BaseCommand):
             first_evaluator = next(iter(evaluator_instances.evaluators.values()))
             resolved = resolve_placement(self.config.placement, first_evaluator)
 
-            # Evaluate with all evaluators
-            individual_scores = {}
-            for name, evaluator in evaluator_instances.evaluators.items():
-                logger.info(f"Evaluating with '{name}'...")
-                individual_score = await evaluator.evaluate(resolved.placement)
-                logger.info(f"  {name}: {individual_score:.6f}")
-                individual_scores[name] = individual_score
+            # Evaluate with all evaluators in parallel
+            logger.info(
+                f"Evaluating with {len(evaluator_instances.evaluators)} "
+                f"evaluator(s) in parallel..."
+            )
+            evaluator_tasks = [
+                evaluator.evaluate(resolved.placement)
+                for evaluator in evaluator_instances.evaluators.values()
+            ]
+            scores = await asyncio.gather(*evaluator_tasks)
+
+            individual_scores = dict(
+                zip(evaluator_instances.evaluators.keys(), scores)
+            )
+            for name, score in individual_scores.items():
+                logger.info(f"  {name}: {score:.6f}")
 
             # Aggregate scores
             aggregated_score = evaluator_instances._aggregate_scores(individual_scores)
