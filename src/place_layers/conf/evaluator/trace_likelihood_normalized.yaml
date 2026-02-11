@@ -1,0 +1,32 @@
+# @package evaluator
+# Trace-based likelihood evaluator with linear normalization
+#
+# This config demonstrates using linear normalization to map raw log-likelihoods
+# to the [0, 1] range for interpretability and multi-objective optimization.
+#
+# The normalization bounds (low, high) should be set based on empirical data:
+#   - low: Expected worst-case log-likelihood (maps to 0.0)
+#   - high: Expected best-case log-likelihood (maps to 1.0)
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=trace_likelihood_normalized \
+#       +backend=transformers +model=apriel2_0_5b_dev \
+#       evaluator.normalization.low=-1000 evaluator.normalization.high=-100
+
+evaluator_type: trace_likelihood
+
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
+
+# Trace sources - list of directories containing JSONL trace files
+trace_sources:
+  - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
+
+# Optional per-task weights
+task_weights: null
+
+# Linear normalization: map [low, high] to [0, 1]
+normalization:
+  type: linear
+  low: -1000.0   # Baseline log-likelihood (worst expected performance)
+  high: -100.0   # Target log-likelihood (best expected performance)
