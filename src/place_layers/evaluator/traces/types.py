@@ -406,6 +406,16 @@ class TraceDataset(BaseModel):
             from collections import Counter
 
             problem_trace_counts = Counter(t.problem_id for t in all_traces)
+            unique_counts = set(problem_trace_counts.values())
+
+            if len(unique_counts) > 1:
+                # Different problems have different trace counts
+                counts_summary = dict(Counter(problem_trace_counts.values()).most_common())
+                logger.warning(
+                    f"Problems have varying trace counts: {counts_summary}. "
+                    f"Using most common count as samples_per_problem."
+                )
+
             # Use the most common count (mode)
             samples_per_problem = problem_trace_counts.most_common(1)[0][1]
             logger.info(
