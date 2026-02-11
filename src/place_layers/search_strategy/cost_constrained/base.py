@@ -24,6 +24,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
+    from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -70,6 +71,28 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self.config: BaseCostConstrainedConfig
         self._progress_estimator = progress_estimator
         self.eval_count = 0
+
+    async def _evaluate_with_details(
+        self, problem: CostConstrainedProblem, placement: LayerPlacement
+    ) -> tuple[float, dict[str, float] | None]:
+        """Evaluate placement and return both aggregated and auxiliary scores.
+
+        Args:
+            problem: The optimization problem
+            placement: The placement to evaluate
+
+        Returns:
+            Tuple of (aggregated_score, auxiliary_scores_dict)
+            auxiliary_scores_dict is None if not using multi-evaluator
+        """
+        from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+
+        # Check if using multi-evaluator
+        if isinstance(problem.evaluator, EvaluatorInstances):
+            return await problem.evaluator.evaluate_with_details(placement)
+        else:
+            score = await problem.evaluator.evaluate(placement)
+            return score, None
 
     @overload
     async def search(
@@ -335,6 +358,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         else None
                     ),
                     top_placements=top_placements,
+                    auxiliary_scores=(
+                        best_in_allocation.auxiliary_scores
+                        if best_in_allocation is not None
+                        else None
+                    ),
                 )
                 for observer in self.observers:
                     observer.on_allocation_completed(event)
@@ -365,6 +393,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
+                        auxiliary_scores=best_in_allocation.auxiliary_scores,
                     )
                     for observer in self.observers:
                         observer.on_best_updated(event)
@@ -381,12 +410,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             min_alloc = cost_model.min_cost_allocation(num_layers)
             assignments = self._allocation_to_assignment(min_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            score, auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=min_alloc,
                 score=score,
+                auxiliary_scores=auxiliary,
             )
 
         return self._create_result(
@@ -532,6 +562,11 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         else None
                     ),
                     top_placements=top_placements,
+                    auxiliary_scores=(
+                        best_in_allocation.auxiliary_scores
+                        if best_in_allocation is not None
+                        else None
+                    ),
                 )
                 for observer in self.observers:
                     observer.on_allocation_completed(event)
@@ -563,6 +598,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                         cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
+                        auxiliary_scores=best_in_allocation.auxiliary_scores,
                     )
                     for observer in self.observers:
                         observer.on_best_updated(event)
@@ -588,12 +624,13 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             max_alloc = cost_model.max_cost_allocation(num_layers)
             assignments = self._allocation_to_assignment(max_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            score, auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=max_alloc,
                 score=score,
+                auxiliary_scores=auxiliary,
             )
             logger.warning(
                 f"No allocation met performance target {performance_target}. "

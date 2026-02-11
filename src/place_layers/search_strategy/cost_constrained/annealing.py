@@ -94,7 +94,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            score, auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
 
             # Notify observers
@@ -118,13 +118,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                     assignments=tuple(assignments),
                     allocation=allocation,
                     score=score,
+                    auxiliary_scores=auxiliary,
                 )
             ]
 
         # Initialize with canonical assignment
         current = list(self._allocation_to_assignment(allocation, num_layers))
         placement = LayerPlacement(assignments=tuple(current))
-        current_score = await problem.evaluate(placement)
+        current_score, current_auxiliary = await self._evaluate_with_details(problem, placement)
         self.eval_count += 1
 
         # Notify observers
@@ -133,6 +134,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
 
         best = current.copy()
         best_score = current_score
+        best_auxiliary = current_auxiliary
 
         # Initialize temperature
         temperature = self.config.initial_temperature
@@ -154,7 +156,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
 
             # Evaluate
             placement = LayerPlacement(assignments=tuple(proposed))
-            proposed_score = await problem.evaluate(placement)
+            proposed_score, proposed_auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
 
             # Notify observers
@@ -178,9 +180,11 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             if accepted:
                 current = proposed
                 current_score = proposed_score
+                current_auxiliary = proposed_auxiliary
                 if proposed_score > best_score:
                     best = current.copy()
                     best_score = proposed_score
+                    best_auxiliary = proposed_auxiliary
 
             steps_taken = step + 1
 
@@ -229,6 +233,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                 assignments=tuple(best),
                 allocation=allocation,
                 score=best_score,
+                auxiliary_scores=best_auxiliary,
             )
         ]
 

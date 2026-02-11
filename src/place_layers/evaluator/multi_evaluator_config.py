@@ -155,6 +155,31 @@ class EvaluatorInstances[ParametersT]:
         # Aggregate based on strategy
         return self._aggregate_scores(scores)
 
+    async def evaluate_with_details(
+        self, parameters: ParametersT
+    ) -> tuple[float, dict[str, float] | None]:
+        """Evaluate parameters and return both aggregated and individual scores.
+
+        Args:
+            parameters: Parameters to evaluate
+
+        Returns:
+            Tuple of (aggregated_score, auxiliary_scores_dict).
+            If only one evaluator, auxiliary_scores_dict is None.
+        """
+        # Evaluate with all evaluators
+        scores = {}
+        for name, evaluator in self.evaluators.items():
+            scores[name] = await evaluator.evaluate(parameters)
+
+        # Aggregate based on strategy
+        aggregated = self._aggregate_scores(scores)
+
+        # Return individual scores only if there are multiple evaluators
+        auxiliary = scores if len(scores) > 1 else None
+
+        return aggregated, auxiliary
+
     async def evaluate_batch(self, parameters_list: list[ParametersT]) -> list[float]:
         """Evaluate multiple parameter settings in batch.
 

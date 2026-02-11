@@ -238,6 +238,8 @@ class AllocationCompletedEvent(BaseModel):
     # All top placements from this allocation (sorted by score descending)
     # Each entry is (assignments, score)
     top_placements: tuple[tuple[tuple[str, ...], float], ...] = ()
+    # Individual scores from auxiliary evaluators (if multi-evaluator mode)
+    auxiliary_scores: dict[str, float] | None = None
 
 
 class BestUpdatedEvent(BaseModel):
@@ -250,6 +252,7 @@ class BestUpdatedEvent(BaseModel):
     cost: float
     allocation: dict[str, int]
     assignments: tuple[str, ...]
+    auxiliary_scores: dict[str, float] | None = None
 
 
 class BoundsUpdatedEvent(BaseModel):
