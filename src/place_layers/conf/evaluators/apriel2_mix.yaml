@@ -1,6 +1,7 @@
 # @package evaluators
 # Multi-evaluator config for Apriel2 optimization
-# Combines MMLU (likelihood), FDA (generative extraction), and SWDE (generative extraction)
+# Combines MMLU (likelihood), FDA (generative extraction), SWDE (generative extraction),
+# and importance-weighted evaluation from precomputed traces
 #
 # Note: This config expects _mmlu_task, _fda_task, _swde_task to be loaded
 # at the global level by the experiment config.
@@ -45,9 +46,23 @@ evaluators_dict:
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
+  importance_weighted:
+    evaluator_type: importance_weighted
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - ${oc.env:TRACE_PATH,/workspace/outputs/traces}
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    # Importance sampling clipping for numerical stability
+    weight_clip_min: 1e-300
+    weight_clip_max: 1e300
+
 weights:
-  mmlu: 0.33
-  fda: 0.33
-  swde: 0.34
+  mmlu: 0.25
+  fda: 0.25
+  swde: 0.25
+  importance_weighted: 0.25
 
 aggregation: weighted_average
