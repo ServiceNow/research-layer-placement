@@ -129,16 +129,19 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                 )
             ]
 
-        # Multi-start SA
+        # Multi-start SA — distribute remainder steps across early restarts
         num_restarts = self.config.num_restarts
-        steps_per_restart = max_steps // num_restarts
+        base_steps, remainder = divmod(max_steps, num_restarts)
 
         best_entry: BeamEntry | None = None
         best_restart = 0
         total_reheats = 0
         total_steps = 0
+        last_final_temp = self.config.initial_temperature
+        any_early = False
 
         for restart in range(num_restarts):
+            steps_this_restart = base_steps + (1 if restart < remainder else 0)
             initial = self._random_initial_assignment(allocation, num_layers)
 
             # Emit restart event
@@ -146,22 +149,25 @@ class AnnealingSearch(BaseCostConstrainedSearch):
                 restart_event = AnnealingRestartEvent(
                     restart_index=restart,
                     num_restarts=num_restarts,
-                    steps_budget=steps_per_restart,
+                    steps_budget=steps_this_restart,
                     initial_assignments=tuple(initial),
                 )
                 for observer in self.observers:
                     observer.on_annealing_restart(restart_event)
 
-            entry, reheats, steps_taken = await self._run_sa_trajectory(
+            entry, reheats, steps_taken, final_temp = await self._run_sa_trajectory(
                 problem=problem,
                 allocation=allocation,
                 initial=initial,
-                max_steps=steps_per_restart,
+                max_steps=steps_this_restart,
                 num_layers=num_layers,
                 restart_index=restart,
             )
             total_reheats += reheats
             total_steps += steps_taken
+            last_final_temp = final_temp
+            if steps_taken < steps_this_restart:
+                any_early = True
 
             if best_entry is None or entry.score > best_entry.score:  # type: ignore[operator]
                 best_entry = entry
@@ -169,10 +175,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
 
         # Emit completed event
         if self.observers and best_entry is not None:
+            if any_early:
+                termination_reason = "min_temperature"
+            else:
+                termination_reason = "max_steps"
             event = AnnealingCompletedEvent(
                 steps_taken=total_steps,
-                final_temperature=self.config.min_temperature,
-                termination_reason="max_steps",
+                final_temperature=last_final_temp,
+                termination_reason=termination_reason,
                 best_assignments=best_entry.assignments,
                 best_score=best_entry.score,  # type: ignore[arg-type]
                 restarts_completed=num_restarts,
@@ -192,12 +202,12 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         max_steps: int,
         num_layers: int,
         restart_index: int,
-    ) -> tuple[BeamEntry, int, int]:
+    ) -> tuple[BeamEntry, int, int, float]:
         """
         Run a single SA trajectory from an initial assignment.
 
         Returns:
-            Tuple of (best_entry, reheats_count, steps_taken).
+            Tuple of (best_entry, reheats_count, steps_taken, final_temperature).
         """
         from place_layers.search_strategy.progress.events import (
             AnnealingReheatEvent,
@@ -225,14 +235,14 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         accept_window: deque[bool] = deque(maxlen=self.config.reheat_window)
 
         for step in range(max_steps):
-            # Sample perturbation size
-            k = self._sample_perturbation_size(num_layers, temperature)
-
-            # Generate move
-            proposed, move_type = self._generate_move(current, k)
-
-            # No-op detection: if proposed == current, skip evaluation
-            if proposed == current:
+            # Sample perturbation size, resample on no-ops
+            for _attempt in range(5):
+                k = self._sample_perturbation_size(num_layers, temperature)
+                proposed, move_type = self._generate_move(current, k)
+                if proposed != current:
+                    break
+            else:
+                # All attempts were no-ops, skip this step
                 steps_taken = step + 1
                 temperature *= self.config.cooling_rate
                 if temperature < self.config.min_temperature:
@@ -330,6 +340,7 @@ class AnnealingSearch(BaseCostConstrainedSearch):
             ),
             reheats,
             steps_taken,
+            temperature,
         )
 
     @staticmethod

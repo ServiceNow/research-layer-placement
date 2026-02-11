@@ -35,7 +35,7 @@ class YAMLResultHandler(BaseResultHandler):
 
         data = result.model_dump()
         with output_path.open("w") as f:
-            yaml.dump(
+            yaml.safe_dump(
                 data,
                 f,
                 default_flow_style=self.config.default_flow_style,

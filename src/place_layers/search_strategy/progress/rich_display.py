@@ -1080,6 +1080,7 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_steps = []
         self._annealing_acceptance_count = 0
         self._annealing_current_step = 0
+        self._annealing_last_k = 0
         self._annealing_reheat_count = 0
         if event.restart_index > 0:
             self._console.print(

@@ -114,12 +114,11 @@ class CalibrateSACommand(BaseCommand):
 
         if result is not None:
             # Save using result handler
+            ext = self.config.result_handler.handler_type
             result_handler = self.config.result_handler.create_result_handler()
-            await result_handler.save(result, output_dir / "calibration_results.yaml")
-            logger.info(
-                "Calibration results saved to %s",
-                output_dir / "calibration_results.yaml",
-            )
+            output_path = output_dir / f"calibration_results.{ext}"
+            await result_handler.save(result, output_path)
+            logger.info("Calibration results saved to %s", output_path)
 
     async def _run_calibration(self, evaluator) -> None | CalibrationResult:
         """Run calibration with evaluator."""
@@ -363,7 +362,7 @@ class CalibrateSACommandConfig(BaseCommandConfig):
         lt=1,
     )
     num_samples: int = Field(
-        description="Number of random swaps to sample",
+        description="Number of ruin-and-recreate moves to sample",
         gt=0,
     )
     max_steps: int = Field(

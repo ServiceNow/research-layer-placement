@@ -1089,6 +1089,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_step = 0
         self._annealing_acceptance_count = 0
         self._annealing_reheat_count = 0
+        self._annealing_last_k = 0
         self._annealing_current_placement = event.initial_assignments
         self._annealing_current_score = 0.0
         self._update_live()

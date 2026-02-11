@@ -23,7 +23,7 @@ command: calibrate_sa
 
 # Calibration parameters
 target_acceptance: 0.8  # 80% acceptance of worsening moves (standard literature value)
-num_samples: 200        # Number of random swaps to sample
+num_samples: 200        # Number of ruin-and-recreate moves to sample
 max_steps: 300          # SA steps per allocation (for computing cooling rate)
 min_temperature: 0.001  # Minimum temperature before pure hill-climbing
 seed: 42                # Random seed for reproducibility
