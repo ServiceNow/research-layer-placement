@@ -1,0 +1,31 @@
+# @package _global_
+#
+# Surrogate Exploration Command
+# =============================
+# Builds a dataset of evaluated placements for surrogate model training.
+# Uses adaptive sampling: evaluates batches until surrogate quality plateaus.
+#
+# Usage:
+#   python -m place_layers +command=explore_placements +evaluator=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
+
+defaults:
+  - /result_handler: json
+  - _self_
+
+command: explore_placements
+
+# Adaptive sampling
+min_samples: 1000       # Initial batch before first quality check
+batch_size: 500         # Samples per subsequent batch
+max_samples: 10000      # Hard cap on total evaluations
+
+# Stopping criteria
+target_rank_correlation: 0.7   # Stop when Spearman rho reaches this
+plateau_patience: 3            # Batches without improvement before stopping
+plateau_min_improvement: 0.02  # Minimum rho improvement to count as progress
+cv_folds: 5                    # Cross-validation folds for quality estimation
+
+# Surrogate (for quality checks during exploration)
+rf_n_estimators: 100
+
+seed: 42

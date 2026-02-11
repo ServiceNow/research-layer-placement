@@ -12,6 +12,7 @@ from place_layers.search_strategy.cost_constrained import (
     CostConstrainedSearchResult,
     HierarchicalConfig,
     HierarchicalSearch,
+    SurrogateSearchConfig,
     SwapBeamConfig,
     SwapBeamSearch,
 )
@@ -27,6 +28,7 @@ SearchStrategyConfig = Annotated[
     | ExhaustiveSearchConfig
     | SwapBeamConfig
     | HierarchicalConfig
-    | AnnealingConfig,
+    | AnnealingConfig
+    | SurrogateSearchConfig,
     Field(discriminator="strategy_type"),
 ]

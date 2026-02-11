@@ -113,7 +113,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._max_cost: float = 0.0
         self._eval_expected: int | None = None
         self._current_allocation_index: int = 0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
         # Leaderboard: list of (score, cost, allocation, placement_str)
         self._leaderboard: list[tuple[float, float, dict[str, int], str]] = []
         # State tracking for live progress
@@ -171,7 +171,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._print(
             "SEARCH_STARTED",
             f"mode={event.mode}, layers={event.num_layers}, "
-            f"allocations={event.max_allocations}",
+            f"allocations={event.max_allocations or '?'}",
         )
         # Additional context lines
         self._print_line(

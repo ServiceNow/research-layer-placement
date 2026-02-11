@@ -1,0 +1,28 @@
+# @package search_strategy
+#
+# Surrogate-assisted search: RF + Expected Improvement.
+#
+# Uses a Random Forest surrogate to score candidate placements cheaply,
+# then validates top candidates with the real evaluator.
+#
+# Requires a pre-built exploration dataset from explore_placements command.
+# Refinement: surrogate drafts candidates, EI selects top-k, evaluator validates.
+
+defaults:
+  - /sa: surrogate
+
+strategy_type: surrogate
+
+# Path to JSON dataset from explore_placements command (required)
+exploration_dataset_path: ???
+
+cv_folds: 5
+
+# --- Surrogate model ---
+rf_n_estimators: 100
+rf_max_depth: null
+ei_xi: 0.01
+
+# --- Refinement loop ---
+num_rounds: 4
+evals_per_round: 500

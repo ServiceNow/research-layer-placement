@@ -1,0 +1,12 @@
+# @package _global_
+# Surrogate exploration using mock evaluator (48 layers, 4 mixers)
+#
+# Usage:
+#   python -m place_layers +experiments=explore_mock_max_perf
+defaults:
+  - /command: explore_placements
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - _self_
+
+max_samples: 3000  # Smaller for mock (evaluations are cheap)

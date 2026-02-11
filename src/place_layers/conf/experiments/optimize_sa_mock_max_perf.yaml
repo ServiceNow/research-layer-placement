@@ -17,5 +17,6 @@ defaults:
 # Settings for demo/testing (matches optimize_mock_max_perf scale)
 search_strategy:
   max_allocations: 10
-  initial_temperature: 11.6
-  seed: 42
+  sa:
+    initial_temperature: 11.6
+    seed: 42

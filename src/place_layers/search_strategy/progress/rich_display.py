@@ -141,7 +141,7 @@ class RichDisplay(PlacementFormatterMixin):
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
 
         self._allocation_index: int = 0
         self._current_allocation: dict[str, int] = {}
@@ -231,7 +231,7 @@ class RichDisplay(PlacementFormatterMixin):
             allocation_content = self._build_allocation_content()
             allocation_panel = Panel(
                 allocation_content,
-                title=f"[bold yellow]Allocation {self._allocation_index}/{self._max_allocations}[/bold yellow]",
+                title=f"[bold yellow]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold yellow]",
                 border_style="yellow",
             )
             components.append(allocation_panel)

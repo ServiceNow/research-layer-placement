@@ -20,8 +20,9 @@ hydra:
 
 search_strategy:
   max_allocations: 10
-  initial_temperature: 11.6
-  seed: 42
+  sa:
+    initial_temperature: 11.6
+    seed: 42
 
 # 0.0 baseline + log-spaced from ~0.02 to 5.0
 # Dense at low sigma where noise transitions from helpful to harmful
