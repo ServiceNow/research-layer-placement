@@ -16,10 +16,11 @@ metric_list:
     higher_is_better: true
 generation_kwargs:
   until:
-    - "Question:"
-    - "</s>"
-    - "<|im_end|>"
-    - "<|eot_id|>"
+    # - "Question:"
+    # - "</s>"
+    # - "<|im_end|>"
+    # - "<|eot_id|>"                                                                                                                                                                                           
+      - "</s>"
   do_sample: false
   temperature: 0.0
   max_gen_toks: 32768

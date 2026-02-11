@@ -63,3 +63,11 @@ filter_list:
         regex_pattern: "\\\\boxed\\{([^}]*)\\}"
         fallback: "[no-match]"
       - function: "take_first"
+  - name: "last-number"
+    filter:
+      # Fallback: extract last number-like token
+      - function: "regex"
+        group_select: -1
+        regex_pattern: "(-?[0-9]+)"
+        fallback: "[no-match]"
+      - function: "take_first"

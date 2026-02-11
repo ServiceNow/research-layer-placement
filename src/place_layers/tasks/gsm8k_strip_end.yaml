@@ -35,9 +35,9 @@ metric_list:
       - "\\s*\\[END FINAL RESPONSE\\]\\s*"
 generation_kwargs:
   until:
-    - "Question:"
+    # - "Question:"
     - "</s>"
-    - "<|im_end|>"
+    # - "<|im_end|>"
   do_sample: false
   temperature: 0.0
 repeats: 1

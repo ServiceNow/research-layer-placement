@@ -9,6 +9,6 @@
 tasks:
   - math_500_strip_end
 
-num_fewshot: 4
+num_fewshot: 0
 max_problems_per_task: null
 split: test
