@@ -33,6 +33,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     AnySearchEvent,
     BeamCandidateEvaluatedEvent,
@@ -268,4 +270,12 @@ class EventDiskWriter:
 
     def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
         """Handle annealing completed event."""
+        self._write_event(event)
+
+    def on_annealing_reheat(self, event: AnnealingReheatEvent) -> None:
+        """Handle annealing reheat event."""
+        self._write_event(event)
+
+    def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
+        """Handle annealing restart event."""
         self._write_event(event)

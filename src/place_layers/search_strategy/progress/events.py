@@ -542,13 +542,15 @@ class AnnealingStepEvent(BaseModel):
     event_type: Literal["annealing_step"] = "annealing_step"
     step: int  # 0-based step number
     max_steps: int
-    swap: tuple[int, int]  # (layer_a, layer_b) that was tried
-    proposed_assignments: tuple[str, ...]  # Placement after swap
+    restart_index: int  # Which restart this step belongs to
+    perturbation_size: int  # Number of positions perturbed
+    move_type: Literal["random_ruin", "contiguous_ruin"]
+    proposed_assignments: tuple[str, ...]  # Placement after move
     proposed_score: float
     temperature: float  # Temperature before this step
     delta: float  # proposed_score - current_score
     acceptance_probability: float  # exp(delta/T) if delta < 0, else 1.0
-    accepted: bool  # Whether the swap was accepted
+    accepted: bool  # Whether the move was accepted
     current_assignments: tuple[str, ...]  # Current state after decision
     current_score: float  # Current score after decision
     best_assignments: tuple[str, ...]  # Best seen so far
@@ -566,6 +568,34 @@ class AnnealingCompletedEvent(BaseModel):
     termination_reason: Literal["max_steps", "min_temperature", "no_swaps"]
     best_assignments: tuple[str, ...]
     best_score: float
+    restarts_completed: int
+    best_restart: int
+    total_reheats: int
+
+
+class AnnealingReheatEvent(BaseModel):
+    """Emitted when adaptive reheating triggers during annealing."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["annealing_reheat"] = "annealing_reheat"
+    restart_index: int
+    step: int
+    old_temperature: float
+    new_temperature: float
+    acceptance_rate: float
+
+
+class AnnealingRestartEvent(BaseModel):
+    """Emitted when a new SA restart begins."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["annealing_restart"] = "annealing_restart"
+    restart_index: int
+    num_restarts: int
+    steps_budget: int
+    initial_assignments: tuple[str, ...]
 
 
 # Discriminated union of all search events
@@ -590,7 +620,9 @@ AnySearchEvent = Annotated[
     | SwapBeamIterationEvent
     # Annealing events
     | AnnealingStepEvent
-    | AnnealingCompletedEvent,
+    | AnnealingCompletedEvent
+    | AnnealingReheatEvent
+    | AnnealingRestartEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -624,4 +656,6 @@ __all__ = [
     # Annealing types
     "AnnealingStepEvent",
     "AnnealingCompletedEvent",
+    "AnnealingReheatEvent",
+    "AnnealingRestartEvent",
 ]

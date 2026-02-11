@@ -8,7 +8,7 @@
 # acceptance ratio for worsening moves.
 #
 # Usage:
-#   python -m place_layers command=calibrate_sa cost_budget=6.4
+#   python -m place_layers command=calibrate_sa +problem=cost_max_perf_small problem.cost_budget=6.4
 #
 # The command will output:
 #   - Delta distribution statistics
@@ -16,18 +16,10 @@
 #   - Computed cooling_rate
 #   - YAML snippet ready to paste into a search strategy config
 
+defaults:
+  - /result_handler: yaml
+
 command: calibrate_sa
-
-# Cost model configuration (required for calibration)
-cost_model:
-  cost_model_type: linear
-  mixer_costs:  # Default: FA, SWA, GDN relative costs
-    mixer_0: 1.0
-    mixer_1: 0.15625
-    mixer_2: 0.09009
-
-# Cost budget (required - no default, must specify)
-cost_budget: ???
 
 # Calibration parameters
 target_acceptance: 0.8  # 80% acceptance of worsening moves (standard literature value)
@@ -35,3 +27,8 @@ num_samples: 200        # Number of random swaps to sample
 max_steps: 300          # SA steps per allocation (for computing cooling rate)
 min_temperature: 0.001  # Minimum temperature before pure hill-climbing
 seed: 42                # Random seed for reproducibility
+
+# Move operator parameters (must match your SA search config)
+initial_temperature_guess: 4.4  # Guess for k-distribution; re-run if result is far off
+max_ruin_fraction: 0.25         # Max fraction of layers ruined at full temperature
+contiguous_ruin_probability: 0.3  # Probability of contiguous vs scattered ruin

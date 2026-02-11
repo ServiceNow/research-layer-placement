@@ -65,6 +65,8 @@ if TYPE_CHECKING:
         AllocationPlanEvent,
         AllocationStartedEvent,
         AnnealingCompletedEvent,
+        AnnealingReheatEvent,
+        AnnealingRestartEvent,
         AnnealingStepEvent,
         BeamCandidateEvaluatedEvent,
         BeamGrowthStepEvent,
@@ -459,22 +461,46 @@ class PlainDisplay(PlacementFormatterMixin):
             accept_str = "accepted" if event.accepted else "rejected"
             self._print_line(
                 f"Step {event.step + 1}/{event.max_steps}: "
+                f"k={event.perturbation_size} {event.move_type}, "
                 f"T={event.temperature:.3g}, delta={event.delta:+.4g}, "
                 f"{accept_str}, best={event.best_score:.4g}",
                 indent=1,
             )
+
+    def on_annealing_restart(self, event: "AnnealingRestartEvent") -> None:
+        """Handle annealing restart event."""
+        if not self._config.show_steps:
+            return
+        self._print_line(
+            f"Restart {event.restart_index + 1}/{event.num_restarts} "
+            f"(budget: {event.steps_budget} steps)",
+            indent=1,
+        )
+
+    def on_annealing_reheat(self, event: "AnnealingReheatEvent") -> None:
+        """Handle annealing reheat event."""
+        if not self._config.show_steps:
+            return
+        self._print_line(
+            f"Reheat: T {event.old_temperature:.3g} → {event.new_temperature:.3g} "
+            f"(acceptance: {event.acceptance_rate:.1%})",
+            indent=2,
+        )
 
     def on_annealing_completed(self, event: "AnnealingCompletedEvent") -> None:
         """Handle annealing completed event."""
         if not self._config.show_steps:
             return
 
-        by_mixer = self._group_layers_by_mixer(event.best_assignments)
-        placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
-        self._print_line(
-            f"Annealing complete ({event.termination_reason}): "
-            f"{event.steps_taken} steps, best={event.best_score:.4g}",
-            indent=1,
-        )
+        parts = [f"Annealing complete ({event.termination_reason}): {event.steps_taken} steps"]
+        if event.restarts_completed > 1:
+            parts.append(f"{event.restarts_completed} restarts (best: #{event.best_restart + 1})")
+        if event.total_reheats > 0:
+            parts.append(f"{event.total_reheats} reheats")
+        parts.append(f"best={event.best_score:.4g}")
+        self._print_line(", ".join(parts), indent=1)
+
         if self._config.show_phases:
+            by_mixer = self._group_layers_by_mixer(event.best_assignments)
+            placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
             self._print_line(f"Best: {placement_str}", indent=2)

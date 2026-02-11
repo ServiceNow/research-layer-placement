@@ -34,6 +34,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
@@ -185,6 +187,10 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_temperature: float = 0.0
         self._annealing_acceptance_count: int = 0
         self._annealing_best_score: float | None = None
+        self._annealing_restart_index: int = 0
+        self._annealing_num_restarts: int = 1
+        self._annealing_last_k: int = 0
+        self._annealing_reheat_count: int = 0
 
         # Track which search strategy is active (for display selection)
         self._active_strategy: str | None = None  # "hierarchical", "swap_beam", "annealing"
@@ -375,7 +381,7 @@ class RichDisplay(PlacementFormatterMixin):
         lines.append(
             Text.from_markup(
                 f"[dim]Step {self._annealing_current_step + 1}/{self._annealing_max_steps}[/dim] | "
-                f"T={self._annealing_temperature:.3g} | "
+                f"T={self._annealing_temperature:.3g} | k={self._annealing_last_k} | "
                 f"Accept: {accept_rate:.0f}%"
             )
         )
@@ -392,9 +398,23 @@ class RichDisplay(PlacementFormatterMixin):
                 Text.from_markup(f"  [green]Best: {self._annealing_best_score:.4g}[/green]")
             )
 
+        if self._annealing_reheat_count > 0:
+            lines.append(
+                Text.from_markup(f"  [yellow]Reheats: {self._annealing_reheat_count}[/yellow]")
+            )
+
+        if self._annealing_num_restarts > 1:
+            title = (
+                f"[bold magenta]Simulated Annealing[/bold magenta] "
+                f"[dim]Restart {self._annealing_restart_index + 1}/"
+                f"{self._annealing_num_restarts}[/dim]"
+            )
+        else:
+            title = "[bold magenta]Simulated Annealing[/bold magenta]"
+
         return Panel(
             Group(*lines) if lines else Text(""),
-            title="[bold magenta]Simulated Annealing[/bold magenta]",
+            title=title,
             border_style="magenta",
         )
 
@@ -781,6 +801,10 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_temperature = 0.0
         self._annealing_acceptance_count = 0
         self._annealing_best_score = None
+        self._annealing_restart_index = 0
+        self._annealing_num_restarts = 1
+        self._annealing_last_k = 0
+        self._annealing_reheat_count = 0
 
         # Reset active strategy (will be set by first inner-loop event)
         self._active_strategy = None
@@ -1025,6 +1049,7 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_max_steps = event.max_steps
         self._annealing_temperature = event.temperature
         self._annealing_best_score = event.best_score
+        self._annealing_last_k = event.perturbation_size
 
         if event.accepted:
             self._annealing_acceptance_count += 1
@@ -1046,18 +1071,42 @@ class RichDisplay(PlacementFormatterMixin):
         if event.step % self._EVAL_UPDATE_INTERVAL == 0:
             self._update_live()
 
+    def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
+        """Handle annealing restart - reset per-restart tracking."""
+        self._annealing_restart_index = event.restart_index
+        self._annealing_num_restarts = event.num_restarts
+        self._annealing_max_steps = event.steps_budget
+        # Reset per-restart counters
+        self._annealing_steps = []
+        self._annealing_acceptance_count = 0
+        self._annealing_current_step = 0
+        self._annealing_reheat_count = 0
+        if event.restart_index > 0:
+            self._console.print(
+                f"  [magenta]Restart {event.restart_index + 1}/{event.num_restarts}[/magenta]"
+            )
+        self._update_live()
+
+    def on_annealing_reheat(self, event: AnnealingReheatEvent) -> None:
+        """Handle annealing reheat - print temperature change."""
+        self._annealing_reheat_count += 1
+        self._console.print(
+            f"    [yellow]Reheat[/yellow]: T {event.old_temperature:.3g} → "
+            f"{event.new_temperature:.3g} (accept: {event.acceptance_rate:.1%})"
+        )
+
     def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
         """Handle annealing completed - print summary."""
-        accept_rate = (
-            self._annealing_acceptance_count / event.steps_taken * 100
-            if event.steps_taken > 0
-            else 0
-        )
+        parts = [f"{event.steps_taken} steps"]
+        if event.restarts_completed > 1:
+            parts.append(f"{event.restarts_completed} restarts (best: #{event.best_restart + 1})")
+        if event.total_reheats > 0:
+            parts.append(f"{event.total_reheats} reheats")
+        detail = ", ".join(parts)
 
         self._console.print(
             f"  [magenta]Annealing[/magenta] ({event.termination_reason}): "
-            f"{event.steps_taken} steps, {accept_rate:.0f}% accepted → "
-            f"[green]{event.best_score:.4g}[/green]"
+            f"{detail} → [green]{event.best_score:.4g}[/green]"
         )
 
         # Reset state for next allocation
@@ -1065,5 +1114,9 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_acceptance_count = 0
         self._annealing_current_step = 0
         self._annealing_max_steps = 0
+        self._annealing_restart_index = 0
+        self._annealing_num_restarts = 1
+        self._annealing_last_k = 0
+        self._annealing_reheat_count = 0
 
         self._update_live()
