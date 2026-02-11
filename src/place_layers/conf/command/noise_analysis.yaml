@@ -1,0 +1,6 @@
+# @package _global_
+
+command: noise_analysis
+
+noise_sigmas: [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]
+num_seeds: 20

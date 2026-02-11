@@ -11,6 +11,7 @@ from place_layers.command.hyperparameter_analysis import (
     HyperparameterAnalysisCommandConfig,
 )
 from place_layers.command.landscape_analysis import LandscapeAnalysisCommandConfig
+from place_layers.command.noise_analysis import NoiseAnalysisCommandConfig
 from place_layers.command.optimize import OptimizeCommandConfig
 from place_layers.command.precompute_traces import PrecomputeTracesCommandConfig
 from place_layers.command.sensitivity_analysis import SensitivityAnalysisCommandConfig
@@ -27,7 +28,8 @@ CommandConfig = Annotated[
     | CalibrateSACommandConfig
     | PrecomputeTracesCommandConfig
     | EvaluateCommandConfig
-    | ServeCommandConfig,
+    | ServeCommandConfig
+    | NoiseAnalysisCommandConfig,
     Field(discriminator="command"),
 ]
 
