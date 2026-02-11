@@ -27,7 +27,7 @@ evaluators_dict:
     max_new_tokens: ${generation.max_new_tokens}
     temperature: ${generation.temperature}
     top_p: ${generation.top_p}
-    use_chat_template: true
+    use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
   swde:
@@ -42,7 +42,7 @@ evaluators_dict:
     max_new_tokens: ${generation.max_new_tokens}
     temperature: ${generation.temperature}
     top_p: ${generation.top_p}
-    use_chat_template: true
+    use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
 weights:
