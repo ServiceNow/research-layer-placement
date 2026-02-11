@@ -400,6 +400,19 @@ class TraceDataset(BaseModel):
         if truncated_count > 0:
             logger.info(f"{truncated_count} truncated traces skipped (incomplete reasoning)")
 
+        # Infer samples_per_problem if not available from metadata
+        if samples_per_problem == 0 and all_traces:
+            # Count traces per problem_id
+            from collections import Counter
+
+            problem_trace_counts = Counter(t.problem_id for t in all_traces)
+            # Use the most common count (mode)
+            samples_per_problem = problem_trace_counts.most_common(1)[0][1]
+            logger.info(
+                f"Inferred samples_per_problem={samples_per_problem} from trace data "
+                f"(metadata.json had null value)"
+            )
+
         return cls(
             traces=tuple(all_traces),
             teacher_model_id=teacher_model,
