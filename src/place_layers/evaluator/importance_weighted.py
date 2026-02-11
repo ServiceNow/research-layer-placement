@@ -204,7 +204,7 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
         self._log_weight_clip_min = math.log(self._weight_clip_min)
         self._log_weight_clip_max = math.log(self._weight_clip_max)
 
-        logger.info(f"Saving IS results to: {self._output_dir}/validation.jsonl")
+        logger.info(f"Saving IS results to: {output_dir}/validation.jsonl")
 
     def _load_and_merge_traces(self) -> MergedTraces:
         """Load traces from all sources and merge by task_name."""
