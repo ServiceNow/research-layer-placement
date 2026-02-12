@@ -24,24 +24,60 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from hydra.core.hydra_config import HydraConfig
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
-from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation
-from place_layers.cost_model.linear_cost_model import (
-    LinearCostModel,
-    LinearCostModelConfig,
+from place_layers.cost_model.linear_cost_model import LinearCostModel
+from place_layers.annealing.moves import (
+    generate_move,
+    random_assignment,
+    sample_perturbation_size,
 )
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
+from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
+
+
+class CalibrationResult(BaseModel):
+    """Result of SA temperature calibration."""
+
+    model_config = {"frozen": True}
+
+    # Calibrated SA parameters (the main output)
+    initial_temperature: float = Field(description="Calibrated initial temperature")
+    cooling_rate: float = Field(description="Computed cooling rate")
+    min_temperature: float = Field(description="Minimum temperature for SA")
+    max_steps: int = Field(description="Max SA steps per allocation")
+
+    # Metadata about the calibration run
+    num_layers: int = Field(description="Number of model layers")
+    cost_budget: float = Field(description="Cost budget used for calibration")
+    target_acceptance: float = Field(description="Target acceptance ratio")
+    actual_acceptance: float = Field(description="Achieved acceptance ratio at T0")
+    num_samples: int = Field(description="Number of moves sampled")
+
+    # Move operator settings used during calibration
+    initial_temperature_guess: float = Field(
+        description="Temperature guess used for k-distribution"
+    )
+    max_ruin_fraction: float = Field(description="Max ruin fraction used")
+    contiguous_ruin_probability: float = Field(
+        description="Contiguous ruin probability used"
+    )
+
+    # Delta distribution summary
+    num_deltas: int = Field(description="Total valid (non-no-op) deltas sampled")
+    num_improving: int = Field(description="Number of improving moves")
+    num_worsening: int = Field(description="Number of worsening moves")
 
 
 class CalibrateSACommand(BaseCommand):
@@ -49,72 +85,110 @@ class CalibrateSACommand(BaseCommand):
 
     config: "CalibrateSACommandConfig"
 
+    def __init__(self, config: "CalibrateSACommandConfig") -> None:
+        super().__init__(config)
+        self.config: CalibrateSACommandConfig
+        self._rng = random.Random(config.seed)
+
     async def run(self) -> None:
         """Execute SA calibration."""
         hydra_cfg = HydraConfig.get()
         output_dir = Path(hydra_cfg.runtime.output_dir)
 
-        logger.info("=" * 70)
-        logger.info("SIMULATED ANNEALING TEMPERATURE CALIBRATION")
-        logger.info("=" * 70)
-        logger.info(f"Target acceptance ratio: {self.config.target_acceptance:.0%}")
-        logger.info(f"Number of samples: {self.config.num_samples}")
-        logger.info(f"Max steps (for cooling rate): {self.config.max_steps}")
+        logger.info(
+            "SA calibration: target_acceptance=%.0f%%, num_samples=%d, "
+            "max_steps=%d, T_guess=%.2f, max_ruin=%.2f, contiguous_p=%.1f",
+            self.config.target_acceptance * 100,
+            self.config.num_samples,
+            self.config.max_steps,
+            self.config.initial_temperature_guess,
+            self.config.max_ruin_fraction,
+            self.config.contiguous_ruin_probability,
+        )
 
         # Create evaluator with proper context management
-        async with self.config.evaluator.create_evaluator() as evaluator:
-            await self._run_calibration(evaluator, output_dir)
+        async with self.config.evaluator.create_evaluator(
+            output_dir=output_dir
+        ) as evaluator:
+            result = await self._run_calibration(evaluator)
 
-    async def _run_calibration(self, evaluator, output_dir: Path) -> None:
+        if result is not None:
+            # Save using result handler
+            ext = self.config.result_handler.handler_type
+            result_handler = self.config.result_handler.create_result_handler()
+            output_path = output_dir / f"calibration_results.{ext}"
+            await result_handler.save(result, output_path)
+            logger.info("Calibration results saved to %s", output_path)
+
+    async def _run_calibration(self, evaluator) -> None | CalibrationResult:
         """Run calibration with evaluator."""
-        cost_model_config = self.config.cost_model
+        problem = self.config.problem.create_problem(evaluator)
 
-        if not isinstance(cost_model_config, LinearCostModelConfig):
+        if not isinstance(problem, CostConstrainedProblem):
+            raise ValueError(
+                "Calibration requires a cost-constrained problem "
+                "(cost_max_performance or cost_min_cost)"
+            )
+
+        cost_model = problem.cost_model
+        if not isinstance(cost_model, LinearCostModel):
             raise ValueError("Calibration currently only supports LinearCostModel")
 
-        cost_model = LinearCostModel(cost_model_config)
-
-        # Create problem
-        problem_config = MaxPerformanceProblemConfig(
-            cost_model=cost_model_config,
-            cost_budget=self.config.cost_budget,
-        )
-        problem = CostConstrainedProblem(evaluator=evaluator, config=problem_config)
+        problem_config = self.config.problem
+        if not isinstance(problem_config, MaxPerformanceProblemConfig):
+            raise ValueError(
+                "Calibration requires a cost_max_performance problem with cost_budget"
+            )
+        cost_budget = problem_config.cost_budget
 
         # Find a representative allocation at the cost bound
         num_layers = evaluator.num_layers
         allocation = cost_model.allocation_at_cost_bound(
-            num_layers, self.config.cost_budget, from_above=True
+            num_layers, cost_budget, from_above=True
         )
 
         if allocation is None:
             logger.error("Could not find allocation at cost bound.")
-            return
+            return None
 
-        logger.info(f"\nUsing representative allocation: {allocation}")
-        logger.info(f"Allocation cost: {cost_model.allocation_cost(allocation):.4f}")
+        logger.info(
+            "Representative allocation: %s (cost=%.4f)",
+            allocation,
+            cost_model.allocation_cost(allocation),
+        )
 
         # Sample delta distribution
-        logger.info(f"\nSampling {self.config.num_samples} random swaps...")
+        logger.info("Sampling %d ruin-and-recreate moves…", self.config.num_samples)
         deltas = await self._sample_deltas(problem, allocation)
+
+        if not deltas:
+            logger.error("No valid moves sampled (all were no-ops). Cannot calibrate.")
+            return None
 
         positive = [d for d in deltas if d > 0]
         negative = [d for d in deltas if d < 0]
 
-        logger.info("\nDelta distribution:")
-        logger.info(f"  Total samples: {len(deltas)}")
-        logger.info(f"  Improving moves: {len(positive)} ({100*len(positive)/len(deltas):.1f}%)")
-        logger.info(f"  Worsening moves: {len(negative)} ({100*len(negative)/len(deltas):.1f}%)")
-
+        logger.debug(
+            "Delta distribution: %d total, %d improving (%.1f%%), %d worsening (%.1f%%)",
+            len(deltas),
+            len(positive),
+            100 * len(positive) / len(deltas),
+            len(negative),
+            100 * len(negative) / len(deltas),
+        )
         if positive:
-            logger.info(
-                f"  Positive deltas: min={min(positive):.4f}, max={max(positive):.4f}, "
-                f"avg={sum(positive)/len(positive):.4f}"
+            logger.debug(
+                "  positive: min=%.4f, max=%.4f, avg=%.4f",
+                min(positive),
+                max(positive),
+                sum(positive) / len(positive),
             )
         if negative:
-            logger.info(
-                f"  Negative deltas: min={min(negative):.4f}, max={max(negative):.4f}, "
-                f"avg={sum(negative)/len(negative):.4f}"
+            logger.debug(
+                "  negative: min=%.4f, max=%.4f, avg=%.4f",
+                min(negative),
+                max(negative),
+                sum(negative) / len(negative),
             )
 
         if not negative:
@@ -122,104 +196,111 @@ class CalibrateSACommand(BaseCommand):
             return
 
         # Find temperature for target acceptance
-        logger.info("\nFinding temperature for target acceptance...")
         initial_temp = self._find_temperature(negative, self.config.target_acceptance)
         cooling_rate = self._compute_cooling_rate(
             initial_temp, self.config.min_temperature, self.config.max_steps
         )
 
         # Verify
-        actual_acceptance = sum(math.exp(d / initial_temp) for d in negative) / len(negative)
+        actual_acceptance = sum(math.exp(d / initial_temp) for d in negative) / len(
+            negative
+        )
 
-        logger.info("\n" + "=" * 70)
-        logger.info("CALIBRATION RESULTS")
-        logger.info("=" * 70)
-        logger.info(f"\n  initial_temperature: {initial_temp:.4f}")
-        logger.info(f"  cooling_rate: {cooling_rate:.6f}")
-        logger.info(f"  min_temperature: {self.config.min_temperature}")
-        logger.info(f"  max_steps: {self.config.max_steps}")
-        logger.info(f"\n  Verification: acceptance at T₀ = {actual_acceptance:.1%}")
+        logger.info(
+            "Calibration result: initial_temperature=%.4f, cooling_rate=%.6f, "
+            "min_temperature=%s, max_steps=%d (acceptance at T0=%.1f%%)",
+            initial_temp,
+            cooling_rate,
+            self.config.min_temperature,
+            self.config.max_steps,
+            actual_acceptance * 100,
+        )
+
+        # Convergence check
+        ratio = initial_temp / self.config.initial_temperature_guess
+        if ratio < 0.5 or ratio > 2.0:
+            logger.warning(
+                "Computed T_0 (%.4f) differs significantly from guess "
+                "(%.4f). Consider re-running with "
+                "initial_temperature_guess=%.2f for better accuracy.",
+                initial_temp,
+                self.config.initial_temperature_guess,
+                initial_temp,
+            )
 
         # Show table of acceptance ratios
-        logger.info("\nTemperature vs acceptance ratio:")
+        logger.debug("Temperature vs acceptance ratio:")
         for target in [0.5, 0.6, 0.7, 0.8, 0.9, 0.95]:
             t = self._find_temperature(negative, target)
-            logger.info(f"  {target:.0%} acceptance → T = {t:.4f}")
+            logger.debug("  %.0f%% acceptance -> T = %.4f", target * 100, t)
 
-        # Write results to file
-        results_path = output_dir / "calibration_results.yaml"
-        with open(results_path, "w") as f:
-            f.write("# SA Calibration Results\n")
-            f.write(f"# Generated for {num_layers} layers\n")
-            f.write(f"# Cost budget: {self.config.cost_budget}\n")
-            f.write(f"# Target acceptance: {self.config.target_acceptance:.0%}\n")
-            f.write("\n")
-            f.write("# Copy these values to your search strategy config:\n")
-            f.write(f"initial_temperature: {initial_temp:.4f}\n")
-            f.write(f"cooling_rate: {cooling_rate:.6f}\n")
-            f.write(f"min_temperature: {self.config.min_temperature}\n")
-            f.write(f"max_steps: {self.config.max_steps}\n")
-
-        logger.info(f"\nResults saved to: {results_path}")
-
-        # Also output YAML snippet to logs
-        logger.info("\n" + "=" * 70)
-        logger.info("YAML CONFIG SNIPPET")
-        logger.info("=" * 70)
-        logger.info(f"""
-# Calibrated for {num_layers} layers, target acceptance: {self.config.target_acceptance:.0%}
-strategy_type: cost_constrained_annealing
-max_allocations: 30
-max_steps: {self.config.max_steps}
-initial_temperature: {initial_temp:.4f}
-cooling_rate: {cooling_rate:.6f}
-min_temperature: {self.config.min_temperature}
-""")
+        # Build structured result
+        return CalibrationResult(
+            initial_temperature=initial_temp,
+            cooling_rate=cooling_rate,
+            min_temperature=self.config.min_temperature,
+            max_steps=self.config.max_steps,
+            num_layers=num_layers,
+            cost_budget=cost_budget,
+            target_acceptance=self.config.target_acceptance,
+            actual_acceptance=actual_acceptance,
+            num_samples=self.config.num_samples,
+            initial_temperature_guess=self.config.initial_temperature_guess,
+            max_ruin_fraction=self.config.max_ruin_fraction,
+            contiguous_ruin_probability=self.config.contiguous_ruin_probability,
+            num_deltas=len(deltas),
+            num_improving=len(positive),
+            num_worsening=len(negative),
+        )
 
     async def _sample_deltas(
         self,
         problem: CostConstrainedProblem,
         allocation: Allocation,
     ) -> list[float]:
-        """Sample random allocation-preserving swaps and return delta distribution."""
-        random.seed(self.config.seed)
+        """Sample deltas using the ruin-and-recreate move operator.
 
-        # Get mixer names from allocation keys (already in phase order)
-        mixer_names = list(allocation.keys())
-
-        # Start from canonical assignment (mixer names, not indices)
-        current: list[str] = []
-        for mixer_name, count in allocation.items():
-            current.extend([mixer_name] * count)
+        Uses the same move logic as AnnealingSearch:
+        - Temperature-dependent perturbation size k (geometric distribution)
+        - Contiguous or scattered ruin-and-recreate
+        - Walks current state forward to sample from diverse states
+        """
+        num_layers = sum(allocation.values())
+        current = random_assignment(self._rng, allocation, num_layers)
 
         placement = LayerPlacement(assignments=tuple(current))
         current_score = await problem.evaluate(placement)
 
         deltas = []
         for _ in range(self.config.num_samples):
-            # Group layers by mixer name
-            layers_by_mixer: dict[str, list[int]] = {name: [] for name in mixer_names}
-            for i, m in enumerate(current):
-                layers_by_mixer[m].append(i)
+            k = sample_perturbation_size(
+                self._rng,
+                num_layers,
+                self.config.initial_temperature_guess,
+                self.config.initial_temperature_guess,
+                self.config.max_ruin_fraction,
+            )
+            proposed, _move_type = generate_move(
+                self._rng,
+                current,
+                k,
+                self.config.contiguous_ruin_probability,
+            )
 
-            # Find mixers with layers
-            non_empty = [name for name, g in layers_by_mixer.items() if g]
-            if len(non_empty) < 2:
+            # Skip no-ops (all ruined positions had same type)
+            if proposed == current:
                 continue
 
-            # Pick two random mixers and swap one layer from each
-            m_a, m_b = random.sample(non_empty, 2)
-            l_a = random.choice(layers_by_mixer[m_a])
-            l_b = random.choice(layers_by_mixer[m_b])
+            placement = LayerPlacement(assignments=tuple(proposed))
+            proposed_score = await problem.evaluate(placement)
+            delta = proposed_score - current_score
+            deltas.append(delta)
 
-            # Create swapped assignment
-            new = current.copy()
-            new[l_a], new[l_b] = new[l_b], new[l_a]
-
-            placement = LayerPlacement(assignments=tuple(new))
-            new_score = await problem.evaluate(placement)
-
-            deltas.append(new_score - current_score)
+            # Walk state forward: accept improving always,
+            # worsening with 50% to sample diverse states
+            if delta > 0 or self._rng.random() < 0.5:
+                current = proposed
+                current_score = proposed_score
 
         return deltas
 
@@ -263,14 +344,16 @@ min_temperature: {self.config.min_temperature}
 class CalibrateSACommandConfig(BaseCommandConfig):
     """Configuration for SA calibration command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
+    _impl_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
 
     command: Literal["calibrate_sa"] = "calibrate_sa"
 
     # Problem setup
     evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
-    cost_model: CostModelConfig = Field(description="Cost model configuration")
-    cost_budget: float = Field(description="Cost budget for the problem", gt=0)
+    problem: ProblemConfig = Field(description="Problem configuration")
+    result_handler: ResultHandlerConfig = Field(
+        description="Result handler configuration",
+    )
 
     # Calibration parameters
     target_acceptance: float = Field(
@@ -279,7 +362,7 @@ class CalibrateSACommandConfig(BaseCommandConfig):
         lt=1,
     )
     num_samples: int = Field(
-        description="Number of random swaps to sample",
+        description="Number of ruin-and-recreate moves to sample",
         gt=0,
     )
     max_steps: int = Field(
@@ -292,4 +375,24 @@ class CalibrateSACommandConfig(BaseCommandConfig):
     )
     seed: int = Field(
         description="Random seed for sampling",
+    )
+
+    # Move operator parameters (must match SA search config)
+    initial_temperature_guess: float = Field(
+        description=(
+            "Temperature guess for perturbation size sampling. "
+            "Used to determine k distribution during calibration. "
+            "Re-run if computed T_0 is far from this guess."
+        ),
+        gt=0,
+    )
+    max_ruin_fraction: float = Field(
+        description="Max fraction of layers ruined at full temperature.",
+        gt=0,
+        le=1,
+    )
+    contiguous_ruin_probability: float = Field(
+        description="Probability of contiguous block ruin vs random scattered ruin.",
+        ge=0,
+        le=1,
     )

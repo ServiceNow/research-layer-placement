@@ -1,0 +1,18 @@
+# @package evaluator
+# Trace precompute evaluator - generates completions for importance weighting
+#
+# Inherits all generative evaluator settings and adds trace-specific configuration.
+# Can be used as a standalone evaluator config group for composability.
+#
+# Example usage:
+#   python -m place_layers +command=precompute_traces +evaluator=trace_precompute \
+#       +backend=vllm +task=gsm8k +generation=sampling
+
+defaults:
+  - generative
+  - _self_
+
+evaluator_type: trace_precompute
+
+# Random seed for few-shot sampling
+seed: 42

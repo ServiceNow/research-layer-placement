@@ -14,9 +14,11 @@ from pydantic import Field
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.problem.layer_placement import CostConstrainedProblem
-from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.allocation_iteration import (
+    AllocationIterationSearch,
+)
 from place_layers.search_strategy.cost_constrained.base_config import (
-    BaseCostConstrainedConfig,
+    AllocationIterationConfig,
 )
 from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
@@ -29,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SwapBeamSearch(BaseCostConstrainedSearch):
+class SwapBeamSearch(AllocationIterationSearch):
     """
     Cost-constrained search using swap-based beam search for the inner loop.
 
@@ -349,7 +351,7 @@ class SwapBeamSearch(BaseCostConstrainedSearch):
         return unique
 
 
-class SwapBeamConfig(BaseCostConstrainedConfig):
+class SwapBeamConfig(AllocationIterationConfig):
     """Configuration for swap-based beam search."""
 
     _impl_class: ClassVar[type["BaseSearchStrategy"]] = SwapBeamSearch

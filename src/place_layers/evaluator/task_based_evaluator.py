@@ -451,15 +451,12 @@ class TaskBasedEvaluatorConfig(BackendEvaluatorConfig):
         ge=0,
     )
     max_problems_per_task: int | None = Field(
-        default=None,
         description="Max problems per task (None = all). Use for faster evaluation.",
     )
     split: str = Field(
-        default="test",
         description="Dataset split to use ('test' or 'validation')",
     )
     doc_prefetch_count: int = Field(
-        default=2,
         description="Number of tasks to prefetch docs for ahead of evaluation. "
         "Higher values hide I/O latency but use more memory.",
         ge=1,

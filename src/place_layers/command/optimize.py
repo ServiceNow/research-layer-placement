@@ -85,7 +85,7 @@ class OptimizeCommand(BaseCommand):
 class OptimizeCommandConfig(BaseCommandConfig):
     """Configuration for optimize command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = OptimizeCommand
+    _impl_class: ClassVar[type[BaseCommand]] = OptimizeCommand
 
     command: Literal["optimize"] = "optimize"
 

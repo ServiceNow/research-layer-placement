@@ -190,7 +190,7 @@ class HyperparameterAnalysisCommand(BaseCommand):
 class HyperparameterAnalysisCommandConfig(BaseCommandConfig):
     """Configuration for hyperparameter analysis command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = HyperparameterAnalysisCommand
+    _impl_class: ClassVar[type[BaseCommand]] = HyperparameterAnalysisCommand
 
     command: Literal["hyperparameter_analysis"] = "hyperparameter_analysis"
 

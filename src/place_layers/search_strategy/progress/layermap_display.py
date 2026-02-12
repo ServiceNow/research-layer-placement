@@ -59,6 +59,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
@@ -68,6 +70,8 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapCandidate,
@@ -82,7 +86,10 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from place_layers.search_strategy.progress.config import LayermapDisplayConfig
-    from place_layers.search_strategy.progress.events import BestUpdatedEvent
+    from place_layers.search_strategy.progress.events import (
+        BestUpdatedEvent,
+        SurrogateDatasetLoadedEvent,
+    )
 
 
 # Mixer color palette - visually distinct colors for up to 6 mixers
@@ -157,7 +164,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
 
         # Current allocation state
         self._allocation_index: int = 0
@@ -218,6 +225,10 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_best_placement: tuple[str, ...] = ()
         self._annealing_best_score: float = 0.0
         self._annealing_acceptance_count: int = 0
+        self._annealing_restart_index: int = 0
+        self._annealing_num_restarts: int = 1
+        self._annealing_last_k: int = 0
+        self._annealing_reheat_count: int = 0
 
     def __enter__(self) -> "LayermapDisplay":
         """Start the Live display."""
@@ -275,7 +286,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Header line: Allocation | Phase | Step
         alloc_str = self._format_allocation(self._current_allocation)
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
         ]
         if self._phase_index > 0:
             header_parts.append(
@@ -417,7 +428,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Header line: Allocation | Swap-Beam Iteration
         alloc_str = self._format_allocation(self._current_allocation)
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
             f"[bold magenta]Swap-Beam[/bold magenta] Iter {self._swap_beam_iteration}/{self._swap_beam_max_iterations}",
         ]
         header = Text.from_markup("  |  ".join(header_parts))
@@ -512,11 +523,14 @@ class LayermapDisplay(PlacementFormatterMixin):
         """Build the annealing search visualization panel."""
         lines = []
 
-        # Header line: Allocation | Annealing Step
+        # Header line: Allocation | Annealing Step (with optional restart info)
         alloc_str = self._format_allocation(self._current_allocation)
+        restart_str = ""
+        if self._annealing_num_restarts > 1:
+            restart_str = f"  [dim]Restart {self._annealing_restart_index + 1}/{self._annealing_num_restarts}[/dim]"
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
-            f"[bold yellow]Annealing[/bold yellow] Step {self._annealing_step + 1}/{self._annealing_max_steps}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
+            f"[bold yellow]Annealing[/bold yellow] Step {self._annealing_step + 1}/{self._annealing_max_steps}{restart_str}",
         ]
         header = Text.from_markup("  |  ".join(header_parts))
         lines.append(header)
@@ -547,7 +561,9 @@ class LayermapDisplay(PlacementFormatterMixin):
             accept_rate = self._annealing_acceptance_count / self._annealing_step * 100
         else:
             accept_rate = 0
-        temp_text = f"T={self._annealing_temperature:.3g}  Accept: {accept_rate:.0f}%"
+        temp_text = f"T={self._annealing_temperature:.3g}  k={self._annealing_last_k}  Accept: {accept_rate:.0f}%"
+        if self._annealing_reheat_count > 0:
+            temp_text += f"  [yellow]Reheats: {self._annealing_reheat_count}[/yellow]"
         lines.append(Text.from_markup(f"[dim]{temp_text}[/dim]"))
 
         return Panel(
@@ -857,6 +873,10 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_best_placement = ()
         self._annealing_best_score = 0.0
         self._annealing_acceptance_count = 0
+        self._annealing_restart_index = 0
+        self._annealing_num_restarts = 1
+        self._annealing_last_k = 0
+        self._annealing_reheat_count = 0
 
         # Per-allocation progress
         self._alloc_eval_start = self._eval_count
@@ -1052,6 +1072,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_step = event.step
         self._annealing_max_steps = event.max_steps
         self._annealing_temperature = event.temperature
+        self._annealing_last_k = event.perturbation_size
         self._annealing_current_placement = event.current_assignments
         self._annealing_current_score = event.current_score
         self._annealing_best_placement = event.best_assignments
@@ -1064,10 +1085,48 @@ class LayermapDisplay(PlacementFormatterMixin):
         if event.step % 5 == 0 or event.step == event.max_steps - 1:
             self._update_live()
 
+    def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
+        """Handle annealing restart - reset per-restart state."""
+        self._active_strategy = "annealing"
+        self._annealing_restart_index = event.restart_index
+        self._annealing_num_restarts = event.num_restarts
+        self._annealing_max_steps = event.steps_budget
+        self._annealing_step = 0
+        self._annealing_acceptance_count = 0
+        self._annealing_reheat_count = 0
+        self._annealing_last_k = 0
+        self._annealing_current_placement = event.initial_assignments
+        self._annealing_current_score = 0.0
+        self._update_live()
+
+    def on_annealing_reheat(self, event: AnnealingReheatEvent) -> None:
+        """Handle annealing reheat - update temperature."""
+        self._annealing_reheat_count += 1
+        self._annealing_temperature = event.new_temperature
+        self._update_live()
+
     def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
         """Handle annealing completed event."""
         # Update final state
         self._annealing_best_placement = event.best_assignments
         self._annealing_best_score = event.best_score
+        self._annealing_last_k = 0
+        self._annealing_reheat_count = 0
 
         self._update_live()
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Handle surrogate round started event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Handle surrogate round completed event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode

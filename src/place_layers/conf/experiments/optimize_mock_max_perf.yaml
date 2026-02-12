@@ -1,7 +1,7 @@
 # @package _global_
 # Max-performance optimization using mock evaluator for testing/development
 # Problem: Maximize performance subject to cost <= cost_budget
-# Simulates Apriel-H 1.5 15B with 48 layers and 4 mixer types (FA, SWA, GDN, KDA)
+# Simulates Apriel-H 1.5 15B with 48 layers and 4 mixer types
 #
 # Usage:
 #   python -m place_layers +experiments=optimize_mock_max_perf

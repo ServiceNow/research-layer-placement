@@ -65,6 +65,8 @@ if TYPE_CHECKING:
         AllocationPlanEvent,
         AllocationStartedEvent,
         AnnealingCompletedEvent,
+        AnnealingReheatEvent,
+        AnnealingRestartEvent,
         AnnealingStepEvent,
         BeamCandidateEvaluatedEvent,
         BeamGrowthStepEvent,
@@ -76,6 +78,9 @@ if TYPE_CHECKING:
         SearchCompletedEvent,
         SearchStartedEvent,
         SwapBeamIterationEvent,
+        SurrogateDatasetLoadedEvent,
+        SurrogateRoundCompletedEvent,
+        SurrogateRoundStartedEvent,
         SwapBeamIterationStartedEvent,
         SwapEvaluatedEvent,
     )
@@ -111,7 +116,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._max_cost: float = 0.0
         self._eval_expected: int | None = None
         self._current_allocation_index: int = 0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
         # Leaderboard: list of (score, cost, allocation, placement_str)
         self._leaderboard: list[tuple[float, float, dict[str, int], str]] = []
         # State tracking for live progress
@@ -169,7 +174,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._print(
             "SEARCH_STARTED",
             f"mode={event.mode}, layers={event.num_layers}, "
-            f"allocations={event.max_allocations}",
+            f"allocations={event.max_allocations or '?'}",
         )
         # Additional context lines
         self._print_line(
@@ -459,22 +464,73 @@ class PlainDisplay(PlacementFormatterMixin):
             accept_str = "accepted" if event.accepted else "rejected"
             self._print_line(
                 f"Step {event.step + 1}/{event.max_steps}: "
+                f"k={event.perturbation_size} {event.move_type}, "
                 f"T={event.temperature:.3g}, delta={event.delta:+.4g}, "
                 f"{accept_str}, best={event.best_score:.4g}",
                 indent=1,
             )
+
+    def on_annealing_restart(self, event: "AnnealingRestartEvent") -> None:
+        """Handle annealing restart event."""
+        if not self._config.show_steps:
+            return
+        self._print_line(
+            f"Restart {event.restart_index + 1}/{event.num_restarts} "
+            f"(budget: {event.steps_budget} steps)",
+            indent=1,
+        )
+
+    def on_annealing_reheat(self, event: "AnnealingReheatEvent") -> None:
+        """Handle annealing reheat event."""
+        if not self._config.show_steps:
+            return
+        self._print_line(
+            f"Reheat: T {event.old_temperature:.3g} → {event.new_temperature:.3g} "
+            f"(acceptance: {event.acceptance_rate:.1%})",
+            indent=2,
+        )
 
     def on_annealing_completed(self, event: "AnnealingCompletedEvent") -> None:
         """Handle annealing completed event."""
         if not self._config.show_steps:
             return
 
-        by_mixer = self._group_layers_by_mixer(event.best_assignments)
-        placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+        parts = [f"Annealing complete ({event.termination_reason}): {event.steps_taken} steps"]
+        if event.restarts_completed > 1:
+            parts.append(f"{event.restarts_completed} restarts (best: #{event.best_restart + 1})")
+        if event.total_reheats > 0:
+            parts.append(f"{event.total_reheats} reheats")
+        parts.append(f"best={event.best_score:.4g}")
+        self._print_line(", ".join(parts), indent=1)
+
+        if self._config.show_phases:
+            by_mixer = self._group_layers_by_mixer(event.best_assignments)
+            placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+            self._print_line(f"Best: {placement_str}", indent=2)
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded event."""
         self._print_line(
-            f"Annealing complete ({event.termination_reason}): "
-            f"{event.steps_taken} steps, best={event.best_score:.4g}",
+            f"Surrogate: {event.num_samples} samples, exploration rho={event.exploration_rho:.2f}",
             indent=1,
         )
-        if self._config.show_phases:
-            self._print_line(f"Best: {placement_str}", indent=2)
+
+    def on_surrogate_round_started(self, event: "SurrogateRoundStartedEvent") -> None:
+        """Handle surrogate round started event."""
+        self._print(
+            f"ROUND {event.round}/{event.total_rounds}",
+            f"SA found {event.sa_candidates} candidates, "
+            f"evaluating top {event.evals_planned} by EI",
+        )
+
+    def on_surrogate_round_completed(self, event: "SurrogateRoundCompletedEvent") -> None:
+        """Handle surrogate round completed event."""
+        self._print(
+            f"ROUND {event.round}/{event.total_rounds} complete",
+            f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
+            f"rho={event.rho:.4f}, dataset={event.dataset_size}",
+        )

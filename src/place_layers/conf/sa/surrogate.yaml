@@ -1,0 +1,17 @@
+# @package search_strategy.sa
+#
+# SA defaults for the surrogate path (SurrogateSearch).
+# Large step budget is cheap (surrogate evals are ~microseconds).
+
+num_restarts: 20
+steps_per_restart: 500000
+initial_temperature: 0.1
+cooling_rate: 0.99999
+min_temperature: 1e-6
+mutation_prob: 0.3
+max_ruin_fraction: 0.5
+contiguous_ruin_prob: 0.3
+top_k: 10000
+no_op_retries: 0
+seed: 42
+reheat: null

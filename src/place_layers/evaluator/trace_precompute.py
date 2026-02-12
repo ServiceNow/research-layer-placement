@@ -119,6 +119,5 @@ class TracePrecomputeEvaluatorConfig(BaseGenerativeEvaluatorConfig):
 
     # Random seed for reproducibility
     seed: int = Field(
-        default=42,
         description="Random seed for few-shot sampling",
     )

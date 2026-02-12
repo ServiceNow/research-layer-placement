@@ -14,8 +14,13 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
+    SurrogateDatasetLoadedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     BeamGrowthStepEvent,
     BeamGrowthStepStartedEvent,
     BeamPhaseCompletedEvent,
@@ -127,4 +132,28 @@ class SearchObserver(Protocol):
 
     def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
         """Called when annealing within an allocation completes."""
+        ...
+
+    def on_annealing_reheat(self, event: AnnealingReheatEvent) -> None:
+        """Called when adaptive reheating triggers during annealing."""
+        ...
+
+    def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
+        """Called when a new SA restart begins."""
+        ...
+
+    # =========================================================================
+    # Surrogate search events
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: SurrogateDatasetLoadedEvent) -> None:
+        """Called after loading exploration dataset, before surrogate rounds."""
+        ...
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Called when a surrogate refinement round begins (SA + EI done)."""
+        ...
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Called when a surrogate refinement round completes."""
         ...

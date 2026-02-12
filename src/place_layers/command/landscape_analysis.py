@@ -433,7 +433,7 @@ class LandscapeAnalysisCommand(BaseCommand):
 class LandscapeAnalysisCommandConfig(BaseCommandConfig):
     """Configuration for landscape analysis command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = LandscapeAnalysisCommand
+    _impl_class: ClassVar[type[BaseCommand]] = LandscapeAnalysisCommand
 
     command: Literal["landscape_analysis"] = "landscape_analysis"
 

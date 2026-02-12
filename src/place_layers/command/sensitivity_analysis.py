@@ -459,7 +459,7 @@ class SensitivityAnalysisCommand(BaseCommand):
 class SensitivityAnalysisCommandConfig(BaseCommandConfig):
     """Configuration for sensitivity analysis command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = SensitivityAnalysisCommand
+    _impl_class: ClassVar[type[BaseCommand]] = SensitivityAnalysisCommand
 
     command: Literal["sensitivity_analysis"] = "sensitivity_analysis"
 

@@ -1,0 +1,30 @@
+# @package _global_
+# Noise degradation analysis using SA search + mock evaluator
+# Same as noise_analysis_mock_max_perf but with simulated annealing
+#
+# Usage:
+#   python -m place_layers +experiments=noise_analysis_sa_mock_max_perf
+
+defaults:
+  - /command: noise_analysis
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - /search_strategy: cost_constrained_annealing
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+search_strategy:
+  max_allocations: 10
+  sa:
+    initial_temperature: 11.6
+    seed: 42
+
+# 0.0 baseline + log-spaced from ~0.02 to 5.0
+# Dense at low sigma where noise transitions from helpful to harmful
+noise_sigmas: [0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0]
+num_seeds: 50

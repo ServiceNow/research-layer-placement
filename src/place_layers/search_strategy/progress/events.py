@@ -191,7 +191,7 @@ class SearchStartedEvent(BaseModel):
     max_cost: float
     num_layers: int
     mixer_names: tuple[str, ...]
-    max_allocations: int
+    max_allocations: int | None = None  # None for strategies without allocation iteration
     total_allocations: int
     eval_count_lower_bound: int | None = None
     eval_count_upper_bound: int | None = None
@@ -530,45 +530,56 @@ class SwapBeamIterationEvent(BaseModel):
 
 
 # =============================================================================
-# Annealing search events
+# Annealing search events (canonical definitions in annealing.events)
+# =============================================================================
+
+from place_layers.annealing.events import (
+    AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
+    AnnealingStepEvent,
+)
+
+
+# =============================================================================
+# Surrogate search events
 # =============================================================================
 
 
-class AnnealingStepEvent(BaseModel):
-    """Emitted after each annealing step.
-
-    Contains full state information for analysis and replay.
-    """
+class SurrogateDatasetLoadedEvent(BaseModel):
+    """Emitted once after loading exploration dataset, before rounds begin."""
 
     model_config = {"frozen": True}
 
-    event_type: Literal["annealing_step"] = "annealing_step"
-    step: int  # 0-based step number
-    max_steps: int
-    swap: tuple[int, int]  # (layer_a, layer_b) that was tried
-    proposed_assignments: tuple[str, ...]  # Placement after swap
-    proposed_score: float
-    temperature: float  # Temperature before this step
-    delta: float  # proposed_score - current_score
-    acceptance_probability: float  # exp(delta/T) if delta < 0, else 1.0
-    accepted: bool  # Whether the swap was accepted
-    current_assignments: tuple[str, ...]  # Current state after decision
-    current_score: float  # Current score after decision
-    best_assignments: tuple[str, ...]  # Best seen so far
-    best_score: float  # Best score seen so far
+    event_type: Literal["surrogate_dataset_loaded"] = "surrogate_dataset_loaded"
+    num_samples: int
+    exploration_rho: float
 
 
-class AnnealingCompletedEvent(BaseModel):
-    """Emitted when annealing within an allocation completes."""
+class SurrogateRoundStartedEvent(BaseModel):
+    """Emitted after SA + EI selection, before real evaluations."""
 
     model_config = {"frozen": True}
 
-    event_type: Literal["annealing_completed"] = "annealing_completed"
-    steps_taken: int
-    final_temperature: float
-    termination_reason: Literal["max_steps", "min_temperature", "no_swaps"]
-    best_assignments: tuple[str, ...]
-    best_score: float
+    event_type: Literal["surrogate_round_started"] = "surrogate_round_started"
+    round: int  # 1-indexed
+    total_rounds: int
+    sa_candidates: int  # distinct candidates from SA
+    evals_planned: int  # top-k selected by EI
+
+
+class SurrogateRoundCompletedEvent(BaseModel):
+    """Emitted after evaluations, surrogate refit, and diagnostics."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["surrogate_round_completed"] = "surrogate_round_completed"
+    round: int  # 1-indexed
+    total_rounds: int
+    rho: float  # CV rho after refit
+    prediction_correlation: float  # Spearman(surrogate predictions, real scores) for this round
+    dataset_size: int  # total samples after round
+    best_score: float  # current best real score
 
 
 # Discriminated union of all search events
@@ -593,7 +604,13 @@ AnySearchEvent = Annotated[
     | SwapBeamIterationEvent
     # Annealing events
     | AnnealingStepEvent
-    | AnnealingCompletedEvent,
+    | AnnealingCompletedEvent
+    | AnnealingReheatEvent
+    | AnnealingRestartEvent
+    # Surrogate events
+    | SurrogateDatasetLoadedEvent
+    | SurrogateRoundStartedEvent
+    | SurrogateRoundCompletedEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -627,4 +644,10 @@ __all__ = [
     # Annealing types
     "AnnealingStepEvent",
     "AnnealingCompletedEvent",
+    "AnnealingReheatEvent",
+    "AnnealingRestartEvent",
+    # Surrogate types
+    "SurrogateDatasetLoadedEvent",
+    "SurrogateRoundStartedEvent",
+    "SurrogateRoundCompletedEvent",
 ]

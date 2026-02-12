@@ -365,7 +365,7 @@ class ConvergenceAnalysisCommand(BaseCommand):
 class ConvergenceAnalysisCommandConfig(BaseCommandConfig):
     """Configuration for convergence analysis command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = ConvergenceAnalysisCommand
+    _impl_class: ClassVar[type[BaseCommand]] = ConvergenceAnalysisCommand
 
     command: Literal["convergence_analysis"] = "convergence_analysis"
 

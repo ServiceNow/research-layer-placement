@@ -40,6 +40,7 @@ def _create_estimator_bounds(
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
@@ -229,6 +230,7 @@ async def test_min_cost_creates_progress_estimator() -> None:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
@@ -294,6 +296,7 @@ async def test_min_cost_eval_count_within_bounds(
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
@@ -353,6 +356,7 @@ async def test_min_cost_early_termination_bounds() -> None:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()
@@ -418,6 +422,7 @@ async def test_final_assignment_valid_and_complete() -> None:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.2,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     evaluator = evaluator_config.create_evaluator()

@@ -735,7 +735,7 @@ class TransformersBackend(SyncBackend):
 class TransformersBackendConfig(BaseBackendConfig):
     """Configuration for Transformers generation backend."""
 
-    _backend_class: ClassVar[type[SyncBackend]] = TransformersBackend
+    _impl_class: ClassVar[type[SyncBackend]] = TransformersBackend
 
     backend_type: Literal["transformers"] = "transformers"
 

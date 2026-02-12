@@ -56,6 +56,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     AnySearchEvent,
     BeamCandidateEvaluatedEvent,
@@ -67,6 +69,9 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateDatasetLoadedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapBeamNodeId,
@@ -77,53 +82,3 @@ from place_layers.search_strategy.progress.layermap_display import LayermapDispl
 from place_layers.search_strategy.progress.plain_display import PlainDisplay
 from place_layers.search_strategy.progress.protocol import SearchObserver
 from place_layers.search_strategy.progress.rich_display import RichDisplay
-
-__all__ = [
-    # Common/outer-loop events (all strategies)
-    "AllocationCompletedEvent",
-    "AllocationPlanEvent",
-    "AllocationStartedEvent",
-    "AnySearchEvent",
-    "BestUpdatedEvent",
-    "BoundsUpdatedEvent",
-    "SearchCompletedEvent",
-    "SearchStartedEvent",
-    # Hierarchical beam search events
-    "BeamCandidateEvaluatedEvent",
-    "BeamGrowthStepEvent",
-    "BeamGrowthStepStartedEvent",
-    "BeamPhaseCompletedEvent",
-    "BeamPhaseStartedEvent",
-    # Swap-beam events
-    "SwapBeamNodeId",
-    "SwapCandidate",
-    "SwapBeamIterationStartedEvent",
-    "SwapEvaluatedEvent",
-    "SwapBeamIterationEvent",
-    # Annealing events
-    "AnnealingStepEvent",
-    "AnnealingCompletedEvent",
-    # Protocol
-    "SearchObserver",
-    # Formatting
-    "PlacementFormatterMixin",
-    # Displays
-    "LayermapDisplay",
-    "PlainDisplay",
-    "RichDisplay",
-    "EventDiskWriter",
-    "EventRecord",
-    # Display configs
-    "BaseObserverConfig",
-    "DiskWriterConfig",
-    "DisplayObserverConfig",
-    "LayermapDisplayConfig",
-    "LogObserverConfig",
-    "ObserversConfig",
-    "PlainDisplayConfig",
-    "RichDisplayConfig",
-    # Progress estimation
-    "AllocationProgressInfo",
-    "ProgressEstimate",
-    "SearchProgressEstimator",
-]

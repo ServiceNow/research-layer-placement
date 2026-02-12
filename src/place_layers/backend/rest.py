@@ -918,7 +918,7 @@ class BaseRESTBackendConfig(BaseBackendConfig):
     Subclasses must provide the `servers` property (either as a field or computed).
     """
 
-    _backend_class: ClassVar[type[AsyncBackend]] = RESTBackend
+    _impl_class: ClassVar[type[AsyncBackend]] = RESTBackend
 
     max_concurrent_per_server: int = Field(
         description="Maximum concurrent requests per server",

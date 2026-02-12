@@ -131,7 +131,7 @@ class EvaluateCommand(BaseCommand):
 class EvaluateCommandConfig(BaseCommandConfig):
     """Configuration for evaluate command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = EvaluateCommand
+    _impl_class: ClassVar[type[BaseCommand]] = EvaluateCommand
 
     command: Literal["evaluate"] = "evaluate"
 
