@@ -378,8 +378,16 @@ class TraceDataset(BaseModel):
         malformed = 0
 
         truncated_count = 0
-        if validation_path.exists():
-            with validation_path.open() as f:
+        if not validation_path.exists():
+            raise FileNotFoundError(
+                f"Validation file not found: {validation_path}\n"
+                f"Expected output directory structure:\n"
+                f"  {output_dir}/\n"
+                f"    metadata.json\n"
+                f"    validation.jsonl  <- missing"
+            )
+
+        with validation_path.open() as f:
                 for line in f:
                     line = line.strip()
                     if not line:
