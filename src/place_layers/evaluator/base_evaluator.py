@@ -62,6 +62,17 @@ class BaseEvaluator[ParametersT]:
         """Number of mixer types."""
         return len(self.mixer_names)
 
+    def get_metrics(self) -> dict[str, float] | None:
+        """Return evaluator-specific metrics beyond the main score.
+
+        Subclasses can override to provide additional metrics that will be
+        included in ``evaluation_results.json`` under the ``metrics`` key.
+
+        Returns:
+            Dictionary of metric name to value, or None if no extra metrics.
+        """
+        return None
+
     async def evaluate(self, parameters: ParametersT) -> float:
         """
         Evaluate parameters and return a score.

@@ -51,6 +51,10 @@ class EvaluationResult(BaseModel):
         description="Mixer indices per layer (null if no placement)"
     )
     score: float = Field(description="Evaluation score")
+    metrics: dict[str, float] | None = Field(
+        default=None,
+        description="Evaluator-specific metrics (e.g., speculative decoding stats)",
+    )
 
 
 class EvaluateCommand(BaseCommand):
@@ -74,6 +78,9 @@ class EvaluateCommand(BaseCommand):
             score = await evaluator.evaluate(resolved.placement)
             logger.info(f"Score: {score:.6f}")
 
+            # Collect evaluator-specific metrics (if any)
+            extra_metrics = evaluator.get_metrics()
+
             # Build result
             result = EvaluationResult(
                 timestamp=datetime.now().isoformat(),
@@ -81,6 +88,7 @@ class EvaluateCommand(BaseCommand):
                 placement=resolved.placement_names,
                 placement_indices=resolved.placement_indices,
                 score=score,
+                metrics=extra_metrics,
             )
 
         # Save using result handler

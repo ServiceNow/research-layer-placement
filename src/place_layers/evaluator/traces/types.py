@@ -96,6 +96,41 @@ class Generation(BaseGeneration):
     record_type: Literal["generation"] = "generation"
 
 
+class SpeculativeGeneration(BaseGeneration):
+    """Generation record from speculative decoding with per-problem metrics.
+
+    Extends BaseGeneration with speculative decoding efficiency metrics.
+    Used by the SpeculativeEvaluator to track both correctness and
+    draft/target interaction statistics per problem.
+    """
+
+    record_type: Literal["speculative_generation"] = "speculative_generation"
+
+    # Speculative decoding metrics
+    num_speculative_steps: int = Field(
+        description="Number of speculative steps (= target model forward passes)"
+    )
+    total_draft_tokens: int = Field(
+        description="Total draft tokens proposed across all steps"
+    )
+    num_accepted_tokens: int = Field(
+        description="Total accepted draft tokens"
+    )
+    acceptance_rate: float = Field(
+        description="Fraction of draft tokens accepted (num_accepted / total_draft)"
+    )
+
+    # Placement provenance
+    draft_placement: list[str] | None = Field(
+        default=None,
+        description="Draft model placement (mixer names per layer)",
+    )
+    target_placement: list[str] | None = Field(
+        default=None,
+        description="Target model placement (mixer names per layer)",
+    )
+
+
 class SkippedProblem(BaseModel):
     """A problem that was skipped during trace generation."""
 
@@ -252,7 +287,12 @@ class ISProblemRecord(BaseModel):
 
 
 TraceRecord = Annotated[
-    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord,
+    Trace
+    | Generation
+    | SpeculativeGeneration
+    | SkippedProblem
+    | LikelihoodRecord
+    | ISProblemRecord,
     Field(discriminator="record_type"),
 ]
 

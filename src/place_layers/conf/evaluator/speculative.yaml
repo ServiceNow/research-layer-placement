@@ -1,0 +1,51 @@
+# @package evaluator
+# Speculative decoding evaluator - measures accuracy using draft/target placements
+#
+# Uses speculative decoding (Leviathan et al., 2023) where a "draft" placement
+# proposes tokens cheaply and a "target" placement verifies them via rejection
+# sampling. The output is exactly distributed according to the target model.
+#
+# The draft placement is specified via +placement=... (same as other evaluators).
+# The target placement defaults to all-attention and can be overridden:
+#   evaluator.target_placement=[attention,gdn]
+#
+# In addition to accuracy, reports speculative decoding metrics:
+#   - avg_acceptance_rate: fraction of draft tokens accepted
+#   - avg_target_model_calls: target forward passes per problem
+#   - avg_tokens_generated: completion tokens per problem
+#
+# NOTE: Only works with TransformersBackend (requires direct model access).
+# NOTE: Requires temperature > 0 for valid rejection sampling.
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=speculative \
+#       +backend=transformers +model=apriel2_0_5b_dev +task=gsm8k_quick \
+#       +generation=sampling +placement=every2nd-gdn
+
+evaluator_type: speculative
+
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
+
+# Task configuration (composed from task/ config group)
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
+
+# Generation parameters (composed from generation/ config group)
+# Speculative decoding produces one completion per problem
+samples_per_problem: 1
+max_new_tokens: ${generation.max_new_tokens}
+temperature: ${generation.temperature}
+top_p: ${generation.top_p}
+
+# Prompt formatting
+use_chat_template: true
+
+# Truncated sample handling
+evaluate_truncated_samples: false
+
+# Speculative decoding parameters
+gamma: 8                        # draft tokens per speculative step
+target_placement: [attention]   # target model placement (default: all-attention)
