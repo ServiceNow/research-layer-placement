@@ -29,6 +29,7 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.result_handler import ResultHandlerConfig
@@ -269,8 +270,10 @@ class ExplorePlacementsCommand(BaseCommand):
         logger.info("Output directory: %s", output_dir)
         logger.info("Starting placement exploration...")
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
-            problem = self.config.problem.create_problem(evaluator)
+        async with self.config.evaluators.create_evaluators(
+            output_dir
+        ) as evaluator_instances:
+            problem = self.config.problem.create_problem(evaluator_instances)
 
             if not isinstance(problem, CostConstrainedProblem):
                 raise CommandError(
@@ -279,7 +282,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
 
             cost_model = problem.cost_model
-            num_layers = evaluator.num_layers
+            num_layers = evaluator_instances.num_layers
 
             # Determine cost budget for feasibility filtering
             from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
@@ -539,7 +542,9 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
 
     command: Literal["explore_placements"] = "explore_placements"
 
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single or multiple with aggregation)"
+    )
     problem: ProblemConfig = Field(description="Problem configuration")
     result_handler: ResultHandlerConfig = Field(
         description="Result handler configuration"
