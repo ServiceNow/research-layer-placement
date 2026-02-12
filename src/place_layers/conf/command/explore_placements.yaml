@@ -20,12 +20,17 @@ batch_size: 500         # Samples per subsequent batch
 max_samples: 10000      # Hard cap on total evaluations
 
 # Stopping criteria
-target_rank_correlation: 0.7   # Stop when Spearman rho reaches this
+target_rank_correlation: 0.95  # Stop when Ridge CV Spearman rho reaches this
+max_gap: 0.15                  # Max train-test gap for model selection & stopping
 plateau_patience: 3            # Batches without improvement before stopping
 plateau_min_improvement: 0.02  # Minimum rho improvement to count as progress
 cv_folds: 5                    # Cross-validation folds for quality estimation
 
 # Surrogate (for quality checks during exploration)
-rf_n_estimators: 100
+rf_n_estimators: 200
 
 seed: 42
+
+# Feature expansion selection
+expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
+expansion_target_rho: 0.95      # target for level selection

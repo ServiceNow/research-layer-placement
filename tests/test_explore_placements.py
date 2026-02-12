@@ -10,6 +10,7 @@ from place_layers.command.explore_placements import (
     ExplorationDataset,
     _append_to_jsonl,
     _check_plateau,
+    _compute_cost_uniform_weights,
     _enumerate_feasible_allocations,
     _get_allocation,
     _load_progress,
@@ -25,7 +26,7 @@ from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
-from place_layers.surrogate.forest_surrogate import ForestSurrogate
+from place_layers.surrogate.model_selection import ridge_cv_rho
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -119,6 +120,52 @@ class TestHelpers:
         for assignment in batch:
             assert len(assignment) == 5
 
+    def test_sample_batch_with_weights(self) -> None:
+        """Weights should bias allocation selection towards higher-weighted allocations."""
+        allocs = [{"m0": 5, "m1": 0}, {"m0": 0, "m1": 5}]
+        # Heavily bias towards second allocation
+        weights = [0.01, 0.99]
+        rng = random.Random(42)
+        batch = _sample_batch(200, allocs, num_layers=5, rng=rng, weights=weights)
+
+        # Count how many samples came from each allocation
+        second_alloc_count = sum(
+            1 for a in batch if a.count("m1") == 5
+        )
+        # With 99% weight on second allocation, vast majority should be from it
+        assert second_alloc_count > 150, (
+            f"Expected >150 samples from second allocation, got {second_alloc_count}"
+        )
+
+    def test_cost_uniform_weights_basic(self) -> None:
+        """Each cost level should receive equal total weight."""
+        config = LinearCostModelConfig(
+            cost_model_type="linear",
+            mixer_costs={"m0": 1.0, "m1": 0.5},
+        )
+        cost_model = config.create_cost_model()
+        num_layers = 4
+
+        # Enumerate all allocations (no budget)
+        allocs = _enumerate_feasible_allocations(cost_model, num_layers, cost_budget=None)
+        weights = _compute_cost_uniform_weights(allocs, cost_model)
+
+        assert len(weights) == len(allocs)
+
+        # Group total weight by cost level
+        cost_totals: dict[float, float] = {}
+        for alloc, w in zip(allocs, weights):
+            cost = round(cost_model.allocation_cost(alloc), 10)
+            cost_totals[cost] = cost_totals.get(cost, 0.0) + w
+
+        # Each cost level should have equal total weight (they're all 1.0
+        # since each cost level has exactly 1 allocation for linear costs)
+        totals = list(cost_totals.values())
+        for t in totals:
+            assert abs(t - totals[0]) < 1e-9, (
+                f"Cost levels have unequal total weights: {cost_totals}"
+            )
+
     def test_check_plateau_no_plateau(self) -> None:
         history = [0.1, 0.2, 0.3, 0.4, 0.5]
         assert not _check_plateau(history, patience=3, min_improvement=0.02)
@@ -193,7 +240,6 @@ class TestExploreIntegration:
         rng = random.Random(42)
         min_samples = 100
         batch_size = 50
-        max_samples = 200
 
         all_assignments: list[tuple[str, ...]] = []
         all_scores: list[float] = []
@@ -208,15 +254,15 @@ class TestExploreIntegration:
 
         assert len(all_assignments) == min_samples
 
-        # Quality check
-        surrogate = ForestSurrogate(
-            n_estimators=50, max_depth=None, seed=42,
+        # Quality check via Ridge CV
+        rho1 = ridge_cv_rho(
+            assignments=all_assignments,
+            scores=np.array(all_scores),
             mixer_names=cost_model.phase_order,
+            cv_folds=5,
+            seed=42,
         )
-        rho = surrogate.cross_validate(
-            all_assignments, np.array(all_scores), cv_folds=5
-        )
-        rho_history = [rho]
+        rho_history = [rho1]
 
         # One more batch
         batch = _sample_batch(batch_size, feasible, num_layers, rng)
@@ -226,16 +272,18 @@ class TestExploreIntegration:
             all_assignments.append(tuple(assignment))
             all_scores.append(score)
 
-        rho2 = surrogate.cross_validate(
-            all_assignments, np.array(all_scores), cv_folds=5
+        rho2 = ridge_cv_rho(
+            assignments=all_assignments,
+            scores=np.array(all_scores),
+            mixer_names=cost_model.phase_order,
+            cv_folds=5,
+            seed=42,
         )
         rho_history.append(rho2)
 
         # Assertions
         assert len(all_assignments) == min_samples + batch_size
         assert rho_history[0] > -1.0  # Sanity: rho is computed
-        # rho should not decrease by much with more data
-        # (may not always increase but shouldn't crash)
         assert len(rho_history) == 2
 
     async def test_exploration_dataset_serialization(self) -> None:

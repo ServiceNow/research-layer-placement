@@ -9,4 +9,10 @@ defaults:
   - /problem: cost_max_perf_apriel_15b
   - _self_
 
-max_samples: 3000  # Smaller for mock (evaluations are cheap)
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+max_samples: 10000  # Smaller for mock (evaluations are cheap)

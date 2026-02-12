@@ -538,6 +538,47 @@ from place_layers.annealing.events import (
 )
 
 
+# =============================================================================
+# Surrogate search events
+# =============================================================================
+
+
+class SurrogateDatasetLoadedEvent(BaseModel):
+    """Emitted once after loading exploration dataset, before rounds begin."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["surrogate_dataset_loaded"] = "surrogate_dataset_loaded"
+    num_samples: int
+    exploration_rho: float
+
+
+class SurrogateRoundStartedEvent(BaseModel):
+    """Emitted after SA + EI selection, before real evaluations."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["surrogate_round_started"] = "surrogate_round_started"
+    round: int  # 1-indexed
+    total_rounds: int
+    sa_candidates: int  # distinct candidates from SA
+    evals_planned: int  # top-k selected by EI
+
+
+class SurrogateRoundCompletedEvent(BaseModel):
+    """Emitted after evaluations, surrogate refit, and diagnostics."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["surrogate_round_completed"] = "surrogate_round_completed"
+    round: int  # 1-indexed
+    total_rounds: int
+    rho: float  # CV rho after refit
+    prediction_correlation: float  # Spearman(surrogate predictions, real scores) for this round
+    dataset_size: int  # total samples after round
+    best_score: float  # current best real score
+
+
 # Discriminated union of all search events
 AnySearchEvent = Annotated[
     # Common/outer-loop events
@@ -562,7 +603,11 @@ AnySearchEvent = Annotated[
     | AnnealingStepEvent
     | AnnealingCompletedEvent
     | AnnealingReheatEvent
-    | AnnealingRestartEvent,
+    | AnnealingRestartEvent
+    # Surrogate events
+    | SurrogateDatasetLoadedEvent
+    | SurrogateRoundStartedEvent
+    | SurrogateRoundCompletedEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -598,4 +643,8 @@ __all__ = [
     "AnnealingCompletedEvent",
     "AnnealingReheatEvent",
     "AnnealingRestartEvent",
+    # Surrogate types
+    "SurrogateDatasetLoadedEvent",
+    "SurrogateRoundStartedEvent",
+    "SurrogateRoundCompletedEvent",
 ]

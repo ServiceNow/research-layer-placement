@@ -1,8 +1,8 @@
 # @package search_strategy
 #
-# Surrogate-assisted search: RF + Expected Improvement.
+# Surrogate-assisted search: Ridge + Bootstrap ensemble + Expected Improvement.
 #
-# Uses a Random Forest surrogate to score candidate placements cheaply,
+# Uses a Ridge regression surrogate to score candidate placements cheaply,
 # then validates top candidates with the real evaluator.
 #
 # Requires a pre-built exploration dataset from explore_placements command.
@@ -19,8 +19,6 @@ exploration_dataset_path: ???
 cv_folds: 5
 
 # --- Surrogate model ---
-rf_n_estimators: 100
-rf_max_depth: null
 ei_xi: 0.01
 
 # --- Refinement loop ---

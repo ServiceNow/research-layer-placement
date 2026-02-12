@@ -16,6 +16,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import KFold
 
 from place_layers.surrogate.encoding import (
+    FeatureExpansionConfig,
     build_type_mapping,
     encode_batch,
     encode_config,
@@ -36,16 +37,21 @@ class ForestSurrogate:
         max_depth: int | None,
         seed: int,
         mixer_names: list[str],
+        min_samples_leaf: int = 1,
+        feature_config: FeatureExpansionConfig | None = None,
     ) -> None:
         self._model = RandomForestRegressor(
             n_estimators=n_estimators,
             max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
             random_state=seed,
             n_jobs=-1,
         )
         self._seed = seed
+        self._min_samples_leaf = min_samples_leaf
         self._is_fitted = False
         self._type_to_int, self._int_to_type = build_type_mapping(mixer_names)
+        self._feature_config = feature_config
 
     def fit(self, assignments: list[tuple[str, ...]], y: np.ndarray) -> None:
         """Fit the random forest on training data.
@@ -54,18 +60,20 @@ class ForestSurrogate:
             assignments: List of placements (each a tuple of mixer names).
             y: Target values of shape (n_samples,).
         """
-        X = encode_batch(assignments, self._type_to_int)
+        X = encode_batch(assignments, self._type_to_int, self._feature_config)
         self._model.fit(X, y)
         self._is_fitted = True
 
     def predict_mean(self, assignments: list[tuple[str, ...]]) -> np.ndarray:
         """Fast mean-only prediction using sklearn's optimized predict."""
-        X = encode_batch(assignments, self._type_to_int)
+        X = encode_batch(assignments, self._type_to_int, self._feature_config)
         return self._model.predict(X)
 
     def predict_mean_one(self, assignment: tuple[str, ...] | list[str]) -> float:
         """Single-assignment mean prediction for SA hot loop."""
-        x = encode_config(assignment, self._type_to_int).reshape(1, -1)
+        x = encode_config(
+            assignment, self._type_to_int, self._feature_config
+        ).reshape(1, -1)
         return float(self._model.predict(x)[0])
 
     def predict(
@@ -79,7 +87,7 @@ class ForestSurrogate:
         Returns:
             (mean, std) arrays, each of shape (n_samples,).
         """
-        X = encode_batch(assignments, self._type_to_int)
+        X = encode_batch(assignments, self._type_to_int, self._feature_config)
         # Collect predictions from each tree
         tree_preds = np.array(
             [tree.predict(X) for tree in self._model.estimators_]
@@ -98,7 +106,9 @@ class ForestSurrogate:
 
     def feature_names(self, num_layers: int) -> list[str]:
         """Human-readable feature names for diagnostics."""
-        return _feature_names(num_layers, self._int_to_type)
+        return _feature_names(
+            num_layers, self._int_to_type, self._feature_config
+        )
 
     def cross_validate(
         self,
@@ -116,7 +126,7 @@ class ForestSurrogate:
         Returns:
             Mean Spearman rho across folds.
         """
-        X = encode_batch(assignments, self._type_to_int)
+        X = encode_batch(assignments, self._type_to_int, self._feature_config)
         kf = KFold(n_splits=cv_folds, shuffle=True, random_state=self._seed)
         rhos = []
         for train_idx, val_idx in kf.split(X):
@@ -126,6 +136,7 @@ class ForestSurrogate:
             rf = RandomForestRegressor(
                 n_estimators=self._model.n_estimators,
                 max_depth=self._model.max_depth,
+                min_samples_leaf=self._min_samples_leaf,
                 random_state=self._seed,
                 n_jobs=-1,
             )

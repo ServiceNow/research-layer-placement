@@ -33,7 +33,11 @@ from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
-from place_layers.surrogate.forest_surrogate import ForestSurrogate
+from place_layers.surrogate.encoding import FeatureExpansionConfig
+from place_layers.surrogate.model_selection import (
+    ridge_cv_rho,
+    select_expansion_level,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +63,9 @@ class ExplorationDataset(BaseModel):
     mixer_names: list[str]
     num_samples: int
     termination_reason: Literal["target_reached", "plateau", "max_samples"]
+
+    # Feature expansion (None = Level 0 / unary only)
+    feature_config: FeatureExpansionConfig | None = None
 
     # Learning curve
     rho_history: list[float]
@@ -101,7 +108,7 @@ def _load_progress(
             scores.append(record["score"])
             allocations.append(record["allocation"])
 
-    logger.info(f"Loaded {len(assignments)} samples from {path}")
+    logger.info("Loaded %d samples from %s", len(assignments), path)
     return assignments, scores, allocations
 
 
@@ -154,19 +161,55 @@ def _enumerate_feasible_allocations(
     return feasible
 
 
+def _compute_cost_uniform_weights(
+    feasible_allocations: list[Allocation],
+    cost_model: BaseCostModel,
+) -> list[float]:
+    """Compute sampling weights for cost-uniform allocation sampling.
+
+    Each distinct cost level receives equal total weight, so the surrogate
+    sees equal coverage across the cost spectrum regardless of how many
+    allocations exist at each cost level.
+
+    Without this, uniform-over-allocation sampling overweights cheap
+    allocations (combinatorially more of them) and underweights the
+    expensive region near the budget boundary — exactly where the search
+    concentrates.
+    """
+    costs = [cost_model.allocation_cost(a) for a in feasible_allocations]
+    # Group by cost level (round to avoid float precision issues)
+    rounded = [round(c, 10) for c in costs]
+    cost_counts: dict[float, int] = {}
+    for rc in rounded:
+        cost_counts[rc] = cost_counts.get(rc, 0) + 1
+    return [1.0 / cost_counts[rc] for rc in rounded]
+
+
 def _sample_batch(
     n: int,
     feasible_allocations: list[Allocation],
     num_layers: int,
     rng: random.Random,
+    weights: list[float] | None = None,
 ) -> list[list[str]]:
     """Sample n random placements from feasible allocations.
 
-    Each sample: pick a random allocation, then generate a random assignment.
+    Each sample: pick a random allocation (weighted if *weights* provided),
+    then generate a random assignment for it.
+
+    Args:
+        weights: Per-allocation sampling weights.  When provided, uses
+            ``rng.choices`` (cost-uniform weighting); when *None*, uses
+            ``rng.choices`` with equal weights.  Both paths consume the
+            same number of RNG calls for deterministic resumption.
     """
+    # Always use rng.choices for consistent RNG call pattern (1 call per sample)
+    # regardless of whether custom weights are provided.
+    indices = range(len(feasible_allocations))
     batch: list[list[str]] = []
     for _ in range(n):
-        allocation = rng.choice(feasible_allocations)
+        idx = rng.choices(indices, weights=weights, k=1)[0]
+        allocation = feasible_allocations[idx]
         assignment = random_assignment(rng, allocation, num_layers)
         batch.append(assignment)
     return batch
@@ -177,6 +220,7 @@ def _fast_forward_rng(
     num_completed: int,
     feasible_allocations: list[Allocation],
     num_layers: int,
+    weights: list[float] | None = None,
 ) -> None:
     """Advance the RNG to match the state after num_completed samples.
 
@@ -184,8 +228,10 @@ def _fast_forward_rng(
     of random choices that were made for the already-completed samples.
     Replays the exact same calls as _sample_batch → random_assignment.
     """
+    indices = range(len(feasible_allocations))
     for _ in range(num_completed):
-        allocation = rng.choice(feasible_allocations)
+        idx = rng.choices(indices, weights=weights, k=1)[0]
+        allocation = feasible_allocations[idx]
         # random_assignment builds a list and shuffles — consume same RNG calls
         random_assignment(rng, allocation, num_layers)
 
@@ -220,7 +266,7 @@ class ExplorePlacementsCommand(BaseCommand):
         hydra_cfg = HydraConfig.get()
         output_dir = Path(hydra_cfg.runtime.output_dir)
 
-        logger.info(f"Output directory: {output_dir}")
+        logger.info("Output directory: %s", output_dir)
         logger.info("Starting placement exploration...")
 
         async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
@@ -249,12 +295,27 @@ class ExplorePlacementsCommand(BaseCommand):
                 cost_model, num_layers, cost_budget
             )
             logger.info(
-                f"Found {len(feasible_allocations)} feasible allocations "
-                f"for {num_layers} layers"
+                "Found %d feasible allocations for %d layers",
+                len(feasible_allocations), num_layers,
+            )
+            logger.info(
+                "Stopping criteria: target_rho=%g, "
+                "plateau_patience=%d (min_improvement=%g), max_samples=%d",
+                self.config.target_rank_correlation,
+                self.config.plateau_patience,
+                self.config.plateau_min_improvement,
+                self.config.max_samples,
             )
 
             if not feasible_allocations:
                 raise CommandError("No feasible allocations found within budget")
+
+            # Cost-uniform sampling weights: each cost level gets equal total
+            # weight so the surrogate sees balanced coverage across the cost
+            # spectrum (avoids oversampling cheap allocations).
+            sampling_weights = _compute_cost_uniform_weights(
+                feasible_allocations, cost_model
+            )
 
             # Load existing progress
             progress_path = output_dir / "exploration_progress.jsonl"
@@ -269,10 +330,11 @@ class ExplorePlacementsCommand(BaseCommand):
             rng = random.Random(self.config.seed)
             if all_assignments:
                 _fast_forward_rng(
-                    rng, len(all_assignments), feasible_allocations, num_layers
+                    rng, len(all_assignments), feasible_allocations, num_layers,
+                    weights=sampling_weights,
                 )
                 logger.info(
-                    f"Resumed from {len(all_assignments)} completed samples"
+                    "Resumed from %d completed samples", len(all_assignments),
                 )
 
             # --- Phase 1: Initial batch ---
@@ -280,9 +342,10 @@ class ExplorePlacementsCommand(BaseCommand):
                 0, self.config.min_samples - len(all_assignments)
             )
             if remaining_initial > 0:
-                logger.info(f"Sampling initial batch of {remaining_initial}")
+                logger.info("Sampling initial batch of %d", remaining_initial)
                 batch = _sample_batch(
-                    remaining_initial, feasible_allocations, num_layers, rng
+                    remaining_initial, feasible_allocations, num_layers, rng,
+                    weights=sampling_weights,
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
@@ -296,24 +359,59 @@ class ExplorePlacementsCommand(BaseCommand):
                         progress_path, assignment_tuple, score, allocation
                     )
 
-            # Create surrogate for quality checks
-            surrogate = ForestSurrogate(
-                n_estimators=self.config.rf_n_estimators,
-                max_depth=None,
-                seed=self.config.seed,
-                mixer_names=phase_order,
-            )
+            # --- Phase 2: Expansion selection ---
+            feature_config: FeatureExpansionConfig | None = None
+            if (
+                self.config.expansion_max_order > 1
+                and len(all_assignments) >= self.config.cv_folds
+            ):
+                expansion_result = select_expansion_level(
+                    assignments=all_assignments,
+                    scores=np.array(all_scores),
+                    mixer_names=phase_order,
+                    cv_folds=self.config.cv_folds,
+                    target_rho=self.config.expansion_target_rho,
+                    max_order=self.config.expansion_max_order,
+                    seed=self.config.seed,
+                )
+                for lr in expansion_result.level_results:
+                    logger.info(
+                        "Expansion level %d: %d features, rho=%.4g "
+                        "(max_order=%d, pairwise_max_range=%d)",
+                        lr.level,
+                        lr.num_features,
+                        lr.rho,
+                        lr.config.max_order,
+                        lr.config.pairwise_max_range,
+                    )
+                if expansion_result.selected_level > 0:
+                    feature_config = expansion_result.selected_config
+                    logger.info(
+                        "Selected expansion level %d: max_order=%d, "
+                        "pairwise_max_range=%d",
+                        expansion_result.selected_level,
+                        feature_config.max_order,
+                        feature_config.pairwise_max_range,
+                    )
+                else:
+                    logger.info("Expansion selection: staying at level 0 (unary only)")
 
-            # --- Phase 2: First quality check ---
+            # --- Phase 2b: First quality check (Ridge CV) ---
             if len(all_assignments) >= self.config.cv_folds:
-                rho = surrogate.cross_validate(
-                    all_assignments, np.array(all_scores), self.config.cv_folds
+                rho = ridge_cv_rho(
+                    assignments=all_assignments,
+                    scores=np.array(all_scores),
+                    mixer_names=phase_order,
+                    feature_config=feature_config,
+                    cv_folds=self.config.cv_folds,
+                    seed=self.config.seed,
                 )
                 rho_history.append(rho)
                 samples_at_check.append(len(all_assignments))
                 logger.info(
-                    f"Initial quality check: rho={rho:.4f} "
-                    f"({len(all_assignments)} samples)"
+                    "Ridge CV rho=%.4g (%d samples)",
+                    rho,
+                    len(all_assignments),
                 )
             else:
                 rho = 0.0
@@ -328,8 +426,8 @@ class ExplorePlacementsCommand(BaseCommand):
                 if rho >= self.config.target_rank_correlation:
                     termination_reason = "target_reached"
                     logger.info(
-                        f"Target rho ({self.config.target_rank_correlation}) "
-                        f"reached: {rho:.4f}"
+                        "Target rho (%g) reached: %.4g",
+                        self.config.target_rank_correlation, rho,
                     )
                     break
 
@@ -340,7 +438,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 ):
                     termination_reason = "plateau"
                     logger.info(
-                        f"Plateau detected after {len(rho_history)} checks"
+                        "Plateau detected after %d checks", len(rho_history),
                     )
                     break
 
@@ -350,11 +448,12 @@ class ExplorePlacementsCommand(BaseCommand):
                     self.config.max_samples - len(all_assignments),
                 )
                 logger.info(
-                    f"Sampling batch of {batch_size} "
-                    f"(total: {len(all_assignments)})"
+                    "Sampling batch of %d (total: %d)",
+                    batch_size, len(all_assignments),
                 )
                 batch = _sample_batch(
-                    batch_size, feasible_allocations, num_layers, rng
+                    batch_size, feasible_allocations, num_layers, rng,
+                    weights=sampling_weights,
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
@@ -368,18 +467,30 @@ class ExplorePlacementsCommand(BaseCommand):
                         progress_path, assignment_tuple, score, allocation
                     )
 
-                # Re-check quality
-                rho = surrogate.cross_validate(
-                    all_assignments, np.array(all_scores), self.config.cv_folds
+                # Re-check quality via Ridge CV
+                rho = ridge_cv_rho(
+                    assignments=all_assignments,
+                    scores=np.array(all_scores),
+                    mixer_names=phase_order,
+                    feature_config=feature_config,
+                    cv_folds=self.config.cv_folds,
+                    seed=self.config.seed,
                 )
+                rho_delta = rho - rho_history[-1] if rho_history else rho
                 rho_history.append(rho)
                 samples_at_check.append(len(all_assignments))
                 logger.info(
-                    f"Quality check: rho={rho:.4f} "
-                    f"({len(all_assignments)} samples)"
+                    "Ridge CV rho=%.4g (%+.4g) at %d samples [target=%g]",
+                    rho,
+                    rho_delta,
+                    len(all_assignments),
+                    self.config.target_rank_correlation,
                 )
 
         # Build result dataset
+        assert rho_history, (
+            "Quality check was never run — need at least cv_folds samples"
+        )
         dataset = ExplorationDataset(
             assignments=all_assignments,
             scores=all_scores,
@@ -388,6 +499,7 @@ class ExplorePlacementsCommand(BaseCommand):
             mixer_names=phase_order,
             num_samples=len(all_assignments),
             termination_reason=termination_reason,
+            feature_config=feature_config,
             rho_history=rho_history,
             samples_at_check=samples_at_check,
             final_rho=rho_history[-1] if rho_history else 0.0,
@@ -398,9 +510,11 @@ class ExplorePlacementsCommand(BaseCommand):
         await result_handler.save(dataset, output_dir / "exploration_results.json")
 
         logger.info(
-            f"Exploration complete: {dataset.num_samples} samples, "
-            f"final rho={dataset.final_rho:.4f}, "
-            f"reason={dataset.termination_reason}"
+            "Exploration complete: %d/%d samples, final rho=%.4g, stopped=%s",
+            dataset.num_samples,
+            self.config.max_samples,
+            dataset.final_rho,
+            dataset.termination_reason,
         )
 
 
@@ -445,6 +559,14 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         gt=0,
         le=1,
     )
+    max_gap: float | None = Field(
+        default=None,
+        description=(
+            "Maximum train-test gap for model selection and stopping. "
+            "When set, prefer RF configs with gap <= max_gap, and require "
+            "gap <= max_gap (in addition to rho >= target) for early stop."
+        ),
+    )
     plateau_patience: int = Field(
         description="Stop if rho doesn't improve for this many batches.",
         gt=0,
@@ -465,3 +587,17 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     )
 
     seed: int = Field(description="Random seed for reproducibility.")
+
+    # Feature expansion selection
+    expansion_max_order: int = Field(
+        description=(
+            "Max n-body order to test for expansion selection. "
+            "1 = skip expansion selection (unary only, backward compatible)."
+        ),
+        ge=1,
+    )
+    expansion_target_rho: float = Field(
+        description="Target Spearman rho for expansion level selection.",
+        gt=0,
+        le=1,
+    )

@@ -1,8 +1,8 @@
 """Surrogate-assisted search strategy for layer placement optimization.
 
-Uses a Random Forest surrogate trained on a pre-built exploration dataset
-to guide evaluation toward promising placements via Expected Improvement
-acquisition.
+Uses a Ridge + Bootstrap ensemble surrogate trained on a pre-built
+exploration dataset to guide evaluation toward promising placements via
+Expected Improvement acquisition.
 
 The surrogate is a DRAFTER: it proposes candidates cheaply,
 but the real evaluator (via problem.evaluate) validates them.
@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
 from pydantic import Field
+from scipy.stats import spearmanr
 
 from place_layers.annealing.sa_core import SAConfig, run_multi_start_sa
 from place_layers.core.types import LayerPlacement
@@ -35,7 +36,7 @@ from place_layers.search_strategy.cost_constrained.types import (
     CostConstrainedSearchResult,
 )
 from place_layers.surrogate.acquisition import expected_improvement
-from place_layers.surrogate.forest_surrogate import ForestSurrogate
+from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 if TYPE_CHECKING:
     from place_layers.cost_model.base_cost_model import Allocation
@@ -69,7 +70,7 @@ def _enumerate_feasible(
 
 
 class SurrogateSearch(BaseCostConstrainedSearch):
-    """Surrogate-assisted search using RF + Expected Improvement.
+    """Surrogate-assisted search using Ridge + Bootstrap ensemble + EI.
 
     Searches across the full placement space simultaneously (no per-allocation
     inner loop). Requires a pre-built exploration dataset. Refinement uses
@@ -215,20 +216,30 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         )
         all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
         all_scores: list[float] = list(exploration.scores)
-        logger.debug(
+        logger.info(
             "Loaded exploration dataset: %d samples, rho=%.4f",
             len(all_assignments),
             exploration.final_rho,
         )
 
+        # Emit dataset loaded event
+        if self.observers:
+            from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
+
+            dataset_event = SurrogateDatasetLoadedEvent(
+                num_samples=len(all_assignments),
+                exploration_rho=exploration.final_rho,
+            )
+            for observer in self.observers:
+                observer.on_surrogate_dataset_loaded(dataset_event)
+
         # Refinement via SA against surrogate
         logger.debug("Refinement: %d rounds", self.config.num_rounds)
 
-        surrogate = ForestSurrogate(
-            n_estimators=self.config.rf_n_estimators,
-            max_depth=self.config.rf_max_depth,
-            seed=self.config.sa.seed,
+        surrogate = RidgeSurrogate(
             mixer_names=mixer_names,
+            seed=self.config.sa.seed,
+            feature_config=exploration.feature_config,
         )
         surrogate.fit(all_assignments, np.array(all_scores))
 
@@ -269,6 +280,24 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             n_select = min(self.config.evals_per_round, len(top_candidates))
             top_indices = np.argsort(ei)[-n_select:][::-1]
 
+            # Emit round started event
+            if self.observers:
+                from place_layers.search_strategy.progress import (
+                    SurrogateRoundStartedEvent,
+                )
+
+                round_started_event = SurrogateRoundStartedEvent(
+                    round=round_num + 1,
+                    total_rounds=self.config.num_rounds,
+                    sa_candidates=sa_result.total_distinct_candidates,
+                    evals_planned=n_select,
+                )
+                for observer in self.observers:
+                    observer.on_surrogate_round_started(round_started_event)
+
+            # Record surrogate predictions for correlation diagnostic
+            predicted_scores = mu[top_indices].copy()
+
             # Step 4: Evaluate with real evaluator
             for idx in top_indices:
                 candidate = top_candidates[idx]
@@ -303,6 +332,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                     for observer in self.observers:
                         observer.on_eval_completed(self.eval_count)
 
+            # Compute prediction correlation for this round's candidates
+            actual_scores = np.array(all_scores[-n_select:])
+            if len(actual_scores) >= 2:
+                corr_result = spearmanr(predicted_scores, actual_scores)
+                prediction_correlation = float(corr_result.statistic)
+            else:
+                prediction_correlation = 0.0
+
             # Step 5: Refit surrogate
             surrogate.fit(all_assignments, np.array(all_scores))
 
@@ -311,11 +348,29 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 cv_folds=self.config.cv_folds,
             )
             logger.debug(
-                "Round %d complete: best=%.6f, rho=%.4f",
+                "Round %d complete: best=%.6f, rho=%.4f, pred_corr=%.4f",
                 round_num + 1,
                 f_best,
                 rho,
+                prediction_correlation,
             )
+
+            # Emit round completed event
+            if self.observers:
+                from place_layers.search_strategy.progress import (
+                    SurrogateRoundCompletedEvent,
+                )
+
+                round_completed_event = SurrogateRoundCompletedEvent(
+                    round=round_num + 1,
+                    total_rounds=self.config.num_rounds,
+                    rho=rho,
+                    prediction_correlation=prediction_correlation,
+                    dataset_size=len(all_assignments),
+                    best_score=f_best,
+                )
+                for observer in self.observers:
+                    observer.on_surrogate_round_completed(round_completed_event)
 
         return all_assignments, all_scores
 
@@ -328,8 +383,9 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 class SurrogateSearchConfig(BaseCostConstrainedConfig):
     """Configuration for surrogate-assisted search.
 
-    The surrogate (Random Forest) is a drafter that proposes candidates cheaply.
-    The real evaluator (via problem.evaluate) validates the top candidates.
+    The surrogate (Ridge + Bootstrap ensemble) is a drafter that proposes
+    candidates cheaply.  The real evaluator (via problem.evaluate) validates
+    the top candidates.
 
     Requires a pre-built exploration dataset from the explore_placements command.
     """
@@ -349,13 +405,6 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     )
 
     # Surrogate model
-    rf_n_estimators: int = Field(
-        description="Number of trees in the random forest.",
-        gt=0,
-    )
-    rf_max_depth: int | None = Field(
-        description="Max tree depth. None = unlimited (RF default).",
-    )
     ei_xi: float = Field(
         description="Exploration parameter for Expected Improvement.",
         ge=0,

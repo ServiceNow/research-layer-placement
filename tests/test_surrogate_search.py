@@ -28,7 +28,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 from place_layers.search_strategy.cost_constrained.surrogate import (
     SurrogateSearchConfig,
 )
-from place_layers.surrogate.forest_surrogate import ForestSurrogate
+from place_layers.surrogate.model_selection import ridge_cv_rho
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -40,8 +40,6 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
     strategy_type="surrogate",
     exploration_dataset_path="PLACEHOLDER",
     cv_folds=3,
-    rf_n_estimators=20,
-    rf_max_depth=None,
     ei_xi=0.01,
     num_rounds=2,
     evals_per_round=20,
@@ -155,11 +153,13 @@ async def _build_exploration_dataset(
             alloc[m] = alloc.get(m, 0) + 1
         allocations.append(alloc)
 
-    surrogate = ForestSurrogate(
-        n_estimators=50, max_depth=None, seed=42,
+    rho = ridge_cv_rho(
+        assignments=assignments,
+        scores=np.array(scores),
         mixer_names=cost_model.phase_order,
+        cv_folds=5,
+        seed=42,
     )
-    rho = surrogate.cross_validate(assignments, np.array(scores), cv_folds=5)
 
     return ExplorationDataset(
         assignments=assignments,

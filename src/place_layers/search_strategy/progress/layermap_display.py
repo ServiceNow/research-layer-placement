@@ -70,6 +70,8 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapCandidate,
@@ -84,7 +86,10 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from place_layers.search_strategy.progress.config import LayermapDisplayConfig
-    from place_layers.search_strategy.progress.events import BestUpdatedEvent
+    from place_layers.search_strategy.progress.events import (
+        BestUpdatedEvent,
+        SurrogateDatasetLoadedEvent,
+    )
 
 
 # Mixer color palette - visually distinct colors for up to 6 mixers
@@ -1109,3 +1114,19 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_reheat_count = 0
 
         self._update_live()
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Handle surrogate round started event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Handle surrogate round completed event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode

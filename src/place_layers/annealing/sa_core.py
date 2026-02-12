@@ -93,6 +93,7 @@ class MultiStartSAResult:
 
     candidates: list[tuple[tuple[str, ...], float]]  # (assignment, score) sorted desc
     total_steps: int
+    total_distinct_candidates: int  # len(tracker._seen)
     best_restart: int
     total_reheats: int
     final_temperature: float
@@ -141,6 +142,11 @@ class TopKTracker:
             heapq.heappush(self._heap, (score, candidate))
         elif score > self._heap[0][0]:
             heapq.heapreplace(self._heap, (score, candidate))
+
+    @property
+    def total_distinct_visited(self) -> int:
+        """Total distinct candidates ever seen (including evicted ones)."""
+        return len(self._seen)
 
     def top_candidates(self) -> list[tuple[tuple[str, ...], float]]:
         """Return (candidate, score) pairs sorted by score descending."""
@@ -378,6 +384,7 @@ async def run_multi_start_sa(
     return MultiStartSAResult(
         candidates=tracker.top_candidates(),
         total_steps=total_steps,
+        total_distinct_candidates=tracker.total_distinct_visited,
         best_restart=best_restart,
         total_reheats=total_reheats,
         final_temperature=last_temperature,

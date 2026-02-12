@@ -69,6 +69,9 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateDatasetLoadedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapBeamNodeId,
@@ -107,6 +110,10 @@ __all__ = [
     "AnnealingCompletedEvent",
     "AnnealingReheatEvent",
     "AnnealingRestartEvent",
+    # Surrogate events
+    "SurrogateDatasetLoadedEvent",
+    "SurrogateRoundStartedEvent",
+    "SurrogateRoundCompletedEvent",
     # Protocol
     "SearchObserver",
     # Formatting
