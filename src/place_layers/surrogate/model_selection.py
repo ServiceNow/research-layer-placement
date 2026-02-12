@@ -77,7 +77,7 @@ def _ridge_cv_spearman(
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
 
-        ridge = RidgeCV(alphas=np.logspace(-3, 6, 10), gcv_mode="svd")
+        ridge = RidgeCV(alphas=np.logspace(-3, 6, 10))
         ridge.fit(X_train, y_train)
         preds = ridge.predict(X_val)
 
