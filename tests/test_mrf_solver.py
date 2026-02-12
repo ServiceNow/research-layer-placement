@@ -34,6 +34,9 @@ def small_evaluator() -> MockSupernetEvaluator:
         noise_sigma=0.0,  # No noise for deterministic tests
         noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -51,6 +54,9 @@ def medium_evaluator() -> MockSupernetEvaluator:
         noise_sigma=0.0,
         noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -68,6 +74,9 @@ def noisy_evaluator() -> MockSupernetEvaluator:
         noise_sigma=0.5,  # Significant noise
         noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -114,12 +123,12 @@ class TestChainMRFModel:
             evaluator_score = await small_evaluator.evaluate(placement, noise_sigma=0.0)
             assert abs(true_score - evaluator_score) < 1e-10
 
-    def test_from_seed(self) -> None:
-        """Test from_seed produces consistent results."""
-        model = ChainMRFModel.from_seed(
+    def test_construction(self) -> None:
+        """Test direct construction produces consistent results."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
             seed=42,
             num_layers=4,
-            mixer_names=["m0", "m1"],
             unary_bonus=1.0,
             unary_penalty=0.5,
             pairwise_scale=0.3,
@@ -128,20 +137,20 @@ class TestChainMRFModel:
         assert model.num_mixers == 2
         assert all(name in ("m0", "m1") for name in model.layer_needs)
 
-    def test_from_seed_matches_evaluator(self, small_evaluator: MockSupernetEvaluator) -> None:
-        """Test from_seed with same params produces same model as evaluator."""
-        model_from_seed = ChainMRFModel.from_seed(
+    def test_construction_matches_evaluator(self, small_evaluator: MockSupernetEvaluator) -> None:
+        """Test direct construction with same params produces same model as evaluator."""
+        model_direct = ChainMRFModel(
+            mixer_names=("m0", "m1"),
             seed=42,
             num_layers=4,
-            mixer_names=["m0", "m1"],
             unary_bonus=1.0,
             unary_penalty=0.5,
             pairwise_scale=0.3,
         )
         model_from_eval = small_evaluator.mrf_model
 
-        assert model_from_seed.layer_needs == model_from_eval.layer_needs
-        assert model_from_seed.pairwise_weights == model_from_eval.pairwise_weights
+        assert model_direct.layer_needs == model_from_eval.layer_needs
+        assert model_direct.pairwise_weights == model_from_eval.pairwise_weights
 
 
 # =============================================================================
@@ -371,6 +380,9 @@ class TestEdgeCases:
             noise_sigma=0.0,
             noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -391,6 +403,9 @@ class TestEdgeCases:
             noise_sigma=0.0,
             noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -412,6 +427,9 @@ class TestEdgeCases:
             noise_sigma=0.0,
             noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -422,3 +440,318 @@ class TestEdgeCases:
         # Solution should match layer needs exactly (both are now strings)
         for i, mixer_name in enumerate(solution.placement.assignments):
             assert mixer_name == model.layer_needs[i]
+
+
+# =============================================================================
+# Extended Model Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def skip_pairwise_model() -> ChainMRFModel:
+    """Create a model with skip-pairwise interactions (N=4, K=2, range=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        pairwise_max_range=2,
+    )
+
+
+@pytest.fixture
+def triplet_model() -> ChainMRFModel:
+    """Create a model with triplet interactions (N=4, K=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        triplet_scale=0.2,
+    )
+
+
+@pytest.fixture
+def combined_model() -> ChainMRFModel:
+    """Create a model with both skip-pairwise and triplet interactions (N=4, K=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        pairwise_max_range=2,
+        triplet_scale=0.2,
+    )
+
+
+# =============================================================================
+# Test Extended ChainMRFModel
+# =============================================================================
+
+
+class TestExtendedChainMRFModel:
+    """Tests for extended ChainMRFModel with higher-order interactions."""
+
+    def test_memory_baseline(self) -> None:
+        """Baseline model (no extensions) has memory=1."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        assert model.memory == 1
+
+    def test_memory_skip_pairwise(self, skip_pairwise_model: ChainMRFModel) -> None:
+        """Skip-pairwise range=2 gives memory=2."""
+        assert skip_pairwise_model.memory == 2
+
+    def test_memory_triplet(self, triplet_model: ChainMRFModel) -> None:
+        """Triplet interactions give memory=2."""
+        assert triplet_model.memory == 2
+
+    def test_memory_combined(self, combined_model: ChainMRFModel) -> None:
+        """Combined model has memory=2."""
+        assert combined_model.memory == 2
+
+    def test_memory_large_range(self) -> None:
+        """Skip-pairwise range=3 gives memory=3."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=6,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=3,
+        )
+        assert model.memory == 3
+
+    def test_baseline_defaults(self) -> None:
+        """Default construction without extensions matches baseline behavior."""
+        baseline = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        extended = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        assert baseline.layer_needs == extended.layer_needs
+        assert baseline.pairwise_weights == extended.pairwise_weights
+        assert extended.pairwise_max_range == 1
+        assert extended.triplet_scale == 0.0
+
+    def test_skip_pairwise_nonzero(self, skip_pairwise_model: ChainMRFModel) -> None:
+        """Skip-pairwise potentials contribute nonzero values."""
+        p1 = LayerPlacement(assignments=("m0", "m0", "m0", "m0"))
+        p2 = LayerPlacement(assignments=("m0", "m0", "m1", "m0"))
+        # These differ only in layer 2; skip-pairwise between layer 0 and 2 should differ
+        s1 = skip_pairwise_model.true_score(p1)
+        s2 = skip_pairwise_model.true_score(p2)
+        assert s1 != s2
+
+    def test_triplet_nonzero(self, triplet_model: ChainMRFModel) -> None:
+        """Triplet potentials contribute nonzero values."""
+        p1 = LayerPlacement(assignments=("m0", "m0", "m0", "m0"))
+        p2 = LayerPlacement(assignments=("m0", "m0", "m0", "m1"))
+        # Changing layer 3 affects triplet (1,2,3) but not (0,1,2)
+        s1 = triplet_model.true_score(p1)
+        s2 = triplet_model.true_score(p2)
+        assert s1 != s2
+
+    def test_true_score_includes_all_terms(self, combined_model: ChainMRFModel) -> None:
+        """true_score includes unary + pairwise + skip-pairwise + triplet terms."""
+        placement = LayerPlacement(assignments=("m0", "m1", "m0", "m1"))
+        score = combined_model.true_score(placement)
+
+        # Compute expected from individual terms
+        expected = 0.0
+        for i in range(4):
+            expected += combined_model.unary_potential(i, placement.assignments[i])
+        for i in range(3):
+            expected += combined_model.pairwise_potential(
+                i, placement.assignments[i], placement.assignments[i + 1]
+            )
+        for r in range(2, combined_model.pairwise_max_range + 1):
+            for i in range(4 - r):
+                expected += combined_model.skip_pairwise_potential(
+                    i, r, placement.assignments[i], placement.assignments[i + r]
+                )
+        for i in range(2):
+            expected += combined_model.triplet_potential(
+                i,
+                placement.assignments[i],
+                placement.assignments[i + 1],
+                placement.assignments[i + 2],
+            )
+
+        assert abs(score - expected) < 1e-10
+
+
+# =============================================================================
+# Test Extended Solver - Unconstrained
+# =============================================================================
+
+
+class TestExtendedSolverUnconstrained:
+    """Tests for unconstrained optimization with extended models."""
+
+    def test_skip_pairwise_matches_exhaustive(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_triplet_matches_exhaustive(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_combined_matches_exhaustive(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_skip_pairwise_score_recomputed(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        dp = solver.solve_unconstrained()
+        recomputed = skip_pairwise_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+    def test_triplet_score_recomputed(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        dp = solver.solve_unconstrained()
+        recomputed = triplet_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+    def test_combined_score_recomputed(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        dp = solver.solve_unconstrained()
+        recomputed = combined_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+
+# =============================================================================
+# Test Extended Solver - Constrained
+# =============================================================================
+
+
+class TestExtendedSolverConstrained:
+    """Tests for constrained optimization with extended models."""
+
+    def test_skip_pairwise_matches_exhaustive(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_triplet_matches_exhaustive(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_combined_matches_exhaustive(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_skip_pairwise_respects_allocation(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        allocation = {"m0": 1, "m1": 3}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation
+
+    def test_triplet_respects_allocation(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        allocation = {"m0": 3, "m1": 1}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation
+
+    def test_combined_respects_allocation(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        allocation = {"m0": 1, "m1": 3}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation

@@ -185,6 +185,46 @@ class TestSelectExpansionLevel:
         assert len(loaded.range_results) == 3
         assert len(loaded.order_results) == 0
 
+    def test_guard_unlocks_higher_orders_with_more_data(self) -> None:
+        """Feature-to-sample guard should relax with more data,
+        unlocking higher-order expansions."""
+        rng = np.random.RandomState(42)
+        mixer_names = ["a", "b", "c"]
+        num_layers = 8
+
+        # Scores with strong triplet signal
+        def score_fn(a):
+            s = sum({"a": 1.0, "b": -0.3, "c": 0.0}[m] for m in a)
+            for i in range(len(a) - 1):
+                s += 0.3 if a[i] == a[i + 1] else -0.1
+            for i in range(len(a) - 2):
+                if a[i] == a[i + 1] == a[i + 2]:
+                    s += 0.8
+            return s
+
+        # Small batch: 50 samples, guard = 100
+        # Order 2 range 1 = 90 features → fits
+        # Order 3 range 1 = 252 features → blocked
+        small = _random_placements(rng, mixer_names, num_layers, 50)
+        small_scores = np.array([score_fn(a) for a in small])
+        result_small = select_expansion_level(
+            assignments=small, scores=small_scores,
+            mixer_names=mixer_names, cv_folds=5, target_rho=0.99,
+            max_pairwise_range=3, max_order=3, seed=42,
+        )
+        assert result_small.selected_order <= 2
+
+        # Large batch: 200 samples, guard = 400
+        # Order 3 range 1 = 252 features → fits
+        large = _random_placements(np.random.RandomState(42), mixer_names, num_layers, 200)
+        large_scores = np.array([score_fn(a) for a in large])
+        result_large = select_expansion_level(
+            assignments=large, scores=large_scores,
+            mixer_names=mixer_names, cv_folds=5, target_rho=0.99,
+            max_pairwise_range=3, max_order=3, seed=42,
+        )
+        assert result_large.selected_order == 3
+
     def test_max_order_1_returns_unary(self) -> None:
         """With max_order=1, should return unary config immediately."""
         rng = np.random.RandomState(42)

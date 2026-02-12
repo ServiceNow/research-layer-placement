@@ -359,10 +359,11 @@ class ExplorePlacementsCommand(BaseCommand):
                         progress_path, assignment_tuple, score, allocation
                     )
 
-            # --- Phase 2: Expansion selection ---
-            # NOTE: Expansion selection runs once on the initial batch and is not
-            # repeated. The expansion structure (which n-body interactions matter)
-            # is a property of the landscape, not of sample size.
+            # --- Phase 2: Initial expansion selection ---
+            # Expansion selection is re-run in the adaptive loop (Phase 3) after
+            # each batch. The feature-to-sample guard in select_expansion_level()
+            # relaxes as more data arrives, potentially unlocking higher-order
+            # features. Re-running is cheap (a few Ridge CV fits).
             feature_config: FeatureExpansionConfig | None = None
             if (
                 self.config.expansion_max_order > 1
@@ -379,12 +380,19 @@ class ExplorePlacementsCommand(BaseCommand):
                     seed=self.config.seed,
                 )
                 for step in expansion_result.range_results:
-                    logger.info(
-                        "Range search: range=%d, %d features, rho=%.4g",
-                        step.config.pairwise_max_range,
-                        step.num_features,
-                        step.rho,
-                    )
+                    if step.config.max_order == 1:
+                        logger.info(
+                            "Unary baseline: %d features, rho=%.4g",
+                            step.num_features,
+                            step.rho,
+                        )
+                    else:
+                        logger.info(
+                            "Range search: range=%d, %d features, rho=%.4g",
+                            step.config.pairwise_max_range,
+                            step.num_features,
+                            step.rho,
+                        )
                 for step in expansion_result.order_results:
                     logger.info(
                         "Order search: order=%d, %d features, rho=%.4g",
@@ -473,6 +481,45 @@ class ExplorePlacementsCommand(BaseCommand):
                         progress_path, assignment_tuple, score, allocation
                     )
 
+                # Re-run expansion selection with larger dataset.
+                # The feature-to-sample guard relaxes as data grows,
+                # potentially unlocking higher-order features.
+                if (
+                    self.config.expansion_max_order > 1
+                    and len(all_assignments) >= self.config.cv_folds
+                ):
+                    expansion_result = select_expansion_level(
+                        assignments=all_assignments,
+                        scores=np.array(all_scores),
+                        mixer_names=phase_order,
+                        cv_folds=self.config.cv_folds,
+                        target_rho=self.config.target_rank_correlation,
+                        max_pairwise_range=self.config.expansion_max_range,
+                        max_order=self.config.expansion_max_order,
+                        seed=self.config.seed,
+                    )
+                    new_config = (
+                        expansion_result.selected_config
+                        if expansion_result.selected_config.max_order > 1
+                        else None
+                    )
+                    if new_config != feature_config:
+                        feature_config = new_config
+                        if feature_config is not None:
+                            logger.info(
+                                "Expansion upgraded: max_order=%d, "
+                                "pairwise_max_range=%d (%d samples)",
+                                feature_config.max_order,
+                                feature_config.pairwise_max_range,
+                                len(all_assignments),
+                            )
+                        else:
+                            logger.info(
+                                "Expansion downgraded to unary only "
+                                "(%d samples)",
+                                len(all_assignments),
+                            )
+
                 # Re-check quality via Ridge CV
                 rho = ridge_cv_rho(
                     assignments=all_assignments,
@@ -483,6 +530,10 @@ class ExplorePlacementsCommand(BaseCommand):
                     seed=self.config.seed,
                 )
                 rho_delta = rho - rho_history[-1] if rho_history else rho
+                # NOTE: rho_history may reflect different feature configs at
+                # different checkpoints if expansion was upgraded mid-loop.
+                # A jump from e.g. 0.93 (order-2) to 0.96 (order-3) is real
+                # progress and the plateau detector correctly sees it as such.
                 rho_history.append(rho)
                 samples_at_check.append(len(all_assignments))
                 logger.info(

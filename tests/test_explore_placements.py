@@ -54,6 +54,9 @@ def _make_small_evaluator(
         noise_sigma=0.0,
         noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config=config)
 
