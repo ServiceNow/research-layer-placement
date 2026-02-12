@@ -93,7 +93,7 @@ class ServeCommand(BaseCommand):
 class ServeCommandConfig(BaseCommandConfig):
     """Configuration for the serve command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = ServeCommand
+    _impl_class: ClassVar[type[BaseCommand]] = ServeCommand
 
     command: Literal["serve"] = "serve"
 

@@ -822,6 +822,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
@@ -843,6 +844,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
@@ -864,6 +866,7 @@ class TestCostConstrainedProblem:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
@@ -896,6 +899,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(
@@ -917,6 +921,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MinCostProblemConfig(
@@ -1000,6 +1005,7 @@ class TestCostConstrainedBeamSearch:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.2,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         problem_config = MaxPerformanceProblemConfig(

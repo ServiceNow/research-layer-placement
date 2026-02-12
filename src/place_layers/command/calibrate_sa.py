@@ -344,7 +344,7 @@ class CalibrateSACommand(BaseCommand):
 class CalibrateSACommandConfig(BaseCommandConfig):
     """Configuration for SA calibration command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
+    _impl_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
 
     command: Literal["calibrate_sa"] = "calibrate_sa"
 

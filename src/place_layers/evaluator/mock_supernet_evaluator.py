@@ -185,7 +185,6 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
     )
 
     noise_seed_shift: int = Field(
-        default=0,
         description="Additive shift applied to the placement hash before seeding "
         "the noise RNG. Different shifts produce independent noise realizations "
         "over the same MRF landscape.",

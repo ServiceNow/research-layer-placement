@@ -360,6 +360,9 @@ class ExplorePlacementsCommand(BaseCommand):
                     )
 
             # --- Phase 2: Expansion selection ---
+            # NOTE: Expansion selection runs once on the initial batch and is not
+            # repeated. The expansion structure (which n-body interactions matter)
+            # is a property of the landscape, not of sample size.
             feature_config: FeatureExpansionConfig | None = None
             if (
                 self.config.expansion_max_order > 1
@@ -370,31 +373,34 @@ class ExplorePlacementsCommand(BaseCommand):
                     scores=np.array(all_scores),
                     mixer_names=phase_order,
                     cv_folds=self.config.cv_folds,
-                    target_rho=self.config.expansion_target_rho,
+                    target_rho=self.config.target_rank_correlation,
+                    max_pairwise_range=self.config.expansion_max_range,
                     max_order=self.config.expansion_max_order,
                     seed=self.config.seed,
                 )
-                for lr in expansion_result.level_results:
+                for step in expansion_result.range_results:
                     logger.info(
-                        "Expansion level %d: %d features, rho=%.4g "
-                        "(max_order=%d, pairwise_max_range=%d)",
-                        lr.level,
-                        lr.num_features,
-                        lr.rho,
-                        lr.config.max_order,
-                        lr.config.pairwise_max_range,
+                        "Range search: range=%d, %d features, rho=%.4g",
+                        step.config.pairwise_max_range,
+                        step.num_features,
+                        step.rho,
                     )
-                if expansion_result.selected_level > 0:
+                for step in expansion_result.order_results:
+                    logger.info(
+                        "Order search: order=%d, %d features, rho=%.4g",
+                        step.config.max_order,
+                        step.num_features,
+                        step.rho,
+                    )
+                if expansion_result.selected_config.max_order > 1:
                     feature_config = expansion_result.selected_config
                     logger.info(
-                        "Selected expansion level %d: max_order=%d, "
-                        "pairwise_max_range=%d",
-                        expansion_result.selected_level,
+                        "Selected: max_order=%d, pairwise_max_range=%d",
                         feature_config.max_order,
                         feature_config.pairwise_max_range,
                     )
                 else:
-                    logger.info("Expansion selection: staying at level 0 (unary only)")
+                    logger.info("Expansion selection: staying at unary only")
 
             # --- Phase 2b: First quality check (Ridge CV) ---
             if len(all_assignments) >= self.config.cv_folds:
@@ -529,7 +535,7 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     All defaults are in the YAML config file (conf/command/explore_placements.yaml).
     """
 
-    _command_class: ClassVar[type[BaseCommand]] = ExplorePlacementsCommand
+    _impl_class: ClassVar[type[BaseCommand]] = ExplorePlacementsCommand
 
     command: Literal["explore_placements"] = "explore_placements"
 
@@ -555,17 +561,12 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
 
     # Stopping criteria
     target_rank_correlation: float = Field(
-        description="Stop when Spearman rho reaches this value.",
+        description=(
+            "Stop when Ridge CV Spearman rho reaches this value. "
+            "Also used as the target for expansion level selection."
+        ),
         gt=0,
         le=1,
-    )
-    max_gap: float | None = Field(
-        default=None,
-        description=(
-            "Maximum train-test gap for model selection and stopping. "
-            "When set, prefer RF configs with gap <= max_gap, and require "
-            "gap <= max_gap (in addition to rho >= target) for early stop."
-        ),
     )
     plateau_patience: int = Field(
         description="Stop if rho doesn't improve for this many batches.",
@@ -580,12 +581,6 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         gt=1,
     )
 
-    # Surrogate config for quality checks
-    rf_n_estimators: int = Field(
-        description="Number of trees in the random forest surrogate.",
-        gt=0,
-    )
-
     seed: int = Field(description="Random seed for reproducibility.")
 
     # Feature expansion selection
@@ -596,8 +591,11 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         ),
         ge=1,
     )
-    expansion_target_rho: float = Field(
-        description="Target Spearman rho for expansion level selection.",
-        gt=0,
-        le=1,
+    expansion_max_range: int = Field(
+        description=(
+            "Ceiling for pairwise skip distance tested during expansion selection. "
+            "The search stops earlier if marginal improvement vanishes or the "
+            "feature-to-sample ratio becomes unfavorable."
+        ),
+        ge=1,
     )

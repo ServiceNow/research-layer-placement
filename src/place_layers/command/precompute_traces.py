@@ -88,7 +88,7 @@ class PrecomputeTracesCommand(BaseCommand):
 class PrecomputeTracesCommandConfig(BaseCommandConfig):
     """Configuration for trace pre-computation command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = PrecomputeTracesCommand
+    _impl_class: ClassVar[type[BaseCommand]] = PrecomputeTracesCommand
 
     command: Literal["precompute_traces"] = "precompute_traces"
 

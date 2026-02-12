@@ -32,6 +32,7 @@ def small_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.0,  # No noise for deterministic tests
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     return MockSupernetEvaluator(config)
@@ -48,6 +49,7 @@ def medium_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.0,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     return MockSupernetEvaluator(config)
@@ -64,6 +66,7 @@ def noisy_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.5,  # Significant noise
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
     )
     return MockSupernetEvaluator(config)
@@ -366,6 +369,7 @@ class TestEdgeCases:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
@@ -385,6 +389,7 @@ class TestEdgeCases:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
@@ -405,6 +410,7 @@ class TestEdgeCases:
             unary_penalty=0.0,
             pairwise_scale=0.0,  # No pairwise interaction
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
