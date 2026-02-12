@@ -45,6 +45,7 @@ from place_layers.evaluator.trace_based_evaluator import (
     TraceBasedEvaluator,
     TraceBasedEvaluatorConfig,
 )
+from place_layers.evaluator.traces.types import TraceLikelihoodProblemRecord
 
 logger = logging.getLogger(__name__)
 
@@ -103,17 +104,6 @@ Normalization = Annotated[
     LinearNormalization | NoNormalization,
     Field(discriminator="type"),
 ]
-
-
-class TraceLikelihoodProblemRecord(BaseModel):
-    """Record for a single problem's trace likelihood evaluation."""
-
-    problem_id: str
-    task_name: str
-    sample_indices: tuple[int, ...]
-    log_probs: tuple[float, ...]
-    mean_log_prob: float
-    num_samples: int
 
 
 class TraceLikelihoodTaskSummary(BaseModel):

@@ -191,6 +191,39 @@ class TextLikelihoodRecord(_LikelihoodRecordBase):
 LikelihoodRecord = ChatLikelihoodRecord | TextLikelihoodRecord
 
 
+class TraceLikelihoodProblemRecord(BaseModel):
+    """Trace likelihood evaluation record for a single problem.
+
+    Used by the TraceLikelihoodEvaluator to stream per-problem results.
+    For each problem, we have N traces. We compute the student log-prob
+    for each, then average them to get the mean log-likelihood for this problem.
+
+    This is simpler than ISProblemRecord - just stores log-probs and their mean.
+    """
+
+    model_config = {"frozen": True}
+
+    record_type: Literal["trace_likelihood_problem"] = "trace_likelihood_problem"
+
+    # === Problem Identification ===
+    problem_id: str = Field(description="Unique identifier (e.g., 'gsm8k:42')")
+    task_name: str = Field(description="lm-eval task name")
+
+    # === Per-Sample Data (parallel arrays, one element per trace/sample) ===
+    sample_indices: tuple[int, ...] = Field(
+        description="Original sample_idx values from traces"
+    )
+    log_probs: tuple[float, ...] = Field(
+        description="Student log-prob for each trace"
+    )
+
+    # === Problem-Level Summary ===
+    mean_log_prob: float = Field(
+        description="Mean of all log-probs for this problem"
+    )
+    num_samples: int = Field(description="Number of traces for this problem")
+
+
 class ISProblemRecord(BaseModel):
     """Importance-weighted evaluation record for a single problem.
 
