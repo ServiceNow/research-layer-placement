@@ -33,8 +33,9 @@ from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
-from place_layers.surrogate.encoding import FeatureExpansionConfig
+from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
 from place_layers.surrogate.model_selection import (
+    ExpansionSelectionResult,
     ridge_cv_rho,
     select_expansion_level,
 )
@@ -251,6 +252,109 @@ def _check_plateau(
     return True
 
 
+def _log_expansion_result(
+    result: ExpansionSelectionResult,
+    n_samples: int,
+    num_types: int,
+    num_layers: int,
+    previous_config: FeatureExpansionConfig | None = None,
+) -> None:
+    """Log a structured, indented expansion selection result block."""
+    if previous_config is not None:
+        header = f"Expansion re-selection ({n_samples} samples):"
+    else:
+        header = (
+            f"Expansion selection "
+            f"({n_samples} samples, {num_types} types, {num_layers} layers):"
+        )
+
+    lines = [header]
+
+    # --- Phase 1 ---
+    lines.append("  Phase 1 (range at order=2):")
+    prev_rho: float | None = None
+    for step in result.range_results:
+        if step.config.max_order == 1:
+            label = "unary baseline"
+        else:
+            label = f"pairwise range={step.config.pairwise_max_range}"
+        entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, rho={step.rho:.4f}"
+        if prev_rho is not None:
+            delta = step.rho - prev_rho
+            entry += f" ({delta:+.4f})"
+        if step.stop_reason is not None:
+            entry += f" <- {_stop_reason_label(step.stop_reason, n_samples)}"
+        lines.append(entry)
+        prev_rho = step.rho
+
+    lines.append(f"  Selected range: {result.selected_range}")
+
+    # --- Phase 2 ---
+    if result.order_results:
+        lines.append(
+            f"  Phase 2 (order at range={result.selected_range}):"
+        )
+        # prev_rho carries over from phase 1's last step
+        for step in result.order_results:
+            label = f"order={step.config.max_order}"
+            entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, rho={step.rho:.4f}"
+            if prev_rho is not None:
+                delta = step.rho - prev_rho
+                entry += f" ({delta:+.4f})"
+            if step.stop_reason is not None:
+                entry += f" <- {_stop_reason_label(step.stop_reason, n_samples)}"
+            lines.append(entry)
+            prev_rho = step.rho
+    else:
+        # Phase 2 skipped — derive reason
+        if result.phase1_stop_reason == "target_reached":
+            skip_reason = "target reached in Phase 1"
+        elif result.selected_order == 1:
+            skip_reason = "unary only"
+        else:
+            skip_reason = "max_order < 3"
+        lines.append(
+            f"  Phase 2 (order at range={result.selected_range}): "
+            f"skipped ({skip_reason})"
+        )
+
+    # --- Result line ---
+    cfg = result.selected_config
+    final_rho = prev_rho if prev_rho is not None else 0.0
+    selected_features = compute_feature_dim(num_layers, num_types, cfg)
+    result_line = (
+        f"  Result: order={result.selected_order}, range={result.selected_range}, "
+        f"{selected_features} features, rho={final_rho:.4f}"
+    )
+
+    # Upgrade annotation
+    if previous_config is not None and previous_config != cfg:
+        if previous_config.max_order == 1:
+            old_desc = "unary"
+        else:
+            old_desc = (
+                f"order={previous_config.max_order}, "
+                f"range={previous_config.pairwise_max_range}"
+            )
+        result_line += f" [UPGRADED from {old_desc}]"
+
+    lines.append(result_line)
+
+    logger.info("\n".join(lines))
+
+
+def _stop_reason_label(reason: str, n_samples: int) -> str:
+    """Map a stop_reason string to a human-readable display label."""
+    labels = {
+        "target_reached": "target reached",
+        "below_min_improvement": "below min_improvement",
+        "feature_guard": f"feature guard (next would exceed {2 * n_samples})",
+        "max_range": "max range",
+        "max_order": "max order",
+    }
+    return labels.get(reason, reason)
+
+
 # ============================================================================
 # Command
 # ============================================================================
@@ -379,36 +483,16 @@ class ExplorePlacementsCommand(BaseCommand):
                     max_order=self.config.expansion_max_order,
                     seed=self.config.seed,
                 )
-                for step in expansion_result.range_results:
-                    if step.config.max_order == 1:
-                        logger.info(
-                            "Unary baseline: %d features, rho=%.4g",
-                            step.num_features,
-                            step.rho,
-                        )
-                    else:
-                        logger.info(
-                            "Range search: range=%d, %d features, rho=%.4g",
-                            step.config.pairwise_max_range,
-                            step.num_features,
-                            step.rho,
-                        )
-                for step in expansion_result.order_results:
-                    logger.info(
-                        "Order search: order=%d, %d features, rho=%.4g",
-                        step.config.max_order,
-                        step.num_features,
-                        step.rho,
-                    )
+                _log_expansion_result(
+                    expansion_result,
+                    n_samples=len(all_assignments),
+                    num_types=len(phase_order),
+                    num_layers=num_layers,
+                )
                 if expansion_result.selected_config.max_order > 1:
                     feature_config = expansion_result.selected_config
-                    logger.info(
-                        "Selected: max_order=%d, pairwise_max_range=%d",
-                        feature_config.max_order,
-                        feature_config.pairwise_max_range,
-                    )
                 else:
-                    logger.info("Expansion selection: staying at unary only")
+                    feature_config = None
 
             # --- Phase 2b: First quality check (Ridge CV) ---
             if len(all_assignments) >= self.config.cv_folds:
@@ -504,21 +588,15 @@ class ExplorePlacementsCommand(BaseCommand):
                         else None
                     )
                     if new_config != feature_config:
+                        old_feature_config = feature_config
                         feature_config = new_config
-                        if feature_config is not None:
-                            logger.info(
-                                "Expansion upgraded: max_order=%d, "
-                                "pairwise_max_range=%d (%d samples)",
-                                feature_config.max_order,
-                                feature_config.pairwise_max_range,
-                                len(all_assignments),
-                            )
-                        else:
-                            logger.info(
-                                "Expansion downgraded to unary only "
-                                "(%d samples)",
-                                len(all_assignments),
-                            )
+                        _log_expansion_result(
+                            expansion_result,
+                            n_samples=len(all_assignments),
+                            num_types=len(phase_order),
+                            num_layers=num_layers,
+                            previous_config=old_feature_config,
+                        )
 
                 # Re-check quality via Ridge CV
                 rho = ridge_cv_rho(
@@ -536,13 +614,23 @@ class ExplorePlacementsCommand(BaseCommand):
                 # progress and the plateau detector correctly sees it as such.
                 rho_history.append(rho)
                 samples_at_check.append(len(all_assignments))
-                logger.info(
-                    "Ridge CV rho=%.4g (%+.4g) at %d samples [target=%g]",
-                    rho,
-                    rho_delta,
-                    len(all_assignments),
-                    self.config.target_rank_correlation,
-                )
+                if feature_config is not None:
+                    logger.info(
+                        "Ridge CV rho=%.4g (%+.4g) at %d samples "
+                        "[order=%d, range=%d]",
+                        rho,
+                        rho_delta,
+                        len(all_assignments),
+                        feature_config.max_order,
+                        feature_config.pairwise_max_range,
+                    )
+                else:
+                    logger.info(
+                        "Ridge CV rho=%.4g (%+.4g) at %d samples [unary]",
+                        rho,
+                        rho_delta,
+                        len(all_assignments),
+                    )
 
         # Build result dataset
         assert rho_history, (

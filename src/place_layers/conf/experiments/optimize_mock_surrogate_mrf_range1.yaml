@@ -1,0 +1,22 @@
+# @package _global_
+#
+# Experiment: surrogate-assisted search on mock MRF range-1 evaluator.
+# Paired with explore_mock_mrf_range1 for dataset generation.
+# Requires a pre-built exploration dataset (provide exploration_dataset_path on CLI).
+
+defaults:
+  - /command: optimize
+  - /evaluator: mock_mrf_range1
+  - /problem: cost_max_perf_apriel_15b
+  - /search_strategy: surrogate
+  - /result_handler: json
+  - _self_
+
+search_strategy:
+  exploration_dataset_path: ???
+  num_rounds: 2
+  evals_per_round: 200
+  sa:
+    num_restarts: 5
+    steps_per_restart: 1000
+    top_k: 200

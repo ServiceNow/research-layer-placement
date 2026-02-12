@@ -37,6 +37,7 @@ class StepResult(BaseModel):
     config: FeatureExpansionConfig
     num_features: int
     rho: float
+    stop_reason: str | None = None  # None = intermediate step; set on terminal step
 
 
 class ExpansionSelectionResult(BaseModel):
@@ -49,6 +50,8 @@ class ExpansionSelectionResult(BaseModel):
     selected_order: int
     range_results: list[StepResult]
     order_results: list[StepResult]
+    phase1_stop_reason: str | None = None  # Why range search stopped
+    phase2_stop_reason: str | None = None  # Why order search stopped (None if skipped)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +185,11 @@ def select_expansion_level(
 
     # If max_order < 2, return early with unary only
     if max_order < 2 or unary_rho >= target_rho:
+        early_reason = "target_reached" if unary_rho >= target_rho else None
+        if early_reason:
+            range_results[-1] = range_results[-1].model_copy(
+                update={"stop_reason": early_reason},
+            )
         selected_config = unary_config
         if unary_rho < min_rho_warn:
             logger.warning(
@@ -196,15 +204,21 @@ def select_expansion_level(
             selected_order=1,
             range_results=range_results,
             order_results=[],
+            phase1_stop_reason=early_reason,
         )
 
     # --- Phase 1: Range selection at order 2 ---
+    phase1_stop_reason: str | None = None
     for r in range(1, max_pairwise_range + 1):
         config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r)
         num_features = compute_feature_dim(num_layers, num_types, config)
 
         # Feature-to-sample guard
         if num_features > 2 * n_samples:
+            phase1_stop_reason = "feature_guard"
+            range_results[-1] = range_results[-1].model_copy(
+                update={"stop_reason": "feature_guard"},
+            )
             break
 
         X = encode_batch(assignments, type_to_int, config)
@@ -216,16 +230,31 @@ def select_expansion_level(
 
         # Target reached — select this range
         if rho >= target_rho:
+            phase1_stop_reason = "target_reached"
+            range_results[-1] = range_results[-1].model_copy(
+                update={"stop_reason": "target_reached"},
+            )
             best_range = r
             prev_rho = rho
             break
 
         # Marginal improvement too small — keep previous
         if (rho - prev_rho) < min_improvement:
+            phase1_stop_reason = "below_min_improvement"
+            range_results[-1] = range_results[-1].model_copy(
+                update={"stop_reason": "below_min_improvement"},
+            )
             break
 
         best_range = r
         prev_rho = rho
+
+    # Loop exhausted without early stop
+    if phase1_stop_reason is None and range_results:
+        phase1_stop_reason = "max_range"
+        range_results[-1] = range_results[-1].model_copy(
+            update={"stop_reason": "max_range"},
+        )
 
     # Determine selected config after phase 1
     best_order = 2 if best_range >= 1 else 1
@@ -238,6 +267,7 @@ def select_expansion_level(
 
     # --- Phase 2: Order selection at selected range ---
     order_results: list[StepResult] = []
+    phase2_stop_reason: str | None = None
 
     if best_range >= 1 and max_order >= 3 and prev_rho < target_rho:
         for n in range(3, max_order + 1):
@@ -248,6 +278,13 @@ def select_expansion_level(
 
             # Feature-to-sample guard
             if num_features > 2 * n_samples:
+                phase2_stop_reason = "feature_guard"
+                # Mark the last evaluated step (could be from range_results
+                # if no order step ran yet, but we only annotate order_results)
+                if order_results:
+                    order_results[-1] = order_results[-1].model_copy(
+                        update={"stop_reason": "feature_guard"},
+                    )
                 break
 
             X = encode_batch(assignments, type_to_int, config)
@@ -259,6 +296,10 @@ def select_expansion_level(
 
             # Target reached
             if rho >= target_rho:
+                phase2_stop_reason = "target_reached"
+                order_results[-1] = order_results[-1].model_copy(
+                    update={"stop_reason": "target_reached"},
+                )
                 best_order = n
                 selected_config = config
                 prev_rho = rho
@@ -266,11 +307,22 @@ def select_expansion_level(
 
             # Marginal improvement too small — keep previous
             if (rho - prev_rho) < min_improvement:
+                phase2_stop_reason = "below_min_improvement"
+                order_results[-1] = order_results[-1].model_copy(
+                    update={"stop_reason": "below_min_improvement"},
+                )
                 break
 
             best_order = n
             selected_config = config
             prev_rho = rho
+
+        # Loop exhausted without early stop
+        if phase2_stop_reason is None and order_results:
+            phase2_stop_reason = "max_order"
+            order_results[-1] = order_results[-1].model_copy(
+                update={"stop_reason": "max_order"},
+            )
 
     # --- Warning for low rho ---
     if prev_rho < min_rho_warn:
@@ -287,4 +339,6 @@ def select_expansion_level(
         selected_order=best_order,
         range_results=range_results,
         order_results=order_results,
+        phase1_stop_reason=phase1_stop_reason,
+        phase2_stop_reason=phase2_stop_reason,
     )
