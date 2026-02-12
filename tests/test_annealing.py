@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 
 from place_layers.annealing.events import (
-    AnnealingReheatEvent,
     AnnealingRestartEvent,
     AnnealingStepEvent,
 )

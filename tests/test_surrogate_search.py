@@ -104,7 +104,6 @@ def _make_max_perf_problem(
 def _make_min_cost_problem(
     evaluator: MockSupernetEvaluator,
 ) -> CostConstrainedProblem:
-    num_layers = evaluator.num_layers
     mixer_names = sorted(evaluator.mixer_names)
     mixer_costs = {name: 1.0 - 0.5 * i for i, name in enumerate(mixer_names)}
     config = MinCostProblemConfig(
