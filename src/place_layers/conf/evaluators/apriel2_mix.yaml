@@ -46,23 +46,53 @@ evaluators_dict:
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
 
-  importance_weighted:
-    evaluator_type: importance_weighted
+  aime24:
+    evaluator_type: trace_likelihood
     backend: ${backend}
     # Trace sources - list of directories containing JSONL trace files
     # Can be overridden via command line or environment variable
     trace_sources:
-      - ${oc.env:TRACE_PATH,/workspace/outputs/traces}
+      - /mnt/plato/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
     # Optional per-task weights (null = equal weighting)
     task_weights: null
-    # Importance sampling clipping for numerical stability
-    weight_clip_min: 1e-300
-    weight_clip_max: 1e300
+    normalization:
+      type: linear
+      low: -5505.176779   # Baseline log-likelihood (worst expected performance)
+      high: -1137.852662   # Target log-likelihood (best expected performance)
+  aime25:
+    evaluator_type: trace_likelihood
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - /mnt/plato/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -4945.062467   # Baseline log-likelihood (worst expected performance)
+      high: -988.175923   # Target log-likelihood (best expected performance)
+  math500:
+    evaluator_type: trace_likelihood
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - /mnt/plato/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -549.356176   # Baseline log-likelihood (worst expected performance)
+      high: -176.630313   # Target log-likelihood (best expected performance)
+  
 
 weights:
-  mmlu: 0.25
-  fda: 0.25
-  swde: 0.25
-  importance_weighted: 0.25
+  mmlu: 0.167
+  fda: 0.167
+  swde: 0.167
+  aime24: 0.167
+  aime25: 0.167
+  math500: 0.167
 
 aggregation: weighted_average
