@@ -3,26 +3,32 @@
 # Combines MMLU (likelihood), FDA (generative extraction), SWDE (generative extraction),
 # and importance-weighted evaluation from precomputed traces
 #
-# Note: This config expects _mmlu_task, _fda_task, _swde_task to be loaded
-# at the global level by the experiment config.
+# Task configurations are embedded via defaults and can be overridden:
+#   +evaluators=apriel2_mix evaluators.mmlu_task=mmlu_quick
+
+defaults:
+  - /task@mmlu_task: mmlu_optimize
+  - /task@fda_task: fda_optimize
+  - /task@swde_task: swde_optimize
 
 evaluators_dict:
   mmlu:
     evaluator_type: likelihood
     backend: ${backend}
-    tasks: ${_mmlu_task.tasks}
-    num_fewshot: ${_mmlu_task.num_fewshot}
-    max_problems_per_task: ${_mmlu_task.max_problems_per_task}
-    split: ${_mmlu_task.split}
+    tasks: ${evaluators.mmlu_task.tasks}
+    num_fewshot: ${evaluators.mmlu_task.num_fewshot}
+    max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
+    split: ${evaluators.mmlu_task.split}
     use_chat_template: true
+    doc_prefetch_count: 2
 
   fda:
     evaluator_type: generative
     backend: ${backend}
-    tasks: ${_fda_task.tasks}
-    num_fewshot: ${_fda_task.num_fewshot}
-    max_problems_per_task: ${_fda_task.max_problems_per_task}
-    split: ${_fda_task.split}
+    tasks: ${evaluators.fda_task.tasks}
+    num_fewshot: ${evaluators.fda_task.num_fewshot}
+    max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
+    split: ${evaluators.fda_task.split}
     # Generation parameters
     samples_per_problem: ${generation.samples_per_problem}
     max_new_tokens: ${generation.max_new_tokens}
@@ -30,14 +36,15 @@ evaluators_dict:
     top_p: ${generation.top_p}
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
 
   swde:
     evaluator_type: generative
     backend: ${backend}
-    tasks: ${_swde_task.tasks}
-    num_fewshot: ${_swde_task.num_fewshot}
-    max_problems_per_task: ${_swde_task.max_problems_per_task}
-    split: ${_swde_task.split}
+    tasks: ${evaluators.swde_task.tasks}
+    num_fewshot: ${evaluators.swde_task.num_fewshot}
+    max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
+    split: ${evaluators.swde_task.split}
     # Generation parameters
     samples_per_problem: ${generation.samples_per_problem}
     max_new_tokens: ${generation.max_new_tokens}
@@ -45,6 +52,7 @@ evaluators_dict:
     top_p: ${generation.top_p}
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
 
   aime24:
     evaluator_type: trace_likelihood
