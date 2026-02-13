@@ -61,7 +61,7 @@ class RidgeSurrogate:
         rng = np.random.RandomState(self._seed)
 
         # Main model: RidgeCV selects best alpha automatically
-        main = RidgeCV(alphas=np.logspace(-3, 3, 7), gcv_mode="svd")
+        main = RidgeCV(alphas=np.logspace(-3, 3, 7))
         main.fit(X, y)
         self._main_model = main
         self._coef = main.coef_
@@ -72,7 +72,7 @@ class RidgeSurrogate:
         self._bootstrap_models = []
         for _ in range(self._n_bootstraps):
             idx = rng.choice(n, size=n, replace=True)
-            model = Ridge(alpha=main.alpha_, solver="svd")
+            model = Ridge(alpha=main.alpha_, solver="lsqr")
             model.fit(X[idx], y[idx])
             self._bootstrap_models.append(model)
 
@@ -144,7 +144,7 @@ class RidgeSurrogate:
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
-            ridge = RidgeCV(alphas=np.logspace(-3, 3, 7), gcv_mode="svd")
+            ridge = RidgeCV(alphas=np.logspace(-3, 3, 7))
             ridge.fit(X_train, y_train)
             preds = ridge.predict(X_val)
 

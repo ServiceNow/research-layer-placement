@@ -1,0 +1,8 @@
+# @package cost_model
+# Linear cost model for small mock evaluator (20 layers, 3 mixers)
+
+cost_model_type: linear
+mixer_costs:
+  mixer_0: 1.0  # Phase 0 (full attention)
+  mixer_1: 0.5  # Phase 1 (sliding window)
+  mixer_2: 0.2  # Remainder (SSM/linear)

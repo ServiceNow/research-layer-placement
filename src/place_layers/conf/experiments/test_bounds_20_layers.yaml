@@ -6,6 +6,7 @@ defaults:
   - /command: optimize
   - /evaluator@evaluators.evaluators_dict.main: mock_20_layers
   - /problem: cost_test_20_layers
+  - /cost_model: linear_test_3mix
   - /search_strategy: cost_constrained_hierarchical
   - /result_handler: json
   - _self_
