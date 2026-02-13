@@ -285,7 +285,7 @@ class ISProblemRecord(BaseModel):
 
 
 TraceRecord = Annotated[
-    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord,
+    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord | TraceLikelihoodProblemRecord,
     Field(discriminator="record_type"),
 ]
 
