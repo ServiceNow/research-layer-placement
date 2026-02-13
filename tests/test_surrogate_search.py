@@ -6,11 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from place_layers.command.explore_placements import (
-    ExplorationDataset,
-    _enumerate_feasible_allocations,
-    _sample_batch,
-)
+from place_layers.command.explore_placements import _sample_batch
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
@@ -135,7 +133,7 @@ async def _build_exploration_dataset(
         if isinstance(problem.config, MaxPerformanceProblemConfig):
             cost_budget = problem.config.cost_budget
 
-    feasible = _enumerate_feasible_allocations(
+    feasible = enumerate_feasible_allocations(
         cost_model, num_layers, cost_budget
     )
 

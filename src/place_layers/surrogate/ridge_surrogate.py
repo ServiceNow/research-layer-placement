@@ -12,10 +12,15 @@ mapping.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from scipy.stats import spearmanr
 from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.model_selection import KFold
+
+if TYPE_CHECKING:
+    from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
@@ -157,3 +162,37 @@ class RidgeSurrogate:
             rhos.append(rho)
 
         return float(np.mean(np.array(rhos))) if rhos else 0.0
+
+    def extract_mrf_model(self, num_layers: int) -> "SurrogateMRFModel":
+        """Extract MRF model from main (RidgeCV) model coefficients."""
+        from place_layers.mrf.surrogate_model import SurrogateMRFModel
+
+        assert self._coef is not None, "Must call fit() first"
+        sorted_names = tuple(sorted(self._type_to_int.keys()))
+        feature_config = self._feature_config or FeatureExpansionConfig()
+        return SurrogateMRFModel(
+            coef=self._coef,
+            intercept=self._intercept,
+            num_layers=num_layers,
+            mixer_names=sorted_names,
+            feature_config=feature_config,
+        )
+
+    def extract_bootstrap_mrf_models(
+        self, num_layers: int
+    ) -> "list[SurrogateMRFModel]":
+        """Extract MRF models from all bootstrap Ridge models."""
+        from place_layers.mrf.surrogate_model import SurrogateMRFModel
+
+        sorted_names = tuple(sorted(self._type_to_int.keys()))
+        feature_config = self._feature_config or FeatureExpansionConfig()
+        return [
+            SurrogateMRFModel(
+                coef=m.coef_,
+                intercept=float(m.intercept_),
+                num_layers=num_layers,
+                mixer_names=sorted_names,
+                feature_config=feature_config,
+            )
+            for m in self._bootstrap_models
+        ]

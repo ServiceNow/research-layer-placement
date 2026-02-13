@@ -10,8 +10,44 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from place_layers.core.types import LayerPlacement
+
+
+@runtime_checkable
+class MRFModelProtocol(Protocol):
+    """Protocol capturing the interface used by ExactMRFSolver."""
+
+    @property
+    def num_layers(self) -> int: ...
+
+    @property
+    def num_mixers(self) -> int: ...
+
+    @property
+    def mixer_names(self) -> tuple[str, ...]: ...
+
+    @property
+    def memory(self) -> int: ...
+
+    @property
+    def pairwise_max_range(self) -> int: ...
+
+    @property
+    def triplet_scale(self) -> float: ...
+
+    def unary_potential(self, layer: int, mixer_name: str) -> float: ...
+
+    def pairwise_potential(self, layer: int, mixer_a: str, mixer_b: str) -> float: ...
+
+    def skip_pairwise_potential(
+        self, layer: int, range_r: int, mixer_a: str, mixer_b: str
+    ) -> float: ...
+
+    def triplet_potential(
+        self, layer: int, mixer_a: str, mixer_b: str, mixer_c: str
+    ) -> float: ...
 
 
 @dataclass(frozen=True)
