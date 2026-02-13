@@ -380,7 +380,7 @@ class TraceDataset(BaseModel):
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text())
             teacher_model = metadata.get("teacher_model", "unknown")
-            samples_per_problem = metadata.get("samples_per_problem", 0)
+            samples_per_problem = metadata.get("samples_per_problem") or 0
         else:
             teacher_model = "unknown"
             samples_per_problem = 0

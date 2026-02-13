@@ -354,6 +354,7 @@ def load_tasks(
     task_specs: list[TaskSpecInput],
     default_num_fewshot: int,
     seed: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, "Task"]:
     """Load multiple lm-eval tasks efficiently with a shared TaskManager.
 
@@ -364,6 +365,9 @@ def load_tasks(
         task_specs: List of task names or TaskSpec objects.
         default_num_fewshot: Default few-shot count.
         seed: Random seed for few-shot sampling (optional).
+        metadata: Extra metadata passed to TaskManager and merged into task
+            configs. Used by tasks with custom_dataset functions that need
+            external info (e.g., RULER needs a tokenizer via "pretrained" key).
 
     Returns:
         Dict mapping task names to configured Task objects.
@@ -397,7 +401,7 @@ def load_tasks(
         ]
 
         # Load all tasks at once with a shared TaskManager
-        task_manager = TaskManager(include_path=include_path)
+        task_manager = TaskManager(include_path=include_path, metadata=metadata)
         task_dict = get_task_dict(task_configs, task_manager=task_manager)
     finally:
         # Restore original relative_to
