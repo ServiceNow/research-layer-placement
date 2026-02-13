@@ -10,9 +10,6 @@
 
 defaults:
   - /command: optimize
-  - /task@_mmlu_task: mmlu_optimize
-  - /task@_fda_task: fda_optimize
-  - /task@_swde_task: swde_optimize
   - /generation: extraction
   - /evaluators: apriel2_mix
   - /backend: rest
