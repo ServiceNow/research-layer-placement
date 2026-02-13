@@ -28,6 +28,9 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from place_layers.clients.types import GenerationResult
 from place_layers.evaluator.base_evaluator import BaseEvaluator
+
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
 from place_layers.evaluator.base_generative_evaluator import (
     BaseGenerativeEvaluator,
     BaseGenerativeEvaluatorConfig,
@@ -61,9 +64,13 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
     config: "GenerativeEvaluatorConfig"
 
     def __init__(
-        self, config: "GenerativeEvaluatorConfig", *, output_dir: "Path"
+        self,
+        config: "GenerativeEvaluatorConfig",
+        *,
+        output_dir: "Path",
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
 
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult

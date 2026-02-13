@@ -39,9 +39,12 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import ClassVar, Literal, Self, Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, Sequence
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
 
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator
@@ -137,7 +140,11 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
     config: "ImportanceWeightedEvaluatorConfig"
 
     def __init__(
-        self, config: "ImportanceWeightedEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "ImportanceWeightedEvaluatorConfig",
+        *,
+        output_dir: Path,
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
     ) -> None:
         self._weight_clip_min = config.weight_clip_min
         self._weight_clip_max = config.weight_clip_max
@@ -147,7 +154,7 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
         self._log_weight_clip_max = math.log(self._weight_clip_max)
 
         # Call parent init (sets up backend, trace loading, task weights, etc.)
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
 
     def _compute_problem_record(
         self,

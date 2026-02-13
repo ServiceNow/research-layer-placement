@@ -29,6 +29,9 @@ from place_layers.evaluator.traces.types import SkippedProblem, Trace, TraceData
 from place_layers.evaluator.progress import create_progress
 
 if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
+
+if TYPE_CHECKING:
     from typing import Self, Sequence
 
 logger = logging.getLogger(__name__)
@@ -98,10 +101,14 @@ class TraceBasedEvaluator(BackendEvaluator):
     config: "TraceBasedEvaluatorConfig"
 
     def __init__(
-        self, config: "TraceBasedEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "TraceBasedEvaluatorConfig",
+        *,
+        output_dir: Path,
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
     ) -> None:
         # Call parent init (sets up backend, trace writer, etc.)
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
 
         # Load and merge all traces by task_name
         self.merged_traces = self._load_and_merge_traces()
