@@ -35,9 +35,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Sequence
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Sequence
 
 from pydantic import BaseModel, Field, field_validator
+
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
 
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.trace_based_evaluator import (
@@ -215,13 +218,17 @@ class TraceLikelihoodEvaluator(TraceBasedEvaluator):
     config: "TraceLikelihoodEvaluatorConfig"
 
     def __init__(
-        self, config: "TraceLikelihoodEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "TraceLikelihoodEvaluatorConfig",
+        *,
+        output_dir: Path,
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
     ) -> None:
         # Store normalization config
         self._normalization = config.normalization
 
         # Call parent init (sets up backend, trace loading, task weights, etc.)
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
 
     def _compute_problem_record(
         self,
