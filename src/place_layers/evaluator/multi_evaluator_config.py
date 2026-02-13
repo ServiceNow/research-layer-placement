@@ -62,6 +62,7 @@ Code usage:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from enum import Enum
 from pathlib import Path
@@ -139,7 +140,10 @@ class EvaluatorInstances[ParametersT]:
         return len(self.mixer_names)
 
     async def evaluate(self, parameters: ParametersT) -> float:
-        """Evaluate parameters using all evaluators and aggregate.
+        """Evaluate parameters using all evaluators in parallel and aggregate.
+
+        All evaluators run concurrently for maximum performance. The shared
+        backend handles request throttling via max_concurrent_requests.
 
         Args:
             parameters: Parameters to evaluate
@@ -147,10 +151,17 @@ class EvaluatorInstances[ParametersT]:
         Returns:
             Aggregated score across all evaluators
         """
-        # Evaluate with all evaluators
-        scores = {}
-        for name, evaluator in self.evaluators.items():
-            scores[name] = await evaluator.evaluate(parameters)
+        # Create evaluation tasks for all evaluators
+        eval_coros = [
+            evaluator.evaluate(parameters)
+            for evaluator in self.evaluators.values()
+        ]
+
+        # Run all evaluators concurrently
+        score_list = await asyncio.gather(*eval_coros)
+
+        # Map results back to evaluator names
+        scores = dict(zip(self.evaluators.keys(), score_list))
 
         # Aggregate based on strategy
         return self._aggregate_scores(scores)
@@ -158,7 +169,9 @@ class EvaluatorInstances[ParametersT]:
     async def evaluate_with_details(
         self, parameters: ParametersT
     ) -> tuple[float, dict[str, float] | None]:
-        """Evaluate parameters and return both aggregated and individual scores.
+        """Evaluate parameters in parallel and return both aggregated and individual scores.
+
+        All evaluators run concurrently for maximum performance.
 
         Args:
             parameters: Parameters to evaluate
@@ -167,10 +180,17 @@ class EvaluatorInstances[ParametersT]:
             Tuple of (aggregated_score, auxiliary_scores_dict).
             If only one evaluator, auxiliary_scores_dict is None.
         """
-        # Evaluate with all evaluators
-        scores = {}
-        for name, evaluator in self.evaluators.items():
-            scores[name] = await evaluator.evaluate(parameters)
+        # Create evaluation tasks for all evaluators
+        eval_coros = [
+            evaluator.evaluate(parameters)
+            for evaluator in self.evaluators.values()
+        ]
+
+        # Run all evaluators concurrently
+        score_list = await asyncio.gather(*eval_coros)
+
+        # Map results back to evaluator names
+        scores = dict(zip(self.evaluators.keys(), score_list))
 
         # Aggregate based on strategy
         aggregated = self._aggregate_scores(scores)
