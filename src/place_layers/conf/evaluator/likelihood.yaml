@@ -31,3 +31,7 @@ split: ${task.split}
 # Whether to use chat template for formatting prompts
 # Set to false for base models or text-based scoring
 use_chat_template: true
+
+# Tokenizer for synthetic task generation (e.g., RULER)
+tokenizer: null
+max_seq_lengths: null
