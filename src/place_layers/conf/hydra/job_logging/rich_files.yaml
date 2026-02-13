@@ -11,7 +11,7 @@ formatters:
 handlers:
   console_rich:
     class: rich.logging.RichHandler
-    level: INFO              # show info, warnings, and errors in the terminal
+    level: WARNING              # show info, warnings, and errors in the terminal
     formatter: rich_fmt
     rich_tracebacks: true
     tracebacks_show_locals: false
@@ -27,7 +27,7 @@ handlers:
     formatter: file_fmt
     filename: app.log  # Since chdir=true, this goes to the run directory
     maxBytes: 10485760       # 10 MB
-    backupCount: 5
+    backupCount: 100
 
   file_err:
     class: logging.handlers.RotatingFileHandler

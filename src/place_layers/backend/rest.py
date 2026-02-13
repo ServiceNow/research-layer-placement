@@ -16,11 +16,10 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, ValidationError, computed_field
+from pydantic import BaseModel, Field, computed_field, ValidationError,model_validator, PrivateAttr
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -85,8 +84,7 @@ class AllServersFailedError(TransientError):
     pass
 
 
-@dataclass
-class ServerHealth:
+class ServerHealth(BaseModel):
     """Health state for a single server with exponential recovery backoff."""
 
     healthy: bool = True
@@ -118,8 +116,7 @@ class ServerHealth:
         return time.monotonic() >= self.next_check_time(base_interval, max_interval)
 
 
-@dataclass
-class ServerPool:
+class ServerPool(BaseModel):
     """Manages server health tracking and load-balanced server selection.
 
     This class has two responsibilities:
@@ -158,10 +155,10 @@ class ServerPool:
     servers: list[str]
     base_recovery_interval: float
     max_recovery_interval: float
-    _health: dict[str, ServerHealth] = field(default_factory=dict, repr=False)
-    _round_robin_counter: int = field(default=0, repr=False)
+    _health: dict[str, ServerHealth] = PrivateAttr(default_factory=dict)
+    _round_robin_counter: int = PrivateAttr(default=0)
 
-    def __post_init__(self) -> None:
+    def model_post_init(self, __context: Any) -> None:
         """Initialize health tracking for all servers."""
         self._health = {server: ServerHealth() for server in self.servers}
         self._round_robin_counter = 0
@@ -935,7 +932,7 @@ class BaseRESTBackendConfig(BaseBackendConfig):
     Subclasses must provide the `servers` property (either as a field or computed).
     """
 
-    _backend_class: ClassVar[type[AsyncBackend]] = RESTBackend
+    _impl_class: ClassVar[type[AsyncBackend]] = RESTBackend
 
     max_concurrent_per_server: int = Field(
         description="Maximum concurrent requests per server",
@@ -972,10 +969,13 @@ class RESTBackendConfig(BaseRESTBackendConfig):
 class RESTDNSBackendConfig(BaseRESTBackendConfig):
     """REST backend with auto-generated server list from DNS pattern.
 
-    Generates server URLs automatically based on a DNS prefix and server count.
+    Generates server URLs automatically based on a DNS prefix and either:
+    1. A specific list of server IDs (via server_ids), or
+    2. A sequential range of server IDs (via num_servers)
+
     Useful for Kubernetes deployments with predictable DNS naming schemes.
 
-    Example:
+    Example with num_servers:
         dns_prefix = "my-service"
         num_servers = 4
         port = 8080
@@ -985,16 +985,49 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         - http://my-service-id-1:8080
         - http://my-service-id-2:8080
         - http://my-service-id-3:8080
+
+    Example with num_servers and server_id_offset:
+        dns_prefix = "my-service"
+        num_servers = 3
+        server_id_offset = 2
+        port = 8080
+
+        Generates:
+        - http://my-service-id-2:8080
+        - http://my-service-id-3:8080
+        - http://my-service-id-4:8080
+
+    Example with server_ids:
+        dns_prefix = "my-service"
+        server_ids = [0, 2, 5]
+        port = 8080
+
+        Generates:
+        - http://my-service-id-0:8080
+        - http://my-service-id-2:8080
+        - http://my-service-id-5:8080
     """
 
     backend_type: Literal["rest_dns"] = "rest_dns"
 
     dns_prefix: str = Field(
-        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{0..n-1})"
+        description="DNS prefix for server hostnames (servers named {dns_prefix}-id-{N})"
     )
-    num_servers: int = Field(
-        description="Number of servers to generate",
+    num_servers: int | None = Field(
+        default=None,
+        description="Number of servers to generate (creates sequential IDs starting from server_id_offset). "
+        "Mutually exclusive with server_ids.",
         ge=1,
+    )
+    server_id_offset: int = Field(
+        default=0,
+        description="Starting ID offset when using num_servers (e.g., offset=2, num_servers=3 generates IDs [2, 3, 4]). "
+        "Ignored when server_ids is specified.",
+        ge=0,
+    )
+    server_ids: list[int] | None = Field(
+        default=None,
+        description="Explicit list of server IDs to use. Mutually exclusive with num_servers.",
     )
     port: int = Field(
         description="Port for all servers",
@@ -1002,11 +1035,38 @@ class RESTDNSBackendConfig(BaseRESTBackendConfig):
         le=65535,
     )
 
+    @model_validator(mode="after")
+    def validate_server_specification(self) -> Self:
+        """Validate that exactly one of num_servers or server_ids is provided."""
+        has_num = self.num_servers is not None
+        has_ids = self.server_ids is not None
+
+        if not has_num and not has_ids:
+            raise ValueError(
+                "RESTDNSBackendConfig requires either 'num_servers' or 'server_ids' to be specified"
+            )
+        if has_num and has_ids:
+            raise ValueError(
+                "RESTDNSBackendConfig cannot have both 'num_servers' and 'server_ids' specified"
+            )
+
+        return self
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def servers(self) -> list[str]:
-        """Auto-generate server URLs from DNS prefix and server count."""
+        """Auto-generate server URLs from DNS prefix and server IDs."""
+        if self.server_ids is not None:
+            # Use explicit server IDs
+            ids = self.server_ids
+        elif self.num_servers is not None:
+            # Use sequential range with offset
+            ids = list(range(self.server_id_offset, self.server_id_offset + self.num_servers))
+        else:
+            # Should never reach here due to __init__ validation
+            raise ValueError("Either num_servers or server_ids must be specified")
+
         return [
             f"http://{self.dns_prefix}-id-{i}:{self.port}"
-            for i in range(self.num_servers)
+            for i in ids
         ]

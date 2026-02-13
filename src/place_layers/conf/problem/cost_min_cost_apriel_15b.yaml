@@ -1,0 +1,12 @@
+# @package problem
+# Cost-constrained problem for Apriel 15B (48 layers)
+# Minimize cost subject to performance >= target
+
+problem_type: cost_min_cost
+
+# Cost model injected from root-level cost_model config group
+cost_model: ${cost_model}
+
+# Performance target: find cheapest config that achieves at least this score
+# For MockSupernetEvaluator, scores typically range based on layer/mixer setup
+performance_target: 5.0

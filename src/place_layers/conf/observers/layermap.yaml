@@ -1,0 +1,7 @@
+# @package observers
+# Layermap preset: ASCII layermap visualization + JSONL disk logging
+
+defaults:
+  - /observer@display: layermap
+  - /observer@log.disk: disk
+  - _self_

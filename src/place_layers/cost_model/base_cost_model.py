@@ -10,9 +10,10 @@ from typing import Literal
 from place_layers.core.types import LayerPlacement
 
 
-# Type alias for allocation: counts per mixer (length = num_mixers)
-# Example: (2, 1, 3) means 2 layers on mixer 0, 1 on mixer 1, 3 on mixer 2
-Allocation = tuple[int, ...]
+# Type alias for allocation: counts per mixer, keyed by mixer name
+# Example: {"FA": 5, "SWA": 3, "GDN": 40} means 5 FA layers, 3 SWA layers, 40 GDN layers
+# Dict iteration order comes from cost_model.phase_order (config.mixer_costs key order)
+Allocation = dict[str, int]
 
 
 class BaseCostModel(ABC):
@@ -33,7 +34,7 @@ class BaseCostModel(ABC):
 
     Terminology:
     - LayerPlacement: which mixer each layer uses (length = num_layers)
-    - Allocation: how many layers use each mixer (length = num_mixers)
+    - Allocation: how many layers use each mixer (dict[str, int])
 
     Cost depends only on allocation (counts), not on which specific layers.
     Performance depends on the full placement.
@@ -43,6 +44,21 @@ class BaseCostModel(ABC):
     @abstractmethod
     def num_mixers(self) -> int:
         """Number of mixer types."""
+        pass
+
+    @property
+    @abstractmethod
+    def phase_order(self) -> list[str]:
+        """
+        Mixer names in phase order for hierarchical search.
+
+        This determines the order in which phases assign layers to mixers.
+        The first mixer in the list is assigned first, then the second, etc.
+        The last mixer in the list receives all remaining layers.
+
+        Implementations should return mixer names in the order specified
+        by the cost model configuration (e.g., the key order in mixer_costs dict).
+        """
         pass
 
     # =========================================================================
@@ -64,7 +80,7 @@ class BaseCostModel(ABC):
 
     @abstractmethod
     def cost_delta(
-        self, layer_idx: int, old_mixer: int, new_mixer: int
+        self, layer_idx: int, old_mixer: str, new_mixer: str
     ) -> float:
         """
         Compute the change in cost from swapping a single layer's mixer.
@@ -73,8 +89,8 @@ class BaseCostModel(ABC):
 
         Args:
             layer_idx: Index of the layer being changed.
-            old_mixer: Current mixer index for the layer.
-            new_mixer: New mixer index for the layer.
+            old_mixer: Current mixer name for the layer.
+            new_mixer: New mixer name for the layer.
 
         Returns:
             Change in cost (positive = more expensive, negative = cheaper).
@@ -117,8 +133,7 @@ class BaseCostModel(ABC):
         Compute cost of an allocation (counts per mixer).
 
         Args:
-            allocation: Tuple of (n_0, n_1, ..., n_{K-1}) where n_i is
-                       the number of layers using mixer i.
+            allocation: Dict mapping mixer name to layer count.
 
         Returns:
             Cost value for this allocation.
@@ -131,10 +146,10 @@ class BaseCostModel(ABC):
         Return the allocation with minimum cost.
 
         Args:
-            num_layers: Total number of layers (sum of allocation).
+            num_layers: Total number of layers (sum of allocation values).
 
         Returns:
-            Allocation tuple with all layers on cheapest mixer(s).
+            Allocation dict with all layers on cheapest mixer(s).
         """
         pass
 
@@ -144,10 +159,10 @@ class BaseCostModel(ABC):
         Return the allocation with maximum cost.
 
         Args:
-            num_layers: Total number of layers (sum of allocation).
+            num_layers: Total number of layers (sum of allocation values).
 
         Returns:
-            Allocation tuple with all layers on most expensive mixer(s).
+            Allocation dict with all layers on most expensive mixer(s).
         """
         pass
 
@@ -202,6 +217,23 @@ class BaseCostModel(ABC):
         """
         pass
 
+    def count_allocations(self, num_layers: int) -> int:
+        """
+        Count total number of possible allocations (stars-and-bars formula).
+
+        The number of ways to distribute num_layers layers among num_mixers mixers
+        is C(num_layers + num_mixers - 1, num_mixers - 1).
+
+        Args:
+            num_layers: Total number of layers.
+
+        Returns:
+            Total number of distinct allocations.
+        """
+        from math import comb
+
+        return comb(num_layers + self.num_mixers - 1, self.num_mixers - 1)
+
     def allocations_by_cost(
         self,
         num_layers: int,
@@ -234,16 +266,26 @@ class BaseCostModel(ABC):
             heap_sign = -1  # Max-heap via negation
 
         start_cost = self.allocation_cost(start)
-        frontier: list[tuple[float, Allocation]] = [(heap_sign * start_cost, start)]
-        visited: set[Allocation] = {start}
+        # Use frozenset of items for hashing since dict is not hashable
+        start_key = frozenset(start.items())
+        # Counter for heap tie-breaking (frozenset is not orderable)
+        counter = 0
+        frontier: list[tuple[float, int, frozenset[tuple[str, int]], Allocation]] = [
+            (heap_sign * start_cost, counter, start_key, start)
+        ]
+        visited: set[frozenset[tuple[str, int]]] = {start_key}
 
         while frontier:
-            signed_cost, alloc = heapq.heappop(frontier)
+            signed_cost, _cnt, _key, alloc = heapq.heappop(frontier)
             cost = heap_sign * signed_cost
             yield cost, alloc
 
             for neighbor, _delta in self.allocation_neighbors(alloc, neighbor_direction):
-                if neighbor not in visited:
-                    visited.add(neighbor)
+                neighbor_key = frozenset(neighbor.items())
+                if neighbor_key not in visited:
+                    visited.add(neighbor_key)
                     neighbor_cost = self.allocation_cost(neighbor)
-                    heapq.heappush(frontier, (heap_sign * neighbor_cost, neighbor))
+                    counter += 1
+                    heapq.heappush(
+                        frontier, (heap_sign * neighbor_cost, counter, neighbor_key, neighbor)
+                    )

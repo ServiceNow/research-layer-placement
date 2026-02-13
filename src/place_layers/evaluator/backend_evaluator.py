@@ -76,7 +76,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
         # Model structure (populated in __aenter__ from backend)
         self._num_layers: int | None = None
-        self._mixer_names: list[str] | None = None
+        self._mixer_names: frozenset[str] | None = None
 
         # Track current placement to avoid redundant set_placement calls
         # None means model doesn't support placements (non-supernet)
@@ -100,7 +100,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         structure = self._backend.model_structure
         if isinstance(structure, SupernetStructure):
             self._num_layers = structure.num_layers
-            self._mixer_names = structure.mixer_names
+            self._mixer_names = frozenset(structure.mixer_names)
             logger.info(
                 f"{self.__class__.__name__} initialized: {self._num_layers} layers, "
                 f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
@@ -136,17 +136,12 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         return self._num_layers
 
     @property
-    def num_mixers(self) -> int:
-        """Number of mixer types per layer."""
-        if self._mixer_names is None:
-            raise RuntimeError(
-                "num_mixers not available - evaluator must be entered first"
-            )
-        return len(self._mixer_names)
+    def mixer_names(self) -> frozenset[str]:
+        """Available mixer types (e.g., {'attention', 'gdn', 'kda'}).
 
-    @property
-    def mixer_names(self) -> list[str]:
-        """Available mixer types (e.g., ['attention', 'gdn', 'kda'])."""
+        This is discovered from the model and used only for validation.
+        For ordering, use cost_model.phase_order.
+        """
         if self._mixer_names is None:
             raise RuntimeError(
                 "mixer_names not available - evaluator must be entered first"
@@ -256,10 +251,10 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         """Validate and set the mixer placement on the backend.
 
         Args:
-            parameters: Layer placement to set.
+            parameters: Layer placement to set (assignments are mixer names).
 
         Raises:
-            ValueError: If placement has wrong number of assignments.
+            ValueError: If placement has wrong number of assignments or invalid mixer names.
         """
         # Validate placement length
         if len(parameters.assignments) != self.num_layers:
@@ -268,8 +263,16 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
                 f"expected {self.num_layers}"
             )
 
-        # Convert assignment indices to mixer names
-        placement = [self.mixer_names[idx] for idx in parameters.assignments]
+        # Validate mixer names
+        valid_names = set(self.mixer_names)
+        for name in parameters.assignments:
+            if name not in valid_names:
+                raise ValueError(
+                    f"Invalid mixer name '{name}'. Valid names: {sorted(valid_names)}"
+                )
+
+        # Assignments are already mixer names - convert to list for backend
+        placement = list(parameters.assignments)
 
         # Skip if unchanged
         if placement == self._current_placement:

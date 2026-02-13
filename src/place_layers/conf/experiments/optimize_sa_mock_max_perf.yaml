@@ -1,0 +1,23 @@
+# @package _global_
+# Max-performance optimization using SA search + mock evaluator
+# Drop-in SA alternative to optimize_mock_max_perf (which uses hierarchical).
+# Same evaluator, problem, and result handler; different search strategy.
+#
+# Usage:
+#   python -m place_layers +experiments=optimize_sa_mock_max_perf
+
+defaults:
+  - /command: optimize
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
+  - /search_strategy: cost_constrained_annealing
+  - /result_handler: json
+  - _self_
+
+# Settings for demo/testing (matches optimize_mock_max_perf scale)
+search_strategy:
+  max_allocations: 10
+  sa:
+    initial_temperature: 11.6
+    seed: 42

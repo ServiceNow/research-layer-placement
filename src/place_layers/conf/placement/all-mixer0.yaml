@@ -1,0 +1,3 @@
+# @package _global_
+# All layers use mixer_0 (for mock evaluator testing)
+placement: [mixer_0]

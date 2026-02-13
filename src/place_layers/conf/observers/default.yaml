@@ -1,0 +1,7 @@
+# @package observers
+# Default observers: Rich terminal display + JSONL disk logging
+
+defaults:
+  - /observer@display: rich
+  - /observer@log.disk: disk
+  - _self_

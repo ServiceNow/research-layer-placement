@@ -1,0 +1,4 @@
+# @package result_handler
+handler_type: yaml
+default_flow_style: false
+sort_keys: false

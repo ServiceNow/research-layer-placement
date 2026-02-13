@@ -307,7 +307,7 @@ class MockBackendConfig(BaseBackendConfig):
     All fields must be provided via Hydra YAML - no defaults in code.
     """
 
-    _backend_class: ClassVar[type[MockBackend]] = MockBackend
+    _impl_class: ClassVar[type[MockBackend]] = MockBackend
 
     backend_type: Literal["mock"] = "mock"
 

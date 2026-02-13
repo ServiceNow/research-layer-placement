@@ -2,58 +2,68 @@
 
 This implements an inner loop strategy that uses simulated annealing to explore
 the assignment space within a fixed allocation.
+
+Key features:
+- Ruin-and-recreate move operator: shuffles k positions (generalizes k-cycles)
+- Multi-start: multiple random restarts explore different basins
+- Adaptive reheating: reheats when acceptance rate drops below threshold
+- Geometric cooling schedule
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import random
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
 
 from pydantic import Field
 
+from place_layers.annealing.sa_core import SAConfig, run_multi_start_sa
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.problem.layer_placement import CostConstrainedProblem
-from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.allocation_iteration import (
+    AllocationIterationSearch,
+)
 from place_layers.search_strategy.cost_constrained.base_config import (
-    BaseCostConstrainedConfig,
+    AllocationIterationConfig,
 )
 from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
 
 
 logger = logging.getLogger(__name__)
 
 
-class AnnealingSearch(BaseCostConstrainedSearch):
+class AnnealingSearch(AllocationIterationSearch):
     """
     Cost-constrained search using simulated annealing for the inner loop.
 
-    Within each allocation, uses simulated annealing:
-    1. Start from canonical assignment
-    2. Propose random allocation-preserving swaps
-    3. Accept improving moves always; accept worsening moves with probability exp(delta/T)
-    4. Cool temperature over time
+    Within each allocation, uses simulated annealing with:
+    1. Random initial assignments (multi-start)
+    2. Ruin-and-recreate move operator (shuffles k positions)
+    3. Metropolis acceptance criterion
+    4. Adaptive reheating when acceptance rate drops
+    5. Geometric cooling schedule
 
-    This provides O(max_steps) evaluations per allocation regardless of the
-    allocation size, making it much more efficient than swap-based beam search.
-
-    Trade-off: SA explores randomly rather than systematically, which may miss
-    good directions that beam search would find. However, it naturally explores
-    multi-hop paths through accumulated accepted moves.
+    The ruin-and-recreate operator generalizes k-cycles: at k=2 it's a swap,
+    at higher k it can reach states that require multiple intermediate swaps.
+    The perturbation size k is coupled to temperature via a geometric distribution.
     """
 
-    def __init__(self, config: "AnnealingConfig") -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: "AnnealingConfig",
+        observers: "Sequence[SearchObserver]" = (),
+        progress_estimator: "SearchProgressEstimator | None" = None,
+    ) -> None:
+        super().__init__(config, observers, progress_estimator)
         self.config: AnnealingConfig
-
-        # Seed RNG for reproducibility if specified
-        if self.config.seed is not None:
-            random.seed(self.config.seed)
+        self._rng = random.Random(self.config.sa.seed)
 
     async def _search_within_allocation(
         self,
@@ -61,169 +71,123 @@ class AnnealingSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         allocation: Allocation,
         num_layers: int,
-    ) -> BeamEntry | None:
+    ) -> list[BeamEntry]:
         """
         Search for the best assignment within a fixed allocation using simulated annealing.
 
-        Performs a random walk through assignment space, accepting moves based
-        on the Metropolis criterion.
+        Uses multiple random restarts, each running a SA trajectory with
+        ruin-and-recreate moves and adaptive reheating.
+
+        Returns:
+            List containing a single BeamEntry result (SA only tracks best),
+            or empty list if no valid assignments exist.
         """
-        alloc_cost = cost_model.allocation_cost(allocation)
-        num_mixers = len(allocation)
+        from place_layers.annealing.events import AnnealingCompletedEvent
 
-        # Group layers by mixer for efficient swap generation
-        layers_by_mixer = self._group_layers_by_mixer(allocation, num_layers)
-
-        # Check if any swaps are possible
-        if not self._can_swap(layers_by_mixer):
+        # Check if any moves are possible (need >= 2 non-zero mixer counts)
+        if not self._can_swap(allocation):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers)
-            placement = LayerPlacement(assignments=assignments)
+            placement = LayerPlacement(assignments=tuple(assignments))
             score = await problem.evaluate(placement)
             self.eval_count += 1
-            return BeamEntry(
-                assignments=assignments,
-                allocation=allocation,
-                cost=alloc_cost,
-                score=score,
-            )
 
-        # Initialize with canonical assignment
-        current = list(self._allocation_to_assignment(allocation, num_layers))
-        placement = LayerPlacement(assignments=tuple(current))
-        current_score = await problem.evaluate(placement)
-        self.eval_count += 1
+            # Notify observers
+            for observer in self.observers:
+                observer.on_eval_completed(self.eval_count)
 
-        best = current.copy()
-        best_score = current_score
+            # Emit completed event with no_swaps reason
+            if self.observers:
+                event = AnnealingCompletedEvent(
+                    steps_taken=0,
+                    final_temperature=self.config.sa.initial_temperature,
+                    termination_reason="no_swaps",
+                    best_assignments=tuple(assignments),
+                    best_score=score,
+                    restarts_completed=0,
+                    best_restart=0,
+                    total_reheats=0,
+                )
+                for observer in self.observers:
+                    observer.on_annealing_completed(event)
 
-        # Initialize temperature
-        temperature = self.config.initial_temperature
+            return [
+                BeamEntry(
+                    assignments=tuple(assignments),
+                    allocation=allocation,
+                    score=score,
+                )
+            ]
 
-        # Main annealing loop
-        for step in range(self.config.max_steps):
-            # Propose a random swap
-            layer_a, layer_b = self._random_swap(current, num_mixers)
-            if layer_a is None:
-                # No valid swap possible (shouldn't happen if can_swap returned True)
-                break
-
-            # Apply swap
-            current[layer_a], current[layer_b] = current[layer_b], current[layer_a]
-
-            # Evaluate
-            placement = LayerPlacement(assignments=tuple(current))
-            new_score = await problem.evaluate(placement)
+        # Score function: evaluate + count + notify
+        async def score_fn(assignment: tuple[str, ...]) -> float:
+            placement = LayerPlacement(assignments=assignment)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
+            for obs in self.observers:
+                obs.on_eval_completed(self.eval_count)
+            return score
 
-            # Metropolis criterion
-            delta = new_score - current_score
-
-            if delta > 0:
-                # Better: always accept
-                current_score = new_score
-                if new_score > best_score:
-                    best = current.copy()
-                    best_score = new_score
-            elif temperature > 0 and random.random() < math.exp(delta / temperature):
-                # Worse but accepted with probability
-                current_score = new_score
-            else:
-                # Rejected: undo swap
-                current[layer_a], current[layer_b] = current[layer_b], current[layer_a]
-
-            # Cool down
-            temperature *= self.config.cooling_rate
-
-            # Early termination if temperature is too low
-            if temperature < self.config.min_temperature:
-                break
-
-        return BeamEntry(
-            assignments=tuple(best),
-            allocation=allocation,
-            cost=alloc_cost,
-            score=best_score,
+        # Pass observers directly — SearchObserver satisfies SAObserver
+        result = await run_multi_start_sa(
+            score_fn=score_fn,
+            allocation_cost=cost_model.allocation_cost,
+            feasible_allocations=[allocation],
+            num_layers=num_layers,
+            mixer_names=cost_model.phase_order,
+            cost_budget=None,
+            config=self.config.sa,
+            rng=self._rng,
+            observers=self.observers,
         )
 
-    def _group_layers_by_mixer(
-        self, allocation: Allocation, num_layers: int
-    ) -> list[list[int]]:
+        # Emit completed event
+        if self.observers and result.candidates:
+            best_assignment, best_score = result.candidates[0]
+            if result.any_early_termination:
+                termination_reason = "min_temperature"
+            else:
+                termination_reason = "max_steps"
+            event = AnnealingCompletedEvent(
+                steps_taken=result.total_steps,
+                final_temperature=result.final_temperature,
+                termination_reason=termination_reason,
+                best_assignments=best_assignment,
+                best_score=best_score,
+                restarts_completed=self.config.sa.num_restarts,
+                best_restart=result.best_restart,
+                total_reheats=result.total_reheats,
+            )
+            for observer in self.observers:
+                observer.on_annealing_completed(event)
+
+        if not result.candidates:
+            return []
+
+        best_assignment, best_score = result.candidates[0]
+        return [
+            BeamEntry(
+                assignments=best_assignment,
+                allocation=allocation,
+                score=best_score,
+            )
+        ]
+
+    @staticmethod
+    def _can_swap(allocation: Allocation) -> bool:
+        """Check if any allocation-preserving move is possible.
+
+        Requires at least 2 mixer types with non-zero counts.
         """
-        Create a canonical grouping of layers by mixer.
-
-        This is used for efficient random swap generation.
-        """
-        layers_by_mixer: list[list[int]] = []
-        layer_idx = 0
-        for count in allocation:
-            layers_by_mixer.append(list(range(layer_idx, layer_idx + count)))
-            layer_idx += count
-        return layers_by_mixer
-
-    def _can_swap(self, layers_by_mixer: list[list[int]]) -> bool:
-        """Check if any allocation-preserving swap is possible."""
-        non_empty = [group for group in layers_by_mixer if len(group) > 0]
-        return len(non_empty) >= 2
-
-    def _random_swap(
-        self, assignments: list[int], num_mixers: int
-    ) -> tuple[int | None, int | None]:
-        """
-        Generate a random allocation-preserving swap.
-
-        Returns (layer_a, layer_b) where the two layers have different mixers.
-        Returns (None, None) if no swap is possible.
-        """
-        # Group current layers by their mixer
-        layers_by_mixer: list[list[int]] = [[] for _ in range(num_mixers)]
-        for layer_idx, mixer in enumerate(assignments):
-            layers_by_mixer[mixer].append(layer_idx)
-
-        # Find pairs of mixers with non-empty groups
-        non_empty_mixers = [i for i, group in enumerate(layers_by_mixer) if len(group) > 0]
-
-        if len(non_empty_mixers) < 2:
-            return None, None
-
-        # Pick two random different mixers
-        mixer_a, mixer_b = random.sample(non_empty_mixers, 2)
-
-        # Pick random layers from each
-        layer_a = random.choice(layers_by_mixer[mixer_a])
-        layer_b = random.choice(layers_by_mixer[mixer_b])
-
-        return layer_a, layer_b
+        non_zero = sum(1 for count in allocation.values() if count > 0)
+        return non_zero >= 2
 
 
-class AnnealingConfig(BaseCostConstrainedConfig):
+class AnnealingConfig(AllocationIterationConfig):
     """Configuration for simulated annealing inner loop."""
 
     _impl_class: ClassVar[type["BaseSearchStrategy"]] = AnnealingSearch
 
     strategy_type: Literal["cost_constrained_annealing"] = "cost_constrained_annealing"
 
-    max_steps: int = Field(
-        description="Maximum number of annealing steps per allocation",
-        gt=0,
-    )
-
-    initial_temperature: float = Field(
-        description="Initial temperature for annealing",
-        gt=0,
-    )
-
-    cooling_rate: float = Field(
-        description="Temperature decay rate per step (T_new = T * cooling_rate)",
-        gt=0,
-        lt=1,
-    )
-
-    min_temperature: float = Field(
-        description="Minimum temperature before early termination",
-        ge=0,
-    )
-
-    seed: int | None = Field(
-        description="Random seed for reproducibility. If None, uses system entropy.",
-    )
+    sa: SAConfig = Field(description="Simulated annealing configuration")

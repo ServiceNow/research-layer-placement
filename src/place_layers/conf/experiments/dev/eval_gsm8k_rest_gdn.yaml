@@ -1,0 +1,32 @@
+# @package _global_
+# Evaluate Apriel2-0.5B-dev on GSM8K via REST backend with GDN placement
+#
+# Prerequisites:
+#   Start a server first (transformers or vLLM):
+#   python -m place_layers +experiments=serve_apriel2_0_5b_dev port=8080
+#   # OR
+#   python -m place_layers +experiments=serve_local_vllm port=8080
+#
+# Usage:
+#   python -m place_layers +experiments=eval_gsm8k_rest_gdn
+
+defaults:
+  - /command: evaluate
+  - /evaluator: generative
+  - /backend: rest
+  - /task: gsm8k
+  - /generation: greedy
+  - /placement: every2nd-gdn
+  - _self_
+
+backend:
+  servers:
+    - http://localhost:8080
+
+# Match local_vllm_gdn settings
+task:
+  num_fewshot: 2
+  max_problems_per_task: null  # Full test set (1319 problems)
+
+generation:
+  max_new_tokens: 512

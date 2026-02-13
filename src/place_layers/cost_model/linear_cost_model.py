@@ -25,7 +25,7 @@ class LinearCostModel(BaseCostModel):
     For autoregressive decoding, time-per-token is additive across layers.
     If mixer type i takes time α_i per layer, then:
 
-        cost(config) = Σ_i α[mixer_idx[i]]
+        cost(config) = Σ_i α[mixer_name[i]]
 
     This is equivalent to:
 
@@ -51,10 +51,11 @@ class LinearCostModel(BaseCostModel):
 
     def __init__(self, config: "LinearCostModelConfig") -> None:
         self.config = config
-        self._mixer_costs = tuple(config.mixer_costs)
-        # Precompute sorted mixer indices for efficient operations
+        # Config is single source of truth for mixer names, costs, and phase order.
+        # No private copies - always access through config.mixer_costs.
+        # Precompute sorted mixer names for efficient operations
         self._mixers_by_cost_asc = tuple(
-            sorted(range(len(self._mixer_costs)), key=lambda i: self._mixer_costs[i])
+            sorted(config.mixer_costs.keys(), key=lambda m: config.mixer_costs[m])
         )
         self._mixers_by_cost_desc = tuple(reversed(self._mixers_by_cost_asc))
 
@@ -64,19 +65,21 @@ class LinearCostModel(BaseCostModel):
 
     def cost(self, placement: LayerPlacement) -> float:
         """Compute total cost as sum of per-layer mixer costs."""
-        return sum(self._mixer_costs[mixer_idx] for mixer_idx in placement.assignments)
+        return sum(
+            self.config.mixer_costs[mixer_name] for mixer_name in placement.assignments
+        )
 
-    def cost_delta(self, layer_idx: int, old_mixer: int, new_mixer: int) -> float:
+    def cost_delta(self, layer_idx: int, old_mixer: str, new_mixer: str) -> float:
         """Compute cost change from swapping a layer's mixer assignment."""
-        return self._mixer_costs[new_mixer] - self._mixer_costs[old_mixer]
+        return self.config.mixer_costs[new_mixer] - self.config.mixer_costs[old_mixer]
 
     def min_cost(self, num_layers: int) -> float:
         """Cost when all layers use the cheapest mixer."""
-        return num_layers * self._mixer_costs[self._mixers_by_cost_asc[0]]
+        return num_layers * self.config.mixer_costs[self._mixers_by_cost_asc[0]]
 
     def max_cost(self, num_layers: int) -> float:
         """Cost when all layers use the most expensive mixer."""
-        return num_layers * self._mixer_costs[self._mixers_by_cost_desc[0]]
+        return num_layers * self.config.mixer_costs[self._mixers_by_cost_desc[0]]
 
     # =========================================================================
     # Allocation-level operations
@@ -87,12 +90,15 @@ class LinearCostModel(BaseCostModel):
         Compute cost of an allocation. O(K).
 
         Args:
-            allocation: Counts per mixer.
+            allocation: Dict mapping mixer name to layer count.
 
         Returns:
-            Total cost = Σ (count_i * α_i)
+            Total cost = Σ (count * cost) for each mixer
         """
-        return sum(n * c for n, c in zip(allocation, self._mixer_costs, strict=True))
+        return sum(
+            count * self.config.mixer_costs[mixer]
+            for mixer, count in allocation.items()
+        )
 
     def min_cost_allocation(self, num_layers: int) -> Allocation:
         """
@@ -100,9 +106,11 @@ class LinearCostModel(BaseCostModel):
 
         All layers go to the cheapest mixer.
         """
-        allocation = [0] * self.num_mixers
-        allocation[self._mixers_by_cost_asc[0]] = num_layers
-        return tuple(allocation)
+        cheapest = self._mixers_by_cost_asc[0]
+        return {
+            mixer: (num_layers if mixer == cheapest else 0)
+            for mixer in self.config.mixer_costs
+        }
 
     def max_cost_allocation(self, num_layers: int) -> Allocation:
         """
@@ -110,9 +118,11 @@ class LinearCostModel(BaseCostModel):
 
         All layers go to the most expensive mixer.
         """
-        allocation = [0] * self.num_mixers
-        allocation[self._mixers_by_cost_desc[0]] = num_layers
-        return tuple(allocation)
+        most_expensive = self._mixers_by_cost_desc[0]
+        return {
+            mixer: (num_layers if mixer == most_expensive else 0)
+            for mixer in self.config.mixer_costs
+        }
 
     def allocation_at_cost_bound(
         self,
@@ -174,16 +184,16 @@ class LinearCostModel(BaseCostModel):
                 return None
 
         num_mixers = self.num_mixers
-        mixer_costs = self._mixer_costs
+        mixer_names = list(self.config.mixer_costs.keys())
 
-        # Sort mixers: descending for maximize (try expensive first),
+        # Sort mixer names: descending for maximize (try expensive first),
         # ascending for minimize (try cheap first)
-        sorted_indices = sorted(
-            range(num_mixers),
-            key=lambda i: mixer_costs[i],
+        sorted_names = sorted(
+            mixer_names,
+            key=lambda m: self.config.mixer_costs[m],
             reverse=maximize,
         )
-        sorted_costs = tuple(mixer_costs[i] for i in sorted_indices)
+        sorted_costs = tuple(self.config.mixer_costs[m] for m in sorted_names)
 
         # Sentinel values for infeasible solutions
         infeasible_cost = -float("inf") if maximize else float("inf")
@@ -287,12 +297,12 @@ class LinearCostModel(BaseCostModel):
         if not is_feasible(best_cost):
             return None
 
-        # Convert from sorted order to original mixer order
-        alloc = [0] * num_mixers
-        for i, count in enumerate(sorted_alloc):
-            alloc[sorted_indices[i]] = count
+        # Convert from sorted order to dict with config.mixer_costs key order
+        # sorted_names[i] -> sorted_alloc[i]
+        sorted_result = {sorted_names[i]: count for i, count in enumerate(sorted_alloc)}
 
-        return tuple(alloc)
+        # Return dict with keys in config.mixer_costs order (phase_order)
+        return {mixer: sorted_result[mixer] for mixer in self.config.mixer_costs}
 
     def _solve_two_mixer_base_case(
         self,
@@ -376,29 +386,31 @@ class LinearCostModel(BaseCostModel):
         For linear costs, the ordering is exact.
 
         Args:
-            allocation: Current allocation.
+            allocation: Current allocation dict.
             direction: "increasing" for more expensive neighbors,
                       "decreasing" for cheaper neighbors.
 
         Yields:
             (neighbor, cost_delta) pairs sorted by |delta|.
         """
-        moves: list[tuple[float, int, int]] = []
+        mixer_costs = self.config.mixer_costs
+        moves: list[tuple[float, str, str]] = []
 
-        for from_mixer in range(self.num_mixers):
-            if allocation[from_mixer] == 0:
+        for from_mixer, count in allocation.items():
+            if count == 0:
                 continue
 
-            for to_mixer in range(self.num_mixers):
+            for to_mixer in allocation:
                 if from_mixer == to_mixer:
                     continue
 
-                delta = self._mixer_costs[to_mixer] - self._mixer_costs[from_mixer]
+                delta = mixer_costs[to_mixer] - mixer_costs[from_mixer]
 
-                # Filter by direction
-                if direction == "increasing" and delta <= 0:
+                # Filter by direction (use strict inequality to allow zero-delta moves
+                # when mixer costs are equal)
+                if direction == "increasing" and delta < 0:
                     continue
-                if direction == "decreasing" and delta >= 0:
+                if direction == "decreasing" and delta > 0:
                     continue
 
                 moves.append((abs(delta), from_mixer, to_mixer))
@@ -406,13 +418,13 @@ class LinearCostModel(BaseCostModel):
         # Sort by |delta| (smallest change first)
         moves.sort(key=lambda x: x[0])
 
-        for abs_delta, from_mixer, to_mixer in moves:
-            new_allocation = list(allocation)
+        for _abs_delta, from_mixer, to_mixer in moves:
+            new_allocation = dict(allocation)
             new_allocation[from_mixer] -= 1
             new_allocation[to_mixer] += 1
 
-            delta = self._mixer_costs[to_mixer] - self._mixer_costs[from_mixer]
-            yield tuple(new_allocation), delta
+            delta = mixer_costs[to_mixer] - mixer_costs[from_mixer]
+            yield new_allocation, delta
 
     # =========================================================================
     # Convenience properties
@@ -421,54 +433,77 @@ class LinearCostModel(BaseCostModel):
     @property
     def num_mixers(self) -> int:
         """Number of mixer types."""
-        return len(self._mixer_costs)
+        return len(self.config.mixer_costs)
 
     @property
-    def mixer_costs(self) -> tuple[float, ...]:
-        """Per-mixer cost coefficients (α values)."""
-        return self._mixer_costs
-
-    @property
-    def cheapest_mixer(self) -> int:
-        """Index of the cheapest (fastest) mixer."""
+    def cheapest_mixer(self) -> str:
+        """Name of the cheapest (fastest) mixer."""
         return self._mixers_by_cost_asc[0]
 
     @property
-    def most_expensive_mixer(self) -> int:
-        """Index of the most expensive (slowest) mixer."""
+    def most_expensive_mixer(self) -> str:
+        """Name of the most expensive (slowest) mixer."""
         return self._mixers_by_cost_desc[0]
+
+    @property
+    def mixers_by_cost_asc(self) -> tuple[str, ...]:
+        """Mixer names sorted by cost, ascending (cheapest first)."""
+        return self._mixers_by_cost_asc
+
+    @property
+    def mixers_by_cost_desc(self) -> tuple[str, ...]:
+        """Mixer names sorted by cost, descending (most expensive first)."""
+        return self._mixers_by_cost_desc
+
+    @property
+    def phase_order(self) -> list[str]:
+        """Mixer names in phase order (from config key order)."""
+        return list(self.config.mixer_costs.keys())
 
 
 class LinearCostModelConfig(BaseCostModelConfig):
     """
     Configuration for linear cost model.
 
-    The mixer_costs list should be ordered from most expensive (powerful)
-    to cheapest (lightweight). For example, with 3 mixers:
-    - mixer_costs[0] = 1.0  (full attention, slowest)
-    - mixer_costs[1] = 0.5  (sliding window, medium)
-    - mixer_costs[2] = 0.2  (linear/SSM, fastest)
+    The mixer_costs dict maps mixer names to their cost coefficients.
+    For example:
+    - mixer_costs["attention"] = 1.0  (full attention, slowest)
+    - mixer_costs["sliding_window"] = 0.5  (sliding window, medium)
+    - mixer_costs["gdn"] = 0.2  (GDN, fastest)
 
     These values can be obtained by profiling or fitting to throughput
     measurements. The key relationship is:
 
-        time_per_token ∝ Σ (mixer_costs[i] * fraction_of_layers_i)
+        time_per_token ∝ Σ (mixer_costs[mixer_name] * fraction_of_layers)
 
     Or equivalently:
 
-        throughput = 1 / (N * Σ (mixer_costs[i] * p_i))
+        throughput = 1 / (N * Σ (mixer_costs[name] * p_name))
 
-    where N is total layers and p_i is fraction using mixer i.
+    where N is total layers and p_name is fraction using that mixer.
+
+    Phase Order:
+        The order of keys in mixer_costs determines the phase order for
+        hierarchical search. The first key is assigned in phase 0, the second
+        in phase 1, etc. The last key receives all remaining layers.
+
+        Example - to run phases as attention → sliding_window → kda → gdn:
+            mixer_costs:
+              attention: 1.0        # Phase 0
+              sliding_window: 0.156 # Phase 1
+              kda: 0.11             # Phase 2
+              gdn: 0.09             # Remainder (gets unassigned layers)
     """
 
     _impl_class: ClassVar[type[BaseCostModel]] = LinearCostModel
 
     cost_model_type: Literal["linear"] = "linear"
 
-    mixer_costs: list[float] = Field(
-        description="Cost coefficient (α) for each mixer type. "
-        "Index 0 is typically the most expensive (e.g., full attention), "
-        "higher indices are cheaper (e.g., SSM). "
+    mixer_costs: dict[str, float] = Field(
+        description="Cost coefficient (α) for each mixer type, keyed by name. "
+        "Key order determines phase order for hierarchical search: first key is "
+        "phase 0, second is phase 1, etc. Last key gets remaining layers. "
+        "e.g., {'attention': 1.0, 'sliding_window': 0.5, 'gdn': 0.2}. "
         "Values represent relative time contribution per layer.",
     )
 
@@ -478,7 +513,7 @@ class LinearCostModelConfig(BaseCostModelConfig):
         if len(self.mixer_costs) < 2:
             raise ValueError("Must have at least 2 mixer types")
 
-        if any(c <= 0 for c in self.mixer_costs):
+        if any(c <= 0 for c in self.mixer_costs.values()):
             raise ValueError("All mixer costs must be positive")
 
         return self

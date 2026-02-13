@@ -9,14 +9,14 @@ from __future__ import annotations
 import gc
 import logging
 import os
-from dataclasses import dataclass
 from typing import Callable
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class MemoryStats:
+class MemoryStats(BaseModel):
     """Snapshot of memory usage.
 
     On shared memory architectures (unified memory), GPU and CPU memory

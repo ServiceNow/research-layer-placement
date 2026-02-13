@@ -1,0 +1,13 @@
+# @package problem
+# Cost-constrained problem for Apriel 0.5B (24 layers)
+# Maximize performance subject to latency budget
+
+problem_type: cost_max_performance
+
+# Cost model injected from root-level cost_model config group
+cost_model: ${cost_model}
+
+# Budget in normalized cost units (attention layer = 1.0)
+# Formula: budget = num_layers / target_speedup
+# Example: 6x speedup -> 24 / 6 = 4.0
+cost_budget: 4.0

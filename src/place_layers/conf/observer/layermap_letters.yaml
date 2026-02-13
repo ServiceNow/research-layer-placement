@@ -1,0 +1,6 @@
+# @package _group_
+# Layermap ASCII visualization with letter characters
+# Shows layer placements using first letter of mixer names (F/S/G)
+
+observer_type: layermap
+char_style: letters

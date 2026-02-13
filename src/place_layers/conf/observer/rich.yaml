@@ -1,0 +1,4 @@
+# @package _group_
+# Rich terminal display with live progress panels
+
+observer_type: rich
