@@ -27,10 +27,11 @@ from pydantic import BaseModel, Field
 from place_layers.command.base_command import BaseCommand, CommandError
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
+from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import CostConstrainedProblem
+from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
@@ -376,18 +377,10 @@ class ExplorePlacementsCommand(BaseCommand):
         async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
             problem = self.config.problem.create_problem(evaluator)
 
-            if not isinstance(problem, CostConstrainedProblem):
-                raise CommandError(
-                    "explore_placements requires a CostConstrainedProblem "
-                    f"(got {type(problem).__name__})"
-                )
-
-            cost_model = problem.cost_model
+            cost_model = self.config.cost_model.create_cost_model()
             num_layers = evaluator.num_layers
 
             # Determine cost budget for feasibility filtering
-            from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
-
             cost_budget: float | None = None
             if isinstance(problem.config, MaxPerformanceProblemConfig):
                 cost_budget = problem.config.cost_budget
@@ -680,6 +673,9 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
 
     evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
     problem: ProblemConfig = Field(description="Problem configuration")
+    cost_model: CostModelConfig = Field(
+        description="Cost model for allocation enumeration and sampling weights.",
+    )
     result_handler: ResultHandlerConfig = Field(
         description="Result handler configuration"
     )

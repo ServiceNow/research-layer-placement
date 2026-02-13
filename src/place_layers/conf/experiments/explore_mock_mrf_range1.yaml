@@ -7,6 +7,7 @@ defaults:
   - /command: explore_placements
   - /evaluator: mock_mrf_range1
   - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
   - _self_
 
 hydra:

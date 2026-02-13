@@ -8,6 +8,7 @@ defaults:
   - /command: optimize
   - /evaluator: mock_mrf_range2_triplet
   - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
   - /search_strategy: surrogate
   - /result_handler: json
   - _self_

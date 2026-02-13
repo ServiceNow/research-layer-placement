@@ -10,6 +10,7 @@ defaults:
   - /command: calibrate_sa
   - /evaluator: mock_apriel_h_1_5_15b
   - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
   - _self_
 
 hydra:

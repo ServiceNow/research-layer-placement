@@ -10,6 +10,7 @@ defaults:
   - /command: optimize
   - /evaluator: mock_apriel_h_1_5_15b
   - /problem: cost_min_cost_apriel_15b
+  - /cost_model: linear_apriel_15b
   - /search_strategy: cost_constrained_hierarchical
   - /result_handler: json
   - _self_

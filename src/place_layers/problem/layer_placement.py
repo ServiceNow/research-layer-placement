@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 from pydantic import Field, model_validator
 
 from place_layers.core.types import LayerPlacement
-from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
+from place_layers.cost_model import CostModelConfig
 from place_layers.problem.base_problem import BaseProblem
 from place_layers.problem.base_problem_config import BaseProblemConfig
 
@@ -92,17 +92,17 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         super().__init__(evaluator, config)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
-        # Validate mixer_costs keys match evaluator mixer names
+        # Create cost model first, then validate mixer names
+        self.cost_model = config.cost_model.create_cost_model()
+
+        # Validate cost model mixer names match evaluator mixer names
         # evaluator.mixer_names is a frozenset (for validation only)
-        config_mixer_names = set(config.cost_model.mixer_costs.keys())
+        config_mixer_names = set(self.cost_model.phase_order)
         if config_mixer_names != evaluator.mixer_names:
             raise ValueError(
                 f"Cost model mixer names {config_mixer_names} "
                 f"must match evaluator mixer names {evaluator.mixer_names}"
             )
-
-        # Create cost model (mixer names come from config.cost_model.mixer_costs)
-        self.cost_model = config.cost_model.create_cost_model()
 
         # Validate constraint based on problem type
         num_layers = evaluator.num_layers
@@ -162,7 +162,7 @@ class BaseCostConstrainedProblemConfig(BaseProblemConfig):
 
     _impl_class: ClassVar[type[BaseProblem]] = CostConstrainedProblem
 
-    cost_model: LinearCostModelConfig = Field(
+    cost_model: CostModelConfig = Field(
         description="Cost model configuration defining per-mixer costs"
     )
 

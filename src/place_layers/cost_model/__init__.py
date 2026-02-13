@@ -10,10 +10,14 @@ from place_layers.cost_model.linear_cost_model import (
     LinearCostModel,
     LinearCostModelConfig,
 )
+from place_layers.cost_model.uniform_cost_model import (
+    UniformCostModel,
+    UniformCostModelConfig,
+)
 
 
 # Discriminated union of all cost models
 CostModelConfig = Annotated[
-    LinearCostModelConfig,
+    LinearCostModelConfig | UniformCostModelConfig,
     Field(discriminator="cost_model_type"),
 ]
