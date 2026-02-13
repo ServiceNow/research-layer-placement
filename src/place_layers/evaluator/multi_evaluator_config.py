@@ -312,6 +312,11 @@ class EvaluatorsConfig(BaseModel):
         Each evaluator gets its own output subdirectory:
         - {output_dir}/evals/{name}/
 
+        Backend sharing: If all evaluators use the same backend config, a single
+        shared backend instance is created and passed to all evaluators. This
+        improves connection pooling and avoids overwhelming servers with too many
+        concurrent requests from multiple backend instances.
+
         Args:
             output_dir: Base output directory for all evaluators
 
@@ -328,17 +333,45 @@ class EvaluatorsConfig(BaseModel):
                     individual_score = await evaluator.evaluate(placement)
                     logger.info(f"{name}: {individual_score:.4f}")
         """
+        import logging
+        from place_layers.evaluator.backend_evaluator import BackendEvaluatorConfig
+
+        logger = logging.getLogger(__name__)
+
         async with AsyncExitStack() as stack:
             # Create output directories
             evals_dir = output_dir / "evals"
             evals_dir.mkdir(parents=True, exist_ok=True)
+
+            # Check if all evaluators share the same backend config
+            backend_configs = [
+                config.backend
+                for config in self.evaluators_dict.values()
+                if isinstance(config, BackendEvaluatorConfig)
+            ]
+
+            shared_backend = None
+            if backend_configs and all(
+                bc.model_dump() == backend_configs[0].model_dump()
+                for bc in backend_configs
+            ):
+                # All backend configs are identical - create shared backend
+                logger.info(
+                    f"Creating shared backend for {len(backend_configs)} evaluator(s)"
+                )
+                shared_backend = backend_configs[0].create_backend()
+                # Enter backend context
+                if hasattr(shared_backend, "__aenter__"):
+                    await stack.enter_async_context(shared_backend)
+                else:
+                    stack.enter_context(shared_backend)
 
             # Create all evaluators
             evaluators = {}
             for name, config in self.evaluators_dict.items():
                 eval_dir = evals_dir / name
                 eval_dir.mkdir(parents=True, exist_ok=True)
-                evaluator = config.create_evaluator(eval_dir)
+                evaluator = config.create_evaluator(eval_dir, shared_backend=shared_backend)
                 evaluators[name] = await stack.enter_async_context(evaluator)
 
             # Yield instances with aggregation logic
