@@ -1,0 +1,55 @@
+# SQuADv2 - Extractive QA with unanswerable questions
+#
+# Simplified version for use with GenerativeEvaluator (generate_until only).
+# The built-in lm-eval squadv2 task uses both generate_until and loglikelihood
+# requests which is incompatible with our framework.
+#
+# Unanswerable questions expect "unanswerable" as the target.
+
+task: squad_v2
+dataset_path: squad_v2
+output_type: generate_until
+training_split: train
+fewshot_split: train
+test_split: validation  # SQuADv2 test labels are not public
+doc_to_text: "Title: {{title}}\n\nBackground: {{context}}\n\nQuestion: {{question}}\n\nAnswer:"
+doc_to_target: " {{answers.text[0] if answers.text else 'unanswerable'}}"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+    regexes_to_ignore:
+      # Strip leading/trailing whitespace
+      - "^\\s+"
+      - "\\s+$"
+      # Strip <|end|> token (Apriel models)
+      - "\\s*<\\|end\\|>\\s*"
+      # Strip [BEGIN/END FINAL RESPONSE] markers (Apriel models)
+      - "\\s*\\[BEGIN FINAL RESPONSE\\]\\s*"
+      - "\\s*\\[END FINAL RESPONSE\\]\\s*"
+generation_kwargs:
+  until:
+    - "\n"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 64
+repeats: 1
+num_fewshot: 1
+filter_list:
+  - name: "apriel-extract"
+    filter:
+      - function: "regex"
+        # Extract text from [BEGIN FINAL RESPONSE]...<|end|> block
+        regex_pattern: "\\[BEGIN FINAL RESPONSE\\]\\s*([\\s\\S]*?)\\s*<\\|end\\|>"
+      - function: "take_first"
+  - name: "strict-match"
+    filter:
+      - function: "regex"
+        # Take everything up to first newline (direct short answer)
+        regex_pattern: "^\\s*([^\\n]+)"
+      - function: "take_first"
+metadata:
+  version: 1.0
