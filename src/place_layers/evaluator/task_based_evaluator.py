@@ -66,14 +66,21 @@ class TaskBasedEvaluator(BackendEvaluator):
 
     config: "TaskBasedEvaluatorConfig"
 
-    def __init__(self, config: "TaskBasedEvaluatorConfig", *, output_dir: "Path") -> None:
+    def __init__(
+        self,
+        config: "TaskBasedEvaluatorConfig",
+        *,
+        output_dir: "Path",
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
+    ) -> None:
         """Initialize task-based evaluator.
 
         Args:
             config: Evaluator configuration with task settings.
             output_dir: Base output directory for results.
+            shared_backend: Optional pre-created backend to share across evaluators.
         """
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
         # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
         # Cache for docs - persists across placements (populated by prefetcher)
