@@ -11,6 +11,7 @@ Output: placement_landscape.pdf + .png in Hydra output dir.
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -103,13 +104,14 @@ class PlacementLandscapeCommand(BaseCommand):
             num_layers,
         )
 
-        # Compute cost range
+        # Compute cost range and baseline for speedup conversion
         alloc_costs = np.array(
             [cost_model.allocation_cost(a) for a in all_allocations]
         )
         min_cost = float(alloc_costs.min())
         max_cost = float(alloc_costs.max())
-        logger.info("Cost range: %.4f – %.4f", min_cost, max_cost)
+        baseline_cost = cost_model.max_cost(num_layers)
+        logger.info("Cost range: %.4f – %.4f (baseline=%.4f)", min_cost, max_cost, baseline_cost)
 
         # Generate density samples
         costs, scores = self._generate_density_samples(
@@ -125,7 +127,7 @@ class PlacementLandscapeCommand(BaseCommand):
         # Compute DP-optimal per cost band
         band_results = self._compute_dp_per_band(
             surrogate, all_allocations, alloc_costs,
-            num_layers, min_cost, max_cost,
+            num_layers, baseline_cost, cost_model,
         )
         logger.info(
             "DP solutions for %d / %d cost bands",
@@ -155,8 +157,7 @@ class PlacementLandscapeCommand(BaseCommand):
             costs,
             scores,
             band_results,
-            min_cost,
-            max_cost,
+            baseline_cost,
             cost_model,
             num_layers,
             observed_costs,
@@ -264,46 +265,63 @@ class PlacementLandscapeCommand(BaseCommand):
         all_allocations: list[Allocation],
         alloc_costs: np.ndarray,
         num_layers: int,
-        min_cost: float,
-        max_cost: float,
+        baseline_cost: float,
+        cost_model: BaseCostModel,
     ) -> list[BandResult]:
-        """Solve DP per allocation, pick best per cost band.
+        """Solve DP per cost band using a single solve_top_n call per band.
+
+        Bins are spaced linearly in speedup-space (speedup = baseline_cost /
+        cost) so that display columns map 1-to-1 to DP bands.  This avoids
+        the domain mismatch where cost-linear bins compress into a handful of
+        speedup-space columns at 1× and leave gaps at high speedup.
 
         Returns:
             List of BandResult sorted by cost, one per occupied band.
         """
         num_bins = self.config.num_cost_bins
-        bin_edges = np.linspace(min_cost, max_cost, num_bins + 1)
+        max_speedup = baseline_cost / float(alloc_costs.min())
+        speedup_edges = np.linspace(1.0, max_speedup, num_bins + 1)
+        cost_bin_edges = np.sort(baseline_cost / speedup_edges)
 
         # Assign each allocation to a bin
-        bin_indices = np.digitize(alloc_costs, bin_edges) - 1
-        # Clip: allocations exactly at max_cost go to last bin
+        bin_indices = np.digitize(alloc_costs, cost_bin_edges) - 1
         bin_indices = np.clip(bin_indices, 0, num_bins - 1)
+
+        # Group allocations by bin
+        bin_to_allocs: dict[int, list[Allocation]] = defaultdict(list)
+        for i, alloc in enumerate(all_allocations):
+            bin_to_allocs[int(bin_indices[i])].append(alloc)
 
         # Extract MRF model and solver
         mrf_model = surrogate.extract_mrf_model(num_layers)
         solver = ExactMRFSolver(mrf_model)
         intercept = mrf_model.intercept
 
-        # Solve DP for each allocation, track best per bin
+        # Solve one unified DP per band
+        occupied_bins = sorted(bin_to_allocs.keys())
         best_per_bin: dict[int, BandResult] = {}
 
-        for i, alloc in enumerate(all_allocations):
-            solution = solver.solve_constrained(alloc)
-            if solution is None:
+        for step, b in enumerate(occupied_bins):
+            band_allocs = bin_to_allocs[b]
+            logger.info(
+                "DP band %d / %d (bin %d, %d allocations)",
+                step + 1, len(occupied_bins), b, len(band_allocs),
+            )
+            top = solver.solve_top_n(band_allocs, n=1)
+            if not top:
                 continue
 
-            # DP returns potentials-only score; add intercept
+            solution = top[0]
             score = solution.true_score + intercept
-            cost = float(alloc_costs[i])
-            b = int(bin_indices[i])
+            # Recover cost from winning solution's assignments
+            alloc = dict(Counter(solution.placement.assignments))
+            cost = cost_model.allocation_cost(alloc)
 
-            if b not in best_per_bin or score > best_per_bin[b].score:
-                best_per_bin[b] = BandResult(
-                    cost=cost,
-                    score=score,
-                    assignments=solution.placement.assignments,
-                )
+            best_per_bin[b] = BandResult(
+                cost=cost,
+                score=score,
+                assignments=solution.placement.assignments,
+            )
 
         # Sort by cost
         return [
@@ -315,8 +333,7 @@ class PlacementLandscapeCommand(BaseCommand):
         costs: np.ndarray,
         scores: np.ndarray,
         band_results: list[BandResult],
-        min_cost: float,
-        max_cost: float,
+        baseline_cost: float,
         cost_model: BaseCostModel,
         num_layers: int,
         observed_costs: np.ndarray | None,
@@ -333,6 +350,11 @@ class PlacementLandscapeCommand(BaseCommand):
         cfg = self.config
         phase_order = cost_model.phase_order
 
+        # Convert costs to speedup (presentation only)
+        speedups = baseline_cost / costs
+        min_speedup = 1.0
+        max_speedup = float(speedups.max())
+
         # Mixer color map: one color per mixer type by phase_order index
         tab_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red",
                        "tab:purple", "tab:brown", "tab:pink", "tab:gray"]
@@ -341,48 +363,53 @@ class PlacementLandscapeCommand(BaseCommand):
             for i, name in enumerate(phase_order)
         }
 
-        fig, (ax_density, ax_layermap) = plt.subplots(
-            2, 1, figsize=(7, 7), dpi=300,
-            gridspec_kw={"height_ratios": [3, 1], "hspace": 0},
-            sharex=True,
+        # GridSpec layout: density plot + colorbar column, layermap below
+        fig = plt.figure(figsize=(7, 7), dpi=300)
+        gs = fig.add_gridspec(
+            2, 2, height_ratios=[3, 1], width_ratios=[1, 0.03],
+            hspace=0.05, wspace=0.05,
         )
+        ax_density = fig.add_subplot(gs[0, 0])
+        cax = fig.add_subplot(gs[0, 1])
+        ax_layermap = fig.add_subplot(gs[1, 0], sharex=ax_density)
 
         # ---- Top panel: density + DP line ----
-        score_min = float(scores.min()) - 0.01
-        score_max = float(scores.max()) + 0.01
         h = ax_density.hist2d(
-            costs, scores,
+            speedups, scores,
             bins=[cfg.num_cost_bins, cfg.num_score_bins],
             cmap="Greys",
-            norm=LogNorm(vmin=1),
-            range=[[min_cost, max_cost], [score_min, score_max]],
+            norm=LogNorm(),
+            density=True,
+            range=[[min_speedup, max_speedup], [0.0, 1.0]],
         )
-        fig.colorbar(h[3], ax=ax_density, label="Count", pad=0.02)
+        fig.colorbar(h[3], cax=cax, label="Density")
+        ax_density.set_ylim(0.0, 1.0)
 
         # DP-optimal line
         if band_results:
-            band_costs = [r.cost for r in band_results]
+            band_speedups = [baseline_cost / r.cost for r in band_results]
             band_scores = [r.score for r in band_results]
             ax_density.plot(
-                band_costs, band_scores,
-                color="tab:red", lw=2, label="DP optimum", zorder=5,
+                band_speedups, band_scores,
+                color="tab:blue", lw=2, label="DP optimum", zorder=5,
             )
 
         # Observed data overlay
         if observed_costs is not None and observed_scores is not None:
+            observed_speedups = baseline_cost / observed_costs
             ax_density.scatter(
-                observed_costs, observed_scores,
-                s=3, alpha=0.3, color="tab:blue", zorder=3,
+                observed_speedups, observed_scores,
+                s=3, alpha=0.3, color="tab:red", zorder=3,
                 label="Observed",
             )
 
         # Random chance line
         ax_density.axhline(
-            y=0.25, color="gray", ls="--", lw=1, alpha=0.7, zorder=2,
+            y=0.25, color="tab:blue", ls="--", lw=1.5, zorder=2,
         )
         ax_density.text(
-            min_cost + 0.02 * (max_cost - min_cost), 0.25 + 0.005,
-            "Random chance", fontsize=8, color="gray", va="bottom",
+            min_speedup + 0.02 * (max_speedup - min_speedup), 0.25 + 0.005,
+            "Random chance", fontsize=8, color="tab:blue", va="bottom",
         )
 
         ax_density.set_ylabel(cfg.score_label)
@@ -391,7 +418,7 @@ class PlacementLandscapeCommand(BaseCommand):
 
         # ---- Bottom panel: layermap ----
         num_bins = cfg.num_cost_bins
-        bin_edges = np.linspace(min_cost, max_cost, num_bins + 1)
+        speedup_bin_edges = np.linspace(min_speedup, max_speedup, num_bins + 1)
         layer_edges = np.arange(num_layers + 1)
 
         # Build mixer name -> index mapping from phase_order
@@ -401,23 +428,25 @@ class PlacementLandscapeCommand(BaseCommand):
         # Build layermap array: (num_layers, num_bins), fill with -1 (empty)
         layermap_data = np.full((num_layers, num_bins), -1, dtype=int)
         for br in band_results:
-            # Find which bin this band result belongs to
-            b = int(np.digitize(br.cost, bin_edges)) - 1
+            br_speedup = baseline_cost / br.cost
+            b = int(np.digitize(br_speedup, speedup_bin_edges)) - 1
             b = min(b, num_bins - 1)
             for layer_idx, mixer_name in enumerate(br.assignments):
                 layermap_data[layer_idx, b] = mixer_to_idx[mixer_name]
 
-        # Colormap: one color per mixer + white for empty
-        from matplotlib.colors import ListedColormap
-        cmap_colors = [mixer_colors[name] for name in phase_order] + ["white"]
+        # Colormap: white for empty (-1), then one color per mixer in phase_order
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        cmap_colors = ["white"] + [mixer_colors[name] for name in phase_order]
         mixer_cmap = ListedColormap(cmap_colors)
+        boundaries = np.arange(-1.5, num_mixers + 0.5, 1)
+        norm = BoundaryNorm(boundaries, len(cmap_colors))
 
         ax_layermap.pcolormesh(
-            bin_edges, layer_edges, layermap_data,
-            cmap=mixer_cmap, vmin=-1, vmax=num_mixers - 1,
+            speedup_bin_edges, layer_edges, layermap_data,
+            cmap=mixer_cmap, norm=norm,
         )
         ax_layermap.set_ylabel("Layer index")
-        ax_layermap.set_xlabel("Normalized cost")
+        ax_layermap.set_xlabel("Speedup (\u00d7)")
         ax_layermap.invert_yaxis()
 
         # Legend for mixer types
@@ -428,12 +457,10 @@ class PlacementLandscapeCommand(BaseCommand):
         ax_layermap.legend(
             handles=legend_patches,
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.25),
+            bbox_to_anchor=(0.5, -0.4),
             ncol=min(len(phase_order), 4),
             fontsize=8,
         )
-
-        fig.tight_layout()
 
         # Save
         pdf_path = output_dir / "placement_landscape.pdf"

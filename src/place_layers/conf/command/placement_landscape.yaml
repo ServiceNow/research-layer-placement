@@ -17,5 +17,5 @@ seed: 42
 
 num_cost_bins: 80
 num_score_bins: 120
-show_observed: false
+show_observed: true
 score_label: "MMLU accuracy"
