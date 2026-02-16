@@ -481,11 +481,16 @@ class ImportanceWeightedEvaluator(BackendEvaluator):
             clip_max=self._weight_clip_max,
         )
 
-        # Compute weighted accuracy using pre-computed task weights
-        final_score = summary.weighted_accuracy(self.task_weights)
-
         logger.info(f"\n{summary}")
-        logger.info(f"Weighted accuracy: {final_score:.4f} (in {elapsed:.1f}s)")
+
+        if self.config.scoring_mode == "student_log_prob":
+            final_score = summary.weighted_student_log_prob(self.task_weights)
+            logger.info(
+                f"Mean student log-prob: {final_score:.1f} (in {elapsed:.1f}s)"
+            )
+        else:
+            final_score = summary.weighted_accuracy(self.task_weights)
+            logger.info(f"Weighted accuracy: {final_score:.4f} (in {elapsed:.1f}s)")
 
         return final_score
 
@@ -534,6 +539,15 @@ class ImportanceWeightedEvaluatorConfig(BackendEvaluatorConfig):
         "If None, all tasks are weighted equally. "
         "Missing tasks default to 1.0 with a warning. "
         "Extra keys are ignored with a warning.",
+    )
+
+    # Scoring mode
+    scoring_mode: Literal["accuracy", "student_log_prob"] = Field(
+        default="accuracy",
+        description="What score to return from evaluate(). "
+        "'accuracy': IS-weighted accuracy (higher=better, range [0,1]). "
+        "'student_log_prob': mean student log-prob per problem (higher=better, "
+        "negative values where less negative = better student fit).",
     )
 
     # Importance sampling parameters

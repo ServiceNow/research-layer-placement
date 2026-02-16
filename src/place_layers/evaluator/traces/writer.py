@@ -653,6 +653,10 @@ class ISTaskStats(BaseModel):
     num_samples: int = Field(description="Total samples across all problems")
     is_accuracy: float = Field(description="Mean IS estimate of P(correct)")
     avg_ess: float = Field(description="Mean effective sample size")
+    avg_student_log_prob: float = Field(
+        default=0.0,
+        description="Mean student log-prob per problem (higher = better fit)",
+    )
 
 
 class ISSummary(BaseModel):
@@ -683,11 +687,27 @@ class ISSummary(BaseModel):
             if name in self.task_stats
         )
 
+    def weighted_student_log_prob(self, weights: dict[str, float]) -> float:
+        """Compute weighted mean student log-prob using provided task weights.
+
+        Args:
+            weights: Dict mapping task_name -> weight (should sum to 1).
+
+        Returns:
+            Weighted mean student log-prob (higher = better fit).
+        """
+        return sum(
+            self.task_stats[name].avg_student_log_prob * weight
+            for name, weight in weights.items()
+            if name in self.task_stats
+        )
+
     def __str__(self) -> str:
         lines = ["Importance-Weighted Evaluation Summary:"]
         for task_name, stats in sorted(self.task_stats.items()):
             lines.append(
                 f"  {task_name}: IS_acc={stats.is_accuracy:.4f}, "
+                f"avg_slp={stats.avg_student_log_prob:.1f}, "
                 f"ESS={stats.avg_ess:.1f}, "
                 f"problems={stats.num_problems}, samples={stats.num_samples}"
             )
@@ -735,8 +755,8 @@ def summarize_is(
     log_clip_max = math.log(clip_max)
 
     # Group records by task_name
-    # task_name -> list of (is_correct_estimate, ess, num_samples)
-    task_results: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
+    # task_name -> list of (is_correct_estimate, ess, num_samples, mean_student_lp)
+    task_results: dict[str, list[tuple[float, float, int, float]]] = defaultdict(list)
     malformed = 0
 
     with validation_path.open() as f:
@@ -755,8 +775,14 @@ def summarize_is(
                         log_clip_min,
                         log_clip_max,
                     )
+                    # Mean student log-prob for this problem
+                    mean_slp = (
+                        sum(record.student_log_probs) / len(record.student_log_probs)
+                        if record.student_log_probs
+                        else 0.0
+                    )
                     task_results[record.task_name].append(
-                        (is_estimate, ess, record.num_samples)
+                        (is_estimate, ess, record.num_samples, mean_slp)
                     )
             except Exception as e:
                 malformed += 1
@@ -772,15 +798,19 @@ def summarize_is(
 
     for task_name, results in task_results.items():
         num_problems = len(results)
-        num_samples = sum(ns for _, _, ns in results)
-        is_accuracy = sum(ice for ice, _, _ in results) / num_problems if num_problems > 0 else 0.0
-        avg_ess = sum(ess for _, ess, _ in results) / num_problems if num_problems > 0 else 0.0
+        num_samples = sum(ns for _, _, ns, _ in results)
+        is_accuracy = sum(ice for ice, _, _, _ in results) / num_problems if num_problems > 0 else 0.0
+        avg_ess = sum(ess for _, ess, _, _ in results) / num_problems if num_problems > 0 else 0.0
+        avg_student_log_prob = (
+            sum(slp for _, _, _, slp in results) / num_problems if num_problems > 0 else 0.0
+        )
 
         task_stats[task_name] = ISTaskStats(
             num_problems=num_problems,
             num_samples=num_samples,
             is_accuracy=is_accuracy,
             avg_ess=avg_ess,
+            avg_student_log_prob=avg_student_log_prob,
         )
 
         total_problems += num_problems

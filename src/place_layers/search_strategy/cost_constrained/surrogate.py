@@ -93,14 +93,22 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             cost_budget=cost_budget,
         )
 
-        # Find best by score
-        best_idx = int(np.argmax(all_scores))
-        best_assignment = all_assignments[best_idx]
+        # Select best only from within-budget placements (exploration may be unconstrained)
+        costs = [
+            cost_model.allocation_cost(dict(Counter(a))) for a in all_assignments
+        ]
+        feasible_indices = [i for i, c in enumerate(costs) if c <= cost_budget]
+        if not feasible_indices:
+            raise ValueError("No feasible solutions found within budget")
+
+        feasible_scores = [all_scores[i] for i in feasible_indices]
+        best_feasible = feasible_indices[int(np.argmax(feasible_scores))]
+        best_assignment = all_assignments[best_feasible]
         best_alloc = dict(Counter(best_assignment))
         best_entry = BeamEntry(
             assignments=best_assignment,
             allocation=best_alloc,
-            score=all_scores[best_idx],
+            score=all_scores[best_feasible],
         )
 
         return self._create_result(
@@ -227,7 +235,16 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         )
         surrogate.fit(all_assignments, np.array(all_scores))
 
-        f_best = float(np.max(all_scores))
+        # f_best: only from within-budget placements (exploration may be unconstrained)
+        if cost_budget is not None:
+            feasible_scores = [
+                s
+                for a, s in zip(all_assignments, all_scores)
+                if cost_model.allocation_cost(dict(Counter(a))) <= cost_budget
+            ]
+            f_best = float(np.max(feasible_scores)) if feasible_scores else float("-inf")
+        else:
+            f_best = float(np.max(all_scores))
 
         for round_num in range(self.config.num_rounds):
             logger.debug(

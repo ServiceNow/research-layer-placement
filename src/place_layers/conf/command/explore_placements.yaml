@@ -31,3 +31,8 @@ seed: 42
 # Feature expansion selection
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
 expansion_max_range: 10         # ceiling for pairwise range search (auto-stops early)
+
+# Fixed feature expansion (optional)
+# If set, skips automatic expansion selection and uses this config directly.
+# Example: {max_order: 3, pairwise_max_range: 1, allocation_counts: true}
+fixed_expansion_config: null

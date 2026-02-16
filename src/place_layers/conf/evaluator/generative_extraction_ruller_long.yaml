@@ -44,3 +44,4 @@ evaluate_truncated_samples: true
 # Tokenizer for synthetic task generation (e.g., RULER)
 tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
 max_seq_lengths: 16384
+doc_prefetch_count: 2

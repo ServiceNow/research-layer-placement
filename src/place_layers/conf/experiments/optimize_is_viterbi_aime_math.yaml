@@ -1,0 +1,31 @@
+# @package _global_
+# Viterbi surrogate optimization with importance-weighted evaluation (aime24, aime25, math_500)
+# Requires a pre-built exploration dataset from explore_is_aime_math.
+#
+# Usage:
+#   python -m place_layers +experiments=optimize_is_viterbi_aime_math \
+#     search_strategy.exploration_dataset_path=/path/to/exploration_results.json
+
+defaults:
+  - /command: optimize
+  - /evaluator: importance_weighted
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
+  - /search_strategy: viterbi_surrogate
+  - /result_handler: json
+  - _self_
+
+# IS traces for aime25, aime24, math_500
+evaluator:
+  scoring_mode: student_log_prob
+  trace_sources:
+    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
+    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+
+search_strategy:
+  exploration_dataset_path: ???
+  num_rounds: 4
+  evals_per_round: 200
