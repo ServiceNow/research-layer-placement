@@ -1,0 +1,6 @@
+# @package task
+tasks:
+  - niah_single_2
+num_fewshot: 0
+max_problems_per_task: null
+split: test              

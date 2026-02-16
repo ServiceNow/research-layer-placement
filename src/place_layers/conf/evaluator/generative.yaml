@@ -34,6 +34,7 @@ top_p: ${generation.top_p}
 # When true (default), uses chat template formatting with messages
 # When false, uses raw text prompts (for base models without chat training)
 use_chat_template: true
+system_instruction: null
 
 # Document prefetch (higher values hide I/O latency but use more memory)
 doc_prefetch_count: 2
@@ -42,3 +43,12 @@ doc_prefetch_count: 2
 # When false (default), truncated samples are marked incorrect (reasoning tasks)
 # When true, truncated samples are evaluated for correctness (extraction tasks)
 evaluate_truncated_samples: false
+
+# Tokenizer for synthetic task generation (e.g., RULER)
+# Set to a HF model/tokenizer name when using tasks that generate synthetic data
+# at eval time and need a tokenizer to calibrate context lengths.
+tokenizer: null
+
+# Context lengths for synthetic tasks (e.g., RULER)
+# Generates samples at each specified length. Example: [4096, 8192, 16384]
+max_seq_lengths: null

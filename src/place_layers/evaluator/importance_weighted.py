@@ -155,6 +155,87 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
 
         # Call parent init (sets up backend, trace loading, task weights, etc.)
         super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
+        logger.info(f"Saving IS results to: {output_dir}/validation.jsonl")
+
+    def _load_and_merge_traces(self) -> MergedTraces:
+        """Load traces from all sources and merge by task_name."""
+        import time
+
+        sources = self.config.trace_sources
+        logger.info(f"Loading traces from {len(sources)} source(s)...")
+
+        merged = MergedTraces()
+        total_traces = 0
+
+        for source_path in sources:
+            path = Path(source_path)
+            logger.info(f"Loading traces from {path}")
+            start = time.perf_counter()
+            dataset = TraceDataset.load_from_directory(path)
+            elapsed = time.perf_counter() - start
+
+            # Add all traces to merged collection
+            for trace in dataset.traces:
+                merged.add_trace(trace)
+
+            total_traces += dataset.num_traces
+            logger.info(
+                f"  Loaded {dataset.num_traces} traces from {len(dataset.task_names)} task(s) "
+                f"in {elapsed:.1f}s"
+            )
+
+        # Log summary by task
+        logger.info(f"Merged {total_traces} traces across {len(merged.task_names)} task(s):")
+        for task_name in sorted(merged.task_names):
+            logger.info(
+                f"  {task_name}: {merged.num_problems(task_name)} problems, "
+                f"{merged.num_traces(task_name)} traces"
+            )
+
+        return merged
+
+    def _compute_task_weights(self) -> dict[str, float]:
+        """Compute normalized task weights.
+
+        Returns a dict mapping task_name -> normalized weight.
+        Handles missing/extra keys in config.task_weights with warnings.
+        """
+        task_names = set(self.merged_traces.task_names)
+        config_weights = self.config.task_weights
+
+        if config_weights is None:
+            # Equal weights for all tasks
+            weight = 1.0 / len(task_names) if task_names else 1.0
+            return {task: weight for task in task_names}
+
+        # Start with config weights, warn about issues
+        weights: dict[str, float] = {}
+        config_keys = set(config_weights.keys())
+
+        # Check for missing tasks (in data but not in config)
+        missing = task_names - config_keys
+        if missing:
+            logger.warning(
+                f"task_weights missing keys for: {sorted(missing)}. Using weight=1.0 for these."
+            )
+
+        # Check for extra tasks (in config but not in data)
+        extra = config_keys - task_names
+        if extra:
+            logger.warning(
+                f"task_weights has keys not in data: {sorted(extra)}. Ignoring these."
+            )
+
+        # Build weights dict
+        for task in task_names:
+            weights[task] = config_weights.get(task, 1.0)
+
+        # Normalize to sum to 1
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("Sum of task weights must be positive")
+
+        return {task: w / total for task, w in weights.items()}
 
     def _compute_problem_record(
         self,
@@ -215,11 +296,16 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
             clip_max=self._weight_clip_max,
         )
 
-        # Compute weighted accuracy using pre-computed task weights
-        final_score = summary.weighted_accuracy(self.task_weights)
-
         logger.info(f"\n{summary}")
-        logger.info(f"Weighted accuracy: {final_score:.4f}")
+
+        if self.config.scoring_mode == "student_log_prob":
+            final_score = summary.weighted_student_log_prob(self.task_weights)
+            logger.info(
+                f"Mean student log-prob: {final_score:.1f}"
+            )
+        else:
+            final_score = summary.weighted_accuracy(self.task_weights)
+            logger.info(f"Weighted accuracy: {final_score:.4f}")
 
         return final_score
 
@@ -230,6 +316,29 @@ class ImportanceWeightedEvaluatorConfig(TraceBasedEvaluatorConfig):
     _impl_class: ClassVar[type[BaseEvaluator]] = ImportanceWeightedEvaluator
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
+
+    # Trace sources - list of paths to directories containing JSONL files
+    trace_sources: list[str] = Field(
+        description="List of paths to trace directories (merged by task_name)"
+    )
+
+    # Optional per-task weights for weighted accuracy
+    task_weights: dict[str, float] | None = Field(
+        default=None,
+        description="Per-task importance weights (task_name -> weight). "
+        "If None, all tasks are weighted equally. "
+        "Missing tasks default to 1.0 with a warning. "
+        "Extra keys are ignored with a warning.",
+    )
+
+    # Scoring mode
+    scoring_mode: Literal["accuracy", "student_log_prob"] = Field(
+        default="accuracy",
+        description="What score to return from evaluate(). "
+        "'accuracy': IS-weighted accuracy (higher=better, range [0,1]). "
+        "'student_log_prob': mean student log-prob per problem (higher=better, "
+        "negative values where less negative = better student fit).",
+    )
 
     # Importance sampling parameters
     weight_clip_min: float = Field(

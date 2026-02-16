@@ -1,0 +1,14 @@
+# @package task
+# MATH-500 with answer extraction from [BEGIN FINAL RESPONSE]...<|end|> blocks
+#
+# Use this for models that output their final answer wrapped like:
+#   [BEGIN FINAL RESPONSE]
+#   $\frac{14}{3}$
+#   <|end|>
+
+tasks:
+  - math_500_strip_end
+
+num_fewshot: 0
+max_problems_per_task: null
+split: test

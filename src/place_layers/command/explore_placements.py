@@ -415,7 +415,15 @@ class ExplorePlacementsCommand(BaseCommand):
             # relaxes as more data arrives, potentially unlocking higher-order
             # features. Re-running is cheap (a few Ridge CV fits).
             feature_config: FeatureExpansionConfig | None = None
-            if (
+            if self.config.fixed_expansion_config is not None:
+                feature_config = self.config.fixed_expansion_config
+                logger.info(
+                    "Using fixed expansion config (skipping selection): "
+                    "order=%d, range=%d",
+                    feature_config.max_order,
+                    feature_config.pairwise_max_range,
+                )
+            elif (
                 self.config.expansion_max_order > 1
                 and len(all_assignments) >= self.config.cv_folds
             ):
@@ -514,8 +522,10 @@ class ExplorePlacementsCommand(BaseCommand):
                 # Re-run expansion selection with larger dataset.
                 # The feature-to-sample guard relaxes as data grows,
                 # potentially unlocking higher-order features.
+                # Skip if using fixed expansion config.
                 if (
-                    self.config.expansion_max_order > 1
+                    self.config.fixed_expansion_config is None
+                    and self.config.expansion_max_order > 1
                     and len(all_assignments) >= self.config.cv_folds
                 ):
                     expansion_result = select_expansion_level(
@@ -688,4 +698,13 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
             "feature-to-sample ratio becomes unfavorable."
         ),
         ge=1,
+    )
+    fixed_expansion_config: FeatureExpansionConfig | None = Field(
+        default=None,
+        description=(
+            "If set, use this feature expansion config directly instead of "
+            "running automatic expansion selection. Useful when you already "
+            "know the desired order and range (e.g., order=3, range=1 for "
+            "adjacent triplets)."
+        ),
     )

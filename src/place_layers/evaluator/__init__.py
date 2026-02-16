@@ -9,6 +9,7 @@ from place_layers.evaluator.importance_weighted import ImportanceWeightedEvaluat
 from place_layers.evaluator.likelihood import LikelihoodEvaluatorConfig
 from place_layers.evaluator.mock_supernet_evaluator import MockSupernetEvaluatorConfig
 from place_layers.evaluator.trace_likelihood import TraceLikelihoodEvaluatorConfig
+from place_layers.evaluator.throughput import ThroughputEvaluatorConfig
 from place_layers.evaluator.trace_precompute import TracePrecomputeEvaluatorConfig
 
 
@@ -19,6 +20,7 @@ EvaluatorConfig = Annotated[
     | GenerativeEvaluatorConfig
     | LikelihoodEvaluatorConfig
     | TraceLikelihoodEvaluatorConfig
-    | TracePrecomputeEvaluatorConfig,
+    | TracePrecomputeEvaluatorConfig
+    | ThroughputEvaluatorConfig,
     Field(discriminator="evaluator_type"),
 ]

@@ -1,0 +1,47 @@
+# @package evaluator
+# Generative evaluator - measures accuracy through direct generation
+#
+# This config uses interpolation to compose with other config groups:
+#   - backend: Generation backend (vllm or transformers)
+#   - task: Benchmark configuration (tasks, num_fewshot)
+#   - generation: Decoding parameters (temperature, samples)
+#
+# Note: Model structure (num_layers, mixer_names) is discovered automatically
+# from the backend at runtime.
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator=generative \
+#       +backend=transformers +model=apriel2_0_5b_dev +task=gsm8k +generation=greedy
+
+evaluator_type: generative
+
+# Backend configuration (composed from backend/ config group)
+backend: ${backend}
+
+# Task configuration (composed from task/ config group)
+tasks: ${task.tasks}
+num_fewshot: ${task.num_fewshot}
+max_problems_per_task: ${task.max_problems_per_task}
+split: ${task.split}
+
+# Generation parameters (composed from generation/ config group)
+samples_per_problem: ${generation.samples_per_problem}
+max_new_tokens: ${generation.max_new_tokens}
+temperature: ${generation.temperature}
+top_p: ${generation.top_p}
+
+# Prompt formatting
+# When true (default), uses chat template formatting with messages
+# When false, uses raw text prompts (for base models without chat training)
+use_chat_template: true
+system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+
+# Truncated sample handling
+# When false (default), truncated samples are marked incorrect (reasoning tasks)
+# When true, truncated samples are evaluated for correctness (extraction tasks)
+evaluate_truncated_samples: true
+
+# Tokenizer for synthetic task generation (e.g., RULER)
+tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+max_seq_lengths: 16384
+doc_prefetch_count: 2

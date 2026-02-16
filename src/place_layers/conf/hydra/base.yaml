@@ -6,10 +6,10 @@ defaults:
   - override hydra_logging: rich
 
 run:
-  dir: ${oc.env:OUTPUT_BASE,outputs}/${hydra.job.override_dirname}
+  dir: ${oc.env:OUTPUT_BASE,outputs}/${path_truncate:${path_sanitize_fragment:${hydra.job.override_dirname}},120}__${path_hash:${hydra.job.override_dirname},12}
 
 sweep:
-  dir: ${oc.env:OUTPUT_BASE,outputs}/multirun/${hydra.job.override_dirname}
+  dir: ${oc.env:OUTPUT_BASE,outputs}/multirun/${path_truncate:${path_sanitize_fragment:${hydra.job.override_dirname}},120}__${path_hash:${hydra.job.override_dirname},12}
   subdir: ${hydra.job.num}
 
 job:

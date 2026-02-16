@@ -174,6 +174,7 @@ class VLLMBackend(AsyncBackend):
                     temperature=req.temperature,
                     top_p=req.top_p,
                     key=req.key,
+                    ignore_eos=req.ignore_eos,
                 )
             except VLLMBadRequestError as e:
                 logger.warning(f"Bad request for {req.key}: {e}")

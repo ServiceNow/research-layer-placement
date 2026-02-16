@@ -1,0 +1,10 @@
+# @package generation
+# Greedy decoding (deterministic)
+#
+# Best for evaluation where reproducibility matters.
+# temperature=0 triggers greedy decoding in both vLLM and Transformers backends.
+
+samples_per_problem: 1
+max_new_tokens: 5000  # Leave ~1K tokens for input (model context = 16384)
+temperature: 0.0  # 0 = greedy (both backends)
+top_p: 1.0

@@ -1,0 +1,13 @@
+# @package task
+# RULER QA Squad - Long-context retrieval benchmark
+#
+# Pads SQuAD questions with distractor documents to fill target context lengths.
+# Requires evaluator.tokenizer to be set (e.g., evaluator.tokenizer=model_name).
+# Also requires: pip install wonderwords nltk
+
+tasks:
+  - ruler_qa_squad
+
+num_fewshot: 0
+max_problems_per_task: null  # null = 500 samples per sequence length
+split: test
