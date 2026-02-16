@@ -27,9 +27,9 @@ from scipy.stats import spearmanr
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.command.landscape_config import LandscapeConfig
-from place_layers.command.landscape_helpers import (
+from place_layers.landscape import (
     BandValidationResult,
+    LandscapeConfig,
     PlacementResult,
     ValidationResults,
     ValidationSummary,

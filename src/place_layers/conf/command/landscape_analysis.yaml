@@ -1,6 +1,0 @@
-# @package _global_
-
-command: landscape_analysis
-
-# Number of configs to sample (null = exhaustive if < 100k)
-sample_size: null
