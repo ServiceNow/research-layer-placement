@@ -17,3 +17,4 @@ cost_model: ${cost_model}
 #
 # Default: 7.5x speedup target
 cost_budget: 6.4
+cost_floor: null

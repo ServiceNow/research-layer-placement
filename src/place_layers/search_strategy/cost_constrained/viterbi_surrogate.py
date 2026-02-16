@@ -68,12 +68,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         logger.debug("Mode: MAX_PERFORMANCE (viterbi-surrogate), budget=%.4f", cost_budget)
 
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget
+            cost_model, num_layers, cost_budget, cost_floor=cost_floor
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
 
@@ -111,12 +112,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
         logger.debug("Mode: MIN_COST (viterbi-surrogate), target=%.4f", performance_target)
 
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None
+            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
 

@@ -100,6 +100,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> "CostConstrainedSearchResult":
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         from place_layers.core.types import LayerPlacement
@@ -139,6 +140,10 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             # Skip allocations above budget
             if alloc_cost > cost_budget:
                 continue
+
+            # Stop at cost floor (everything remaining is cheaper)
+            if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                break
 
             allocations_explored += 1
 
@@ -312,6 +317,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> "CostConstrainedSearchResult":
         """MIN_COST mode: minimize cost subject to performance >= target."""
         from place_layers.core.types import LayerPlacement
@@ -341,6 +347,10 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
         ):
+            # Stop at cost floor (everything remaining is cheaper)
+            if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                break
+
             allocations_explored += 1
 
             logger.info(f"\n--- Allocation {allocations_explored}: {allocation} ---")

@@ -71,13 +71,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         logger.debug("Mode: MAX_PERFORMANCE (surrogate-assisted), budget=%.4f", cost_budget)
 
         # Enumerate feasible allocations within budget
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget
+            cost_model, num_layers, cost_budget, cost_floor=cost_floor
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
 
@@ -91,6 +92,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=cost_budget,
+            cost_floor=cost_floor,
         )
 
         # Find best by score
@@ -117,13 +119,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
         logger.debug("Mode: MIN_COST (surrogate-assisted), target=%.4f", performance_target)
 
         # Enumerate ALL allocations (no budget filter for min_cost)
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None
+            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
 
@@ -137,6 +140,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=None,
+            cost_floor=cost_floor,
         )
 
         # Find cheapest that meets target
@@ -189,6 +193,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         num_layers: int,
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
+        cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Load exploration data and run refinement, return (all_assignments, all_scores)."""
         rng = random.Random(self.config.sa.seed)
@@ -251,6 +256,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 cost_budget=cost_budget,
                 config=self.config.sa,
                 rng=rng,
+                cost_floor=cost_floor,
             )
             top_candidates = [c for c, _s in sa_result.candidates]
 

@@ -3,16 +3,16 @@
 Generates a paper-quality figure showing:
 1. Density of random placements — most configurations at any cost are bad
 2. DP-optimal line — the surrogate's Viterbi solution at each cost level
+3. (Optional) Validated line — real evaluated scores from validate_landscape
 
 Input: exploration_results.json from explore_placements + a cost model config.
-Output: placement_landscape.pdf + .png in Hydra output dir.
+       Optionally: validation_results.json from validate_landscape.
+Output: placement_landscape.pdf + .png + landscape_data.json in Hydra output dir.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import Counter, defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -22,29 +22,19 @@ from pydantic import Field
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.cost_model import CostModelConfig
+from place_layers.command.landscape_config import LandscapeConfig
+from place_layers.command.landscape_helpers import (
+    BandResult,
+    LandscapeData,
+    ValidationResults,
+    compute_band_edges,
+    compute_dp_per_band,
+    load_and_fit_surrogate,
+)
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
-from place_layers.mrf.solver import ExactMRFSolver
-from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.model_selection import select_expansion_level
-from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Data structures
-# ============================================================================
-
-
-@dataclass(frozen=True)
-class BandResult:
-    """DP-optimal result for one cost band."""
-
-    cost: float
-    score: float
-    assignments: tuple[str, ...]
 
 
 # ============================================================================
@@ -91,7 +81,12 @@ class PlacementLandscapeCommand(BaseCommand):
         output_dir = Path(hydra_cfg.runtime.output_dir)
         logger.info("Output directory: %s", output_dir)
 
-        dataset, surrogate, cost_model = self._load_and_fit_surrogate()
+        landscape = self.config.landscape
+        dataset, surrogate, cost_model = load_and_fit_surrogate(
+            landscape.exploration_dataset_path,
+            landscape.cost_model,
+            landscape.seed,
+        )
         num_layers = dataset.num_layers
 
         # Enumerate ALL allocations (no budget filter)
@@ -108,10 +103,13 @@ class PlacementLandscapeCommand(BaseCommand):
         alloc_costs = np.array(
             [cost_model.allocation_cost(a) for a in all_allocations]
         )
-        min_cost = float(alloc_costs.min())
-        max_cost = float(alloc_costs.max())
         baseline_cost = cost_model.max_cost(num_layers)
-        logger.info("Cost range: %.4f – %.4f (baseline=%.4f)", min_cost, max_cost, baseline_cost)
+        logger.info(
+            "Cost range: %.4f – %.4f (baseline=%.4f)",
+            float(alloc_costs.min()),
+            float(alloc_costs.max()),
+            baseline_cost,
+        )
 
         # Generate density samples
         costs, scores = self._generate_density_samples(
@@ -125,14 +123,15 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Compute DP-optimal per cost band
-        band_results = self._compute_dp_per_band(
+        band_results = compute_dp_per_band(
             surrogate, all_allocations, alloc_costs,
             num_layers, baseline_cost, cost_model,
+            landscape.num_cost_bins,
         )
         logger.info(
             "DP solutions for %d / %d cost bands",
             len(band_results),
-            self.config.num_cost_bins,
+            landscape.num_cost_bins,
         )
         if band_results:
             logger.info(
@@ -141,6 +140,32 @@ class PlacementLandscapeCommand(BaseCommand):
                 band_results[0].score,
                 band_results[-1].cost,
                 band_results[-1].score,
+            )
+
+        # Save band data as JSON
+        cost_bin_edges = compute_band_edges(
+            alloc_costs, baseline_cost, landscape.num_cost_bins,
+        )
+        landscape_data = LandscapeData(
+            num_layers=num_layers,
+            baseline_cost=baseline_cost,
+            num_cost_bins=landscape.num_cost_bins,
+            cost_bin_edges=cost_bin_edges.tolist(),
+            bands=band_results,
+        )
+        landscape_data.save(output_dir / "landscape_data.json")
+        logger.info("Saved landscape_data.json")
+
+        # Load validation data if provided
+        validation: ValidationResults | None = None
+        if self.config.validation_results_path is not None:
+            validation = ValidationResults.load(
+                Path(self.config.validation_results_path)
+            )
+            logger.info(
+                "Loaded validation results: %d bands, rho=%.4f",
+                len(validation.bands),
+                validation.summary.spearman_rho,
             )
 
         # Observed data overlay
@@ -163,60 +188,12 @@ class PlacementLandscapeCommand(BaseCommand):
             observed_costs,
             observed_scores,
             output_dir,
+            validation,
         )
-
-    def _load_and_fit_surrogate(
-        self,
-    ) -> tuple[ExplorationDataset, RidgeSurrogate, BaseCostModel]:
-        """Load dataset, select expansion level, fit surrogate."""
-        dataset = ExplorationDataset.load(
-            Path(self.config.exploration_dataset_path)
-        )
-        logger.info(
-            "Loaded dataset: %d samples, %d layers, rho=%.4f",
-            dataset.num_samples,
-            dataset.num_layers,
-            dataset.final_rho,
-        )
-
-        cost_model = self.config.cost_model.create_cost_model()
-
-        # Model selection
-        scores_array = np.array(dataset.scores)
-        expansion_result = select_expansion_level(
-            assignments=dataset.assignments,
-            scores=scores_array,
-            mixer_names=dataset.mixer_names,
-            seed=self.config.seed,
-        )
-        feature_config = (
-            expansion_result.selected_config
-            if expansion_result.selected_config.max_order > 1
-            else None
-        )
-        logger.info(
-            "Model selection: order=%d, range=%d, rho=%.4f",
-            expansion_result.selected_order,
-            expansion_result.selected_range,
-            expansion_result.range_results[-1].rho
-            if expansion_result.range_results
-            else 0.0,
-        )
-
-        # Fit surrogate
-        surrogate = RidgeSurrogate(
-            mixer_names=dataset.mixer_names,
-            seed=self.config.seed,
-            feature_config=feature_config,
-        )
-        surrogate.fit(dataset.assignments, scores_array)
-        logger.info("Surrogate fitted")
-
-        return dataset, surrogate, cost_model
 
     def _generate_density_samples(
         self,
-        surrogate: RidgeSurrogate,
+        surrogate,
         all_allocations: list[Allocation],
         alloc_costs: np.ndarray,
         num_layers: int,
@@ -226,7 +203,7 @@ class PlacementLandscapeCommand(BaseCommand):
         Returns:
             (costs, scores) arrays of shape (total_samples,).
         """
-        rng = np.random.default_rng(self.config.seed)
+        rng = np.random.default_rng(self.config.landscape.seed)
         n_per = self.config.samples_per_allocation
         chunk_size = 10_000
 
@@ -259,75 +236,6 @@ class PlacementLandscapeCommand(BaseCommand):
 
         return np.array(all_costs), np.concatenate(all_scores_list)
 
-    def _compute_dp_per_band(
-        self,
-        surrogate: RidgeSurrogate,
-        all_allocations: list[Allocation],
-        alloc_costs: np.ndarray,
-        num_layers: int,
-        baseline_cost: float,
-        cost_model: BaseCostModel,
-    ) -> list[BandResult]:
-        """Solve DP per cost band using a single solve_top_n call per band.
-
-        Bins are spaced linearly in speedup-space (speedup = baseline_cost /
-        cost) so that display columns map 1-to-1 to DP bands.  This avoids
-        the domain mismatch where cost-linear bins compress into a handful of
-        speedup-space columns at 1× and leave gaps at high speedup.
-
-        Returns:
-            List of BandResult sorted by cost, one per occupied band.
-        """
-        num_bins = self.config.num_cost_bins
-        max_speedup = baseline_cost / float(alloc_costs.min())
-        speedup_edges = np.linspace(1.0, max_speedup, num_bins + 1)
-        cost_bin_edges = np.sort(baseline_cost / speedup_edges)
-
-        # Assign each allocation to a bin
-        bin_indices = np.digitize(alloc_costs, cost_bin_edges) - 1
-        bin_indices = np.clip(bin_indices, 0, num_bins - 1)
-
-        # Group allocations by bin
-        bin_to_allocs: dict[int, list[Allocation]] = defaultdict(list)
-        for i, alloc in enumerate(all_allocations):
-            bin_to_allocs[int(bin_indices[i])].append(alloc)
-
-        # Extract MRF model and solver
-        mrf_model = surrogate.extract_mrf_model(num_layers)
-        solver = ExactMRFSolver(mrf_model)
-        intercept = mrf_model.intercept
-
-        # Solve one unified DP per band
-        occupied_bins = sorted(bin_to_allocs.keys())
-        best_per_bin: dict[int, BandResult] = {}
-
-        for step, b in enumerate(occupied_bins):
-            band_allocs = bin_to_allocs[b]
-            logger.info(
-                "DP band %d / %d (bin %d, %d allocations)",
-                step + 1, len(occupied_bins), b, len(band_allocs),
-            )
-            top = solver.solve_top_n(band_allocs, n=1)
-            if not top:
-                continue
-
-            solution = top[0]
-            score = solution.true_score + intercept
-            # Recover cost from winning solution's assignments
-            alloc = dict(Counter(solution.placement.assignments))
-            cost = cost_model.allocation_cost(alloc)
-
-            best_per_bin[b] = BandResult(
-                cost=cost,
-                score=score,
-                assignments=solution.placement.assignments,
-            )
-
-        # Sort by cost
-        return [
-            best_per_bin[b] for b in sorted(best_per_bin.keys())
-        ]
-
     def _plot(
         self,
         costs: np.ndarray,
@@ -339,6 +247,7 @@ class PlacementLandscapeCommand(BaseCommand):
         observed_costs: np.ndarray | None,
         observed_scores: np.ndarray | None,
         output_dir: Path,
+        validation: ValidationResults | None = None,
     ) -> None:
         """Render two-panel figure: density + layermap."""
         import matplotlib
@@ -376,7 +285,7 @@ class PlacementLandscapeCommand(BaseCommand):
         # ---- Top panel: density + DP line ----
         h = ax_density.hist2d(
             speedups, scores,
-            bins=[cfg.num_cost_bins, cfg.num_score_bins],
+            bins=[cfg.landscape.num_cost_bins, cfg.num_score_bins],
             cmap="Greys",
             norm=LogNorm(),
             density=True,
@@ -385,13 +294,28 @@ class PlacementLandscapeCommand(BaseCommand):
         fig.colorbar(h[3], cax=cax, label="Density")
         ax_density.set_ylim(0.0, 1.0)
 
-        # DP-optimal line
+        # DP-optimal line (dashed when validation present, solid otherwise)
         if band_results:
             band_speedups = [baseline_cost / r.cost for r in band_results]
             band_scores = [r.score for r in band_results]
+            dp_style = "--" if validation is not None else "-"
+            dp_label = "Surrogate DP" if validation is not None else "DP optimum"
             ax_density.plot(
                 band_speedups, band_scores,
-                color="tab:blue", lw=2, label="DP optimum", zorder=5,
+                color="tab:blue", lw=2, ls=dp_style,
+                label=dp_label, zorder=5,
+            )
+
+        # Validated line (when validation data present)
+        if validation is not None and validation.bands:
+            val_speedups = [
+                baseline_cost / b.validated.cost for b in validation.bands
+            ]
+            val_scores = [b.validated.score for b in validation.bands]
+            ax_density.plot(
+                val_speedups, val_scores,
+                color="tab:red", lw=2, ls="-",
+                label="Validated", zorder=6,
             )
 
         # Observed data overlay
@@ -399,7 +323,8 @@ class PlacementLandscapeCommand(BaseCommand):
             observed_speedups = baseline_cost / observed_costs
             ax_density.scatter(
                 observed_speedups, observed_scores,
-                s=3, alpha=0.3, color="tab:red", zorder=3,
+                s=3, alpha=0.3, color="tab:red" if validation is None else "tab:gray",
+                zorder=3,
                 label="Observed",
             )
 
@@ -417,7 +342,23 @@ class PlacementLandscapeCommand(BaseCommand):
         ax_density.tick_params(labelbottom=False)
 
         # ---- Bottom panel: layermap ----
-        num_bins = cfg.num_cost_bins
+        # Use validated assignments if available, otherwise surrogate DP
+        if validation is not None and validation.bands:
+            layermap_source = [
+                BandResult(
+                    band_index=b.band_index,
+                    cost_low=b.cost_low,
+                    cost_high=b.cost_high,
+                    cost=b.validated.cost,
+                    score=b.validated.score,
+                    assignments=b.validated.assignments,
+                )
+                for b in validation.bands
+            ]
+        else:
+            layermap_source = band_results
+
+        num_bins = cfg.landscape.num_cost_bins
         speedup_bin_edges = np.linspace(min_speedup, max_speedup, num_bins + 1)
         layer_edges = np.arange(num_layers + 1)
 
@@ -427,7 +368,7 @@ class PlacementLandscapeCommand(BaseCommand):
 
         # Build layermap array: (num_layers, num_bins), fill with -1 (empty)
         layermap_data = np.full((num_layers, num_bins), -1, dtype=int)
-        for br in band_results:
+        for br in layermap_source:
             br_speedup = baseline_cost / br.cost
             b = int(np.digitize(br_speedup, speedup_bin_edges)) - 1
             b = min(b, num_bins - 1)
@@ -483,11 +424,8 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
 
     command: Literal["placement_landscape"] = "placement_landscape"
 
-    cost_model: CostModelConfig = Field(
-        description="Cost model for allocation enumeration and cost computation.",
-    )
-    exploration_dataset_path: str = Field(
-        description="Path to exploration_results.json from explore_placements.",
+    landscape: LandscapeConfig = Field(
+        description="Shared landscape configuration (binning, surrogate, cost model).",
     )
 
     # Sampling
@@ -495,13 +433,8 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
         description="Random permutations per allocation for density estimation.",
         gt=0,
     )
-    seed: int = Field(description="Random seed for reproducibility.")
 
     # Plot
-    num_cost_bins: int = Field(
-        description="Histogram bins along cost axis.",
-        gt=0,
-    )
     num_score_bins: int = Field(
         description="Histogram bins along score axis.",
         gt=0,
@@ -511,4 +444,10 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
     )
     score_label: str = Field(
         description="Y-axis label for the density plot.",
+    )
+
+    # Validation overlay (optional — YAML supplies null)
+    validation_results_path: str | None = Field(
+        description="Path to validation_results.json from validate_landscape. "
+        "If provided, overlays real evaluated scores and uses validated placements in layermap.",
     )

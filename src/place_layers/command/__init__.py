@@ -18,6 +18,7 @@ from place_layers.command.placement_landscape import PlacementLandscapeCommandCo
 from place_layers.command.precompute_traces import PrecomputeTracesCommandConfig
 from place_layers.command.sensitivity_analysis import SensitivityAnalysisCommandConfig
 from place_layers.command.serve import ServeCommandConfig
+from place_layers.command.validate_landscape import ValidateLandscapeCommandConfig
 
 
 # Discriminated union of all commands
@@ -33,7 +34,8 @@ CommandConfig = Annotated[
     | ServeCommandConfig
     | NoiseAnalysisCommandConfig
     | ExplorePlacementsCommandConfig
-    | PlacementLandscapeCommandConfig,
+    | PlacementLandscapeCommandConfig
+    | ValidateLandscapeCommandConfig,
     Field(discriminator="command"),
 ]
 
