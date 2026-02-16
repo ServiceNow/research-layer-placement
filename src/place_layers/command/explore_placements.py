@@ -22,19 +22,21 @@ from typing import ClassVar, Literal
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from place_layers.command.base_command import BaseCommand, CommandError
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
+from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
 from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
@@ -49,36 +51,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Result model
 # ============================================================================
-
-
-class ExplorationDataset(BaseModel):
-    """Serializable dataset of evaluated placements."""
-
-    model_config = {"frozen": True}
-
-    # Data
-    assignments: list[tuple[str, ...]]
-    scores: list[float]
-    allocations: list[dict[str, int]]
-
-    # Metadata
-    num_layers: int
-    mixer_names: list[str]
-    num_samples: int
-    termination_reason: Literal["target_reached", "plateau", "max_samples"]
-
-    # Feature expansion (None = Level 0 / unary only)
-    feature_config: FeatureExpansionConfig | None = None
-
-    # Learning curve
-    rho_history: list[float]
-    samples_at_check: list[int]
-    final_rho: float
-
-    @classmethod
-    def load(cls, path: Path) -> "ExplorationDataset":
-        """Load dataset from JSON file."""
-        return cls.model_validate_json(path.read_text())
 
 
 # ============================================================================
@@ -137,31 +109,6 @@ def _get_allocation(assignment: list[str] | tuple[str, ...]) -> dict[str, int]:
     for mixer in assignment:
         alloc[mixer] = alloc.get(mixer, 0) + 1
     return alloc
-
-
-def _enumerate_feasible_allocations(
-    cost_model: BaseCostModel,
-    num_layers: int,
-    cost_budget: float | None,
-) -> list[Allocation]:
-    """Collect all allocations within budget (or all if no budget).
-
-    Args:
-        cost_model: The cost model to query.
-        num_layers: Number of layers.
-        cost_budget: If set, only include allocations with cost <= budget.
-
-    Returns:
-        List of feasible allocations.
-    """
-    feasible: list[Allocation] = []
-    for alloc_cost, allocation in cost_model.allocations_by_cost(
-        num_layers, direction="increasing"
-    ):
-        if cost_budget is not None and alloc_cost > cost_budget:
-            break  # All subsequent allocations are more expensive
-        feasible.append(allocation)
-    return feasible
 
 
 def _compute_cost_uniform_weights(
@@ -392,7 +339,7 @@ class ExplorePlacementsCommand(BaseCommand):
             # Enumerate feasible allocations
             phase_order = cost_model.phase_order
 
-            feasible_allocations = _enumerate_feasible_allocations(
+            feasible_allocations = enumerate_feasible_allocations(
                 cost_model, num_layers, cost_budget
             )
             logger.info(

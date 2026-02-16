@@ -6,6 +6,7 @@ from pydantic import Field
 
 from place_layers.cost_model.base_cost_model import BaseCostModel
 from place_layers.cost_model.base_cost_model_config import BaseCostModelConfig
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.cost_model.linear_cost_model import (
     LinearCostModel,
     LinearCostModelConfig,

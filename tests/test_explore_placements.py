@@ -7,15 +7,15 @@ import numpy as np
 import pytest
 
 from place_layers.command.explore_placements import (
-    ExplorationDataset,
     _append_to_jsonl,
     _check_plateau,
     _compute_cost_uniform_weights,
-    _enumerate_feasible_allocations,
     _get_allocation,
     _load_progress,
     _sample_batch,
 )
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
@@ -91,7 +91,7 @@ class TestHelpers:
         alloc = _get_allocation(assignment)
         assert alloc == {"m0": 3, "m1": 2}
 
-    def test_enumerate_feasible_allocations(self) -> None:
+    def testenumerate_feasible_allocations(self) -> None:
         """Should enumerate allocations within budget."""
         config = LinearCostModelConfig(
             cost_model_type="linear",
@@ -101,14 +101,14 @@ class TestHelpers:
         num_layers = 6
 
         # All allocations (no budget)
-        all_allocs = _enumerate_feasible_allocations(
+        all_allocs = enumerate_feasible_allocations(
             cost_model, num_layers, cost_budget=None
         )
         assert len(all_allocs) == num_layers + 1  # 0..6 for m0
 
         # With budget
         budget = 4.0  # Excludes allocations costing more than 4.0
-        feasible = _enumerate_feasible_allocations(
+        feasible = enumerate_feasible_allocations(
             cost_model, num_layers, cost_budget=budget
         )
         for alloc in feasible:
@@ -151,7 +151,7 @@ class TestHelpers:
         num_layers = 4
 
         # Enumerate all allocations (no budget)
-        allocs = _enumerate_feasible_allocations(cost_model, num_layers, cost_budget=None)
+        allocs = enumerate_feasible_allocations(cost_model, num_layers, cost_budget=None)
         weights = _compute_cost_uniform_weights(allocs, cost_model)
 
         assert len(weights) == len(allocs)
@@ -235,7 +235,7 @@ class TestExploreIntegration:
         # Enumerate feasible allocations
         assert isinstance(problem.config, MaxPerformanceProblemConfig)
         cost_budget = problem.config.cost_budget
-        feasible = _enumerate_feasible_allocations(
+        feasible = enumerate_feasible_allocations(
             cost_model, num_layers, cost_budget
         )
         assert len(feasible) > 0

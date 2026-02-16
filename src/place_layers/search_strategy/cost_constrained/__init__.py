@@ -38,6 +38,10 @@ from place_layers.search_strategy.cost_constrained.swap_beam import (
     SwapBeamConfig,
     SwapBeamSearch,
 )
+from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiSurrogateSearchConfig,
+    ViterbiSurrogateSearch,
+)
 from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
     CostConstrainedSearchResult,
@@ -45,6 +49,10 @@ from place_layers.search_strategy.cost_constrained.types import (
 
 # Discriminated union of all cost-constrained search strategy configs
 CostConstrainedConfig = Annotated[
-    SwapBeamConfig | HierarchicalConfig | AnnealingConfig | SurrogateSearchConfig,
+    SwapBeamConfig
+    | HierarchicalConfig
+    | AnnealingConfig
+    | SurrogateSearchConfig
+    | ViterbiSurrogateSearchConfig,
     Field(discriminator="strategy_type"),
 ]

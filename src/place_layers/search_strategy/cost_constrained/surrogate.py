@@ -35,7 +35,9 @@ from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
     CostConstrainedSearchResult,
 )
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.acquisition import expected_improvement
+from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 if TYPE_CHECKING:
@@ -46,22 +48,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Helpers
-# ============================================================================
-
-
-def _enumerate_feasible(
-    cost_model: BaseCostModel,
-    num_layers: int,
-    cost_budget: float | None,
-) -> list["Allocation"]:
-    """Enumerate feasible allocations (deferred import to avoid circular dependency)."""
-    from place_layers.command.explore_placements import _enumerate_feasible_allocations
-
-    return _enumerate_feasible_allocations(cost_model, num_layers, cost_budget)
 
 
 # ============================================================================
@@ -90,7 +76,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         logger.debug("Mode: MAX_PERFORMANCE (surrogate-assisted), budget=%.4f", cost_budget)
 
         # Enumerate feasible allocations within budget
-        feasible_allocations = _enumerate_feasible(
+        feasible_allocations = enumerate_feasible_allocations(
             cost_model, num_layers, cost_budget
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
@@ -136,7 +122,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         logger.debug("Mode: MIN_COST (surrogate-assisted), target=%.4f", performance_target)
 
         # Enumerate ALL allocations (no budget filter for min_cost)
-        feasible_allocations = _enumerate_feasible(
+        feasible_allocations = enumerate_feasible_allocations(
             cost_model, num_layers, cost_budget=None
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
@@ -209,8 +195,6 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         mixer_names = cost_model.phase_order
 
         # Load exploration dataset
-        from place_layers.command.explore_placements import ExplorationDataset
-
         exploration = ExplorationDataset.load(
             Path(self.config.exploration_dataset_path)
         )
@@ -289,7 +273,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 round_started_event = SurrogateRoundStartedEvent(
                     round=round_num + 1,
                     total_rounds=self.config.num_rounds,
-                    sa_candidates=sa_result.total_distinct_candidates,
+                    num_candidates=sa_result.total_distinct_candidates,
                     evals_planned=n_select,
                 )
                 for observer in self.observers:

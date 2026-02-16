@@ -1,0 +1,403 @@
+"""Bootstrap Viterbi surrogate search strategy for layer placement optimization.
+
+Uses ridge coefficients as MRF potentials and runs Viterbi DP on each
+bootstrap model to find exact optimal placements.  Each bootstrap Ridge was
+fit on a different resample, so their coefficients differ — especially in
+uncertain regions.  This gives automatic exploration/exploitation:
+
+- High surrogate quality → bootstrap models agree → few distinct candidates (exploit)
+- Low surrogate quality → models disagree → many distinct candidates (explore)
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import Counter
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+import numpy as np
+from pydantic import Field
+from scipy.stats import spearmanr
+
+from place_layers.core.types import LayerPlacement
+from place_layers.cost_model.base_cost_model import BaseCostModel
+from place_layers.mrf.solver import ExactMRFSolver
+from place_layers.problem.layer_placement import CostConstrainedProblem
+from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.base_config import (
+    BaseCostConstrainedConfig,
+)
+from place_layers.search_strategy.cost_constrained.types import (
+    BeamEntry,
+    CostConstrainedSearchResult,
+)
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+from place_layers.surrogate.acquisition import expected_improvement
+from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
+
+if TYPE_CHECKING:
+    from place_layers.cost_model.base_cost_model import Allocation
+    from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
+    from place_layers.search_strategy.progress import SearchObserver
+    from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
+
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Strategy
+# ============================================================================
+
+
+class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
+    """Bootstrap Viterbi surrogate search.
+
+    Extracts MRF potentials from each bootstrap Ridge model's coefficients,
+    runs Viterbi DP to find globally top-N placements per model, pools and
+    deduplicates, then selects via Expected Improvement for real evaluation.
+    """
+
+    config: "ViterbiSurrogateSearchConfig"
+
+    async def _search_max_performance(
+        self,
+        problem: CostConstrainedProblem,
+        cost_model: BaseCostModel,
+        num_layers: int,
+        cost_budget: float,
+    ) -> CostConstrainedSearchResult:
+        """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
+        logger.debug("Mode: MAX_PERFORMANCE (viterbi-surrogate), budget=%.4f", cost_budget)
+
+        feasible_allocations = enumerate_feasible_allocations(
+            cost_model, num_layers, cost_budget
+        )
+        logger.debug("Found %d feasible allocations", len(feasible_allocations))
+
+        if not feasible_allocations:
+            raise ValueError("No feasible allocations found within budget")
+
+        all_assignments, all_scores = await self._run_surrogate_loop(
+            problem=problem,
+            cost_model=cost_model,
+            num_layers=num_layers,
+            feasible_allocations=feasible_allocations,
+            cost_budget=cost_budget,
+        )
+
+        best_idx = int(np.argmax(all_scores))
+        best_assignment = all_assignments[best_idx]
+        best_alloc = dict(Counter(best_assignment))
+        best_entry = BeamEntry(
+            assignments=best_assignment,
+            allocation=best_alloc,
+            score=all_scores[best_idx],
+        )
+
+        return self._create_result(
+            best_entry=best_entry,
+            cost_model=cost_model,
+            mode="max_performance",
+            constraint_value=cost_budget,
+            allocations_explored=0,
+        )
+
+    async def _search_min_cost(
+        self,
+        problem: CostConstrainedProblem,
+        cost_model: BaseCostModel,
+        num_layers: int,
+        performance_target: float,
+    ) -> CostConstrainedSearchResult:
+        """MIN_COST mode: minimize cost subject to performance >= target."""
+        logger.debug("Mode: MIN_COST (viterbi-surrogate), target=%.4f", performance_target)
+
+        feasible_allocations = enumerate_feasible_allocations(
+            cost_model, num_layers, cost_budget=None
+        )
+        logger.debug("Found %d total allocations", len(feasible_allocations))
+
+        if not feasible_allocations:
+            raise ValueError("No allocations found")
+
+        all_assignments, all_scores = await self._run_surrogate_loop(
+            problem=problem,
+            cost_model=cost_model,
+            num_layers=num_layers,
+            feasible_allocations=feasible_allocations,
+            cost_budget=None,
+        )
+
+        best_entry: BeamEntry | None = None
+        best_cost = float("inf")
+        fallback_entry: BeamEntry | None = None
+        fallback_score = float("-inf")
+
+        for assignment, score in zip(all_assignments, all_scores):
+            alloc = dict(Counter(assignment))
+            cost = cost_model.allocation_cost(alloc)
+
+            if score >= performance_target and cost < best_cost:
+                best_cost = cost
+                best_entry = BeamEntry(
+                    assignments=assignment,
+                    allocation=alloc,
+                    score=score,
+                )
+            if score > fallback_score:
+                fallback_score = score
+                fallback_entry = BeamEntry(
+                    assignments=assignment,
+                    allocation=alloc,
+                    score=score,
+                )
+
+        if best_entry is None:
+            logger.warning(
+                "No placement met performance target %s. "
+                "Returning best by score.",
+                performance_target,
+            )
+            assert fallback_entry is not None
+            best_entry = fallback_entry
+
+        return self._create_result(
+            best_entry=best_entry,
+            cost_model=cost_model,
+            mode="min_cost",
+            constraint_value=performance_target,
+            allocations_explored=0,
+        )
+
+    async def _run_surrogate_loop(
+        self,
+        problem: CostConstrainedProblem,
+        cost_model: BaseCostModel,
+        num_layers: int,
+        feasible_allocations: list["Allocation"],
+        cost_budget: float | None,
+    ) -> tuple[list[tuple[str, ...]], list[float]]:
+        """Load exploration data and run Viterbi refinement loop."""
+        mixer_names = cost_model.phase_order
+
+        # Load exploration dataset
+        exploration = ExplorationDataset.load(
+            Path(self.config.exploration_dataset_path)
+        )
+        all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
+        all_scores: list[float] = list(exploration.scores)
+        logger.info(
+            "Loaded exploration dataset: %d samples, rho=%.4f",
+            len(all_assignments),
+            exploration.final_rho,
+        )
+
+        # Emit dataset loaded event
+        if self.observers:
+            from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
+
+            dataset_event = SurrogateDatasetLoadedEvent(
+                num_samples=len(all_assignments),
+                exploration_rho=exploration.final_rho,
+            )
+            for observer in self.observers:
+                observer.on_surrogate_dataset_loaded(dataset_event)
+
+        # Initial surrogate fit
+        surrogate = RidgeSurrogate(
+            mixer_names=mixer_names,
+            seed=self.config.seed,
+            feature_config=exploration.feature_config,
+        )
+        surrogate.fit(all_assignments, np.array(all_scores))
+        f_best = float(np.max(all_scores))
+
+        for round_num in range(self.config.num_rounds):
+            logger.debug(
+                "Round %d/%d: Bootstrap Viterbi (%d models x %d candidates)",
+                round_num + 1,
+                self.config.num_rounds,
+                len(surrogate._bootstrap_models),
+                self.config.candidates_per_model,
+            )
+
+            # Step 1: Extract MRF models from bootstrap ensemble
+            mrf_models = surrogate.extract_bootstrap_mrf_models(num_layers)
+
+            # Step 2: For each MRF model, run Viterbi to get globally top-M
+            candidate_set: set[tuple[str, ...]] = set()
+            for mrf_model in mrf_models:
+                solver = ExactMRFSolver(mrf_model)
+                top_n = solver.solve_top_n(
+                    feasible_allocations, n=self.config.candidates_per_model
+                )
+                for solution in top_n:
+                    candidate_set.add(solution.placement.assignments)
+
+            candidate_list = list(candidate_set)
+            logger.debug(
+                "Viterbi produced %d distinct candidates from %d models",
+                len(candidate_list),
+                len(mrf_models),
+            )
+
+            if not candidate_list:
+                logger.warning("No candidates from Viterbi, skipping round")
+                continue
+
+            # Step 3: Score with EI (full predict: mu and sigma)
+            mu, sigma = surrogate.predict(candidate_list)
+            ei = expected_improvement(mu, sigma, f_best, xi=self.config.ei_xi)
+
+            # Step 4: Select top evals_per_round by EI
+            n_select = min(self.config.evals_per_round, len(candidate_list))
+            top_indices = np.argsort(ei)[-n_select:][::-1]
+
+            # Emit round started event
+            if self.observers:
+                from place_layers.search_strategy.progress import (
+                    SurrogateRoundStartedEvent,
+                )
+
+                round_started_event = SurrogateRoundStartedEvent(
+                    round=round_num + 1,
+                    total_rounds=self.config.num_rounds,
+                    num_candidates=len(candidate_list),
+                    evals_planned=n_select,
+                )
+                for observer in self.observers:
+                    observer.on_surrogate_round_started(round_started_event)
+
+            # Record surrogate predictions for correlation diagnostic
+            predicted_scores = mu[top_indices].copy()
+
+            # Step 5: Evaluate with real evaluator
+            for idx in top_indices:
+                candidate = candidate_list[idx]
+                placement = LayerPlacement(assignments=candidate)
+                score = await problem.evaluate(placement)
+                self.eval_count += 1
+
+                all_assignments.append(candidate)
+                all_scores.append(score)
+
+                if score > f_best:
+                    f_best = score
+
+                    if self.observers:
+                        best_alloc = dict(Counter(candidate))
+                        best_cost = cost_model.allocation_cost(best_alloc)
+
+                        from place_layers.search_strategy.progress import (
+                            BestUpdatedEvent,
+                        )
+
+                        event = BestUpdatedEvent(
+                            score=score,
+                            cost=best_cost,
+                            allocation=best_alloc,
+                            assignments=candidate,
+                        )
+                        for observer in self.observers:
+                            observer.on_best_updated(event)
+
+                if self.observers:
+                    for observer in self.observers:
+                        observer.on_eval_completed(self.eval_count)
+
+            # Compute prediction correlation for this round's candidates
+            actual_scores = np.array(all_scores[-n_select:])
+            if len(actual_scores) >= 2:
+                corr_result = spearmanr(predicted_scores, actual_scores)
+                prediction_correlation = float(corr_result.statistic)
+            else:
+                prediction_correlation = 0.0
+
+            # Step 6: Refit surrogate
+            surrogate.fit(all_assignments, np.array(all_scores))
+
+            rho = surrogate.cross_validate(
+                all_assignments, np.array(all_scores),
+                cv_folds=self.config.cv_folds,
+            )
+            logger.debug(
+                "Round %d complete: best=%.6f, rho=%.4f, pred_corr=%.4f",
+                round_num + 1,
+                f_best,
+                rho,
+                prediction_correlation,
+            )
+
+            # Emit round completed event
+            if self.observers:
+                from place_layers.search_strategy.progress import (
+                    SurrogateRoundCompletedEvent,
+                )
+
+                round_completed_event = SurrogateRoundCompletedEvent(
+                    round=round_num + 1,
+                    total_rounds=self.config.num_rounds,
+                    rho=rho,
+                    prediction_correlation=prediction_correlation,
+                    dataset_size=len(all_assignments),
+                    best_score=f_best,
+                )
+                for observer in self.observers:
+                    observer.on_surrogate_round_completed(round_completed_event)
+
+        return all_assignments, all_scores
+
+
+# ============================================================================
+# Config
+# ============================================================================
+
+
+class ViterbiSurrogateSearchConfig(BaseCostConstrainedConfig):
+    """Configuration for bootstrap Viterbi surrogate search.
+
+    Extracts MRF potentials from each bootstrap Ridge model's coefficients
+    and runs Viterbi DP to find exact optimal placements.  No SA needed.
+
+    Requires a pre-built exploration dataset from the explore_placements command.
+    """
+
+    _impl_class: ClassVar[type["BaseSearchStrategy"]] = ViterbiSurrogateSearch
+
+    strategy_type: Literal["viterbi_surrogate"] = "viterbi_surrogate"
+
+    exploration_dataset_path: str = Field(
+        description="Path to JSON dataset from explore_placements command.",
+    )
+
+    cv_folds: int = Field(
+        description="Cross-validation folds for surrogate quality.",
+        gt=1,
+    )
+
+    ei_xi: float = Field(
+        description="Exploration parameter for Expected Improvement.",
+        ge=0,
+    )
+
+    num_rounds: int = Field(
+        description="Number of surrogate-guided refinement rounds.",
+        gt=0,
+    )
+
+    evals_per_round: int = Field(
+        description="Top candidates by EI evaluated per round.",
+        gt=0,
+    )
+
+    seed: int = Field(
+        description="Random seed for surrogate fitting.",
+    )
+
+    candidates_per_model: int = Field(
+        description="Number of globally top placements to harvest from each bootstrap model's DP table.",
+        gt=0,
+    )

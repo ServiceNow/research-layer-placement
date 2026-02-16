@@ -564,7 +564,7 @@ class SurrogateRoundStartedEvent(BaseModel):
     event_type: Literal["surrogate_round_started"] = "surrogate_round_started"
     round: int  # 1-indexed
     total_rounds: int
-    sa_candidates: int  # distinct candidates from SA
+    num_candidates: int  # distinct candidates (from SA or Viterbi)
     evals_planned: int  # top-k selected by EI
 
 

@@ -22,7 +22,7 @@ from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation
 
 if TYPE_CHECKING:
-    from place_layers.mrf.model import ChainMRFModel
+    from place_layers.mrf.model import MRFModelProtocol
 
 
 @dataclass(frozen=True)
@@ -50,11 +50,11 @@ class ExactMRFSolver:
             - exactly c[k] layers assigned to mixer k overall
     """
 
-    def __init__(self, model: ChainMRFModel) -> None:
+    def __init__(self, model: MRFModelProtocol) -> None:
         """Initialize solver with MRF model.
 
         Args:
-            model: Chain MRF model to optimize.
+            model: Any object implementing MRFModelProtocol.
         """
         self.model = model
 
@@ -260,6 +260,122 @@ class ExactMRFSolver:
             true_score=best_score,
         )
 
+    def solve_top_n(
+        self,
+        feasible_allocations: list[Allocation],
+        n: int,
+    ) -> list[ExactSolution]:
+        """Find the globally top-n placements across all feasible allocations.
+
+        Single DP pass with allocation tracking (state = (history, counts)),
+        tracking ALL feasible count tuples simultaneously.  At the final layer,
+        collects ALL entries whose counts match a feasible allocation, sorts
+        globally by score, and backtracks the top n.
+
+        Multiple solutions MAY share the same allocation but differ in
+        arrangement (different history states).
+
+        Args:
+            feasible_allocations: List of allocations to consider.
+            n: Number of top solutions to return.
+
+        Returns:
+            List of ExactSolution sorted by score descending, length <= n.
+        """
+        N = self.model.num_layers
+        K = self.model.num_mixers
+        names = self.model.mixer_names
+        m = self.model.memory
+
+        # Convert allocations to target count tuples and build feasible set
+        feasible_set: set[tuple[int, ...]] = set()
+        for alloc in feasible_allocations:
+            target = tuple(alloc.get(name, 0) for name in names)
+            if sum(target) == N:
+                feasible_set.add(target)
+
+        if not feasible_set:
+            return []
+
+        # Max counts per mixer for pruning
+        max_counts = [0] * K
+        for target in feasible_set:
+            for k in range(K):
+                if target[k] > max_counts[k]:
+                    max_counts[k] = target[k]
+
+        # State: (history_tuple, counts_tuple)
+        # V[layer][(history, counts)] = best score
+        V: list[dict[tuple[tuple[int, ...], tuple[int, ...]], float]] = [
+            {} for _ in range(N)
+        ]
+        backtrack: list[
+            dict[
+                tuple[tuple[int, ...], tuple[int, ...]],
+                tuple[tuple[int, ...], tuple[int, ...]],
+            ]
+        ] = [{} for _ in range(N)]
+
+        # Base case: first layer
+        for j in range(K):
+            if 1 > max_counts[j]:
+                continue
+            counts = tuple(1 if k == j else 0 for k in range(K))
+            history = (j,)
+            state = (history, counts)
+            V[0][state] = self.model.unary_potential(0, names[j])
+
+        # Forward pass
+        for i in range(1, N):
+            for (prev_history, prev_counts), prev_score in V[i - 1].items():
+                for j in range(K):
+                    new_count_j = prev_counts[j] + 1
+                    if new_count_j > max_counts[j]:
+                        continue
+
+                    new_counts = tuple(
+                        prev_counts[k] + (1 if k == j else 0) for k in range(K)
+                    )
+
+                    unary = self.model.unary_potential(i, names[j])
+                    trans = self._transition_score(i, prev_history, j)
+                    score = prev_score + unary + trans
+
+                    new_history = (*prev_history, j)[-m:]
+                    new_state = (new_history, new_counts)
+
+                    if new_state not in V[i] or score > V[i][new_state]:
+                        V[i][new_state] = score
+                        backtrack[i][new_state] = (prev_history, prev_counts)
+
+        # Collect all final-layer entries whose counts are feasible
+        candidates: list[tuple[float, tuple[tuple[int, ...], tuple[int, ...]]]] = []
+        for (history, counts), score in V[N - 1].items():
+            if counts in feasible_set:
+                candidates.append((score, (history, counts)))
+
+        # Sort globally by score descending, take top n
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        top_candidates = candidates[:n]
+
+        # Backtrack each to reconstruct placement
+        results: list[ExactSolution] = []
+        for score, state in top_candidates:
+            assignment_indices: list[int] = [0] * N
+            current_state = state
+            assignment_indices[N - 1] = current_state[0][-1]
+
+            for i in range(N - 2, -1, -1):
+                prev_history, prev_counts = backtrack[i + 1][current_state]
+                assignment_indices[i] = prev_history[-1]
+                current_state = (prev_history, prev_counts)
+
+            assignments = tuple(names[j] for j in assignment_indices)
+            placement = LayerPlacement(assignments=assignments)
+            results.append(ExactSolution(placement=placement, true_score=score))
+
+        return results
+
     def enumerate_all(self) -> list[tuple[LayerPlacement, float]]:
         """Enumerate all possible placements with their true scores.
 
@@ -276,7 +392,7 @@ class ExactMRFSolver:
 
         for assignment in product(range(K), repeat=N):
             placement = LayerPlacement(assignments=tuple(names[j] for j in assignment))
-            score = self.model.true_score(placement)
+            score = self.model.true_score(placement)  # type: ignore[attr-defined]
             results.append((placement, score))
 
         # Sort by score descending
@@ -319,7 +435,7 @@ class ExactMRFSolver:
                 continue
 
             placement = LayerPlacement(assignments=tuple(names[j] for j in assignment))
-            score = self.model.true_score(placement)
+            score = self.model.true_score(placement)  # type: ignore[attr-defined]
             results.append((placement, score))
 
         # Sort by score descending

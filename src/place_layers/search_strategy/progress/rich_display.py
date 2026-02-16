@@ -1141,7 +1141,7 @@ class RichDisplay(PlacementFormatterMixin):
         """Handle surrogate round started - print permanent line."""
         self._console.print(
             f"  [cyan]ROUND {event.round}/{event.total_rounds}[/cyan]: "
-            f"SA found {event.sa_candidates} candidates, "
+            f"{event.num_candidates} candidates, "
             f"evaluating top {event.evals_planned} by EI"
         )
 
