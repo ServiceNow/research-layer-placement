@@ -1,0 +1,25 @@
+# @package evaluator
+# Throughput evaluator - benchmarks generation speed (tokens/sec)
+#
+# Measures throughput by generating completions from synthetic prompts
+# with configurable input and output sequence lengths.
+#
+# Usage:
+#   python -m place_layers +command=evaluate +evaluator=throughput \
+#       +backend=rest +model=apriel2_0_5b_dev +placement=all_attention
+
+evaluator_type: throughput
+
+backend: ${backend}
+
+# Sequence length configuration (in tokens)
+input_seq_len: 512
+output_seq_len: 128
+
+# Workload configuration
+num_requests: 100
+num_warmup_requests: 5
+ignore_eos: true
+
+# Synthetic prompt fill text (repeated to reach target input_seq_len)
+prompt_fill_text: "The quick brown fox jumps over the lazy dog. "

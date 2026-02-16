@@ -757,6 +757,7 @@ class RESTBackend(AsyncBackend):
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,
                     top_p=req.top_p,
+                    ignore_eos=req.ignore_eos,
                     placement=self._current_placement,
                 )
                 data = await self._call_with_failover(
