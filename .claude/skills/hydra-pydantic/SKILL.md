@@ -1,6 +1,6 @@
 ---
 name: hydra-pydantic
-description: Use when adding new polymorphic components (backends, evaluators, runners), creating discriminated unions, implementing smart constructors, or setting up Hydra+Pydantic configuration patterns. Triggers on tasks like "add a new backend", "create new evaluator type", "implement new runner".
+description: Use for ANY task that adds, modifies, or touches commands, features, components, Pydantic models, Hydra YAML configs, or configuration of any kind. In this codebase every new feature and every command change involves Hydra+Pydantic configuration, so this skill applies to virtually all implementation work. Covers: creating or modifying BaseModel config classes, editing YAML config files, adding config fields, creating config groups, implementing polymorphic components (discriminated unions, smart constructors), adding new commands, and refactoring existing ones. Critical rules enforced: NEVER use dataclasses for configs (always Pydantic BaseModel), NEVER put defaults or default_factory in Pydantic models (all defaults live in YAML), always use Literal discriminators for unions.
 ---
 
 # Hydra + Pydantic Configuration Patterns
@@ -36,10 +36,14 @@ class BaseComponentConfig(BaseModel):
 
 ## When to Use This Skill
 
-- Adding a new backend/evaluator/runner implementation
-- Creating a new polymorphic component type
-- Setting up config for a new module with multiple implementations
+- Adding or modifying ANY command or feature (all commands have configs)
+- Creating or editing Pydantic BaseModel classes
+- Editing or creating Hydra YAML config files
+- Adding fields to existing config classes
+- Creating new config groups
+- Implementing new polymorphic component types
 - Debugging discriminated union or smart constructor issues
+- Any task where configuration structure decisions are being made
 
 ## Files to Create for New Component
 
