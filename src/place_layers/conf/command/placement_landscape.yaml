@@ -6,16 +6,15 @@
 # Requires an exploration_results.json from the explore_placements command.
 #
 # Usage:
-#   python -m place_layers +command=placement_landscape +cost_model=linear_apriel_15b exploration_dataset_path=exploration_results.json
+#   python -m place_layers +command=placement_landscape +cost_model=linear_apriel_15b +landscape=apriel_15b landscape.exploration_dataset_path=exploration_results.json
 
 command: placement_landscape
-cost_model: ${cost_model}
-exploration_dataset_path: ???
+landscape: ${landscape}
 
 samples_per_allocation: 200
-seed: 42
 
-num_cost_bins: 80
 num_score_bins: 120
 show_observed: true
 score_label: "MMLU accuracy"
+
+validation_results_path: null

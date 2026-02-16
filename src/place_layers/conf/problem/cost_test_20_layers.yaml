@@ -9,3 +9,4 @@ cost_model: ${cost_model}
 # Min cost (all m2): 20 * 0.2 = 4.0
 # Max cost (all m0): 20 * 1.0 = 20.0
 cost_budget: 8.0
+cost_floor: null

@@ -134,6 +134,27 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
                     "which is trivially satisfied by any configuration."
                 )
 
+        # Validate cost_floor
+        cost_floor = config.cost_floor
+        if cost_floor is not None:
+            if cost_floor > max_cost:
+                raise ValueError(
+                    f"cost_floor ({cost_floor}) exceeds maximum possible cost "
+                    f"({max_cost}). No feasible allocations exist above the floor."
+                )
+            if cost_floor < min_cost:
+                logger.warning(
+                    f"cost_floor ({cost_floor}) is below minimum possible cost "
+                    f"({min_cost}). The floor has no effect."
+                )
+            if isinstance(config, MaxPerformanceProblemConfig):
+                if cost_floor >= config.cost_budget:
+                    raise ValueError(
+                        f"cost_floor ({cost_floor}) must be less than "
+                        f"cost_budget ({config.cost_budget}). "
+                        "The search range [cost_floor, cost_budget] is empty."
+                    )
+
     def compute_cost(self, placement: LayerPlacement) -> float:
         """Compute the cost of a placement configuration."""
         return self.cost_model.cost(placement)
@@ -164,6 +185,12 @@ class BaseCostConstrainedProblemConfig(BaseProblemConfig):
 
     cost_model: CostModelConfig = Field(
         description="Cost model configuration defining per-mixer costs"
+    )
+
+    cost_floor: float | None = Field(
+        description="Lower bound on cost. Allocations below this are excluded from search. "
+        "null means no lower bound.",
+        ge=0,
     )
 
 

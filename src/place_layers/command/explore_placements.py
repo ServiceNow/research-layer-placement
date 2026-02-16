@@ -331,16 +331,18 @@ class ExplorePlacementsCommand(BaseCommand):
             num_layers = evaluator_instances.num_layers
             
 
-            # Determine cost budget for feasibility filtering
+            # Determine cost budget and floor for feasibility filtering
             cost_budget: float | None = None
+            cost_floor: float | None = None
             if isinstance(problem.config, MaxPerformanceProblemConfig):
                 cost_budget = problem.config.cost_budget
+                cost_floor = problem.config.cost_floor
 
             # Enumerate feasible allocations
             phase_order = cost_model.phase_order
 
             feasible_allocations = enumerate_feasible_allocations(
-                cost_model, num_layers, cost_budget
+                cost_model, num_layers, cost_budget, cost_floor=cost_floor
             )
             logger.info(
                 "Found %d feasible allocations for %d layers",

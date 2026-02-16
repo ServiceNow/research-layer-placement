@@ -10,3 +10,4 @@ cost_model: ${cost_model}
 # Performance target: find cheapest config that achieves at least this score
 # For MockSupernetEvaluator, scores typically range based on layer/mixer setup
 performance_target: 5.0
+cost_floor: null

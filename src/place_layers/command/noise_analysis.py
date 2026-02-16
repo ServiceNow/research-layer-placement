@@ -125,6 +125,8 @@ class NoiseAnalysisCommand(BaseCommand):
             cost_model.num_mixers,
         )
 
+        cost_floor = self.config.problem.cost_floor
+
         match self.config.problem:
             case MaxPerformanceProblemConfig(cost_budget=budget):
                 best = None
@@ -134,6 +136,8 @@ class NoiseAnalysisCommand(BaseCommand):
                 ):
                     if alloc_cost > budget:
                         continue
+                    if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                        break
                     checked += 1
                     solution = solver.solve_constrained(allocation)
                     if solution and (
@@ -154,6 +158,8 @@ class NoiseAnalysisCommand(BaseCommand):
                 for alloc_cost, allocation in cost_model.allocations_by_cost(
                     num_layers, "increasing"
                 ):
+                    if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                        continue
                     checked += 1
                     solution = solver.solve_constrained(allocation)
                     if solution and solution.true_score >= target:

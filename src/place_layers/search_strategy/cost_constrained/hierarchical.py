@@ -959,6 +959,7 @@ class HierarchicalConfig(AllocationIterationConfig):
         num_layers = problem.evaluator.num_layers
 
         # Enumerate allocations in the same order as search will use
+        cost_floor = config.cost_floor
         allocations: list[tuple[float, Allocation]] = []
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
@@ -970,6 +971,10 @@ class HierarchicalConfig(AllocationIterationConfig):
                         continue
                 case MinCostProblemConfig():
                     pass  # No filtering - enumerate all allocations
+
+            # Apply cost floor (shared by both modes)
+            if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                break
 
             if len(allocations) >= self.max_allocations:
                 break

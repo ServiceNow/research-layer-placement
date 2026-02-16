@@ -76,6 +76,7 @@ def _make_small_problem(
             mixer_costs=mixer_costs,
         ),
         cost_budget=num_layers * 0.8,  # Budget between min and max
+        cost_floor=None,
     )
     return CostConstrainedProblem(evaluator=evaluator, config=config)
 

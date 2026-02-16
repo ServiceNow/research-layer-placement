@@ -158,6 +158,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if dry_run:
             return None
 
+        cost_floor = config.cost_floor
+
         match config:
             case MaxPerformanceProblemConfig(cost_budget=budget):
                 return await self._search_max_performance(
@@ -165,6 +167,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     cost_model=cost_model,
                     num_layers=num_layers,
                     cost_budget=budget,
+                    cost_floor=cost_floor,
                 )
             case MinCostProblemConfig(performance_target=target):
                 return await self._search_min_cost(
@@ -172,6 +175,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     cost_model=cost_model,
                     num_layers=num_layers,
                     performance_target=target,
+                    cost_floor=cost_floor,
                 )
             case _:
                 raise TypeError(f"Unexpected config type: {type(config)}")
@@ -210,6 +214,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         ...
@@ -221,6 +226,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
         ...
@@ -308,3 +314,5 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Total layers: {num_layers}")
         logger.info(f"Number of mixer types: {num_mixers}")
         logger.info(f"Mode: {config.problem_type}")
+        if config.cost_floor is not None:
+            logger.info(f"Cost floor: {config.cost_floor}")

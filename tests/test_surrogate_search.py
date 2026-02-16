@@ -99,6 +99,7 @@ def _make_max_perf_problem(
             mixer_costs=mixer_costs,
         ),
         cost_budget=num_layers * 0.8,
+        cost_floor=None,
     )
     return CostConstrainedProblem(evaluator=evaluator, config=config)
 
@@ -115,6 +116,7 @@ def _make_min_cost_problem(
             mixer_costs=mixer_costs,
         ),
         performance_target=0.0,  # Easy target so test can find it
+        cost_floor=None,
     )
     return CostConstrainedProblem(evaluator=evaluator, config=config)
 
