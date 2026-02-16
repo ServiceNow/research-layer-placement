@@ -1,7 +1,7 @@
 """Simulated annealing building blocks.
 
 Provides move operators and core SA primitives used by multiple search
-strategies (AnnealingSearch, SurrogateSearch) and commands (CalibrateSA).
+strategies (AnnealingSearch, SurrogateSearch).
 """
 
 from place_layers.annealing.events import (

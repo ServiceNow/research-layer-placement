@@ -16,10 +16,10 @@ import numpy as np
 import pytest
 
 from place_layers.command.explore_placements import _sample_batch
-from place_layers.command.landscape_config import LandscapeConfig
-from place_layers.command.landscape_helpers import (
+from place_layers.landscape import (
     BandResult,
     BandValidationResult,
+    LandscapeConfig,
     LandscapeData,
     PlacementResult,
     ValidationResults,

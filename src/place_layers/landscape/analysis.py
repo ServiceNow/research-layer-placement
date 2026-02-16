@@ -1,11 +1,7 @@
-"""Shared helpers for placement landscape commands.
+"""Shared analysis functions for placement landscape commands.
 
-Extracted from PlacementLandscapeCommand to support both:
-- placement_landscape (density plot + DP line)
-- validate_landscape (per-band real evaluation)
-
-Pydantic models follow the TraceDataset pattern: model_dump_json / model_validate_json
-with .save() / .load() class methods.
+Provides surrogate fitting, cost band computation, and per-band DP solving
+used by both placement_landscape and validate_landscape commands.
 """
 
 from __future__ import annotations
@@ -15,118 +11,16 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel
 
 from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
+from place_layers.landscape.models import BandResult
 from place_layers.mrf.solver import ExactMRFSolver
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.model_selection import select_expansion_level
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Pydantic models
-# ============================================================================
-
-
-class BandResult(BaseModel):
-    """DP-optimal result for one cost band."""
-
-    model_config = {"frozen": True}
-
-    band_index: int
-    cost_low: float
-    cost_high: float
-    cost: float
-    score: float
-    assignments: tuple[str, ...]
-
-
-class PlacementResult(BaseModel):
-    """A single placement with its cost and score."""
-
-    model_config = {"frozen": True}
-
-    cost: float
-    score: float
-    assignments: tuple[str, ...]
-
-
-class BandValidationResult(BaseModel):
-    """Per-band surrogate DP + validated search results."""
-
-    model_config = {"frozen": True}
-
-    band_index: int
-    cost_low: float
-    cost_high: float
-    surrogate_dp: PlacementResult
-    validated: PlacementResult
-    total_evaluations: int
-
-
-class ValidationSummary(BaseModel):
-    """Aggregate statistics across all validated bands."""
-
-    model_config = {"frozen": True}
-
-    spearman_rho: float
-    mean_residual: float
-    total_bands: int
-    total_evaluations: int
-
-
-class ValidationResults(BaseModel):
-    """Full output of validate_landscape command. Serializable to JSON."""
-
-    model_config = {"frozen": True}
-
-    num_layers: int
-    baseline_cost: float
-    num_cost_bins: int
-    cost_bin_edges: list[float]
-    bands: list[BandValidationResult]
-    summary: ValidationSummary
-
-    def save(self, path: Path) -> None:
-        """Save to JSON file."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2))
-
-    @classmethod
-    def load(cls, path: Path) -> ValidationResults:
-        """Load from JSON file."""
-        return cls.model_validate_json(path.read_text())
-
-
-class LandscapeData(BaseModel):
-    """Per-band DP results from placement_landscape. Serializable to JSON."""
-
-    model_config = {"frozen": True}
-
-    num_layers: int
-    baseline_cost: float
-    num_cost_bins: int
-    cost_bin_edges: list[float]
-    bands: list[BandResult]
-
-    def save(self, path: Path) -> None:
-        """Save to JSON file."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2))
-
-    @classmethod
-    def load(cls, path: Path) -> LandscapeData:
-        """Load from JSON file."""
-        return cls.model_validate_json(path.read_text())
-
-
-# ============================================================================
-# Shared functions
-# ============================================================================
 
 
 def load_and_fit_surrogate(

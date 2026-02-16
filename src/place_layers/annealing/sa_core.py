@@ -1,7 +1,7 @@
 """Core simulated annealing building blocks.
 
-Reusable primitives shared by AnnealingSearch (real evaluator SA),
-SurrogateSearch (surrogate-guided SA), and CalibrateSACommand.
+Reusable primitives shared by AnnealingSearch (real evaluator SA)
+and SurrogateSearch (surrogate-guided SA).
 
 The ``SAConfig`` Pydantic model is the single source of truth for SA
 hyperparameters.  ``run_multi_start_sa`` is the single async SA loop
