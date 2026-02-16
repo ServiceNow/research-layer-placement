@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 from pydantic import Field, model_validator
 
 from place_layers.core.types import LayerPlacement
-from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
+from place_layers.cost_model import CostModelConfig
 from place_layers.problem.base_problem import BaseProblem
 from place_layers.problem.base_problem_config import BaseProblemConfig
 
@@ -92,17 +92,17 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         super().__init__(evaluator, config)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
-        # Validate mixer_costs keys match evaluator mixer names
+        # Create cost model first, then validate mixer names
+        self.cost_model = config.cost_model.create_cost_model()
+
+        # Validate cost model mixer names match evaluator mixer names
         # evaluator.mixer_names is a frozenset (for validation only)
-        config_mixer_names = set(config.cost_model.mixer_costs.keys())
+        config_mixer_names = set(self.cost_model.phase_order)
         if config_mixer_names != evaluator.mixer_names:
             raise ValueError(
                 f"Cost model mixer names {config_mixer_names} "
                 f"must match evaluator mixer names {evaluator.mixer_names}"
             )
-
-        # Create cost model (mixer names come from config.cost_model.mixer_costs)
-        self.cost_model = config.cost_model.create_cost_model()
 
         # Validate constraint based on problem type
         num_layers = evaluator.num_layers
@@ -134,6 +134,27 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
                     "which is trivially satisfied by any configuration."
                 )
 
+        # Validate cost_floor
+        cost_floor = config.cost_floor
+        if cost_floor is not None:
+            if cost_floor > max_cost:
+                raise ValueError(
+                    f"cost_floor ({cost_floor}) exceeds maximum possible cost "
+                    f"({max_cost}). No feasible allocations exist above the floor."
+                )
+            if cost_floor < min_cost:
+                logger.warning(
+                    f"cost_floor ({cost_floor}) is below minimum possible cost "
+                    f"({min_cost}). The floor has no effect."
+                )
+            if isinstance(config, MaxPerformanceProblemConfig):
+                if cost_floor >= config.cost_budget:
+                    raise ValueError(
+                        f"cost_floor ({cost_floor}) must be less than "
+                        f"cost_budget ({config.cost_budget}). "
+                        "The search range [cost_floor, cost_budget] is empty."
+                    )
+
     def compute_cost(self, placement: LayerPlacement) -> float:
         """Compute the cost of a placement configuration."""
         return self.cost_model.cost(placement)
@@ -162,8 +183,14 @@ class BaseCostConstrainedProblemConfig(BaseProblemConfig):
 
     _impl_class: ClassVar[type[BaseProblem]] = CostConstrainedProblem
 
-    cost_model: LinearCostModelConfig = Field(
+    cost_model: CostModelConfig = Field(
         description="Cost model configuration defining per-mixer costs"
+    )
+
+    cost_floor: float | None = Field(
+        description="Lower bound on cost. Allocations below this are excluded from search. "
+        "null means no lower bound.",
+        ge=0,
     )
 
 

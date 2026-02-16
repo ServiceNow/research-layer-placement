@@ -1,0 +1,20 @@
+# @package _global_
+# Unconstrained surrogate exploration using MRF range-2 + triplet evaluator.
+# Samples from ALL allocations uniformly (uniform cost model, no budget).
+#
+# Usage:
+#   python -m place_layers +experiments=explore_mock_unconstrained_mrf_range2_triplet
+defaults:
+  - /command: explore_placements
+  - /evaluator: mock_mrf_range2_triplet
+  - /problem: apriel_h_1_5_15b
+  - /cost_model: uniform_apriel_15b
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+max_samples: 10000

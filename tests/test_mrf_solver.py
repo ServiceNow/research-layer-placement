@@ -4,7 +4,10 @@ The core guarantees of the MRF solver are:
 1. Unconstrained solver finds the global optimum (verified via exhaustive search)
 2. Constrained solver finds the global optimum within allocation constraints
 3. True score computation matches the evaluator's score without noise
+4. solve_top_n returns globally top-N placements across feasible allocations
 """
+
+from collections import Counter
 
 import pytest
 
@@ -32,7 +35,11 @@ def small_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.0,  # No noise for deterministic tests
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -48,7 +55,11 @@ def medium_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.0,
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -64,7 +75,11 @@ def noisy_evaluator() -> MockSupernetEvaluator:
         unary_penalty=0.5,
         pairwise_scale=0.3,
         noise_sigma=0.5,  # Significant noise
+        noise_seed_shift=0,
         eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
     )
     return MockSupernetEvaluator(config)
 
@@ -111,12 +126,12 @@ class TestChainMRFModel:
             evaluator_score = await small_evaluator.evaluate(placement, noise_sigma=0.0)
             assert abs(true_score - evaluator_score) < 1e-10
 
-    def test_from_seed(self) -> None:
-        """Test from_seed produces consistent results."""
-        model = ChainMRFModel.from_seed(
+    def test_construction(self) -> None:
+        """Test direct construction produces consistent results."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
             seed=42,
             num_layers=4,
-            mixer_names=["m0", "m1"],
             unary_bonus=1.0,
             unary_penalty=0.5,
             pairwise_scale=0.3,
@@ -125,20 +140,20 @@ class TestChainMRFModel:
         assert model.num_mixers == 2
         assert all(name in ("m0", "m1") for name in model.layer_needs)
 
-    def test_from_seed_matches_evaluator(self, small_evaluator: MockSupernetEvaluator) -> None:
-        """Test from_seed with same params produces same model as evaluator."""
-        model_from_seed = ChainMRFModel.from_seed(
+    def test_construction_matches_evaluator(self, small_evaluator: MockSupernetEvaluator) -> None:
+        """Test direct construction with same params produces same model as evaluator."""
+        model_direct = ChainMRFModel(
+            mixer_names=("m0", "m1"),
             seed=42,
             num_layers=4,
-            mixer_names=["m0", "m1"],
             unary_bonus=1.0,
             unary_penalty=0.5,
             pairwise_scale=0.3,
         )
         model_from_eval = small_evaluator.mrf_model
 
-        assert model_from_seed.layer_needs == model_from_eval.layer_needs
-        assert model_from_seed.pairwise_weights == model_from_eval.pairwise_weights
+        assert model_direct.layer_needs == model_from_eval.layer_needs
+        assert model_direct.pairwise_weights == model_from_eval.pairwise_weights
 
 
 # =============================================================================
@@ -366,7 +381,11 @@ class TestEdgeCases:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -385,7 +404,11 @@ class TestEdgeCases:
             unary_penalty=0.5,
             pairwise_scale=0.3,
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -405,7 +428,11 @@ class TestEdgeCases:
             unary_penalty=0.0,
             pairwise_scale=0.0,  # No pairwise interaction
             noise_sigma=0.0,
+            noise_seed_shift=0,
             eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
         )
         evaluator = MockSupernetEvaluator(config)
         model = evaluator.mrf_model
@@ -416,3 +443,540 @@ class TestEdgeCases:
         # Solution should match layer needs exactly (both are now strings)
         for i, mixer_name in enumerate(solution.placement.assignments):
             assert mixer_name == model.layer_needs[i]
+
+
+# =============================================================================
+# Extended Model Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def skip_pairwise_model() -> ChainMRFModel:
+    """Create a model with skip-pairwise interactions (N=4, K=2, range=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        pairwise_max_range=2,
+    )
+
+
+@pytest.fixture
+def triplet_model() -> ChainMRFModel:
+    """Create a model with triplet interactions (N=4, K=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        triplet_scale=0.2,
+    )
+
+
+@pytest.fixture
+def combined_model() -> ChainMRFModel:
+    """Create a model with both skip-pairwise and triplet interactions (N=4, K=2)."""
+    return ChainMRFModel(
+        mixer_names=("m0", "m1"),
+        seed=42,
+        num_layers=4,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        pairwise_max_range=2,
+        triplet_scale=0.2,
+    )
+
+
+# =============================================================================
+# Test Extended ChainMRFModel
+# =============================================================================
+
+
+class TestExtendedChainMRFModel:
+    """Tests for extended ChainMRFModel with higher-order interactions."""
+
+    def test_memory_baseline(self) -> None:
+        """Baseline model (no extensions) has memory=1."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        assert model.memory == 1
+
+    def test_memory_skip_pairwise(self, skip_pairwise_model: ChainMRFModel) -> None:
+        """Skip-pairwise range=2 gives memory=2."""
+        assert skip_pairwise_model.memory == 2
+
+    def test_memory_triplet(self, triplet_model: ChainMRFModel) -> None:
+        """Triplet interactions give memory=2."""
+        assert triplet_model.memory == 2
+
+    def test_memory_combined(self, combined_model: ChainMRFModel) -> None:
+        """Combined model has memory=2."""
+        assert combined_model.memory == 2
+
+    def test_memory_large_range(self) -> None:
+        """Skip-pairwise range=3 gives memory=3."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=6,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=3,
+        )
+        assert model.memory == 3
+
+    def test_baseline_defaults(self) -> None:
+        """Default construction without extensions matches baseline behavior."""
+        baseline = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        extended = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        assert baseline.layer_needs == extended.layer_needs
+        assert baseline.pairwise_weights == extended.pairwise_weights
+        assert extended.pairwise_max_range == 1
+        assert extended.triplet_scale == 0.0
+
+    def test_skip_pairwise_nonzero(self, skip_pairwise_model: ChainMRFModel) -> None:
+        """Skip-pairwise potentials contribute nonzero values."""
+        p1 = LayerPlacement(assignments=("m0", "m0", "m0", "m0"))
+        p2 = LayerPlacement(assignments=("m0", "m0", "m1", "m0"))
+        # These differ only in layer 2; skip-pairwise between layer 0 and 2 should differ
+        s1 = skip_pairwise_model.true_score(p1)
+        s2 = skip_pairwise_model.true_score(p2)
+        assert s1 != s2
+
+    def test_triplet_nonzero(self, triplet_model: ChainMRFModel) -> None:
+        """Triplet potentials contribute nonzero values."""
+        p1 = LayerPlacement(assignments=("m0", "m0", "m0", "m0"))
+        p2 = LayerPlacement(assignments=("m0", "m0", "m0", "m1"))
+        # Changing layer 3 affects triplet (1,2,3) but not (0,1,2)
+        s1 = triplet_model.true_score(p1)
+        s2 = triplet_model.true_score(p2)
+        assert s1 != s2
+
+    def test_true_score_includes_all_terms(self, combined_model: ChainMRFModel) -> None:
+        """true_score includes unary + pairwise + skip-pairwise + triplet terms."""
+        placement = LayerPlacement(assignments=("m0", "m1", "m0", "m1"))
+        score = combined_model.true_score(placement)
+
+        # Compute expected from individual terms
+        expected = 0.0
+        for i in range(4):
+            expected += combined_model.unary_potential(i, placement.assignments[i])
+        for i in range(3):
+            expected += combined_model.pairwise_potential(
+                i, placement.assignments[i], placement.assignments[i + 1]
+            )
+        for r in range(2, combined_model.pairwise_max_range + 1):
+            for i in range(4 - r):
+                expected += combined_model.skip_pairwise_potential(
+                    i, r, placement.assignments[i], placement.assignments[i + r]
+                )
+        for i in range(2):
+            expected += combined_model.triplet_potential(
+                i,
+                placement.assignments[i],
+                placement.assignments[i + 1],
+                placement.assignments[i + 2],
+            )
+
+        assert abs(score - expected) < 1e-10
+
+
+# =============================================================================
+# Test Extended Solver - Unconstrained
+# =============================================================================
+
+
+class TestExtendedSolverUnconstrained:
+    """Tests for unconstrained optimization with extended models."""
+
+    def test_skip_pairwise_matches_exhaustive(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_triplet_matches_exhaustive(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_combined_matches_exhaustive(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """DP matches exhaustive for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        dp = solver.solve_unconstrained()
+        exhaustive = solver.enumerate_all()
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_skip_pairwise_score_recomputed(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        dp = solver.solve_unconstrained()
+        recomputed = skip_pairwise_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+    def test_triplet_score_recomputed(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        dp = solver.solve_unconstrained()
+        recomputed = triplet_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+    def test_combined_score_recomputed(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Solution score matches recomputed score for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        dp = solver.solve_unconstrained()
+        recomputed = combined_model.true_score(dp.placement)
+        assert abs(dp.true_score - recomputed) < 1e-10
+
+
+# =============================================================================
+# Test Extended Solver - Constrained
+# =============================================================================
+
+
+class TestExtendedSolverConstrained:
+    """Tests for constrained optimization with extended models."""
+
+    def test_skip_pairwise_matches_exhaustive(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_triplet_matches_exhaustive(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_combined_matches_exhaustive(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Constrained DP matches exhaustive for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        allocation = {"m0": 2, "m1": 2}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        exhaustive = solver.enumerate_constrained(allocation)
+        assert abs(dp.true_score - exhaustive[0][1]) < 1e-10
+        assert dp.placement == exhaustive[0][0]
+
+    def test_skip_pairwise_respects_allocation(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        allocation = {"m0": 1, "m1": 3}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation
+
+    def test_triplet_respects_allocation(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        allocation = {"m0": 3, "m1": 1}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation
+
+    def test_combined_respects_allocation(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """Solution respects allocation for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        allocation = {"m0": 1, "m1": 3}
+        dp = solver.solve_constrained(allocation)
+        assert dp is not None
+        counts = {"m0": 0, "m1": 0}
+        for name in dp.placement.assignments:
+            counts[name] += 1
+        assert counts == allocation
+
+
+# =============================================================================
+# Test solve_top_n
+# =============================================================================
+
+
+class TestSolveTopN:
+    """Tests for globally top-N placement solver."""
+
+    def test_baseline_top1_matches_exhaustive(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """solve_top_n top-1 matches exhaustive optimum (N=4, K=2)."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+
+        N = model.num_layers
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+        # Exhaustive best
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=10)
+
+        # Top-1 must be the global optimum
+        assert len(top_n) > 0
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+        assert top_n[0].placement == all_scored[0][0]
+
+        # Each returned placement's score must match its true_score
+        for sol in top_n:
+            assert abs(sol.true_score - model.true_score(sol.placement)) < 1e-10
+
+    def test_baseline_matches_exhaustive_medium(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """solve_top_n top-1 matches exhaustive for medium model (N=6, K=3).
+
+        With K=3, m=1: up to 3 history states per allocation, more diversity.
+        """
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+
+        all_allocs = [
+            {"m0": a, "m1": b, "m2": 6 - a - b}
+            for a in range(7) for b in range(7 - a)
+        ]
+
+        # Exhaustive best
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=20)
+        assert len(top_n) == 20
+
+        # Top-1 must match
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+        assert top_n[0].placement == all_scored[0][0]
+
+        # All returned scores must be correct
+        for sol in top_n:
+            assert abs(sol.true_score - model.true_score(sol.placement)) < 1e-10
+
+    def test_skip_pairwise_top1_matches(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """solve_top_n top-1 matches exhaustive for skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        N = skip_pairwise_model.num_layers
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=10)
+        assert len(top_n) > 0
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+
+        for sol in top_n:
+            assert abs(sol.true_score - skip_pairwise_model.true_score(sol.placement)) < 1e-10
+
+    def test_triplet_top1_matches(
+        self, triplet_model: ChainMRFModel
+    ) -> None:
+        """solve_top_n top-1 matches exhaustive for triplet model."""
+        solver = ExactMRFSolver(triplet_model)
+        N = triplet_model.num_layers
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=10)
+        assert len(top_n) > 0
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+
+        for sol in top_n:
+            assert abs(sol.true_score - triplet_model.true_score(sol.placement)) < 1e-10
+
+    def test_combined_top1_matches(
+        self, combined_model: ChainMRFModel
+    ) -> None:
+        """solve_top_n top-1 matches exhaustive for combined model."""
+        solver = ExactMRFSolver(combined_model)
+        N = combined_model.num_layers
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=10)
+        assert len(top_n) > 0
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+
+        for sol in top_n:
+            assert abs(sol.true_score - combined_model.true_score(sol.placement)) < 1e-10
+
+    def test_intra_allocation_diversity(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Verify some allocations appear multiple times with different arrangements."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+
+        # Single allocation with many possible arrangements
+        allocation = {"m0": 2, "m1": 2, "m2": 2}
+        top_n = solver.solve_top_n([allocation], n=20)
+
+        # All should have the same allocation
+        for sol in top_n:
+            counts = dict(Counter(sol.placement.assignments))
+            assert counts == allocation
+
+        # But different arrangements
+        unique = {sol.placement.assignments for sol in top_n}
+        assert len(unique) == len(top_n), "All returned solutions should be distinct"
+        assert len(unique) > 1, "Should have multiple arrangements for one allocation"
+
+    def test_score_matches_true_score(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Each returned solution's score matches model.true_score(placement)."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        N = model.num_layers
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+        top_n = solver.solve_top_n(all_allocs, n=10)
+        for sol in top_n:
+            recomputed = model.true_score(sol.placement)
+            assert abs(sol.true_score - recomputed) < 1e-10
+
+    def test_sorted_descending(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Results should be sorted by score descending."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        N = model.num_layers
+        all_allocs = [
+            {"m0": a, "m1": b, "m2": N - a - b}
+            for a in range(N + 1) for b in range(N + 1 - a)
+        ]
+
+        top_n = solver.solve_top_n(all_allocs, n=30)
+        for i in range(len(top_n) - 1):
+            assert top_n[i].true_score >= top_n[i + 1].true_score
+
+    def test_empty_feasible(self) -> None:
+        """Empty feasible allocations returns empty list."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        solver = ExactMRFSolver(model)
+        assert solver.solve_top_n([], n=10) == []
+
+    def test_n_larger_than_candidates(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """When n > total candidates, return all available."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+
+        # Only one allocation
+        top_n = solver.solve_top_n([{"m0": 2, "m1": 2}], n=1000)
+        # N=4, K=2, allocation (2,2) has C(4,2)=6 placements, with m=1 up to K=2 history states
+        assert len(top_n) <= 1000
+        assert len(top_n) > 0
+
+    def test_subset_of_allocations(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Verify that restricting feasible allocations filters correctly."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+
+        restricted = [{"m0": 3, "m1": 3, "m2": 0}]
+        top_n = solver.solve_top_n(restricted, n=10)
+
+        for sol in top_n:
+            counts = dict(Counter(sol.placement.assignments))
+            # m2 might not appear in Counter — fill in zeros
+            for name in model.mixer_names:
+                counts.setdefault(name, 0)
+            assert counts == {"m0": 3, "m1": 3, "m2": 0}

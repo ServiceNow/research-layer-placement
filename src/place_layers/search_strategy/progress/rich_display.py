@@ -45,6 +45,8 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapEvaluatedEvent,
@@ -54,7 +56,10 @@ from place_layers.search_strategy.progress.formatter import PlacementFormatterMi
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from place_layers.search_strategy.progress.events import BestUpdatedEvent
+    from place_layers.search_strategy.progress.events import (
+        BestUpdatedEvent,
+        SurrogateDatasetLoadedEvent,
+    )
 
 
 class LeaderboardEntry(BaseModel):
@@ -141,7 +146,7 @@ class RichDisplay(PlacementFormatterMixin):
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
 
         self._allocation_index: int = 0
         self._current_allocation: dict[str, int] = {}
@@ -231,7 +236,7 @@ class RichDisplay(PlacementFormatterMixin):
             allocation_content = self._build_allocation_content()
             allocation_panel = Panel(
                 allocation_content,
-                title=f"[bold yellow]Allocation {self._allocation_index}/{self._max_allocations}[/bold yellow]",
+                title=f"[bold yellow]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold yellow]",
                 border_style="yellow",
             )
             components.append(allocation_panel)
@@ -1121,3 +1126,29 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_reheat_count = 0
 
         self._update_live()
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded - print permanent context line."""
+        self._console.print(
+            f"  Surrogate: {event.num_samples} samples, exploration rho={event.exploration_rho:.2f}"
+        )
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Handle surrogate round started - print permanent line."""
+        self._console.print(
+            f"  [cyan]ROUND {event.round}/{event.total_rounds}[/cyan]: "
+            f"{event.num_candidates} candidates, "
+            f"evaluating top {event.evals_planned} by EI"
+        )
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Handle surrogate round completed - print permanent line."""
+        self._console.print(
+            f"  [cyan]ROUND {event.round}/{event.total_rounds} complete[/cyan]: "
+            f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
+            f"rho={event.rho:.4f}, dataset={event.dataset_size}"
+        )

@@ -18,14 +18,14 @@ class BaseCommandConfig(BaseModel, ABC):
     Each command subclass should:
     1. Set command: Literal["command_name"] = "command_name"
     2. Add command-specific fields
-    3. Set _command_class: ClassVar[type[BaseCommand]] = CommandClass
+    3. Set _impl_class: ClassVar[type[BaseCommand]] = CommandClass
     """
 
     # Discriminator field (filled by subclasses with Literal type)
     command: str = Field(description="Command to execute")
 
     # Command class binding (each subclass must define this)
-    _command_class: ClassVar[type[BaseCommand]]
+    _impl_class: ClassVar[type[BaseCommand]]
 
     def create_command(self) -> BaseCommand:
         """Create command instance from this config.
@@ -33,4 +33,4 @@ class BaseCommandConfig(BaseModel, ABC):
         Returns:
             Command instance with full config
         """
-        return self._command_class(config=self)
+        return self._impl_class(config=self)

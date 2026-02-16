@@ -1,8 +1,8 @@
-"""Pure move operators for cost-constrained simulated annealing.
+"""Pure move operators for simulated annealing.
 
 Free functions that implement allocation-preserving moves on assignment vectors.
-Used by both ``AnnealingSearch`` (runtime optimisation) and ``CalibrateSACommand``
-(temperature calibration).
+Used by ``AnnealingSearch`` (runtime optimisation), ``SurrogateSearch``
+(surrogate-guided refinement), and ``CalibrateSACommand`` (temperature calibration).
 """
 
 from __future__ import annotations
@@ -95,6 +95,26 @@ def sample_perturbation_size(
         k += 1
 
     return min(k, num_layers)
+
+
+def type_mutation(
+    rng: random.Random,
+    assignments: list[str],
+    mixer_names: list[str],
+) -> list[str]:
+    """Change one random position to a different mixer type.
+
+    Unlike ruin_and_recreate, this changes the allocation.
+    Caller must check cost feasibility of the new allocation.
+    """
+    pos = rng.randrange(len(assignments))
+    current_type = assignments[pos]
+    candidates = [m for m in mixer_names if m != current_type]
+    if not candidates:
+        return assignments.copy()
+    proposed = assignments.copy()
+    proposed[pos] = rng.choice(candidates)
+    return proposed
 
 
 def random_assignment(

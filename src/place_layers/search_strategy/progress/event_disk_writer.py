@@ -46,6 +46,9 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateDatasetLoadedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapEvaluatedEvent,
@@ -278,4 +281,20 @@ class EventDiskWriter:
 
     def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
         """Handle annealing restart event."""
+        self._write_event(event)
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: SurrogateDatasetLoadedEvent) -> None:
+        """Handle surrogate dataset loaded event."""
+        self._write_event(event)
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Handle surrogate round started event."""
+        self._write_event(event)
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Handle surrogate round completed event."""
         self._write_event(event)

@@ -70,6 +70,8 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateRoundCompletedEvent,
+    SurrogateRoundStartedEvent,
     SwapBeamIterationEvent,
     SwapBeamIterationStartedEvent,
     SwapCandidate,
@@ -84,7 +86,10 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from place_layers.search_strategy.progress.config import LayermapDisplayConfig
-    from place_layers.search_strategy.progress.events import BestUpdatedEvent
+    from place_layers.search_strategy.progress.events import (
+        BestUpdatedEvent,
+        SurrogateDatasetLoadedEvent,
+    )
 
 
 # Mixer color palette - visually distinct colors for up to 6 mixers
@@ -159,7 +164,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
         self._max_cost: float = 0.0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
 
         # Current allocation state
         self._allocation_index: int = 0
@@ -281,7 +286,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Header line: Allocation | Phase | Step
         alloc_str = self._format_allocation(self._current_allocation)
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
         ]
         if self._phase_index > 0:
             header_parts.append(
@@ -423,7 +428,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Header line: Allocation | Swap-Beam Iteration
         alloc_str = self._format_allocation(self._current_allocation)
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
             f"[bold magenta]Swap-Beam[/bold magenta] Iter {self._swap_beam_iteration}/{self._swap_beam_max_iterations}",
         ]
         header = Text.from_markup("  |  ".join(header_parts))
@@ -524,7 +529,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         if self._annealing_num_restarts > 1:
             restart_str = f"  [dim]Restart {self._annealing_restart_index + 1}/{self._annealing_num_restarts}[/dim]"
         header_parts = [
-            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations}[/bold cyan]: {alloc_str}",
+            f"[bold cyan]Allocation {self._allocation_index}/{self._max_allocations or '?'}[/bold cyan]: {alloc_str}",
             f"[bold yellow]Annealing[/bold yellow] Step {self._annealing_step + 1}/{self._annealing_max_steps}{restart_str}",
         ]
         header = Text.from_markup("  |  ".join(header_parts))
@@ -1109,3 +1114,19 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._annealing_reheat_count = 0
 
         self._update_live()
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
+        """Handle surrogate round started event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode
+
+    def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
+        """Handle surrogate round completed event (no-op for layermap display)."""
+        del event  # Not displayed in layermap mode

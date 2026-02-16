@@ -35,6 +35,9 @@ top_p: ${generation.top_p}
 # When false, uses raw text prompts (for base models without chat training)
 use_chat_template: true
 
+# Document prefetch (higher values hide I/O latency but use more memory)
+doc_prefetch_count: 2
+
 # Truncated sample handling
 # When false (default), truncated samples are marked incorrect (reasoning tasks)
 # When true, truncated samples are evaluated for correctness (extraction tasks)

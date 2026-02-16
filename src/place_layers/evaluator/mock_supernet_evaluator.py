@@ -60,13 +60,16 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     def __init__(self, config: "MockSupernetEvaluatorConfig") -> None:
         super().__init__(config)
 
-        self._mrf_model = ChainMRFModel.from_seed(
+        self._mrf_model = ChainMRFModel(
+            mixer_names=tuple(self.config.mixer_names),
             seed=self.config.seed,
             num_layers=self.config.num_layers,
-            mixer_names=self.config.mixer_names,
             unary_bonus=self.config.unary_bonus,
             unary_penalty=self.config.unary_penalty,
             pairwise_scale=self.config.pairwise_scale,
+            pairwise_decay=self.config.pairwise_decay,
+            pairwise_max_range=self.config.pairwise_max_range,
+            triplet_scale=self.config.triplet_scale,
         )
 
     @classmethod
@@ -185,7 +188,6 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
     )
 
     noise_seed_shift: int = Field(
-        default=0,
         description="Additive shift applied to the placement hash before seeding "
         "the noise RNG. Different shifts produce independent noise realizations "
         "over the same MRF landscape.",
@@ -193,5 +195,23 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
 
     eval_delay_seconds: float = Field(
         description="Artificial delay per evaluation (seconds) for testing display dynamics",
+        ge=0.0,
+    )
+
+    pairwise_decay: float = Field(
+        description="Geometric decay for skip-pairwise scales. "
+        "Scale at range r = pairwise_scale * pairwise_decay^(r-1).",
+        gt=0.0,
+    )
+
+    pairwise_max_range: int = Field(
+        description="Maximum pairwise interaction range. "
+        "1 = adjacent only (baseline), 2+ enables skip-pairwise.",
+        ge=1,
+    )
+
+    triplet_scale: float = Field(
+        description="Scale factor for 3-body (triplet) interaction potentials. "
+        "0.0 disables triplet interactions.",
         ge=0.0,
     )

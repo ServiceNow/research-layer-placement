@@ -1,0 +1,20 @@
+# @package search_strategy.sa
+#
+# SA defaults for the real-evaluator path (AnnealingSearch).
+# See cost_constrained_annealing.yaml for calibration notes.
+
+num_restarts: 5
+steps_per_restart: 2000
+initial_temperature: 4.4
+cooling_rate: 0.997
+min_temperature: 0.001
+mutation_prob: 0.0
+max_ruin_fraction: 0.25
+contiguous_ruin_prob: 0.3
+top_k: 1
+no_op_retries: 4
+seed: null
+reheat:
+  fraction: 0.3
+  threshold: 0.02
+  window: 200

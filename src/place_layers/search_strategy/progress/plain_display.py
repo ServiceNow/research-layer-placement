@@ -78,6 +78,9 @@ if TYPE_CHECKING:
         SearchCompletedEvent,
         SearchStartedEvent,
         SwapBeamIterationEvent,
+        SurrogateDatasetLoadedEvent,
+        SurrogateRoundCompletedEvent,
+        SurrogateRoundStartedEvent,
         SwapBeamIterationStartedEvent,
         SwapEvaluatedEvent,
     )
@@ -113,7 +116,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._max_cost: float = 0.0
         self._eval_expected: int | None = None
         self._current_allocation_index: int = 0
-        self._max_allocations: int = 0
+        self._max_allocations: int | None = 0
         # Leaderboard: list of (score, cost, allocation, placement_str)
         self._leaderboard: list[tuple[float, float, dict[str, int], str]] = []
         # State tracking for live progress
@@ -171,7 +174,7 @@ class PlainDisplay(PlacementFormatterMixin):
         self._print(
             "SEARCH_STARTED",
             f"mode={event.mode}, layers={event.num_layers}, "
-            f"allocations={event.max_allocations}",
+            f"allocations={event.max_allocations or '?'}",
         )
         # Additional context lines
         self._print_line(
@@ -504,3 +507,30 @@ class PlainDisplay(PlacementFormatterMixin):
             by_mixer = self._group_layers_by_mixer(event.best_assignments)
             placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
             self._print_line(f"Best: {placement_str}", indent=2)
+
+    # =========================================================================
+    # Surrogate search event handlers
+    # =========================================================================
+
+    def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
+        """Handle surrogate dataset loaded event."""
+        self._print_line(
+            f"Surrogate: {event.num_samples} samples, exploration rho={event.exploration_rho:.2f}",
+            indent=1,
+        )
+
+    def on_surrogate_round_started(self, event: "SurrogateRoundStartedEvent") -> None:
+        """Handle surrogate round started event."""
+        self._print(
+            f"ROUND {event.round}/{event.total_rounds}",
+            f"{event.num_candidates} candidates, "
+            f"evaluating top {event.evals_planned} by EI",
+        )
+
+    def on_surrogate_round_completed(self, event: "SurrogateRoundCompletedEvent") -> None:
+        """Handle surrogate round completed event."""
+        self._print(
+            f"ROUND {event.round}/{event.total_rounds} complete",
+            f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
+            f"rho={event.rho:.4f}, dataset={event.dataset_size}",
+        )

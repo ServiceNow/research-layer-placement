@@ -19,9 +19,11 @@ from place_layers.search_strategy.beam_core import (
     create_layer_assignment,
     select_top_beam,
 )
-from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.allocation_iteration import (
+    AllocationIterationSearch,
+)
 from place_layers.search_strategy.cost_constrained.base_config import (
-    BaseCostConstrainedConfig,
+    AllocationIterationConfig,
 )
 from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
@@ -112,7 +114,7 @@ def allocation_eval_count(
     return count
 
 
-class HierarchicalSearch(BaseCostConstrainedSearch):
+class HierarchicalSearch(AllocationIterationSearch):
     """
     Cost-constrained search using hierarchical beam search for the inner loop.
 
@@ -906,7 +908,7 @@ class HierarchicalSearch(BaseCostConstrainedSearch):
                     observer.on_beam_candidate_evaluated(event)
 
 
-class HierarchicalConfig(BaseCostConstrainedConfig):
+class HierarchicalConfig(AllocationIterationConfig):
     """Configuration for hierarchical beam search inner loop."""
 
     _impl_class: ClassVar[type["BaseSearchStrategy"]] = HierarchicalSearch
@@ -956,6 +958,7 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
         num_layers = problem.evaluator.num_layers
 
         # Enumerate allocations in the same order as search will use
+        cost_floor = config.cost_floor
         allocations: list[tuple[float, Allocation]] = []
         for alloc_cost, allocation in cost_model.allocations_by_cost(
             num_layers, direction="decreasing"
@@ -967,6 +970,10 @@ class HierarchicalConfig(BaseCostConstrainedConfig):
                         continue
                 case MinCostProblemConfig():
                     pass  # No filtering - enumerate all allocations
+
+            # Apply cost floor (shared by both modes)
+            if cost_floor is not None and alloc_cost < cost_floor - 1e-9:
+                break
 
             if len(allocations) >= self.max_allocations:
                 break

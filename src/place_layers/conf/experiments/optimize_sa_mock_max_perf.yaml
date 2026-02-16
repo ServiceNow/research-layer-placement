@@ -10,6 +10,7 @@ defaults:
   - /command: optimize
   - /evaluator: mock_apriel_h_1_5_15b
   - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
   - /search_strategy: cost_constrained_annealing
   - /result_handler: json
   - _self_
@@ -17,5 +18,6 @@ defaults:
 # Settings for demo/testing (matches optimize_mock_max_perf scale)
 search_strategy:
   max_allocations: 10
-  initial_temperature: 11.6
-  seed: 42
+  sa:
+    initial_temperature: 11.6
+    seed: 42

@@ -31,7 +31,7 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation
 from place_layers.cost_model.linear_cost_model import LinearCostModel
-from place_layers.search_strategy.cost_constrained.moves import (
+from place_layers.annealing.moves import (
     generate_move,
     random_assignment,
     sample_perturbation_size,
@@ -344,7 +344,7 @@ class CalibrateSACommand(BaseCommand):
 class CalibrateSACommandConfig(BaseCommandConfig):
     """Configuration for SA calibration command."""
 
-    _command_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
+    _impl_class: ClassVar[type[BaseCommand]] = CalibrateSACommand
 
     command: Literal["calibrate_sa"] = "calibrate_sa"
 
