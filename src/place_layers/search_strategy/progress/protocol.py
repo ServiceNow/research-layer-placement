@@ -14,6 +14,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
     BeamGrowthStepEvent,
@@ -127,4 +129,12 @@ class SearchObserver(Protocol):
 
     def on_annealing_completed(self, event: AnnealingCompletedEvent) -> None:
         """Called when annealing within an allocation completes."""
+        ...
+
+    def on_annealing_reheat(self, event: AnnealingReheatEvent) -> None:
+        """Called when adaptive reheating triggers during annealing."""
+        ...
+
+    def on_annealing_restart(self, event: AnnealingRestartEvent) -> None:
+        """Called when a new SA restart begins."""
         ...

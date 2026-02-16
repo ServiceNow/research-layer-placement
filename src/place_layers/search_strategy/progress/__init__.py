@@ -56,6 +56,8 @@ from place_layers.search_strategy.progress.events import (
     AllocationPlanEvent,
     AllocationStartedEvent,
     AnnealingCompletedEvent,
+    AnnealingReheatEvent,
+    AnnealingRestartEvent,
     AnnealingStepEvent,
     AnySearchEvent,
     BeamCandidateEvaluatedEvent,
@@ -103,6 +105,8 @@ __all__ = [
     # Annealing events
     "AnnealingStepEvent",
     "AnnealingCompletedEvent",
+    "AnnealingReheatEvent",
+    "AnnealingRestartEvent",
     # Protocol
     "SearchObserver",
     # Formatting

@@ -1,0 +1,23 @@
+# @package _global_
+# SA temperature calibration using mock evaluator
+# Calibrates initial_temperature for simulated annealing on the same
+# mock Apriel-H 1.5 15B problem used by optimize_mock_max_perf.
+#
+# Usage:
+#   python -m place_layers +experiments=calibrate_sa_mock_max_perf
+
+defaults:
+  - /command: calibrate_sa
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+# Mock evaluator deltas are larger than real model; override guess
+# to avoid convergence warning (calibrated value is ~11.6)
+initial_temperature_guess: 12.0
