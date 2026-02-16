@@ -1,0 +1,35 @@
+# @package _global_
+
+# Parse multi-evaluator exploration results into per-evaluator files.
+# This experiment config makes it easy to parse results from a multi-evaluator
+# exploration run and generate individual exploration_results.json files for
+# each evaluator.
+#
+# Usage:
+#   python -m place_layers \
+#       +experiments=parse_multi_eval \
+#       exploration_dir=/path/to/exploration/run
+#
+# For paths with special characters (=, ,), use a symlink:
+#   ln -s "/path/with=special,chars" /tmp/my_exploration
+#   python -m place_layers \
+#       +experiments=parse_multi_eval \
+#       exploration_dir=/tmp/my_exploration
+#
+# Output: {hydra_output_dir}/{evaluator_name}/exploration_results.json
+#
+# Then use with placement_landscape:
+#   python -m place_layers \
+#       +experiments=placement_landscape \
+#       exploration_dataset_path={output_dir}/mmlu/exploration_results.json
+
+defaults:
+  - /command: parse_multi_eval_results
+  - _self_
+
+# Override these on command line
+exploration_dir: /mnt/evaluations/layer_placement/explore/2026-02-13/+backend=rest_dns,+evaluators=apriel2_mix,+experiments=explore_mock_unconstrained,+generation=extraction,+observers=headless,backend.num_servers=54,backend.server_id_offset=96/
+
+# Parallel processing settings
+num_workers: 4  # Number of evaluators to process in parallel
+num_score_workers: 1  # Number of workers per evaluator for score computation
