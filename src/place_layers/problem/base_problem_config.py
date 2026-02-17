@@ -22,6 +22,6 @@ class BaseProblemConfig(BaseModel):
     # Each subclass must define this
     _impl_class: ClassVar[type[BaseProblem]]
 
-    def create_problem(self, evaluators: "Evaluators") -> "BaseProblem":
+    def create_problem(self, evaluators: "Evaluators", objective_name: str) -> "BaseProblem":
         """Smart constructor: instantiate problem from config and evaluators."""
-        return self._impl_class(evaluators=evaluators, config=self)
+        return self._impl_class(evaluators=evaluators, config=self, objective_name=objective_name)

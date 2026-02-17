@@ -234,7 +234,7 @@ class AllocationCompletedEvent(BaseModel):
     mixer_names: tuple[str, ...]
     # Final assignments - tuple of mixer names, one per layer
     assignments: tuple[str, ...] | None  # None if no valid assignment found
-    scores: dict[str, float] | None  # None if no valid assignment found
+    score: float | None  # None if no valid assignment found
     # All top placements from this allocation (sorted by score descending)
     # Each entry is (assignments, aggregated_score)
     top_placements: tuple[tuple[tuple[str, ...], float], ...] = ()
@@ -246,7 +246,7 @@ class BestUpdatedEvent(BaseModel):
     model_config = {"frozen": True}
 
     event_type: Literal["best_updated"] = "best_updated"
-    scores: dict[str, float]
+    score: float
     cost: float
     allocation: dict[str, int]
     assignments: tuple[str, ...]
@@ -301,7 +301,7 @@ class SearchCompletedEvent(BaseModel):
     model_config = {"frozen": True}
 
     event_type: Literal["search_completed"] = "search_completed"
-    best_scores: dict[str, float]
+    best_score: float
     best_cost: float
     total_evaluations: int
     allocations_explored: int
@@ -492,8 +492,7 @@ class SurrogateCandidateEvaluatedEvent(BaseModel):
     eval_index: int  # 1-indexed within round
     evals_planned: int
     assignments: tuple[str, ...]  # full placement
-    scores: dict[str, float]  # per-evaluator real scores
-    agg_score: float  # aggregated real score
+    score: float  # objective score
     surrogate_mu: float  # surrogate's mean prediction
     ei_value: float  # EI that selected this candidate
     cost: float  # placement cost

@@ -56,7 +56,7 @@ def _create_estimator_bounds(
         cost_budget=cost_budget,
         cost_floor=None,
     )
-    problem = problem_config.create_problem(wrap_evaluator(evaluator))
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search config and get estimator
     search_config = HierarchicalConfig(
@@ -250,7 +250,7 @@ async def test_min_cost_creates_progress_estimator() -> None:
         performance_target=0.5,
         cost_floor=None,
     )
-    problem = problem_config.create_problem(wrap_evaluator(evaluator))
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(
@@ -320,7 +320,7 @@ async def test_min_cost_eval_count_within_bounds(
         performance_target=performance_target,
         cost_floor=None,
     )
-    problem = problem_config.create_problem(wrap_evaluator(evaluator))
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(
@@ -384,7 +384,7 @@ async def test_min_cost_early_termination_bounds() -> None:
         performance_target=performance_target,
         cost_floor=None,
     )
-    problem = problem_config.create_problem(wrap_evaluator(evaluator))
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy with many allocations to see early termination
     search_config = HierarchicalConfig(
@@ -454,7 +454,7 @@ async def test_final_assignment_valid_and_complete() -> None:
         cost_budget=cost_budget,
         cost_floor=None,
     )
-    problem = problem_config.create_problem(wrap_evaluator(evaluator))
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(

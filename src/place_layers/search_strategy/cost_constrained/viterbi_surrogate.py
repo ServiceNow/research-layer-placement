@@ -92,14 +92,10 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         best_idx = int(np.argmax(all_scores))
         best_assignment = all_assignments[best_idx]
         best_alloc = dict(Counter(best_assignment))
-        # Re-evaluate to get dict scores for BeamEntry
-        placement = LayerPlacement(assignments=best_assignment)
-        best_scores = await problem.evaluate(placement)
-        self.eval_count += 1
         best_entry = BeamEntry(
             assignments=best_assignment,
             allocation=best_alloc,
-            scores=best_scores,
+            score=all_scores[best_idx],
         )
 
         return self._create_result(
@@ -169,14 +165,14 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             best_alloc = fallback_alloc
 
         assert best_alloc is not None
-        # Re-evaluate to get dict scores for BeamEntry
+        # Re-evaluate to get scalar score for BeamEntry
         placement = LayerPlacement(assignments=best_assignment)
-        best_scores = await problem.evaluate(placement)
+        best_score_val = await problem.evaluate(placement)
         self.eval_count += 1
         best_entry = BeamEntry(
             assignments=best_assignment,
             allocation=best_alloc,
-            scores=best_scores,
+            score=best_score_val,
         )
 
         return self._create_result(
@@ -293,19 +289,18 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             for eval_i, idx in enumerate(top_indices):
                 candidate = candidate_list[idx]
                 placement = LayerPlacement(assignments=candidate)
-                scores_dict = await problem.evaluate(placement)
-                agg_score = problem.evaluators.aggregate(scores_dict)
+                score = await problem.evaluate(placement)
                 self.eval_count += 1
 
                 all_assignments.append(candidate)
-                all_scores.append(agg_score)
+                all_scores.append(score)
 
                 alloc = dict(Counter(candidate))
                 candidate_cost = cost_model.allocation_cost(alloc)
 
                 is_new_best = False
-                if agg_score > f_best:
-                    f_best = agg_score
+                if score > f_best:
+                    f_best = score
                     is_new_best = True
 
                     if self.observers:
@@ -314,7 +309,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                         )
 
                         event = BestUpdatedEvent(
-                            scores=scores_dict,
+                            score=score,
                             cost=candidate_cost,
                             allocation=alloc,
                             assignments=candidate,
@@ -336,8 +331,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                         eval_index=eval_i + 1,
                         evals_planned=n_select,
                         assignments=candidate,
-                        scores=scores_dict,
-                        agg_score=agg_score,
+                        score=score,
                         surrogate_mu=float(mu[idx]),
                         ei_value=float(ei[idx]),
                         cost=candidate_cost,

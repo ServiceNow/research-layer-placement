@@ -1,0 +1,3 @@
+# @package objective
+objective_type: weighted_average
+weights: {}

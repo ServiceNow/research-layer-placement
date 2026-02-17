@@ -855,7 +855,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="less than minimum"):
-            problem_config.create_problem(wrap_evaluator(evaluator))
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_budget_validation_too_high(self) -> None:
         """Budget above maximum cost should fail (trivially satisfied)."""
@@ -881,7 +881,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum"):
-            problem_config.create_problem(wrap_evaluator(evaluator))
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_mixer_name_mismatch(self) -> None:
         """Mixer name mismatch should fail."""
@@ -907,7 +907,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="must match"):
-            problem_config.create_problem(wrap_evaluator(evaluator))
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_above_budget_fails(self) -> None:
         """cost_floor >= cost_budget should fail (empty search range)."""
@@ -933,7 +933,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="cost_floor.*must be less than"):
-            problem_config.create_problem(wrap_evaluator(evaluator))
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_above_max_cost_fails(self) -> None:
         """cost_floor above maximum possible cost should fail."""
@@ -959,7 +959,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum possible cost"):
-            problem_config.create_problem(wrap_evaluator(evaluator))
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_below_min_cost_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """cost_floor below minimum possible cost should warn but not error."""
@@ -985,7 +985,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with caplog.at_level(logging.WARNING):
-            problem = problem_config.create_problem(wrap_evaluator(evaluator))
+            problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
         assert problem is not None
         assert "below minimum possible cost" in caplog.text
@@ -1013,7 +1013,7 @@ class TestCostConstrainedProblem:
         )
         evaluator = evaluator_config.create_evaluator()
 
-        problem = problem_config.create_problem(wrap_evaluator(evaluator))
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
         assert problem is not None
 
 
@@ -1049,7 +1049,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(wrap_evaluator(evaluator))
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     @pytest.fixture
     def small_problem_min_cost(self) -> CostConstrainedProblem:
@@ -1075,7 +1075,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(wrap_evaluator(evaluator))
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     async def test_max_performance_respects_budget(
         self, small_problem_max_perf: CostConstrainedProblem
@@ -1105,8 +1105,7 @@ class TestCostConstrainedBeamSearch:
         result = await search.search(small_problem_min_cost)
 
         # Performance should meet target
-        agg_score = sum(result.best_scores.values()) / len(result.best_scores)
-        assert agg_score >= 2.0
+        assert result.best_score >= 2.0
         # Should have done some evaluations
         assert result.total_evaluations > 0
 
@@ -1169,16 +1168,16 @@ class TestCostConstrainedBeamSearch:
 
         # Run twice
         evaluator1 = evaluator_config.create_evaluator()
-        problem1 = problem_config.create_problem(wrap_evaluator(evaluator1))
+        problem1 = problem_config.create_problem(wrap_evaluator(evaluator1), objective_name="weighted_average")
         search1 = search_config.create_search_strategy()
         result1 = await search1.search(problem1)
 
         evaluator2 = evaluator_config.create_evaluator()
-        problem2 = problem_config.create_problem(wrap_evaluator(evaluator2))
+        problem2 = problem_config.create_problem(wrap_evaluator(evaluator2), objective_name="weighted_average")
         search2 = search_config.create_search_strategy()
         result2 = await search2.search(problem2)
 
-        assert result1.best_scores == result2.best_scores
+        assert result1.best_score == result2.best_score
         assert result1.final_cost == result2.final_cost
         assert result1.best_parameters.assignments == result2.best_parameters.assignments
 
@@ -1255,7 +1254,7 @@ class TestCostFloorSearch:
             cost_floor=4.0,
         )
         evaluator = evaluator_config.create_evaluator()
-        problem = problem_config.create_problem(wrap_evaluator(evaluator))
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
         search_config = AnnealingConfig(
             sa=_SMALL_SA_CONFIG, max_allocations=10

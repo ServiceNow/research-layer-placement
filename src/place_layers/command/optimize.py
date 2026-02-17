@@ -41,29 +41,32 @@ class OptimizeCommand(BaseCommand):
             async with self.config.evaluators.create_evaluators(
                 output_dir, backend=backend
             ) as evals:
-                problem = self.config.problem.create_problem(evals)
+                result = None
+                for key in evals.objective_names:
+                    problem = self.config.problem.create_problem(evals, objective_name=key)
 
-                # Create progress estimator
-                progress_estimator = self.config.search_strategy.create_progress_estimator(
-                    problem
-                )
+                    # Create progress estimator
+                    progress_estimator = self.config.search_strategy.create_progress_estimator(
+                        problem
+                    )
 
-                with self.config.observers.create_observers() as observers:
-                    search_strategy = self.config.search_strategy.create_search_strategy(
-                        observers=observers,
-                        progress_estimator=progress_estimator,
-                    )
-                    result = await search_strategy.search(
-                        problem=problem, dry_run=self.config.dry_run
-                    )
+                    with self.config.observers.create_observers() as observers:
+                        search_strategy = self.config.search_strategy.create_search_strategy(
+                            observers=observers,
+                            progress_estimator=progress_estimator,
+                        )
+                        result = await search_strategy.search(
+                            problem=problem, dry_run=self.config.dry_run
+                        )
 
                 if result is None:
                     return
 
                 # Log per-evaluator score breakdown for multi-evaluator runs
                 if len(evals.evaluators) > 1:
+                    raw_scores = await evals.evaluate(result.best_parameters)
                     logger.info("Best result breakdown:")
-                    for name, score in result.best_scores.items():
+                    for name, score in raw_scores.items():
                         logger.info(f"  {name}: {score:.6f}")
 
                 result_handler = self.config.result_handler.create_result_handler()

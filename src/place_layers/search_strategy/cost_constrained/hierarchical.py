@@ -198,18 +198,10 @@ class HierarchicalSearch(AllocationIterationSearch):
         """
         Search for the best assignment within a fixed allocation using unified beam search.
 
-        Uses a single unified beam throughout all phases. Each beam entry carries its own
-        fixed_assignments from prior phases, so different "paths" emerge naturally through
-        competition. Entries compete at every step and across phases - weak entries get
-        eliminated regardless of their history.
-
-        Phase order is determined by the order of keys in mixer_costs config, not alphabetical.
-
         Returns:
-            List of BeamEntry results sorted by score descending, or empty list
-            if no valid assignments exist.
+            List of BeamEntry results sorted by score descending,
+            or empty list if no valid assignments exist.
         """
-        alloc_cost = cost_model.allocation_cost(allocation)
         # Allocation dict order IS the phase order (from config.mixer_costs keys)
         mixer_order = list(allocation.keys())
 
@@ -321,20 +313,20 @@ class HierarchicalSearch(AllocationIterationSearch):
 
             # Final evaluation
             placement = LayerPlacement(assignments=tuple(assignments))
-            scores = await problem.evaluate(placement)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
 
             results.append(
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    scores=scores,
+                    score=score,
                 )
             )
 
-        # Sort by aggregated score descending (higher is better)
+        # Sort by score descending (higher is better)
         results.sort(
-            key=lambda e: problem.evaluators.aggregate(e.scores) if e.scores else float("-inf"),
+            key=lambda e: e.score if e.score is not None else float("-inf"),
             reverse=True,
         )
         return results
@@ -614,8 +606,7 @@ class HierarchicalSearch(AllocationIterationSearch):
             )
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
-            scores_dict = await problem.evaluate(placement)
-            score = problem.evaluators.aggregate(scores_dict)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
 
             # Generate ID for this candidate (step=0 for prescoring)
@@ -873,8 +864,8 @@ class HierarchicalSearch(AllocationIterationSearch):
             )
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
-            scores_dict = await problem.evaluate(placement)
-            candidate["score"] = problem.evaluators.aggregate(scores_dict)
+            score = await problem.evaluate(placement)
+            candidate["score"] = score
             candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
 
@@ -960,7 +951,7 @@ class HierarchicalConfig(AllocationIterationConfig):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluators.num_layers
+        num_layers = problem.num_layers
 
         # Enumerate allocations in the same order as search will use
         cost_floor = config.cost_floor

@@ -482,7 +482,7 @@ class RichDisplay(PlacementFormatterMixin):
 
     def _print_allocation_complete(self, event: AllocationCompletedEvent) -> None:
         """Print allocation completion summary with full placement."""
-        if event.assignments is None or event.scores is None:
+        if event.assignments is None or event.score is None:
             self._console.print("[dim]  No valid placement found for this allocation[/dim]")
             return
 
@@ -491,7 +491,7 @@ class RichDisplay(PlacementFormatterMixin):
         placement_str = self._format_placement(
             by_mixer, max_layers_per_mixer=8, escape_brackets=True
         )
-        score_str = self._format_scores(event.scores)
+        score_str = self._format_score(event.score)
 
         self._console.print(
             f"[bold cyan]✓ Allocation {event.allocation_index} complete[/bold cyan]: "
@@ -611,9 +611,9 @@ class RichDisplay(PlacementFormatterMixin):
         # Summary table
         summary = Table.grid(padding=(0, 2))
         summary.add_column(style="bold")
-        summary.add_column(style="green" if event.best_scores else "")
+        summary.add_column(style="green" if event.best_score else "")
 
-        score_str = self._format_scores(event.best_scores)
+        score_str = self._format_score(event.best_score)
         summary.add_row("Best score", score_str)
         summary.add_row("Best cost", f"{event.best_cost:.4f}")
         summary.add_row("Evaluations", f"{event.total_evaluations:,}")
@@ -1025,13 +1025,13 @@ class RichDisplay(PlacementFormatterMixin):
             show = True
         elif len(self._surrogate_top_scores) < k:
             show = True
-        elif event.agg_score > self._surrogate_top_scores[0]:
+        elif event.score > self._surrogate_top_scores[0]:
             show = True
         else:
             show = False
 
         # Maintain sorted top-k list (ascending, so [0] is min)
-        bisect.insort(self._surrogate_top_scores, event.agg_score)
+        bisect.insort(self._surrogate_top_scores, event.score)
         if k is not None and len(self._surrogate_top_scores) > k:
             self._surrogate_top_scores.pop(0)
 
@@ -1039,7 +1039,7 @@ class RichDisplay(PlacementFormatterMixin):
             marker = " [bold yellow]★[/bold yellow]" if event.is_new_best else ""
             self._console.print(
                 f"    #{event.eval_index}/{event.evals_planned}: "
-                f"[green]{event.agg_score:.4g}[/green] "
+                f"[green]{event.score:.4g}[/green] "
                 f"(μ̂ {event.surrogate_mu:.4g}){marker}"
             )
 

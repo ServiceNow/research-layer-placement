@@ -87,7 +87,8 @@ class PrecomputeTracesCommand(BaseCommand):
 
                 # Run trace generation
                 scores = await evals.evaluate(resolved.placement)
-                accuracy = evals.aggregate(scores)
+                objective_name = evals.objective_names[0]
+                accuracy = evals.objectives(scores)[objective_name]
                 logger.info(f"Teacher accuracy: {accuracy:.1%}")
 
         logger.info("Trace precomputation complete!")

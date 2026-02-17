@@ -16,10 +16,8 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 async def test_evaluate_dict_scores():
     """Test that Evaluators.evaluate returns dict scores."""
     from place_layers.evaluator import MockSupernetEvaluatorConfig
-    from place_layers.evaluator.evaluators import (
-        AggregationStrategy,
-        EvaluatorsConfig,
-    )
+    from place_layers.evaluator.evaluators import EvaluatorsConfig
+    from place_layers.evaluator.objective import WeightedAverageObjectiveConfig
     from place_layers.core.types import LayerPlacement
 
     # Create a multi-evaluator config with two mock evaluators
@@ -56,8 +54,9 @@ async def test_evaluate_dict_scores():
                 eval_delay_seconds=0.0,
             ),
         },
-        weights={"eval1": 0.6, "eval2": 0.4},
-        aggregation=AggregationStrategy.WEIGHTED_AVERAGE,
+        objective=WeightedAverageObjectiveConfig(
+            weights={"eval1": 0.6, "eval2": 0.4},
+        ),
     )
 
     # Create evaluators
@@ -69,31 +68,33 @@ async def test_evaluate_dict_scores():
         placement = LayerPlacement(assignments=("FA",) * 8)
         scores = await evaluators.evaluate(placement)
 
-        print(f"✓ Scores dict: {scores}")
+        print(f"Scores dict: {scores}")
 
         # Verify we got per-evaluator scores
         assert isinstance(scores, dict)
         assert "eval1" in scores
         assert "eval2" in scores
 
-        # Verify aggregation is correct
-        agg = evaluators.aggregate(scores)
+        # Verify objectives is correct
+        obj_scores = evaluators.objectives(scores)
         expected = 0.6 * scores["eval1"] + 0.4 * scores["eval2"]
-        assert abs(agg - expected) < 1e-6, f"Aggregation mismatch: {agg} != {expected}"
+        assert abs(obj_scores["weighted_average"] - expected) < 1e-6, (
+            f"Objective mismatch: {obj_scores['weighted_average']} != {expected}"
+        )
 
-        print("✓ evaluate returns dict scores correctly")
+        print("evaluate returns dict scores correctly")
 
 
 def test_event_fields():
     """Test that event fields accept dict scores."""
     # Test BestUpdatedEvent
     event1 = BestUpdatedEvent(
-        scores={"eval1": 0.9, "eval2": 0.7},
+        score=0.82,
         cost=5.0,
         allocation={"FA": 4, "GDN": 4},
         assignments=("FA",) * 4 + ("GDN",) * 4,
     )
-    print(f"✓ BestUpdatedEvent with scores: {event1.scores}")
+    print(f"BestUpdatedEvent with score: {event1.score}")
 
     # Test AllocationCompletedEvent
     event2 = AllocationCompletedEvent(
@@ -102,9 +103,9 @@ def test_event_fields():
         allocation_cost=5.0,
         mixer_names=("FA", "GDN"),
         assignments=("FA",) * 4 + ("GDN",) * 4,
-        scores={"eval1": 0.9, "eval2": 0.7},
+        score=0.82,
     )
-    print(f"✓ AllocationCompletedEvent with scores: {event2.scores}")
+    print(f"AllocationCompletedEvent with score: {event2.score}")
 
 
 def test_beam_entry():
@@ -112,9 +113,9 @@ def test_beam_entry():
     entry = BeamEntry(
         assignments=("FA",) * 4 + ("GDN",) * 4,
         allocation={"FA": 4, "GDN": 4},
-        scores={"eval1": 0.9, "eval2": 0.7},
+        score=0.82,
     )
-    print(f"✓ BeamEntry with scores: {entry.scores}")
+    print(f"BeamEntry with score: {entry.score}")
 
 
 if __name__ == "__main__":

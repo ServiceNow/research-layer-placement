@@ -116,15 +116,9 @@ class PlacementFormatterMixin:
         return ", ".join(parts)
 
     @staticmethod
-    def _format_scores(scores: dict[str, float]) -> str:
-        """Format a scores dict for display.
-
-        Single evaluator: just the value (e.g., "0.8567").
-        Multiple evaluators: key=value pairs (e.g., "mmlu=0.85, gsm8k=0.72").
-        """
-        if len(scores) == 1:
-            return f"{next(iter(scores.values())):.4g}"
-        return ", ".join(f"{k}={v:.4g}" for k, v in scores.items())
+    def _format_score(score: float) -> str:
+        """Format a scalar score for display."""
+        return f"{score:.4g}"
 
     def _format_allocation(self, allocation: dict[str, int]) -> str:
         """Format allocation as 'FA:2 SWA:1 GDN:7'."""

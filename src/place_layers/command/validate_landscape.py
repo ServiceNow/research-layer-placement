@@ -138,7 +138,7 @@ class ValidateLandscapeCommand(BaseCommand):
                         # Support both old (best_score: float) and new (best_scores: dict) formats
                         raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
                         if isinstance(raw_scores, dict):
-                            loaded_score = sum(raw_scores.values()) / len(raw_scores)
+                            loaded_score = next(iter(evals.objectives(raw_scores).values()))
                         else:
                             loaded_score = float(raw_scores)
                         validated_bands.append(
@@ -187,8 +187,10 @@ class ValidateLandscapeCommand(BaseCommand):
                         cost_budget=band.cost_high,
                         cost_floor=band.cost_low,
                     )
+                    objective_name = evals.objective_names[0]
                     problem = CostConstrainedProblem(
-                        evaluators=evals, config=problem_config
+                        evaluators=evals, config=problem_config,
+                        objective_name=objective_name,
                     )
 
                     # Construct per-band search strategy
@@ -210,8 +212,7 @@ class ValidateLandscapeCommand(BaseCommand):
 
                     total_evals += result.total_evaluations
 
-                    # Aggregate dict scores to scalar for PlacementResult
-                    validated_score = sum(result.best_scores.values()) / len(result.best_scores)
+                    validated_score = result.best_score
 
                     validated_bands.append(
                         BandValidationResult(

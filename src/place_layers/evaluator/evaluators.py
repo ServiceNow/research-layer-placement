@@ -1,9 +1,9 @@
-"""Primary evaluation interface: wraps 1+ evaluators with aggregation.
+"""Primary evaluation interface: wraps 1+ evaluators with an objective.
 
 ``Evaluators`` is the **only** evaluation interface that problems and search
 strategies interact with.  Even a single evaluator is wrapped in this
 container.  Individual ``BaseEvaluator`` subclasses stay clean — evaluate one
-thing, return a float, know nothing about aggregation.
+thing, return a float, know nothing about objectives.
 
 Configuration
 -------------
@@ -19,16 +19,18 @@ Configuration
           evaluator_type: likelihood
           backend: ${backend}
           tasks: ["mmlu"]
-      weights:
-        gsm8k: 0.6
-        mmlu: 0.4
-      aggregation: weighted_average
+      objective:
+        objective_type: weighted_average
+        weights:
+          gsm8k: 0.6
+          mmlu: 0.4
 
 Code usage::
 
     async with config.evaluators.create_evaluators(output_dir, backend=backend) as evals:
-        scores = await evals.evaluate(placement)       # dict[str, float]
-        scalar = evals.aggregate(scores)               # float
+        scores = await evals.evaluate(placement)             # dict[str, float]
+        obj_scores = evals.objectives(scores)                # dict[str, float]
+        obj_scores = await evals.evaluate_objectives(placement)  # combined
 """
 
 from __future__ import annotations
@@ -36,14 +38,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
-from enum import Enum
 from pathlib import Path
-from types import TracebackType
-from typing import TYPE_CHECKING, AsyncGenerator, Self
+from typing import TYPE_CHECKING, AsyncGenerator, Iterable, Self
 
 from pydantic import BaseModel, Field, model_validator
 
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.objective import (
+    BaseObjective,
+    ObjectiveConfig,
+    WeightedAverageObjectiveConfig,
+)
 
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
@@ -53,33 +58,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Aggregation strategy
-# ---------------------------------------------------------------------------
-
-
-class AggregationStrategy(str, Enum):
-    """Strategy for aggregating scores from multiple evaluators."""
-
-    WEIGHTED_AVERAGE = "weighted_average"
-    """Weighted average: score = sum(weight_i * score_i)"""
-
-    FIRST_ONLY = "first_only"
-    """Use only the first evaluator's score (for auxiliary metrics)"""
-
-    MIN = "min"
-    """Take minimum score across all evaluators"""
-
-    MAX = "max"
-    """Take maximum score across all evaluators"""
-
-
-# ---------------------------------------------------------------------------
 # Evaluators (runtime container)
 # ---------------------------------------------------------------------------
 
 
 class Evaluators[ParametersT]:
-    """Primary evaluation interface.  Wraps 1+ evaluators with aggregation.
+    """Primary evaluation interface.  Wraps 1+ evaluators with an objective.
 
     This is the **only** evaluation interface that problems and search
     strategies interact with.  Even a single evaluator is wrapped here.
@@ -88,29 +72,25 @@ class Evaluators[ParametersT]:
     ----------
     evaluators : dict[str, BaseEvaluator]
         Named evaluator instances.
-    weights : dict[str, float]
-        Per-evaluator aggregation weights.
-    aggregation : AggregationStrategy
-        How to combine per-evaluator scores.
     num_layers : int
         Validated at construction — all evaluators must agree.
     mixer_names : frozenset[str]
         Validated at construction — all evaluators must agree.
+    objective : BaseObjective
+        Objective mapping evaluator scores to optimization objectives.
     """
 
     def __init__(
         self,
         evaluators: dict[str, BaseEvaluator[ParametersT]],
-        weights: dict[str, float],
-        aggregation: AggregationStrategy,
         num_layers: int,
         mixer_names: frozenset[str],
+        objective: BaseObjective,
     ) -> None:
         self.evaluators = evaluators
-        self.weights = weights
-        self.aggregation = aggregation
         self._num_layers = num_layers
         self._mixer_names = mixer_names
+        self.objective = objective
 
     # -- Model structure (validated, not lazy) --------------------------------
 
@@ -126,7 +106,62 @@ class Evaluators[ParametersT]:
     def num_mixers(self) -> int:
         return len(self._mixer_names)
 
-    # -- Evaluation -----------------------------------------------------------
+    # -- Objective names (exposed for search strategies) ----------------------
+
+    @property
+    def objective_names(self) -> tuple[str, ...]:
+        """Objective names exposed for search strategies to iterate over."""
+        return self.objective.objective_names
+
+    # -- Primary evaluation interface (what search strategies call) -----------
+
+    async def evaluate_objectives(
+        self,
+        parameters: ParametersT,
+        names: Iterable[str] | None = None,
+    ) -> dict[str, float]:
+        """Evaluate and return objective scores.  This is the primary search API.
+
+        Args:
+            parameters: Placement to evaluate.
+            names: Which objectives to compute.  None = all objectives.
+
+        Internally determines which evaluators are needed (via the objective's
+        ``required_evaluators()``), runs only those, and maps through the
+        objective.
+        """
+        if names is None:
+            requested = self.objective.objective_names
+        else:
+            requested = tuple(names)
+
+        # Determine which evaluators are needed
+        needed: set[str] = set()
+        for name in requested:
+            needed |= self.objective.required_evaluators(name)
+
+        # Run only needed evaluators
+        eval_names = sorted(needed)
+        coros = [self.evaluators[n].evaluate(parameters) for n in eval_names]
+        score_list = await asyncio.gather(*coros)
+        evaluator_scores = dict(zip(eval_names, score_list))
+
+        # Map through objective, filter to requested names
+        all_obj_scores = self.objective.objectives(evaluator_scores)
+        return {name: all_obj_scores[name] for name in requested}
+
+    # -- Score mapping (pure function on evaluator scores) --------------------
+
+    def objectives(self, evaluator_scores: dict[str, float]) -> dict[str, float]:
+        """Map evaluator scores to objective scores.  Pure function, no I/O.
+
+        Used when evaluator scores are already cached (e.g., BeamEntry.scores,
+        ExplorationDataset).  Search strategies store evaluator-level scores
+        and compute objective scores on demand via this method.
+        """
+        return self.objective.objectives(evaluator_scores)
+
+    # -- Low-level: evaluate all evaluators (returns evaluator scores) --------
 
     async def evaluate(self, parameters: ParametersT) -> dict[str, float]:
         """Evaluate *parameters* using all evaluators in parallel.
@@ -134,7 +169,7 @@ class Evaluators[ParametersT]:
         Returns
         -------
         dict[str, float]
-            Evaluator name → score.
+            Evaluator name -> score.
         """
         eval_coros = [
             evaluator.evaluate(parameters)
@@ -149,21 +184,20 @@ class Evaluators[ParametersT]:
         """Evaluate multiple parameter settings."""
         return [await self.evaluate(p) for p in parameters_list]
 
-    # -- Aggregation (ONLY lives here, not on BaseEvaluator) ------------------
+    # -- Mutation -------------------------------------------------------------
 
-    def aggregate(self, scores: dict[str, float]) -> float:
-        """Aggregate per-evaluator *scores* to a single scalar."""
-        if self.aggregation == AggregationStrategy.WEIGHTED_AVERAGE:
-            return sum(self.weights[name] * score for name, score in scores.items())
-        elif self.aggregation == AggregationStrategy.FIRST_ONLY:
-            first_name = next(iter(self.evaluators.keys()))
-            return scores[first_name]
-        elif self.aggregation == AggregationStrategy.MIN:
-            return min(scores.values())
-        elif self.aggregation == AggregationStrategy.MAX:
-            return max(scores.values())
-        else:
-            raise ValueError(f"Unknown aggregation strategy: {self.aggregation}")
+    def replace_evaluator(
+        self, name: str, evaluator: "BaseEvaluator[ParametersT]"
+    ) -> "Evaluators[ParametersT]":
+        """Return a copy with the named evaluator replaced."""
+        new_evals = dict(self.evaluators)
+        new_evals[name] = evaluator
+        return Evaluators(
+            evaluators=new_evals,
+            num_layers=self._num_layers,
+            mixer_names=self._mixer_names,
+            objective=self.objective,
+        )
 
     # -- Lifecycle ------------------------------------------------------------
 
@@ -174,7 +208,7 @@ class Evaluators[ParametersT]:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
+        exc_tb: "TracebackType | None",
     ) -> None:
         pass  # Lifecycle managed by EvaluatorsConfig via AsyncExitStack
 
@@ -185,7 +219,7 @@ class Evaluators[ParametersT]:
 
 
 class EvaluatorsConfig(BaseModel):
-    """Configuration for 1+ evaluators with aggregation strategy.
+    """Configuration for 1+ evaluators with an objective.
 
     Usage::
 
@@ -199,48 +233,35 @@ class EvaluatorsConfig(BaseModel):
         description="Dict of named evaluator configurations"
     )
 
-    weights: dict[str, float] = Field(
-        default_factory=dict,
-        description="Weights for each evaluator (used with weighted_average). "
-        "If empty, uniform weights are used.",
-    )
-
-    aggregation: AggregationStrategy = Field(
-        default=AggregationStrategy.WEIGHTED_AVERAGE,
-        description="Strategy for aggregating scores from multiple evaluators",
+    objective: ObjectiveConfig = Field(
+        default_factory=WeightedAverageObjectiveConfig,
+        description="Objective function mapping evaluator scores to optimization objectives",
     )
 
     @model_validator(mode="after")
-    def validate_weights(self) -> Self:
-        """Validate that weights match evaluators and sum to 1.0."""
+    def validate_objective(self) -> Self:
+        """Validate objective configuration against evaluator configs."""
         if not self.configs:
             raise ValueError("Must provide at least one evaluator")
 
-        # If weights not specified, use uniform weights
-        if not self.weights:
-            n = len(self.configs)
-            object.__setattr__(
-                self, "weights", {name: 1.0 / n for name in self.configs}
-            )
-
-        # Check that weight keys match evaluator keys
-        if set(self.weights.keys()) != set(self.configs.keys()):
-            raise ValueError(
-                f"Weight keys {set(self.weights.keys())} must match "
-                f"evaluator keys {set(self.configs.keys())}"
-            )
-
-        # Check that weights sum to 1.0 (only for weighted_average)
-        if self.aggregation == AggregationStrategy.WEIGHTED_AVERAGE:
-            total = sum(self.weights.values())
-            if not (0.99 <= total <= 1.01):
-                raise ValueError(
-                    f"Weights must sum to 1.0 for weighted_average, got {total:.4f}"
-                )
-
-        # Check that all weights are non-negative
-        if any(w < 0 for w in self.weights.values()):
-            raise ValueError("All weights must be non-negative")
+        if isinstance(self.objective, WeightedAverageObjectiveConfig):
+            if self.objective.weights:
+                # Validate weight keys match evaluator keys
+                if set(self.objective.weights.keys()) != set(self.configs.keys()):
+                    raise ValueError(
+                        f"Weight keys {set(self.objective.weights.keys())} must match "
+                        f"evaluator keys {set(self.configs.keys())}"
+                    )
+                # Validate weights sum to 1.0
+                total = sum(self.objective.weights.values())
+                if not (0.99 <= total <= 1.01):
+                    raise ValueError(
+                        f"Weights must sum to 1.0 for weighted_average, got {total:.4f}"
+                    )
+                # Validate non-negative
+                if any(w < 0 for w in self.objective.weights.values()):
+                    raise ValueError("All weights must be non-negative")
+            # Empty weights auto-filled at create_objective() time
 
         return self
 
@@ -333,10 +354,14 @@ class EvaluatorsConfig(BaseModel):
                 len(mixer_names),
             )
 
+            # Create objective from config
+            objective = self.objective.create_objective(
+                evaluator_names=tuple(evaluators.keys())
+            )
+
             yield Evaluators(
                 evaluators=evaluators,
-                weights=self.weights,
-                aggregation=self.aggregation,
+                objective=objective,
                 num_layers=num_layers,
                 mixer_names=mixer_names,
             )

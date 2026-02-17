@@ -74,15 +74,15 @@ class EvaluateCommand(BaseCommand):
                 for name, score in scores.items():
                     logger.info(f"  {name}: {score:.6f}")
                 if len(scores) > 1:
-                    agg = evals.aggregate(scores)
-                    logger.info(
-                        f"Aggregated score ({self.config.evaluators.aggregation.value}): "
-                        f"{agg:.6f}"
-                    )
+                    obj_scores = evals.objectives(scores)
+                    for obj_name, obj_score in obj_scores.items():
+                        logger.info(
+                            f"Objective ({obj_name}): {obj_score:.6f}"
+                        )
 
                 # Build result
                 evaluator_type = (
-                    f"multi[{self.config.evaluators.aggregation.value}]"
+                    f"multi[{self.config.evaluators.objective.objective_type}]"
                     if len(evals.evaluators) > 1
                     else next(iter(self.config.evaluators.configs.values())).evaluator_type
                 )

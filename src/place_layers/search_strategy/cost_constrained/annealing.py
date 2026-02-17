@@ -75,11 +75,8 @@ class AnnealingSearch(AllocationIterationSearch):
         """
         Search for the best assignment within a fixed allocation using simulated annealing.
 
-        Uses multiple random restarts, each running a SA trajectory with
-        ruin-and-recreate moves and adaptive reheating.
-
         Returns:
-            List containing a single BeamEntry result (SA only tracks best),
+            List containing a single BeamEntry (SA only tracks best),
             or empty list if no valid assignments exist.
         """
         from place_layers.annealing.events import AnnealingCompletedEvent
@@ -89,7 +86,7 @@ class AnnealingSearch(AllocationIterationSearch):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            scores_dict = await problem.evaluate(placement)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
 
             # Notify observers
@@ -103,7 +100,7 @@ class AnnealingSearch(AllocationIterationSearch):
                     final_temperature=self.config.sa.initial_temperature,
                     termination_reason="no_swaps",
                     best_assignments=tuple(assignments),
-                    best_score=problem.evaluators.aggregate(scores_dict),
+                    best_score=score,
                     restarts_completed=0,
                     best_restart=0,
                     total_reheats=0,
@@ -111,25 +108,21 @@ class AnnealingSearch(AllocationIterationSearch):
                 for observer in self.observers:
                     observer.on_annealing_completed(event)
 
-            return [
-                BeamEntry(
-                    assignments=tuple(assignments),
-                    allocation=allocation,
-                    scores=scores_dict,
-                )
-            ]
+            entry = BeamEntry(
+                assignments=tuple(assignments),
+                allocation=allocation,
+                score=score,
+            )
+            return [entry]
 
-        # Score function: evaluate + count + notify (returns aggregate for SA)
-        _scores_cache: dict[tuple[str, ...], dict[str, float]] = {}
-
+        # Score function: evaluate + count + notify (returns objective score for SA)
         async def score_fn(assignment: tuple[str, ...]) -> float:
             placement = LayerPlacement(assignments=assignment)
-            scores_dict = await problem.evaluate(placement)
-            _scores_cache[assignment] = scores_dict
+            score = await problem.evaluate(placement)
             self.eval_count += 1
             for obs in self.observers:
                 obs.on_eval_completed(self.eval_count)
-            return problem.evaluators.aggregate(scores_dict)
+            return score
 
         # Pass observers directly — SearchObserver satisfies SAObserver
         result = await run_multi_start_sa(
@@ -167,18 +160,12 @@ class AnnealingSearch(AllocationIterationSearch):
         if not result.candidates:
             return []
 
-        best_assignment, _best_agg = result.candidates[0]
-        best_scores = _scores_cache.get(best_assignment)
-        if best_scores is None:
-            # Re-evaluate if not in cache (shouldn't happen)
-            placement = LayerPlacement(assignments=best_assignment)
-            best_scores = await problem.evaluate(placement)
-            self.eval_count += 1
+        best_assignment, best_score = result.candidates[0]
         return [
             BeamEntry(
                 assignments=best_assignment,
                 allocation=allocation,
-                scores=best_scores,
+                score=best_score,
             )
         ]
 

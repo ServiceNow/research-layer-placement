@@ -27,8 +27,9 @@ class LayerPlacementProblem(BaseProblem[LayerPlacement]):
         self,
         evaluators: "Evaluators[LayerPlacement]",
         config: LayerPlacementProblemConfig,
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluators, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: LayerPlacementProblemConfig  # Type narrowing
 
         # Validate budgets against evaluator dimensions
@@ -88,8 +89,9 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
         self,
         evaluators: "Evaluators[LayerPlacement]",
         config: "CostConstrainedProblemConfig",
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluators, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
         # Create cost model first, then validate mixer names

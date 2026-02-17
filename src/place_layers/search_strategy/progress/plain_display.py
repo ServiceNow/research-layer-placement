@@ -223,16 +223,16 @@ class PlainDisplay(PlacementFormatterMixin):
 
         if self._config.show_allocation_complete:
             alloc_str = self._format_allocation(event.allocation)
-            if event.scores is not None and event.assignments is not None:
+            if event.score is not None and event.assignments is not None:
                 by_mixer = self._group_layers_by_mixer(event.assignments)
                 placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
-                score_str = self._format_scores(event.scores)
+                score_str = self._format_score(event.score)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
                     f"{placement_str} -> {score_str}",
                 )
-            elif event.scores is not None:
-                score_str = self._format_scores(event.scores)
+            elif event.score is not None:
+                score_str = self._format_score(event.score)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
                     f"{alloc_str} -> {score_str}",
@@ -250,7 +250,7 @@ class PlainDisplay(PlacementFormatterMixin):
     def on_best_updated(self, event: "BestUpdatedEvent") -> None:
         """Handle best updated event."""
         if self._config.show_best_updated:
-            score_str = self._format_scores(event.scores)
+            score_str = self._format_score(event.score)
             self._print(
                 "BEST_UPDATED",
                 f"score={score_str}, cost={event.cost:.4f}",
@@ -262,7 +262,7 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_search_completed(self, event: "SearchCompletedEvent") -> None:
         """Handle search completed event."""
-        score_str = self._format_scores(event.best_scores)
+        score_str = self._format_score(event.best_score)
         self._print(
             "SEARCH_COMPLETE",
             f"best={score_str}, evals={event.total_evaluations}, "
@@ -500,13 +500,13 @@ class PlainDisplay(PlacementFormatterMixin):
             show = True
         elif len(self._surrogate_top_scores) < k:
             show = True
-        elif event.agg_score > self._surrogate_top_scores[0]:
+        elif event.score > self._surrogate_top_scores[0]:
             show = True
         else:
             show = False
 
         # Maintain sorted top-k list (ascending, so [0] is min)
-        bisect.insort(self._surrogate_top_scores, event.agg_score)
+        bisect.insort(self._surrogate_top_scores, event.score)
         if k is not None and len(self._surrogate_top_scores) > k:
             self._surrogate_top_scores.pop(0)
 
@@ -514,7 +514,7 @@ class PlainDisplay(PlacementFormatterMixin):
             marker = " *" if event.is_new_best else ""
             self._print_line(
                 f"#{event.eval_index}/{event.evals_planned}: "
-                f"score={event.agg_score:.4g}, "
+                f"score={event.score:.4g}, "
                 f"mu={event.surrogate_mu:.4g}, "
                 f"EI={event.ei_value:.3g}{marker}",
                 indent=2,

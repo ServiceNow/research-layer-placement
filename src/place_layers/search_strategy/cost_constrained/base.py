@@ -109,7 +109,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluators.num_layers
+        num_layers = problem.num_layers
         num_mixers = cost_model.num_mixers
         mixer_names = cost_model.phase_order
 
@@ -246,7 +246,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         allocations_explored: int,
     ) -> CostConstrainedSearchResult:
         """Create the final search result."""
-        assert best_entry.scores is not None
+        assert best_entry.score is not None
 
         # Compute cost from allocation (never stored, always computed fresh)
         final_cost = cost_model.allocation_cost(best_entry.allocation)
@@ -254,7 +254,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
-        logger.info(f"Best scores: {best_entry.scores}")
+        logger.info(f"Best score: {best_entry.score}")
         logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")
@@ -265,7 +265,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             from place_layers.search_strategy.progress import SearchCompletedEvent
 
             event = SearchCompletedEvent(
-                best_scores=best_entry.scores,
+                best_score=best_entry.score,
                 best_cost=final_cost,
                 total_evaluations=self.eval_count,
                 allocations_explored=allocations_explored,
@@ -275,7 +275,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         return CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=best_entry.assignments),
-            best_scores=best_entry.scores,
+            best_score=best_entry.score,
             total_evaluations=self.eval_count,
             final_cost=final_cost,
             mode=mode,

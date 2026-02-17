@@ -37,5 +37,5 @@ class SearchResult[ParametersT](BaseModel):
     """Complete results from an optimization run."""
 
     best_parameters: ParametersT
-    best_scores: dict[str, float]
+    best_score: float
     total_evaluations: int

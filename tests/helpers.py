@@ -1,14 +1,19 @@
 """Shared test helpers for place_layers tests."""
 
-from place_layers.evaluator.evaluators import AggregationStrategy, Evaluators
+from place_layers.evaluator.evaluators import Evaluators
+from place_layers.evaluator.objective import WeightedAverageObjectiveConfig
 
 
-def wrap_evaluator(evaluator, name: str = "main") -> Evaluators:
+def make_evaluators(evaluator, name: str = "main") -> Evaluators:
     """Wrap a single evaluator in an Evaluators container for tests."""
+    names = (name,)
     return Evaluators(
         evaluators={name: evaluator},
-        weights={name: 1.0},
-        aggregation=AggregationStrategy.FIRST_ONLY,
         num_layers=evaluator.num_layers,
         mixer_names=evaluator.mixer_names,
+        objective=WeightedAverageObjectiveConfig().create_objective(names),
     )
+
+
+# Backward-compatible alias
+wrap_evaluator = make_evaluators

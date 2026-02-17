@@ -126,7 +126,8 @@ class CalibrateSACommand(BaseCommand):
 
     async def _run_calibration(self, evals) -> None | CalibrationResult:
         """Run calibration with evaluators."""
-        problem = self.config.problem.create_problem(evals)
+        objective_name = evals.objective_names[0]
+        problem = self.config.problem.create_problem(evals, objective_name=objective_name)
 
         if not isinstance(problem, CostConstrainedProblem):
             raise ValueError(
@@ -273,8 +274,7 @@ class CalibrateSACommand(BaseCommand):
         current = random_assignment(self._rng, allocation, num_layers)
 
         placement = LayerPlacement(assignments=tuple(current))
-        current_scores = await problem.evaluate(placement)
-        current_agg = problem.evaluators.aggregate(current_scores)
+        current_agg = await problem.evaluate(placement)
 
         deltas = []
         for _ in range(self.config.num_samples):
@@ -297,8 +297,7 @@ class CalibrateSACommand(BaseCommand):
                 continue
 
             placement = LayerPlacement(assignments=tuple(proposed))
-            proposed_scores = await problem.evaluate(placement)
-            proposed_agg = problem.evaluators.aggregate(proposed_scores)
+            proposed_agg = await problem.evaluate(placement)
             delta = proposed_agg - current_agg
             deltas.append(delta)
 

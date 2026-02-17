@@ -348,7 +348,8 @@ class TestValidateLandscapePipeline:
                     cost_floor=band.cost_low,
                 )
                 problem = CostConstrainedProblem(
-                    evaluators=wrap_evaluator(evaluator), config=problem_config
+                    evaluators=wrap_evaluator(evaluator), config=problem_config,
+                    objective_name="weighted_average",
                 )
 
                 search_config = ViterbiSurrogateSearchConfig(
@@ -376,7 +377,7 @@ class TestValidateLandscapePipeline:
                         ),
                         validated=PlacementResult(
                             cost=result.final_cost,
-                            score=sum(result.best_scores.values()) / len(result.best_scores),
+                            score=result.best_score,
                             assignments=result.best_parameters.assignments,
                         ),
                         total_evaluations=result.total_evaluations,
@@ -480,7 +481,8 @@ class TestValidateLandscapePipeline:
                 cost_floor=band.cost_low,
             )
             problem = CostConstrainedProblem(
-                evaluators=wrap_evaluator(evaluator), config=problem_config
+                evaluators=wrap_evaluator(evaluator), config=problem_config,
+                objective_name="weighted_average",
             )
             search_config = ViterbiSurrogateSearchConfig(
                 strategy_type="viterbi_surrogate",
@@ -504,9 +506,7 @@ class TestValidateLandscapePipeline:
             (band_dir / "surrogate_dp.json").read_text()
         )
 
-        # best_scores is now a dict; aggregate for PlacementResult scalar
-        raw_scores = loaded_result["best_scores"]
-        loaded_score = sum(raw_scores.values()) / len(raw_scores)
+        loaded_score = loaded_result["best_score"]
 
         resumed_band = BandValidationResult(
             band_index=band.band_index,
@@ -525,7 +525,7 @@ class TestValidateLandscapePipeline:
 
         # Verify restored band matches original result
         assert resumed_band.total_evaluations == result.total_evaluations
-        expected_score = sum(result.best_scores.values()) / len(result.best_scores)
+        expected_score = result.best_score
         assert resumed_band.validated.score == expected_score
         assert resumed_band.validated.cost == result.final_cost
         assert resumed_band.surrogate_dp.cost == band.cost

@@ -111,7 +111,7 @@ class SurrogateDisplayEntry(BaseModel):
 
     eval_index: int
     assignments: tuple[str, ...]
-    agg_score: float
+    score: float
     surrogate_mu: float
     ei_value: float
     is_new_best: bool
@@ -519,7 +519,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         display_entries = self._surrogate_entries
         if k is not None and len(display_entries) > k:
             # Top-k by score, then re-sort by eval_index for display order
-            display_entries = sorted(display_entries, key=lambda e: e.agg_score, reverse=True)[:k]
+            display_entries = sorted(display_entries, key=lambda e: e.score, reverse=True)[:k]
             display_entries.sort(key=lambda e: e.eval_index)
 
         # Header line: Round X/Y | Candidates | Evaluating progress
@@ -539,11 +539,11 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Render each evaluated candidate (filtered to top-k)
         # Find the best score in this round for highlighting
         round_best_score = max(
-            (e.agg_score for e in display_entries), default=float("-inf")
+            (e.score for e in display_entries), default=float("-inf")
         )
         for entry in display_entries:
             row = self._render_surrogate_candidate_row(
-                entry, is_round_best=(entry.agg_score == round_best_score)
+                entry, is_round_best=(entry.score == round_best_score)
             )
             lines.append(row)
 
@@ -597,7 +597,7 @@ class LayermapDisplay(PlacementFormatterMixin):
 
         # Real score
         result.append(
-            f"  {entry.agg_score:.4g}",
+            f"  {entry.score:.4g}",
             style="bold green" if entry.is_new_best else "green",
         )
 
@@ -1125,7 +1125,7 @@ class LayermapDisplay(PlacementFormatterMixin):
             SurrogateDisplayEntry(
                 eval_index=event.eval_index,
                 assignments=event.assignments,
-                agg_score=event.agg_score,
+                score=event.score,
                 surrogate_mu=event.surrogate_mu,
                 ei_value=event.ei_value,
                 is_new_best=event.is_new_best,
@@ -1141,7 +1141,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         alloc = dict(Counter(event.assignments))
         self._leaderboard.append(
             LeaderboardEntry(
-                score=event.agg_score,
+                score=event.score,
                 cost=event.cost,
                 allocation=alloc,
                 assignments=event.assignments,
@@ -1167,11 +1167,11 @@ class LayermapDisplay(PlacementFormatterMixin):
 
         # Show best placement from this round's entries
         if self._surrogate_entries:
-            best_entry = max(self._surrogate_entries, key=lambda e: e.agg_score)
+            best_entry = max(self._surrogate_entries, key=lambda e: e.score)
             viz = Text("    ")
             for mixer in best_entry.assignments:
                 viz.append_text(self._render_layer(mixer, is_evaluating=False))
-            viz.append(f" → {best_entry.agg_score:.4g}", style="bold green")
+            viz.append(f" → {best_entry.score:.4g}", style="bold green")
             self._console.print(viz)
 
         # Clear entries for next round

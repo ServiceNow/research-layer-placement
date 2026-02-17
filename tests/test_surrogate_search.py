@@ -102,7 +102,7 @@ def _make_max_perf_problem(
         cost_budget=num_layers * 0.8,
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 def _make_min_cost_problem(
@@ -119,7 +119,7 @@ def _make_min_cost_problem(
         performance_target=0.0,  # Easy target so test can find it
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 async def _build_exploration_dataset(
@@ -216,10 +216,10 @@ class TestSurrogateSearchIntegration:
 
         assert isinstance(result, CostConstrainedSearchResult)
         assert result.mode == "max_performance"
-        assert result.best_scores is not None
+        assert result.best_score is not None
         assert result.total_evaluations > 0
-        # 2 rounds × 20 evals_per_round + 1 final re-eval for dict scores
-        assert result.total_evaluations == 2 * 20 + 1
+        # 2 rounds × 20 evals_per_round
+        assert result.total_evaluations == 2 * 20
         # Cost should be within budget
         cost_budget = problem.config.cost_budget
         assert result.final_cost <= cost_budget + 1e-9
@@ -243,7 +243,7 @@ class TestSurrogateSearchIntegration:
 
         assert isinstance(result, CostConstrainedSearchResult)
         assert result.mode == "min_cost"
-        assert result.best_scores is not None
+        assert result.best_score is not None
         assert result.total_evaluations > 0
 
     async def test_dry_run(self, tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ class TestSurrogateSearchIntegration:
         """CostConstrainedSearchResult should serialize and deserialize."""
         result = CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=("m0", "m1", "m0")),
-            best_scores={"main": 0.85},
+            best_score=0.85,
             total_evaluations=40,
             final_cost=2.0,
             mode="max_performance",
@@ -289,6 +289,6 @@ class TestSurrogateSearchIntegration:
 
         json_str = result.model_dump_json()
         loaded = CostConstrainedSearchResult.model_validate_json(json_str)
-        assert loaded.best_scores == {"main": 0.85}
+        assert loaded.best_score == 0.85
         assert loaded.mode == "max_performance"
         assert loaded.allocations_explored == 0

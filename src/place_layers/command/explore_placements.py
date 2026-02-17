@@ -337,7 +337,10 @@ class ExplorePlacementsCommand(BaseCommand):
             async with self.config.evaluators.create_evaluators(
                 output_dir, backend=backend
             ) as evaluator_instances:
-                problem = self.config.problem.create_problem(evaluator_instances)
+                objective_name = evaluator_instances.objective_names[0]
+                problem = self.config.problem.create_problem(
+                    evaluator_instances, objective_name=objective_name
+                )
 
                 cost_model = self.config.cost_model.create_cost_model()
                 num_layers = evaluator_instances.num_layers
@@ -410,7 +413,7 @@ class ExplorePlacementsCommand(BaseCommand):
                     )
                     for assignment in batch:
                         placement = LayerPlacement(assignments=tuple(assignment))
-                        scores_dict = await problem.evaluate(placement)
+                        scores_dict = await evaluator_instances.evaluate(placement)
                         assignment_tuple = tuple(assignment)
                         allocation = _get_allocation(assignment)
                         all_assignments.append(assignment_tuple)
@@ -420,10 +423,11 @@ class ExplorePlacementsCommand(BaseCommand):
                             progress_path, assignment_tuple, scores_dict, allocation
                         )
 
-                # Helper: aggregate dict scores to scalar array for surrogate quality
+                # Helper: map dict scores to scalar array for surrogate quality
                 def _agg_scores() -> np.ndarray:
                     return np.array([
-                        evaluator_instances.aggregate(s) for s in all_scores
+                        evaluator_instances.objectives(s)[objective_name]
+                        for s in all_scores
                     ])
 
                 # --- Phase 2: Initial expansion selection ---
@@ -518,7 +522,7 @@ class ExplorePlacementsCommand(BaseCommand):
                     )
                     for assignment in batch:
                         placement = LayerPlacement(assignments=tuple(assignment))
-                        scores_dict = await problem.evaluate(placement)
+                        scores_dict = await evaluator_instances.evaluate(placement)
                         assignment_tuple = tuple(assignment)
                         allocation = _get_allocation(assignment)
                         all_assignments.append(assignment_tuple)
@@ -603,8 +607,8 @@ class ExplorePlacementsCommand(BaseCommand):
             assignments=all_assignments,
             scores=all_scores,
             allocations=all_allocations,
-            evaluator_weights=dict(evaluator_instances.weights),
-            aggregation=evaluator_instances.aggregation.value,
+            evaluator_weights={},
+            aggregation="weighted_average",
             num_layers=num_layers,
             mixer_names=phase_order,
             num_samples=len(all_assignments),

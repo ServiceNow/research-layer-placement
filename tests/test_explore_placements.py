@@ -79,7 +79,7 @@ def _make_small_problem(
         cost_budget=num_layers * 0.8,  # Budget between min and max
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 # =============================================================================

@@ -18,7 +18,7 @@ class BeamEntry(BaseModel):
 
     assignments: tuple[str, ...]  # Mixer names, one per layer
     allocation: dict[str, int]  # Counts per mixer, keyed by mixer name
-    scores: dict[str, float] | None = None  # None until evaluated
+    score: float | None = None  # None until evaluated
 
 
 class CostConstrainedSearchResult(SearchResult[LayerPlacement]):
