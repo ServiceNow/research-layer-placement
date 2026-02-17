@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.base_evaluator import BaseEvaluator
+    from place_layers.evaluator.evaluators import Evaluators
     from place_layers.problem.base_problem import BaseProblem
 
 
@@ -22,6 +22,6 @@ class BaseProblemConfig(BaseModel):
     # Each subclass must define this
     _impl_class: ClassVar[type[BaseProblem]]
 
-    def create_problem(self, evaluator: BaseEvaluator) -> BaseProblem:
-        """Smart constructor: instantiate problem from config and evaluator."""
-        return self._impl_class(evaluator=evaluator, config=self)
+    def create_problem(self, evaluators: "Evaluators") -> "BaseProblem":
+        """Smart constructor: instantiate problem from config and evaluators."""
+        return self._impl_class(evaluators=evaluators, config=self)

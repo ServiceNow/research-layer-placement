@@ -228,7 +228,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
 
                 # Build top_placements from all beam entries with valid scores
                 top_placements = tuple(
-                    (entry.assignments, problem.evaluator.aggregate(entry.scores))
+                    (entry.assignments, problem.evaluators.aggregate(entry.scores))
                     for entry in beam_results
                     if entry.scores is not None
                 )
@@ -260,12 +260,12 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             # Entries returned from _search_within_allocation are always evaluated
             assert best_in_allocation.scores is not None
 
-            best_agg = problem.evaluator.aggregate(best_in_allocation.scores)
+            best_agg = problem.evaluators.aggregate(best_in_allocation.scores)
             logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Update global best
             old_best_agg = (
-                problem.evaluator.aggregate(best_entry.scores)
+                problem.evaluators.aggregate(best_entry.scores)
                 if best_entry is not None and best_entry.scores
                 else float("-inf")
             )
@@ -440,7 +440,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
 
                 # Build top_placements from all beam entries with valid scores
                 top_placements = tuple(
-                    (entry.assignments, problem.evaluator.aggregate(entry.scores))
+                    (entry.assignments, problem.evaluators.aggregate(entry.scores))
                     for entry in beam_results
                     if entry.scores is not None
                 )
@@ -472,7 +472,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             # Entries returned from _search_within_allocation are always evaluated
             assert best_in_allocation.scores is not None
 
-            best_agg = problem.evaluator.aggregate(best_in_allocation.scores)
+            best_agg = problem.evaluators.aggregate(best_in_allocation.scores)
             logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Check if it meets the performance target
@@ -527,7 +527,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             )
             logger.warning(
                 f"No allocation met performance target {performance_target}. "
-                f"Returning best effort: score={problem.evaluator.aggregate(scores_dict):.4f}"
+                f"Returning best effort: score={problem.evaluators.aggregate(scores_dict):.4f}"
             )
 
         return self._create_result(

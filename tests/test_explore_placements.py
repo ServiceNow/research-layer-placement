@@ -27,6 +27,7 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -78,7 +79,7 @@ def _make_small_problem(
         cost_budget=num_layers * 0.8,  # Budget between min and max
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
 
 
 # =============================================================================

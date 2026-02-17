@@ -334,7 +334,7 @@ class HierarchicalSearch(AllocationIterationSearch):
 
         # Sort by aggregated score descending (higher is better)
         results.sort(
-            key=lambda e: problem.evaluator.aggregate(e.scores) if e.scores else float("-inf"),
+            key=lambda e: problem.evaluators.aggregate(e.scores) if e.scores else float("-inf"),
             reverse=True,
         )
         return results
@@ -615,7 +615,7 @@ class HierarchicalSearch(AllocationIterationSearch):
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
             scores_dict = await problem.evaluate(placement)
-            score = problem.evaluator.aggregate(scores_dict)
+            score = problem.evaluators.aggregate(scores_dict)
             self.eval_count += 1
 
             # Generate ID for this candidate (step=0 for prescoring)
@@ -874,7 +874,7 @@ class HierarchicalSearch(AllocationIterationSearch):
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
             scores_dict = await problem.evaluate(placement)
-            candidate["score"] = problem.evaluator.aggregate(scores_dict)
+            candidate["score"] = problem.evaluators.aggregate(scores_dict)
             candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
 
@@ -960,7 +960,7 @@ class HierarchicalConfig(AllocationIterationConfig):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.evaluators.num_layers
 
         # Enumerate allocations in the same order as search will use
         cost_floor = config.cost_floor

@@ -36,7 +36,8 @@ from place_layers.annealing.moves import (
     random_assignment,
     sample_perturbation_size,
 )
-from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
+from place_layers.backend import BackendConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
@@ -106,12 +107,14 @@ class CalibrateSACommand(BaseCommand):
             self.config.contiguous_ruin_probability,
         )
 
-        # Create evaluator with proper context management
-        async with self.config.evaluators.create_evaluators(
-            output_dir=output_dir
-        ) as evals:
-            evaluator = next(iter(evals.evaluators.values()))
-            result = await self._run_calibration(evaluator)
+        from contextlib import nullcontext
+
+        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        async with backend_cm as backend:
+            async with self.config.evaluators.create_evaluators(
+                output_dir=output_dir, backend=backend
+            ) as evals:
+                result = await self._run_calibration(evals)
 
         if result is not None:
             # Save using result handler
@@ -121,9 +124,9 @@ class CalibrateSACommand(BaseCommand):
             await result_handler.save(result, output_path)
             logger.info("Calibration results saved to %s", output_path)
 
-    async def _run_calibration(self, evaluator) -> None | CalibrationResult:
-        """Run calibration with evaluator."""
-        problem = self.config.problem.create_problem(evaluator)
+    async def _run_calibration(self, evals) -> None | CalibrationResult:
+        """Run calibration with evaluators."""
+        problem = self.config.problem.create_problem(evals)
 
         if not isinstance(problem, CostConstrainedProblem):
             raise ValueError(
@@ -143,7 +146,7 @@ class CalibrateSACommand(BaseCommand):
         cost_budget = problem_config.cost_budget
 
         # Find a representative allocation at the cost bound
-        num_layers = evaluator.num_layers
+        num_layers = evals.num_layers
         allocation = cost_model.allocation_at_cost_bound(
             num_layers, cost_budget, from_above=True
         )
@@ -270,7 +273,8 @@ class CalibrateSACommand(BaseCommand):
         current = random_assignment(self._rng, allocation, num_layers)
 
         placement = LayerPlacement(assignments=tuple(current))
-        current_score = await problem.evaluate(placement)
+        current_scores = await problem.evaluate(placement)
+        current_agg = problem.evaluators.aggregate(current_scores)
 
         deltas = []
         for _ in range(self.config.num_samples):
@@ -293,15 +297,16 @@ class CalibrateSACommand(BaseCommand):
                 continue
 
             placement = LayerPlacement(assignments=tuple(proposed))
-            proposed_score = await problem.evaluate(placement)
-            delta = proposed_score - current_score
+            proposed_scores = await problem.evaluate(placement)
+            proposed_agg = problem.evaluators.aggregate(proposed_scores)
+            delta = proposed_agg - current_agg
             deltas.append(delta)
 
             # Walk state forward: accept improving always,
             # worsening with 50% to sample diverse states
             if delta > 0 or self._rng.random() < 0.5:
                 current = proposed
-                current_score = proposed_score
+                current_agg = proposed_agg
 
         return deltas
 
@@ -350,6 +355,10 @@ class CalibrateSACommandConfig(BaseCommandConfig):
     command: Literal["calibrate_sa"] = "calibrate_sa"
 
     # Problem setup
+    backend: BackendConfig | None = Field(
+        default=None,
+        description="Backend configuration. None for mock evaluators.",
+    )
     evaluators: EvaluatorsConfig = Field(description="Evaluator configuration")
     problem: ProblemConfig = Field(description="Problem configuration")
     result_handler: ResultHandlerConfig = Field(

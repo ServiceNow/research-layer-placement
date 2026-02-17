@@ -91,10 +91,10 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
         # Get dimensions from evaluator
-        num_layers = problem.evaluator.num_layers
-        num_mixers = problem.evaluator.num_mixers
+        num_layers = problem.evaluators.num_layers
+        num_mixers = problem.evaluators.num_mixers
         # Convert frozenset to sorted list for indexable access
-        mixer_names = sorted(problem.evaluator.mixer_names)
+        mixer_names = sorted(problem.evaluators.mixer_names)
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -140,7 +140,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         assignments = [final_assignments[i] for i in range(num_layers)]
         final_config = LayerPlacement(assignments=tuple(assignments))
         final_scores = await problem.evaluate(final_config)
-        final_agg = problem.evaluator.aggregate(final_scores)
+        final_agg = problem.evaluators.aggregate(final_scores)
         self.eval_count += 1
 
         logger.info(f"\n{'='*60}")
@@ -249,7 +249,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             )
             placement = LayerPlacement(assignments=tuple(assignments))
             scores_dict = await problem.evaluate(placement)
-            score = problem.evaluator.aggregate(scores_dict)
+            score = problem.evaluators.aggregate(scores_dict)
             self.eval_count += 1
             layer_scores.append((layer_idx, score))
             logger.debug(f"  Layer {layer_idx}: {score:.4f}")
@@ -337,7 +337,7 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             )
             placement = LayerPlacement(assignments=tuple(assignments))
             scores_dict = await problem.evaluate(placement)
-            candidate["score"] = problem.evaluator.aggregate(scores_dict)
+            candidate["score"] = problem.evaluators.aggregate(scores_dict)
             self.eval_count += 1
 
             if (i + 1) % max(1, len(candidates) // 10) == 0:

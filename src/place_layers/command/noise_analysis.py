@@ -23,6 +23,7 @@ from pydantic import Field
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
+from place_layers.evaluator.evaluators import AggregationStrategy, Evaluators
 from place_layers.evaluator.mock_supernet_evaluator import (
     MockSupernetEvaluator,
     MockSupernetEvaluatorConfig,
@@ -270,6 +271,16 @@ class NoiseAnalysisCommand(BaseCommand):
             noise_sigmas=self.config.noise_sigmas,
         )
 
+    def _wrap_evaluator(self, evaluator: MockSupernetEvaluator) -> Evaluators:
+        """Wrap a single evaluator in an Evaluators container."""
+        return Evaluators(
+            evaluators={"main": evaluator},
+            weights={"main": 1.0},
+            aggregation=AggregationStrategy.FIRST_ONLY,
+            num_layers=evaluator.num_layers,
+            mixer_names=evaluator.mixer_names,
+        )
+
     async def _run_trial(
         self,
         evaluator: MockSupernetEvaluator,
@@ -277,7 +288,7 @@ class NoiseAnalysisCommand(BaseCommand):
         optimal_placement: LayerPlacement,
     ) -> TrialResult:
         """Run a single cost-constrained search trial."""
-        problem = self.config.problem.create_problem(evaluator)
+        problem = self.config.problem.create_problem(self._wrap_evaluator(evaluator))
         strategy = self.config.search_strategy.create_search_strategy()
 
         result = cast(CostConstrainedSearchResult, await strategy.search(problem))

@@ -305,7 +305,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 candidate = top_candidates[idx]
                 placement = LayerPlacement(assignments=candidate)
                 scores_dict = await problem.evaluate(placement)
-                agg_score = problem.evaluator.aggregate(scores_dict)
+                agg_score = problem.evaluators.aggregate(scores_dict)
                 self.eval_count += 1
 
                 all_assignments.append(candidate)

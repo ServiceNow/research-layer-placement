@@ -44,6 +44,7 @@ from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
 )
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -347,7 +348,7 @@ class TestValidateLandscapePipeline:
                     cost_floor=band.cost_low,
                 )
                 problem = CostConstrainedProblem(
-                    evaluator=evaluator, config=problem_config
+                    evaluators=wrap_evaluator(evaluator), config=problem_config
                 )
 
                 search_config = ViterbiSurrogateSearchConfig(
@@ -479,7 +480,7 @@ class TestValidateLandscapePipeline:
                 cost_floor=band.cost_low,
             )
             problem = CostConstrainedProblem(
-                evaluator=evaluator, config=problem_config
+                evaluators=wrap_evaluator(evaluator), config=problem_config
             )
             search_config = ViterbiSurrogateSearchConfig(
                 strategy_type="viterbi_surrogate",

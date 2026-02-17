@@ -27,6 +27,7 @@ from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
     ViterbiSurrogateSearchConfig,
 )
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -89,7 +90,7 @@ def _make_max_perf_problem(
         cost_budget=num_layers * 0.8,
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
 
 
 def _make_min_cost_problem(
@@ -106,7 +107,7 @@ def _make_min_cost_problem(
         performance_target=0.0,  # Easy target so test can find it
         cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config)
 
 
 async def _build_exploration_dataset(

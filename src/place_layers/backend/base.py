@@ -861,6 +861,12 @@ class SyncBackend(ABC):
         """Cleanup backend resources (e.g., free GPU memory)."""
         pass
 
+    async def __aenter__(self) -> Self:
+        return self.__enter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.__exit__(exc_type, exc_val, exc_tb)
+
     @abstractmethod
     def generate_chat(
         self,

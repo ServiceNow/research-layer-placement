@@ -29,6 +29,7 @@ from place_layers.problem import (
 )
 from place_layers.annealing.sa_core import SAConfig
 from place_layers.search_strategy import AnnealingConfig
+from tests.helpers import wrap_evaluator
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -854,7 +855,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="less than minimum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator))
 
     def test_budget_validation_too_high(self) -> None:
         """Budget above maximum cost should fail (trivially satisfied)."""
@@ -880,7 +881,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator))
 
     def test_mixer_name_mismatch(self) -> None:
         """Mixer name mismatch should fail."""
@@ -906,7 +907,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="must match"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator))
 
     def test_cost_floor_above_budget_fails(self) -> None:
         """cost_floor >= cost_budget should fail (empty search range)."""
@@ -932,7 +933,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="cost_floor.*must be less than"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator))
 
     def test_cost_floor_above_max_cost_fails(self) -> None:
         """cost_floor above maximum possible cost should fail."""
@@ -958,7 +959,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum possible cost"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator))
 
     def test_cost_floor_below_min_cost_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """cost_floor below minimum possible cost should warn but not error."""
@@ -984,7 +985,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with caplog.at_level(logging.WARNING):
-            problem = problem_config.create_problem(evaluator)
+            problem = problem_config.create_problem(wrap_evaluator(evaluator))
 
         assert problem is not None
         assert "below minimum possible cost" in caplog.text
@@ -1012,7 +1013,7 @@ class TestCostConstrainedProblem:
         )
         evaluator = evaluator_config.create_evaluator()
 
-        problem = problem_config.create_problem(evaluator)
+        problem = problem_config.create_problem(wrap_evaluator(evaluator))
         assert problem is not None
 
 
@@ -1048,7 +1049,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator))
 
     @pytest.fixture
     def small_problem_min_cost(self) -> CostConstrainedProblem:
@@ -1074,7 +1075,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator))
 
     async def test_max_performance_respects_budget(
         self, small_problem_max_perf: CostConstrainedProblem
@@ -1168,12 +1169,12 @@ class TestCostConstrainedBeamSearch:
 
         # Run twice
         evaluator1 = evaluator_config.create_evaluator()
-        problem1 = problem_config.create_problem(evaluator1)
+        problem1 = problem_config.create_problem(wrap_evaluator(evaluator1))
         search1 = search_config.create_search_strategy()
         result1 = await search1.search(problem1)
 
         evaluator2 = evaluator_config.create_evaluator()
-        problem2 = problem_config.create_problem(evaluator2)
+        problem2 = problem_config.create_problem(wrap_evaluator(evaluator2))
         search2 = search_config.create_search_strategy()
         result2 = await search2.search(problem2)
 
@@ -1254,7 +1255,7 @@ class TestCostFloorSearch:
             cost_floor=4.0,
         )
         evaluator = evaluator_config.create_evaluator()
-        problem = problem_config.create_problem(evaluator)
+        problem = problem_config.create_problem(wrap_evaluator(evaluator))
 
         search_config = AnnealingConfig(
             sa=_SMALL_SA_CONFIG, max_allocations=10

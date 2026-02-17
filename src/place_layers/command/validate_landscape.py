@@ -38,7 +38,8 @@ from place_layers.landscape import (
     load_and_fit_surrogate,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
-from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
+from place_layers.backend import BackendConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
@@ -108,33 +109,110 @@ class ValidateLandscapeCommand(BaseCommand):
         # 2. Per-band search with real evaluator (incremental save + resume)
         bands_dir = output_dir / "bands"
 
-        async with self.config.evaluators.create_evaluators(output_dir) as evals:
-            evaluator = next(iter(evals.evaluators.values()))
-            validated_bands: list[BandValidationResult] = []
-            total_evals = 0
+        from contextlib import nullcontext
 
-            for step, band in enumerate(band_results):
-                band_dir = bands_dir / f"band_{band.band_index:03d}"
-                result_path = band_dir / "result.json"
+        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        async with backend_cm as backend:
+            async with self.config.evaluators.create_evaluators(
+                output_dir, backend=backend
+            ) as evals:
+                validated_bands: list[BandValidationResult] = []
+                total_evals = 0
 
-                # Skip if already completed (resumption)
-                if result_path.exists():
+                for step, band in enumerate(band_results):
+                    band_dir = bands_dir / f"band_{band.band_index:03d}"
+                    result_path = band_dir / "result.json"
+
+                    # Skip if already completed (resumption)
+                    if result_path.exists():
+                        logger.info(
+                            "Band %d already validated, skipping (step %d / %d)",
+                            band.band_index,
+                            step + 1,
+                            len(band_results),
+                        )
+                        loaded_result = json.loads(result_path.read_text())
+                        surrogate_dp = PlacementResult.model_validate_json(
+                            (band_dir / "surrogate_dp.json").read_text()
+                        )
+                        # Support both old (best_score: float) and new (best_scores: dict) formats
+                        raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
+                        if isinstance(raw_scores, dict):
+                            loaded_score = sum(raw_scores.values()) / len(raw_scores)
+                        else:
+                            loaded_score = float(raw_scores)
+                        validated_bands.append(
+                            BandValidationResult(
+                                band_index=band.band_index,
+                                cost_low=band.cost_low,
+                                cost_high=band.cost_high,
+                                surrogate_dp=surrogate_dp,
+                                validated=PlacementResult(
+                                    cost=loaded_result["final_cost"],
+                                    score=loaded_score,
+                                    assignments=tuple(
+                                        loaded_result["best_parameters"]["assignments"]
+                                    ),
+                                ),
+                                total_evaluations=loaded_result["total_evaluations"],
+                            )
+                        )
+                        total_evals += loaded_result["total_evaluations"]
+                        continue
+
                     logger.info(
-                        "Band %d already validated, skipping (step %d / %d)",
-                        band.band_index,
+                        "Validating band %d / %d (cost %.4f – %.4f, surrogate score %.4f)",
                         step + 1,
                         len(band_results),
+                        band.cost_low,
+                        band.cost_high,
+                        band.score,
                     )
-                    loaded_result = json.loads(result_path.read_text())
-                    surrogate_dp = PlacementResult.model_validate_json(
-                        (band_dir / "surrogate_dp.json").read_text()
+
+                    # Save surrogate DP first (before the search that might crash)
+                    band_dir.mkdir(parents=True, exist_ok=True)
+                    surrogate_dp = PlacementResult(
+                        cost=band.cost,
+                        score=band.score,
+                        assignments=band.assignments,
                     )
-                    # Support both old (best_score: float) and new (best_scores: dict) formats
-                    raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
-                    if isinstance(raw_scores, dict):
-                        loaded_score = sum(raw_scores.values()) / len(raw_scores)
-                    else:
-                        loaded_score = float(raw_scores)
+                    (band_dir / "surrogate_dp.json").write_text(
+                        surrogate_dp.model_dump_json(indent=2)
+                    )
+
+                    # Construct per-band problem
+                    problem_config = MaxPerformanceProblemConfig(
+                        problem_type="cost_max_performance",
+                        cost_model=landscape.cost_model,
+                        cost_budget=band.cost_high,
+                        cost_floor=band.cost_low,
+                    )
+                    problem = CostConstrainedProblem(
+                        evaluators=evals, config=problem_config
+                    )
+
+                    # Construct per-band search strategy
+                    search_config = ViterbiSurrogateSearchConfig(
+                        strategy_type="viterbi_surrogate",
+                        exploration_dataset_path=landscape.exploration_dataset_path,
+                        num_rounds=self.config.search_num_rounds,
+                        evals_per_round=self.config.search_evals_per_round,
+                        candidates_per_model=self.config.search_candidates_per_model,
+                        cv_folds=self.config.search_cv_folds,
+                        ei_xi=self.config.search_ei_xi,
+                        seed=self.config.search_seed,
+                    )
+                    strategy = search_config.create_search_strategy()
+                    result = await strategy.search(problem)
+
+                    # Save per-band result (CostConstrainedSearchResult as JSON)
+                    result_path.write_text(result.model_dump_json(indent=2))
+
+                    total_evals += result.total_evaluations
+
+                    # Aggregate dict scores to scalar for PlacementResult
+                    validated_score = sum(result.best_scores.values()) / len(result.best_scores)
+
                     validated_bands.append(
                         BandValidationResult(
                             band_index=band.band_index,
@@ -142,93 +220,21 @@ class ValidateLandscapeCommand(BaseCommand):
                             cost_high=band.cost_high,
                             surrogate_dp=surrogate_dp,
                             validated=PlacementResult(
-                                cost=loaded_result["final_cost"],
-                                score=loaded_score,
-                                assignments=tuple(
-                                    loaded_result["best_parameters"]["assignments"]
-                                ),
+                                cost=result.final_cost,
+                                score=validated_score,
+                                assignments=result.best_parameters.assignments,
                             ),
-                            total_evaluations=loaded_result["total_evaluations"],
+                            total_evaluations=result.total_evaluations,
                         )
                     )
-                    total_evals += loaded_result["total_evaluations"]
-                    continue
 
-                logger.info(
-                    "Validating band %d / %d (cost %.4f – %.4f, surrogate score %.4f)",
-                    step + 1,
-                    len(band_results),
-                    band.cost_low,
-                    band.cost_high,
-                    band.score,
-                )
-
-                # Save surrogate DP first (before the search that might crash)
-                band_dir.mkdir(parents=True, exist_ok=True)
-                surrogate_dp = PlacementResult(
-                    cost=band.cost,
-                    score=band.score,
-                    assignments=band.assignments,
-                )
-                (band_dir / "surrogate_dp.json").write_text(
-                    surrogate_dp.model_dump_json(indent=2)
-                )
-
-                # Construct per-band problem
-                problem_config = MaxPerformanceProblemConfig(
-                    problem_type="cost_max_performance",
-                    cost_model=landscape.cost_model,
-                    cost_budget=band.cost_high,
-                    cost_floor=band.cost_low,
-                )
-                problem = CostConstrainedProblem(
-                    evaluator=evaluator, config=problem_config
-                )
-
-                # Construct per-band search strategy
-                search_config = ViterbiSurrogateSearchConfig(
-                    strategy_type="viterbi_surrogate",
-                    exploration_dataset_path=landscape.exploration_dataset_path,
-                    num_rounds=self.config.search_num_rounds,
-                    evals_per_round=self.config.search_evals_per_round,
-                    candidates_per_model=self.config.search_candidates_per_model,
-                    cv_folds=self.config.search_cv_folds,
-                    ei_xi=self.config.search_ei_xi,
-                    seed=self.config.search_seed,
-                )
-                strategy = search_config.create_search_strategy()
-                result = await strategy.search(problem)
-
-                # Save per-band result (CostConstrainedSearchResult as JSON)
-                result_path.write_text(result.model_dump_json(indent=2))
-
-                total_evals += result.total_evaluations
-
-                # Aggregate dict scores to scalar for PlacementResult
-                validated_score = sum(result.best_scores.values()) / len(result.best_scores)
-
-                validated_bands.append(
-                    BandValidationResult(
-                        band_index=band.band_index,
-                        cost_low=band.cost_low,
-                        cost_high=band.cost_high,
-                        surrogate_dp=surrogate_dp,
-                        validated=PlacementResult(
-                            cost=result.final_cost,
-                            score=validated_score,
-                            assignments=result.best_parameters.assignments,
-                        ),
-                        total_evaluations=result.total_evaluations,
+                    logger.info(
+                        "Band %d: surrogate=%.4f, validated=%.4f, evals=%d",
+                        band.band_index,
+                        band.score,
+                        validated_score,
+                        result.total_evaluations,
                     )
-                )
-
-                logger.info(
-                    "Band %d: surrogate=%.4f, validated=%.4f, evals=%d",
-                    band.band_index,
-                    band.score,
-                    validated_score,
-                    result.total_evaluations,
-                )
 
         # 3. Compute summary statistics
         if len(validated_bands) >= 2:
@@ -286,6 +292,11 @@ class ValidateLandscapeCommandConfig(BaseCommandConfig):
     _impl_class: ClassVar[type[BaseCommand]] = ValidateLandscapeCommand
 
     command: Literal["validate_landscape"] = "validate_landscape"
+
+    backend: BackendConfig | None = Field(
+        default=None,
+        description="Backend configuration. None for mock evaluators.",
+    )
 
     landscape: LandscapeConfig = Field(
         description="Shared landscape configuration (binning, surrogate, cost model).",

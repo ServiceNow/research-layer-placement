@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 
 # Test that imports work and types are correct
-from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+from place_layers.evaluator.evaluators import Evaluators
 from place_layers.search_strategy.progress.events import (
     AllocationCompletedEvent,
     BestUpdatedEvent,
@@ -14,9 +14,9 @@ from place_layers.search_strategy.cost_constrained.types import BeamEntry
 
 
 async def test_evaluate_dict_scores():
-    """Test that EvaluatorInstances.evaluate returns dict scores."""
+    """Test that Evaluators.evaluate returns dict scores."""
     from place_layers.evaluator import MockSupernetEvaluatorConfig
-    from place_layers.evaluator.multi_evaluator_config import (
+    from place_layers.evaluator.evaluators import (
         AggregationStrategy,
         EvaluatorsConfig,
     )

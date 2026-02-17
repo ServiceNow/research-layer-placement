@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from place_layers.core.types import LayerPlacement
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.base_evaluator import BaseEvaluator
+    from place_layers.evaluator.evaluators import Evaluators
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class PlacementResolution:
 
 def resolve_placement(
     spec: list[str] | None,
-    evaluator: "BaseEvaluator",
+    evaluators: "Evaluators",
 ) -> PlacementResolution:
     """Resolve a placement specification to a LayerPlacement.
 
@@ -41,7 +41,7 @@ def resolve_placement(
 
     Args:
         spec: List of mixer names per layer, or None.
-        evaluator: Evaluator providing model structure.
+        evaluators: Evaluators providing model structure.
 
     Returns:
         PlacementResolution with placement object and metadata.
@@ -58,8 +58,8 @@ def resolve_placement(
         )
 
     # Get model structure
-    num_layers = evaluator.num_layers
-    mixer_names = evaluator.mixer_names
+    num_layers = evaluators.num_layers
+    mixer_names = evaluators.mixer_names
 
     logger.info(f"Model: {num_layers} layers, mixers: {list(mixer_names)}")
 

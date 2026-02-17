@@ -77,10 +77,10 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
             )
 
         # Get dimensions from evaluator
-        num_layers = problem.evaluator.num_layers
-        num_mixers = problem.evaluator.num_mixers
+        num_layers = problem.evaluators.num_layers
+        num_mixers = problem.evaluators.num_mixers
         # Convert frozenset to sorted list for indexable access
-        mixer_names = sorted(problem.evaluator.mixer_names)
+        mixer_names = sorted(problem.evaluators.mixer_names)
         budgets = problem.config.budgets
 
         logger.info(f"\n{'='*60}")
@@ -112,7 +112,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\nEvaluating all configurations...")
         scores_dicts = await problem.evaluate_batch(all_configs)
         # Aggregate to scalar for sorting/comparison
-        scores = [problem.evaluator.aggregate(s) for s in scores_dicts]
+        scores = [problem.evaluators.aggregate(s) for s in scores_dicts]
 
         # Find best configuration
         if self.config.higher_is_better:

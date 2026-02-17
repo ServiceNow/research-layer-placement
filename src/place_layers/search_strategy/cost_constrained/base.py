@@ -25,7 +25,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+    from place_layers.evaluator.evaluators import Evaluators
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -109,7 +109,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.evaluators.num_layers
         num_mixers = cost_model.num_mixers
         mixer_names = cost_model.phase_order
 

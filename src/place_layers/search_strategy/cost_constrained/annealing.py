@@ -103,7 +103,7 @@ class AnnealingSearch(AllocationIterationSearch):
                     final_temperature=self.config.sa.initial_temperature,
                     termination_reason="no_swaps",
                     best_assignments=tuple(assignments),
-                    best_score=problem.evaluator.aggregate(scores_dict),
+                    best_score=problem.evaluators.aggregate(scores_dict),
                     restarts_completed=0,
                     best_restart=0,
                     total_reheats=0,
@@ -129,7 +129,7 @@ class AnnealingSearch(AllocationIterationSearch):
             self.eval_count += 1
             for obs in self.observers:
                 obs.on_eval_completed(self.eval_count)
-            return problem.evaluator.aggregate(scores_dict)
+            return problem.evaluators.aggregate(scores_dict)
 
         # Pass observers directly — SearchObserver satisfies SAObserver
         result = await run_multi_start_sa(
