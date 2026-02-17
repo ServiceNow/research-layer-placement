@@ -188,8 +188,9 @@ class TestHelpers:
         """ExplorationDataset.load() should deserialize from file."""
         dataset = ExplorationDataset(
             assignments=[("m0", "m1")],
-            scores=[{"main": 0.5}],
+            scores=[0.5],
             allocations=[{"m0": 1, "m1": 1}],
+            objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
             num_samples=1,
@@ -205,37 +206,19 @@ class TestHelpers:
         assert loaded.num_samples == 1
         assert loaded.assignments == [("m0", "m1")]
         assert loaded.final_rho == 0.3
-
-    def test_exploration_dataset_legacy_scalar_migration(self, tmp_path: Path) -> None:
-        """Legacy datasets with float scores should auto-migrate to dict."""
-        legacy_json = '{"assignments": [["m0", "m1"]], "scores": [0.5], "allocations": [{"m0": 1, "m1": 1}], "num_layers": 2, "mixer_names": ["m0", "m1"], "num_samples": 1, "termination_reason": "max_samples", "rho_history": [0.3], "samples_at_check": [1], "final_rho": 0.3}'
-        path = tmp_path / "legacy.json"
-        path.write_text(legacy_json)
-
-        loaded = ExplorationDataset.load(path)
-        assert loaded.scores == [{"main": 0.5}]
-        assert loaded.aggregated_scores() == [0.5]
+        assert loaded.objective_name == "weighted_average"
 
     def test_jsonl_roundtrip(self, tmp_path: Path) -> None:
         """Write and read progress JSONL."""
         path = tmp_path / "progress.jsonl"
-        _append_to_jsonl(path, ("m0", "m1", "m0"), {"main": 0.75}, {"m0": 2, "m1": 1})
-        _append_to_jsonl(path, ("m1", "m1", "m0"), {"main": 0.82}, {"m0": 1, "m1": 2})
+        _append_to_jsonl(path, ("m0", "m1", "m0"), 0.75, {"m0": 2, "m1": 1})
+        _append_to_jsonl(path, ("m1", "m1", "m0"), 0.82, {"m0": 1, "m1": 2})
 
         assignments, scores, allocations = _load_progress(path)
         assert len(assignments) == 2
         assert assignments[0] == ("m0", "m1", "m0")
-        assert scores[1] == {"main": 0.82}
+        assert scores[1] == 0.82
         assert allocations[0] == {"m0": 2, "m1": 1}
-
-    def test_jsonl_legacy_scalar_roundtrip(self, tmp_path: Path) -> None:
-        """Legacy JSONL with scalar scores should load as dict."""
-        path = tmp_path / "progress.jsonl"
-        path.write_text('{"assignment": ["m0", "m1"], "score": 0.75, "allocation": {"m0": 1, "m1": 1}}\n')
-
-        assignments, scores, allocations = _load_progress(path)
-        assert len(assignments) == 1
-        assert scores[0] == {"main": 0.75}
 
 
 # =============================================================================
@@ -315,8 +298,9 @@ class TestExploreIntegration:
         """ExplorationDataset should serialize and deserialize correctly."""
         dataset = ExplorationDataset(
             assignments=[("m0", "m1"), ("m1", "m0")],
-            scores=[{"main": 0.5}, {"main": 0.7}],
+            scores=[0.5, 0.7],
             allocations=[{"m0": 1, "m1": 1}, {"m0": 1, "m1": 1}],
+            objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
             num_samples=2,
@@ -332,6 +316,6 @@ class TestExploreIntegration:
 
         assert loaded.num_samples == 2
         assert loaded.assignments == [("m0", "m1"), ("m1", "m0")]
-        assert loaded.scores == [{"main": 0.5}, {"main": 0.7}]
-        assert loaded.aggregated_scores() == [0.5, 0.7]
+        assert loaded.scores == [0.5, 0.7]
+        assert loaded.objective_name == "weighted_average"
         assert loaded.termination_reason == "max_samples"

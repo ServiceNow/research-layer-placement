@@ -213,7 +213,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             Path(self.config.exploration_dataset_path)
         )
         all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.aggregated_scores())
+        all_scores: list[float] = list(exploration.scores)
         logger.info(
             "Loaded exploration dataset: %d samples, rho=%.4f",
             len(all_assignments),
