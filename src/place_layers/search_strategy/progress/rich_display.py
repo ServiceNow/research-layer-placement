@@ -45,6 +45,7 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
 )
@@ -120,9 +121,11 @@ class RichDisplay(PlacementFormatterMixin):
     def __init__(
         self,
         console: Console | None = None,
+        surrogate_top_k: int | None = 10,
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
+        self._surrogate_top_k = surrogate_top_k
         # Mixin attributes (set in on_search_started)
         self._mixer_names: tuple[str, ...] = ()
         self._num_layers: int = 0
@@ -177,6 +180,10 @@ class RichDisplay(PlacementFormatterMixin):
 
         # Track which search strategy is active (for display selection)
         self._active_strategy: str | None = None  # "hierarchical", "annealing"
+
+        # Surrogate top-k display state
+        self._surrogate_top_scores: list[float] = []
+        self._surrogate_evals_seen: int = 0
 
     def __enter__(self) -> "RichDisplay":
         """Start the Live display."""
@@ -996,11 +1003,45 @@ class RichDisplay(PlacementFormatterMixin):
 
     def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
         """Handle surrogate round started - print permanent line."""
+        self._surrogate_top_scores = []
+        self._surrogate_evals_seen = 0
         self._console.print(
             f"  [cyan]ROUND {event.round}/{event.total_rounds}[/cyan]: "
             f"{event.num_candidates} candidates, "
             f"evaluating top {event.evals_planned} by EI"
         )
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Handle surrogate candidate evaluated - print compact line (top-k filtered)."""
+        import bisect
+
+        self._surrogate_evals_seen += 1
+        k = self._surrogate_top_k
+
+        # Decide whether to show this candidate
+        if k is None or event.is_new_best:
+            show = True
+        elif len(self._surrogate_top_scores) < k:
+            show = True
+        elif event.agg_score > self._surrogate_top_scores[0]:
+            show = True
+        else:
+            show = False
+
+        # Maintain sorted top-k list (ascending, so [0] is min)
+        bisect.insort(self._surrogate_top_scores, event.agg_score)
+        if k is not None and len(self._surrogate_top_scores) > k:
+            self._surrogate_top_scores.pop(0)
+
+        if show:
+            marker = " [bold yellow]★[/bold yellow]" if event.is_new_best else ""
+            self._console.print(
+                f"    #{event.eval_index}/{event.evals_planned}: "
+                f"[green]{event.agg_score:.4g}[/green] "
+                f"(μ̂ {event.surrogate_mu:.4g}){marker}"
+            )
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Handle surrogate round completed - print permanent line."""

@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         BoundsUpdatedEvent,
         SearchCompletedEvent,
         SearchStartedEvent,
+        SurrogateCandidateEvaluatedEvent,
         SurrogateDatasetLoadedEvent,
         SurrogateRoundCompletedEvent,
         SurrogateRoundStartedEvent,
@@ -107,6 +108,9 @@ class PlainDisplay(PlacementFormatterMixin):
         # Mixin attributes (set in on_search_started)
         self._mixer_names: tuple[str, ...] = ()
         self._num_layers: int = 0
+        # Surrogate top-k display state
+        self._surrogate_top_scores: list[float] = []
+        self._surrogate_evals_seen: int = 0
         # State tracking for enhanced output
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
@@ -474,11 +478,47 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_surrogate_round_started(self, event: "SurrogateRoundStartedEvent") -> None:
         """Handle surrogate round started event."""
+        self._surrogate_top_scores = []
+        self._surrogate_evals_seen = 0
         self._print(
             f"ROUND {event.round}/{event.total_rounds}",
             f"{event.num_candidates} candidates, "
             f"evaluating top {event.evals_planned} by EI",
         )
+
+    def on_surrogate_candidate_evaluated(
+        self, event: "SurrogateCandidateEvaluatedEvent"
+    ) -> None:
+        """Handle surrogate candidate evaluated event (top-k filtered)."""
+        import bisect
+
+        self._surrogate_evals_seen += 1
+        k = self._config.surrogate_top_k
+
+        # Decide whether to show this candidate
+        if k is None or event.is_new_best:
+            show = True
+        elif len(self._surrogate_top_scores) < k:
+            show = True
+        elif event.agg_score > self._surrogate_top_scores[0]:
+            show = True
+        else:
+            show = False
+
+        # Maintain sorted top-k list (ascending, so [0] is min)
+        bisect.insort(self._surrogate_top_scores, event.agg_score)
+        if k is not None and len(self._surrogate_top_scores) > k:
+            self._surrogate_top_scores.pop(0)
+
+        if show:
+            marker = " *" if event.is_new_best else ""
+            self._print_line(
+                f"#{event.eval_index}/{event.evals_planned}: "
+                f"score={event.agg_score:.4g}, "
+                f"mu={event.surrogate_mu:.4g}, "
+                f"EI={event.ei_value:.3g}{marker}",
+                indent=2,
+            )
 
     def on_surrogate_round_completed(self, event: "SurrogateRoundCompletedEvent") -> None:
         """Handle surrogate round completed event."""

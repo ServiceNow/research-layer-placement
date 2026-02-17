@@ -481,6 +481,26 @@ class SurrogateRoundCompletedEvent(BaseModel):
     best_score: float  # current best real score
 
 
+class SurrogateCandidateEvaluatedEvent(BaseModel):
+    """Emitted after each real evaluation of a surrogate-selected candidate."""
+
+    model_config = {"frozen": True}
+
+    event_type: Literal["surrogate_candidate_evaluated"] = "surrogate_candidate_evaluated"
+    round: int  # 1-indexed
+    total_rounds: int
+    eval_index: int  # 1-indexed within round
+    evals_planned: int
+    assignments: tuple[str, ...]  # full placement
+    scores: dict[str, float]  # per-evaluator real scores
+    agg_score: float  # aggregated real score
+    surrogate_mu: float  # surrogate's mean prediction
+    ei_value: float  # EI that selected this candidate
+    cost: float  # placement cost
+    is_new_best: bool  # beat f_best?
+    f_best: float  # current best (after update)
+
+
 # Discriminated union of all search events
 AnySearchEvent = Annotated[
     # Common/outer-loop events
@@ -505,7 +525,8 @@ AnySearchEvent = Annotated[
     # Surrogate events
     | SurrogateDatasetLoadedEvent
     | SurrogateRoundStartedEvent
-    | SurrogateRoundCompletedEvent,
+    | SurrogateRoundCompletedEvent
+    | SurrogateCandidateEvaluatedEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -539,4 +560,5 @@ __all__ = [
     "SurrogateDatasetLoadedEvent",
     "SurrogateRoundStartedEvent",
     "SurrogateRoundCompletedEvent",
+    "SurrogateCandidateEvaluatedEvent",
 ]

@@ -46,6 +46,7 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
@@ -276,4 +277,10 @@ class EventDiskWriter:
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Handle surrogate round completed event."""
+        self._write_event(event)
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Handle surrogate candidate evaluated event."""
         self._write_event(event)

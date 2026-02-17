@@ -36,6 +36,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
@@ -62,13 +63,14 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
 )
 from place_layers.search_strategy.progress.formatter import PlacementFormatterMixin
 
 # Active strategy types for layermap display
-ActiveStrategy = Literal["hierarchical", "annealing"]
+ActiveStrategy = Literal["hierarchical", "annealing", "surrogate"]
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -100,6 +102,19 @@ class BeamDisplayEntry(BaseModel):
     placement: tuple[str | None, ...]  # Per-layer mixer assignments
     score: float | None
     is_best: bool = False
+
+
+class SurrogateDisplayEntry(BaseModel):
+    """A surrogate candidate for display."""
+
+    model_config = {"frozen": True}
+
+    eval_index: int
+    assignments: tuple[str, ...]
+    agg_score: float
+    surrogate_mu: float
+    ei_value: float
+    is_new_best: bool
 
 
 class LeaderboardEntry(BaseModel):
@@ -195,6 +210,17 @@ class LayermapDisplay(PlacementFormatterMixin):
         # Active search strategy
         self._active_strategy: ActiveStrategy | None = None
 
+        # Surrogate search state
+        self._surrogate_round: int = 0
+        self._surrogate_total_rounds: int = 0
+        self._surrogate_num_candidates: int = 0
+        self._surrogate_evals_planned: int = 0
+        self._surrogate_eval_index: int = 0
+        self._surrogate_entries: list[SurrogateDisplayEntry] = []
+        self._surrogate_dataset_size: int = 0
+        self._surrogate_rho: float = 0.0
+        self._surrogate_best_score: float = float("-inf")
+
         # Annealing state
         self._annealing_step: int = 0
         self._annealing_max_steps: int = 0
@@ -241,7 +267,9 @@ class LayermapDisplay(PlacementFormatterMixin):
         components = []
 
         # Main layermap panel - strategy-specific content
-        if self._allocation_index > 0:
+        if self._active_strategy == "surrogate" and self._surrogate_entries:
+            components.append(self._build_surrogate_content())
+        elif self._allocation_index > 0:
             if self._active_strategy == "annealing" and self._annealing_current_placement:
                 components.append(self._build_annealing_content())
             elif self._beam_entries:  # hierarchical (default)
@@ -478,6 +506,113 @@ class LayermapDisplay(PlacementFormatterMixin):
 
         return result
 
+    # =========================================================================
+    # Surrogate visualization methods
+    # =========================================================================
+
+    def _build_surrogate_content(self) -> Panel:
+        """Build the surrogate search visualization panel."""
+        lines = []
+
+        # Filter to top-k entries for display (keep all in _surrogate_entries for leaderboard)
+        k = self._config.surrogate_top_k
+        display_entries = self._surrogate_entries
+        if k is not None and len(display_entries) > k:
+            # Top-k by score, then re-sort by eval_index for display order
+            display_entries = sorted(display_entries, key=lambda e: e.agg_score, reverse=True)[:k]
+            display_entries.sort(key=lambda e: e.eval_index)
+
+        # Header line: Round X/Y | Candidates | Evaluating progress
+        eval_text = f"Evaluating: {self._surrogate_eval_index}/{self._surrogate_evals_planned}"
+        if k is not None and len(self._surrogate_entries) > k:
+            eval_text += f" (top {k})"
+        header_parts = [
+            f"[bold magenta]Round {self._surrogate_round}/{self._surrogate_total_rounds}[/bold magenta]",
+            f"Candidates: {self._surrogate_num_candidates:,}",
+            eval_text,
+        ]
+        lines.append(Text.from_markup("  |  ".join(header_parts)))
+
+        # Separator
+        lines.append(Text("─" * min(80, self._num_layers + 40), style="dim"))
+
+        # Render each evaluated candidate (filtered to top-k)
+        # Find the best score in this round for highlighting
+        round_best_score = max(
+            (e.agg_score for e in display_entries), default=float("-inf")
+        )
+        for entry in display_entries:
+            row = self._render_surrogate_candidate_row(
+                entry, is_round_best=(entry.agg_score == round_best_score)
+            )
+            lines.append(row)
+
+        # Show "evaluating" indicator if more evals expected
+        if self._surrogate_eval_index < self._surrogate_evals_planned:
+            eval_text = Text()
+            eval_text.append(
+                f"  #{self._surrogate_eval_index + 1}: ", style="dim"
+            )
+            eval_text.append("···  evaluating", style="dim italic")
+            lines.append(eval_text)
+
+        # Separator
+        lines.append(Text("─" * min(80, self._num_layers + 40), style="dim"))
+
+        # Footer: Best score | Dataset size | rho
+        footer_parts = []
+        if self._surrogate_best_score > float("-inf"):
+            footer_parts.append(f"[green]Best: {self._surrogate_best_score:.4g}[/green]")
+        if self._surrogate_dataset_size > 0:
+            footer_parts.append(f"Dataset: {self._surrogate_dataset_size:,}")
+        if self._surrogate_rho > 0:
+            footer_parts.append(f"ρ {self._surrogate_rho:.2f}")
+        if footer_parts:
+            lines.append(Text.from_markup("  |  ".join(footer_parts)))
+
+        return Panel(
+            Group(*lines),
+            title="[bold]Surrogate Search[/bold]",
+            border_style="magenta",
+        )
+
+    def _render_surrogate_candidate_row(
+        self,
+        entry: SurrogateDisplayEntry,
+        is_round_best: bool,
+    ) -> Text:
+        """Render one surrogate candidate as a row."""
+        result = Text()
+
+        # Row number
+        is_highlight = entry.is_new_best or is_round_best
+        result.append(
+            f"  #{entry.eval_index}: ",
+            style="bold" if is_highlight else "",
+        )
+
+        # Render each layer position
+        for mixer in entry.assignments:
+            result.append_text(self._render_layer(mixer, is_evaluating=False))
+
+        # Real score
+        result.append(
+            f"  {entry.agg_score:.4g}",
+            style="bold green" if entry.is_new_best else "green",
+        )
+
+        # Surrogate prediction (mu hat)
+        result.append(f"  (μ̂ {entry.surrogate_mu:.4g})", style="dim")
+
+        # EI value
+        result.append(f"  EI {entry.ei_value:.3g}", style="dim")
+
+        # New best marker
+        if entry.is_new_best:
+            result.append(" ★", style="bold yellow")
+
+        return result
+
     def _render_leaderboard(self) -> Panel:
         """Render the unified summary + leaderboard panel."""
         components = []
@@ -686,6 +821,17 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._beam_entries = []
         self._leaderboard = []
         self._evaluating_layer = None
+
+        # Reset surrogate state
+        self._surrogate_round = 0
+        self._surrogate_total_rounds = 0
+        self._surrogate_num_candidates = 0
+        self._surrogate_evals_planned = 0
+        self._surrogate_eval_index = 0
+        self._surrogate_entries = []
+        self._surrogate_dataset_size = 0
+        self._surrogate_rho = 0.0
+        self._surrogate_best_score = float("-inf")
 
         # Print header
         self._print_search_header()
@@ -945,13 +1091,89 @@ class LayermapDisplay(PlacementFormatterMixin):
     # =========================================================================
 
     def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
-        """Handle surrogate dataset loaded event (no-op for layermap display)."""
-        del event  # Not displayed in layermap mode
+        """Handle surrogate dataset loaded event."""
+        self._active_strategy = "surrogate"
+        self._surrogate_dataset_size = event.num_samples
+        self._surrogate_rho = event.exploration_rho
+        self._console.print(
+            f"  Surrogate: {event.num_samples} samples, "
+            f"exploration ρ={event.exploration_rho:.2f}"
+        )
 
     def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
-        """Handle surrogate round started event (no-op for layermap display)."""
-        del event  # Not displayed in layermap mode
+        """Handle surrogate round started event."""
+        self._active_strategy = "surrogate"
+        self._surrogate_round = event.round
+        self._surrogate_total_rounds = event.total_rounds
+        self._surrogate_num_candidates = event.num_candidates
+        self._surrogate_evals_planned = event.evals_planned
+        self._surrogate_eval_index = 0
+        self._surrogate_entries = []
+        self._console.print(
+            f"  Round {event.round}/{event.total_rounds}: "
+            f"{event.num_candidates:,} candidates, "
+            f"evaluating top {event.evals_planned} by EI"
+        )
+        self._update_live()
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Handle surrogate candidate evaluated event."""
+        # Append display entry
+        self._surrogate_entries.append(
+            SurrogateDisplayEntry(
+                eval_index=event.eval_index,
+                assignments=event.assignments,
+                agg_score=event.agg_score,
+                surrogate_mu=event.surrogate_mu,
+                ei_value=event.ei_value,
+                is_new_best=event.is_new_best,
+            )
+        )
+        self._surrogate_eval_index = event.eval_index
+
+        # Update best score
+        if event.is_new_best:
+            self._surrogate_best_score = event.f_best
+
+        # Add to leaderboard
+        alloc = dict(Counter(event.assignments))
+        self._leaderboard.append(
+            LeaderboardEntry(
+                score=event.agg_score,
+                cost=event.cost,
+                allocation=alloc,
+                assignments=event.assignments,
+            )
+        )
+        self._leaderboard.sort(key=lambda e: e.score, reverse=True)
+        self._leaderboard = self._leaderboard[:50]
+
+        self._update_live()
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
-        """Handle surrogate round completed event (no-op for layermap display)."""
-        del event  # Not displayed in layermap mode
+        """Handle surrogate round completed event."""
+        self._surrogate_rho = event.rho
+        self._surrogate_dataset_size = event.dataset_size
+        self._surrogate_best_score = event.best_score
+
+        # Print permanent round summary with best placement layermap
+        self._console.print(
+            f"  ✓ Round {event.round}: best={event.best_score:.4g}, "
+            f"r={event.prediction_correlation:.2f}, "
+            f"ρ={event.rho:.2f}, dataset={event.dataset_size}"
+        )
+
+        # Show best placement from this round's entries
+        if self._surrogate_entries:
+            best_entry = max(self._surrogate_entries, key=lambda e: e.agg_score)
+            viz = Text("    ")
+            for mixer in best_entry.assignments:
+                viz.append_text(self._render_layer(mixer, is_evaluating=False))
+            viz.append(f" → {best_entry.agg_score:.4g}", style="bold green")
+            self._console.print(viz)
+
+        # Clear entries for next round
+        self._surrogate_entries = []
+        self._update_live()

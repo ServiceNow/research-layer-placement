@@ -301,7 +301,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             predicted_scores = mu[top_indices].copy()
 
             # Step 4: Evaluate with real evaluator
-            for idx in top_indices:
+            for eval_i, idx in enumerate(top_indices):
                 candidate = top_candidates[idx]
                 placement = LayerPlacement(assignments=candidate)
                 scores_dict = await problem.evaluate(placement)
@@ -311,21 +311,23 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 all_assignments.append(candidate)
                 all_scores.append(agg_score)
 
+                alloc = dict(Counter(candidate))
+                candidate_cost = cost_model.allocation_cost(alloc)
+
+                is_new_best = False
                 if agg_score > f_best:
                     f_best = agg_score
+                    is_new_best = True
 
                     if self.observers:
-                        best_alloc = dict(Counter(candidate))
-                        best_cost = cost_model.allocation_cost(best_alloc)
-
                         from place_layers.search_strategy.progress import (
                             BestUpdatedEvent,
                         )
 
                         event = BestUpdatedEvent(
                             scores=scores_dict,
-                            cost=best_cost,
-                            allocation=best_alloc,
+                            cost=candidate_cost,
+                            allocation=alloc,
                             assignments=candidate,
                         )
                         for observer in self.observers:
@@ -334,6 +336,27 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 if self.observers:
                     for observer in self.observers:
                         observer.on_eval_completed(self.eval_count)
+
+                    from place_layers.search_strategy.progress import (
+                        SurrogateCandidateEvaluatedEvent,
+                    )
+
+                    eval_event = SurrogateCandidateEvaluatedEvent(
+                        round=round_num + 1,
+                        total_rounds=self.config.num_rounds,
+                        eval_index=eval_i + 1,
+                        evals_planned=n_select,
+                        assignments=candidate,
+                        scores=scores_dict,
+                        agg_score=agg_score,
+                        surrogate_mu=float(mu[idx]),
+                        ei_value=float(ei[idx]),
+                        cost=candidate_cost,
+                        is_new_best=is_new_best,
+                        f_best=f_best,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_candidate_evaluated(eval_event)
 
             # Compute prediction correlation for this round's candidates
             actual_scores = np.array(all_scores[-n_select:])

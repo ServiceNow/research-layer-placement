@@ -69,6 +69,7 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,

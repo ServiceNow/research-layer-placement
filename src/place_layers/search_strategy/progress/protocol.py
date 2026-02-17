@@ -18,6 +18,7 @@ from place_layers.search_strategy.progress.events import (
     AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
@@ -135,4 +136,10 @@ class SearchObserver(Protocol):
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Called when a surrogate refinement round completes."""
+        ...
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Called after each real evaluation of a surrogate-selected candidate."""
         ...
