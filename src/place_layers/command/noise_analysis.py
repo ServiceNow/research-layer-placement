@@ -18,16 +18,11 @@ from typing import ClassVar, Literal, cast
 import matplotlib.pyplot as plt
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
-from pydantic import BaseModel, Field
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
-from place_layers.evaluator.evaluators import Evaluators
-from place_layers.evaluator.mock_supernet_evaluator import (
-    MockSupernetEvaluator,
-    MockSupernetEvaluatorConfig,
-)
-from place_layers.evaluator.objective import IndependentObjectiveConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig, Evaluators
+from place_layers.evaluator.mock_supernet_evaluator import MockSupernetEvaluator
 from place_layers.cost_model.base_cost_model import BaseCostModel
 from place_layers.mrf import ExactMRFSolver, ExactSolution
 from place_layers.problem.layer_placement import (
@@ -179,125 +174,98 @@ class NoiseAnalysisCommand(BaseCommand):
         """Execute noise analysis."""
         output_dir = Path(HydraConfig.get().runtime.output_dir)
 
-        # Build base evaluators
-        base_evaluators: dict[str, MockSupernetEvaluator] = {}
-        for name, eval_config in self.config.evaluators.configs.items():
-            evaluator = eval_config.create_evaluator()
-            assert isinstance(evaluator, MockSupernetEvaluator)
-            base_evaluators[name] = evaluator
+        async with self.config.evaluators.create_evaluators(output_dir) as evals:
+            # Validate all evaluators are MockSupernetEvaluator
+            for name, evaluator in evals.evaluators.items():
+                if not isinstance(evaluator, MockSupernetEvaluator):
+                    raise TypeError(
+                        f"Evaluator '{name}' must be MockSupernetEvaluator, "
+                        f"got {type(evaluator).__name__}"
+                    )
 
-        first = next(iter(base_evaluators.values()))
+            # Pick any evaluator to compute exact optimal (all share same MRF
+            # landscape when they have the same seed/structure params — they
+            # differ only in noise_sigma / noise_seed_shift).
+            first_name = next(iter(evals.evaluators))
+            first_eval = cast(
+                MockSupernetEvaluator, evals.evaluators[first_name]
+            )
+            cost_model = self.config.problem.cost_model.create_cost_model()
 
-        # Build Evaluators container with INDEPENDENT objective
-        objective = IndependentObjectiveConfig().create_objective(
-            evaluator_names=tuple(base_evaluators.keys()),
-        )
-        base_evals = Evaluators(
-            evaluators=base_evaluators,
-            objective=objective,
-            num_layers=first.num_layers,
-            mixer_names=first.mixer_names,
-        )
-
-        cost_model = self.config.problem.cost_model.create_cost_model()
-
-        # Compute exact optimal per landscape
-        optimals: dict[str, ExactSolution] = {}
-        for name, evaluator in base_evaluators.items():
-            logger.info("[%s] Computing exact optimal via DP…", name)
-            solver = evaluator.create_solver()
+            logger.info("Computing exact optimal via DP…")
+            solver = first_eval.create_solver()
             optimal = self._compute_exact_optimal(solver, cost_model)
             if optimal is None:
-                raise ValueError(f"[{name}] No feasible placement found")
-            optimals[name] = optimal
+                raise ValueError("No feasible placement found")
             logger.info(
-                "[%s] Exact optimal: true_score=%.4f, placement=%s…",
-                name,
+                "Exact optimal: true_score=%.4f, placement=%s…",
                 optimal.true_score,
                 optimal.placement.assignments[:10],
             )
+            optimal_true = optimal.true_score
 
-        # Run noise sweep
-        all_trials: dict[str, list[TrialResult]] = {
-            name: [] for name in base_evaluators
-        }
-        total_trials = len(self.config.noise_sigmas) * self.config.num_seeds
-        trial_num = 0
-
-        for sigma in self.config.noise_sigmas:
-            logger.info("Sigma %.2f (%d seeds)", sigma, self.config.num_seeds)
-            for seed_offset in range(self.config.num_seeds):
-                trial_num += 1
-
-                # Swap in noisy variants
-                trial_evals = base_evals
-                for name, evaluator in base_evaluators.items():
-                    noisy = MockSupernetEvaluator.with_noise(
-                        evaluator, sigma, noise_seed_shift=seed_offset
-                    )
-                    trial_evals = trial_evals.replace_evaluator(name, noisy)
-
-                # M searches, one per evaluator/objective
-                for name in base_evaluators:
-                    problem = self.config.problem.create_problem(
-                        trial_evals, objective_name=name
-                    )
-                    strategy = self.config.search_strategy.create_search_strategy()
-                    result = cast(
-                        CostConstrainedSearchResult, await strategy.search(problem)
-                    )
-
-                    found_true = base_evaluators[name].true_score(
-                        result.best_parameters
-                    )
-                    optimal_true = optimals[name].true_score
-                    regret = optimal_true - found_true
-                    edit_distance = sum(
-                        a != b
-                        for a, b in zip(
-                            result.best_parameters.assignments,
-                            optimals[name].placement.assignments,
-                            strict=True,
-                        )
-                    )
-                    found_noisy = result.best_score
-
-                    all_trials[name].append(
-                        TrialResult(
-                            noise_sigma=sigma,
-                            noise_seed_shift=seed_offset,
-                            optimal_true_score=optimal_true,
-                            found_true_score=found_true,
-                            found_noisy_score=found_noisy,
-                            found_cost=result.final_cost,
-                            regret=regret,
-                            relative_regret=(
-                                abs(regret / optimal_true)
-                                if optimal_true != 0
-                                else 0.0
-                            ),
-                            edit_distance=edit_distance,
-                            found_optimal=edit_distance == 0,
-                            allocations_explored=result.allocations_explored,
-                        )
-                    )
+            # Run search for each evaluator (each has its own noise config)
+            all_trials: list[TrialResult] = []
+            total = len(evals.evaluators)
+            for trial_num, name in enumerate(evals.evaluators, 1):
+                evaluator = cast(
+                    MockSupernetEvaluator, evals.evaluators[name]
+                )
+                sigma = evaluator.config.noise_sigma
+                seed_shift = evaluator.config.noise_seed_shift
 
                 logger.info(
-                    "  [%d/%d] trial complete",
-                    trial_num,
-                    total_trials,
+                    "[%d/%d] %s: sigma=%.2f, seed_shift=%d",
+                    trial_num, total, name, sigma, seed_shift,
                 )
 
-        # Save per-landscape
-        for name in base_evaluators:
-            eval_dir = output_dir / name
-            eval_dir.mkdir(parents=True, exist_ok=True)
-            sweep = SweepResults(
-                trials=all_trials[name], noise_sigmas=self.config.noise_sigmas
-            )
-            self._save_results(sweep, eval_dir, self.config.evaluators.configs[name])
-            self._create_plots(sweep, eval_dir)
-            self._print_summary(name, sweep)
+                # Each evaluator name is an objective name (IndependentObjective)
+                problem = self.config.problem.create_problem(
+                    evals, objective_name=name
+                )
+                strategy = self.config.search_strategy.create_search_strategy()
+                result = cast(
+                    CostConstrainedSearchResult, await strategy.search(problem)
+                )
+
+                found_true = first_eval.true_score(result.best_parameters)
+                regret = optimal_true - found_true
+                edit_distance = sum(
+                    a != b
+                    for a, b in zip(
+                        result.best_parameters.assignments,
+                        optimal.placement.assignments,
+                        strict=True,
+                    )
+                )
+
+                all_trials.append(
+                    TrialResult(
+                        noise_sigma=sigma,
+                        noise_seed_shift=seed_shift,
+                        optimal_true_score=optimal_true,
+                        found_true_score=found_true,
+                        found_noisy_score=result.best_score,
+                        found_cost=result.final_cost,
+                        regret=regret,
+                        relative_regret=(
+                            abs(regret / optimal_true)
+                            if optimal_true != 0
+                            else 0.0
+                        ),
+                        edit_distance=edit_distance,
+                        found_optimal=edit_distance == 0,
+                        allocations_explored=result.allocations_explored,
+                    )
+                )
+
+            # Derive noise_sigmas from trials
+            noise_sigmas = sorted(set(t.noise_sigma for t in all_trials))
+
+            sweep = SweepResults(trials=all_trials, noise_sigmas=noise_sigmas)
+            self._save_results(sweep, output_dir, evals)
+            self._create_plots(sweep, output_dir)
+            self._print_summary(sweep)
 
         logger.info("Results saved to %s", output_dir)
 
@@ -305,18 +273,17 @@ class NoiseAnalysisCommand(BaseCommand):
         self,
         results: SweepResults,
         output_dir: Path,
-        eval_config: MockSupernetEvaluatorConfig,
+        evals: Evaluators,
     ) -> None:
         """Save results to JSON."""
         data = {
             "config": {
-                "num_layers": eval_config.num_layers,
-                "mixer_names": eval_config.mixer_names,
-                "seed": eval_config.seed,
+                "num_layers": evals.num_layers,
+                "mixer_names": sorted(evals.mixer_names),
                 "problem_type": self.config.problem.problem_type,
                 "search_strategy_type": self.config.search_strategy.strategy_type,
-                "noise_sigmas": self.config.noise_sigmas,
-                "num_seeds": self.config.num_seeds,
+                "noise_sigmas": results.noise_sigmas,
+                "num_trials": len(results.trials),
             },
             "trials": [
                 {
@@ -400,11 +367,10 @@ class NoiseAnalysisCommand(BaseCommand):
         logger.info("Saved line plot to %s", output_dir / "noise_analysis_lines.png")
         plt.close("all")
 
-    def _print_summary(self, name: str, results: SweepResults) -> None:
+    def _print_summary(self, results: SweepResults) -> None:
         """Print summary statistics."""
         logger.info(
-            "[%s] Summary: sigma | mean_regret | std_regret | mean_edit_dist | std_edit_dist",
-            name,
+            "Summary: sigma | mean_regret | std_regret | mean_edit_dist | std_edit_dist",
         )
         for sigma in results.noise_sigmas:
             logger.info(
@@ -417,41 +383,20 @@ class NoiseAnalysisCommand(BaseCommand):
             )
 
 
-class NoiseAnalysisEvaluatorsConfig(BaseModel):
-    """Named mock evaluator configurations for noise analysis."""
-
-    model_config = {"frozen": True}
-
-    configs: dict[str, MockSupernetEvaluatorConfig] = Field(
-        description="Named mock evaluator configurations. One noise sweep per evaluator.",
-    )
-
-
 class NoiseAnalysisCommandConfig(BaseCommandConfig):
-    """Configuration for noise degradation analysis."""
+    """Configuration for noise degradation analysis.
+
+    Each evaluator entry in the standard ``EvaluatorsConfig`` should be a
+    ``MockSupernetEvaluator`` with its own ``noise_sigma`` and
+    ``noise_seed_shift``.  Use ``objective_type: independent``.
+    """
 
     _impl_class: ClassVar[type[BaseCommand]] = NoiseAnalysisCommand
 
     command: Literal["noise_analysis"] = "noise_analysis"
 
-    evaluators: NoiseAnalysisEvaluatorsConfig = Field(
-        description="Mock evaluators to analyze (one full noise sweep per evaluator)",
-    )
+    evaluators: EvaluatorsConfig
 
-    problem: CostConstrainedProblemConfig = Field(
-        description="Cost-constrained problem configuration (cost model + constraints)",
-    )
+    problem: CostConstrainedProblemConfig
 
-    search_strategy: CostConstrainedConfig = Field(
-        description="Cost-constrained search strategy configuration",
-    )
-
-    # Sweep parameters
-    noise_sigmas: list[float] = Field(
-        description="Noise levels to sweep over",
-    )
-
-    num_seeds: int = Field(
-        description="Number of random seeds for statistical significance",
-        gt=0,
-    )
+    search_strategy: CostConstrainedConfig

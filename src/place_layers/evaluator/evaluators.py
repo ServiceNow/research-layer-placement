@@ -184,21 +184,6 @@ class Evaluators[ParametersT]:
         """Evaluate multiple parameter settings."""
         return [await self.evaluate(p) for p in parameters_list]
 
-    # -- Mutation -------------------------------------------------------------
-
-    def replace_evaluator(
-        self, name: str, evaluator: "BaseEvaluator[ParametersT]"
-    ) -> "Evaluators[ParametersT]":
-        """Return a copy with the named evaluator replaced."""
-        new_evals = dict(self.evaluators)
-        new_evals[name] = evaluator
-        return Evaluators(
-            evaluators=new_evals,
-            num_layers=self._num_layers,
-            mixer_names=self._mixer_names,
-            objective=self.objective,
-        )
-
     # -- Lifecycle ------------------------------------------------------------
 
     async def __aenter__(self) -> Self:

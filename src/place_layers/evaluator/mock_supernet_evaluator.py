@@ -73,19 +73,6 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
             triplet_scale=self.config.triplet_scale,
         )
 
-    @classmethod
-    def with_noise(
-        cls,
-        evaluator: MockSupernetEvaluator,
-        noise_sigma: float,
-        noise_seed_shift: int = 0,
-    ) -> MockSupernetEvaluator:
-        """Return a copy of *evaluator* with a different noise configuration."""
-        config = evaluator.config.model_copy(
-            update={"noise_sigma": noise_sigma, "noise_seed_shift": noise_seed_shift}
-        )
-        return cls(config)
-
     @property
     def mrf_model(self) -> ChainMRFModel:
         """The underlying MRF model defining the score landscape."""
