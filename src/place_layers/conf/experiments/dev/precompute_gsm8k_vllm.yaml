@@ -7,10 +7,11 @@
 #
 #   # Run:
 #   VLLM_MODEL=Qwen/Qwen2-0.5B python -m place_layers \
-#       +experiments=precompute_gsm8k_vllm
+#       +experiments=dev/precompute_gsm8k_vllm
 
 defaults:
   - /command: precompute_traces
+  - /evaluator@evaluators.configs.main: trace_precompute
   - /backend: vllm
   - /task: gsm8k
   - /generation: sampling

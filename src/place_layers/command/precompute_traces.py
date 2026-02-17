@@ -55,7 +55,7 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
 from place_layers.core.memory_logging import log_memory, reset_peak_memory_stats
-from place_layers.evaluator.trace_precompute import TracePrecomputeEvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,9 @@ class PrecomputeTracesCommand(BaseCommand):
         log_memory("INIT")
         reset_peak_memory_stats()
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
+        async with self.config.evaluators.create_evaluators(output_dir) as evals:
+            evaluator = next(iter(evals.evaluators.values()))
+
             # Resolve placement specification
             resolved = resolve_placement(self.config.placement, evaluator)
 
@@ -92,8 +94,8 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
 
     command: Literal["precompute_traces"] = "precompute_traces"
 
-    evaluator: TracePrecomputeEvaluatorConfig = Field(
-        description="Trace precompute evaluator configuration"
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single trace_precompute evaluator)"
     )
 
     placement: list[str] | None = Field(

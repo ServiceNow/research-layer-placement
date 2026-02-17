@@ -33,22 +33,25 @@ class BaseProblem[ParametersT]:
         self.evaluator = evaluator
         self.config = config
 
-    async def evaluate(self, parameters: ParametersT) -> float:
+    async def evaluate(self, parameters: ParametersT) -> dict[str, float]:
         """
         Evaluate parameters.
 
         This is the primary API that search algorithms use.
-        Delegates to the evaluator.
+        Delegates to the evaluator (EvaluatorInstances).
 
         Args:
             parameters: Parameters to evaluate.
 
         Returns:
-            Score (higher is better by default).
+            Dict mapping evaluator name to score.
         """
-        return await self.evaluator.evaluate(parameters)
+        result = await self.evaluator.evaluate(parameters)
+        if isinstance(result, dict):
+            return result
+        return {"main": result}
 
-    async def evaluate_batch(self, parameters_list: list[ParametersT]) -> list[float]:
+    async def evaluate_batch(self, parameters_list: list[ParametersT]) -> list[dict[str, float]]:
         """
         Evaluate multiple parameter settings in batch.
 
@@ -58,6 +61,6 @@ class BaseProblem[ParametersT]:
             parameters_list: List of parameters to evaluate.
 
         Returns:
-            List of scores in the same order as parameters_list.
+            List of score dicts in the same order as parameters_list.
         """
-        return await self.evaluator.evaluate_batch(parameters_list)
+        return [await self.evaluate(p) for p in parameters_list]

@@ -72,11 +72,6 @@ from place_layers.search_strategy.progress.events import (
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapBeamNodeId,
-    SwapCandidate,
-    SwapEvaluatedEvent,
 )
 from place_layers.search_strategy.progress.layermap_display import LayermapDisplay
 from place_layers.search_strategy.progress.plain_display import PlainDisplay

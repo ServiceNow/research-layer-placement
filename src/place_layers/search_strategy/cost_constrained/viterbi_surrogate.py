@@ -92,10 +92,14 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         best_idx = int(np.argmax(all_scores))
         best_assignment = all_assignments[best_idx]
         best_alloc = dict(Counter(best_assignment))
+        # Re-evaluate to get dict scores for BeamEntry
+        placement = LayerPlacement(assignments=best_assignment)
+        best_scores = await problem.evaluate(placement)
+        self.eval_count += 1
         best_entry = BeamEntry(
             assignments=best_assignment,
             allocation=best_alloc,
-            score=all_scores[best_idx],
+            scores=best_scores,
         )
 
         return self._create_result(
@@ -133,10 +137,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             cost_budget=None,
         )
 
-        best_entry: BeamEntry | None = None
         best_cost = float("inf")
-        fallback_entry: BeamEntry | None = None
         fallback_score = float("-inf")
+
+        best_assignment: tuple[str, ...] | None = None
+        best_alloc: dict[str, int] | None = None
+        fallback_assignment: tuple[str, ...] | None = None
+        fallback_alloc: dict[str, int] | None = None
 
         for assignment, score in zip(all_assignments, all_scores):
             alloc = dict(Counter(assignment))
@@ -144,27 +151,33 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
             if score >= performance_target and cost < best_cost:
                 best_cost = cost
-                best_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                best_assignment = assignment
+                best_alloc = alloc
             if score > fallback_score:
                 fallback_score = score
-                fallback_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                fallback_assignment = assignment
+                fallback_alloc = alloc
 
-        if best_entry is None:
+        if best_assignment is None:
             logger.warning(
                 "No placement met performance target %s. "
                 "Returning best by score.",
                 performance_target,
             )
-            assert fallback_entry is not None
-            best_entry = fallback_entry
+            assert fallback_assignment is not None and fallback_alloc is not None
+            best_assignment = fallback_assignment
+            best_alloc = fallback_alloc
+
+        assert best_alloc is not None
+        # Re-evaluate to get dict scores for BeamEntry
+        placement = LayerPlacement(assignments=best_assignment)
+        best_scores = await problem.evaluate(placement)
+        self.eval_count += 1
+        best_entry = BeamEntry(
+            assignments=best_assignment,
+            allocation=best_alloc,
+            scores=best_scores,
+        )
 
         return self._create_result(
             best_entry=best_entry,
@@ -190,7 +203,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             Path(self.config.exploration_dataset_path)
         )
         all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.scores)
+        all_scores: list[float] = list(exploration.aggregated_scores())
         logger.info(
             "Loaded exploration dataset: %d samples, rho=%.4f",
             len(all_assignments),
@@ -280,14 +293,15 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             for idx in top_indices:
                 candidate = candidate_list[idx]
                 placement = LayerPlacement(assignments=candidate)
-                score = await problem.evaluate(placement)
+                scores_dict = await problem.evaluate(placement)
+                agg_score = problem.evaluator.aggregate(scores_dict)
                 self.eval_count += 1
 
                 all_assignments.append(candidate)
-                all_scores.append(score)
+                all_scores.append(agg_score)
 
-                if score > f_best:
-                    f_best = score
+                if agg_score > f_best:
+                    f_best = agg_score
 
                     if self.observers:
                         best_alloc = dict(Counter(candidate))
@@ -298,7 +312,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                         )
 
                         event = BestUpdatedEvent(
-                            score=score,
+                            scores=scores_dict,
                             cost=best_cost,
                             allocation=best_alloc,
                             assignments=candidate,

@@ -18,7 +18,7 @@ defaults:
   - /generation: greedy
 
 evaluators:
-  evaluators_dict:
+  configs:
     main:
       evaluator_type: generative
       backend: ${backend}
@@ -41,7 +41,7 @@ defaults:
   - /generation: greedy
 
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k:
       evaluator_type: generative
       backend: ${backend}
@@ -71,7 +71,7 @@ To reuse existing `conf/evaluator/*.yaml` configs, use Hydra's package override 
 ```yaml
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: generative  # Load generative.yaml into dict
+  - /evaluator@evaluators.configs.main: generative  # Load generative.yaml into dict
   - /backend: transformers
   - /model: apriel2_0_5b_dev
   - /task: gsm8k
@@ -83,15 +83,15 @@ For multiple evaluators, load each one into the dict:
 ```yaml
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.gsm8k: generative
-  - /evaluator@evaluators.evaluators_dict.mmlu: likelihood
+  - /evaluator@evaluators.configs.gsm8k: generative
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: transformers
   - /model: apriel2_0_5b_dev
   - /generation: greedy
 
 # Override specific evaluator configs
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k:
       tasks: ["gsm8k"]
       max_problems_per_task: 100
@@ -112,7 +112,7 @@ Combines scores using weights: `score = sum(weight_i * score_i)`
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {...}
     mmlu: {...}
   weights:
@@ -128,7 +128,7 @@ Uses first evaluator for optimization, others for tracking/logging only:
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {...}      # Used for optimization
     mmlu: {...}       # Logged but not used for optimization
     arc_easy: {...}   # Logged but not used for optimization
@@ -142,7 +142,7 @@ Takes minimum score across all evaluators (optimize worst-case):
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {...}
     mmlu: {...}
   aggregation: min
@@ -153,7 +153,7 @@ Takes maximum score across all evaluators (optimize best-case):
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {...}
     mmlu: {...}
   aggregation: max
@@ -184,8 +184,7 @@ The `evaluation_results.json` contains:
 {
   "timestamp": "2026-02-10T...",
   "evaluator_type": "multi[weighted_average]",
-  "score": 0.7234,              // Aggregated score
-  "auxiliary_scores": {          // Individual scores
+  "scores": {                   // Per-evaluator scores
     "gsm8k": 0.8123,
     "mmlu": 0.5893
   },
@@ -255,7 +254,7 @@ Evaluate performance across multiple benchmarks:
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}
     math: {evaluator_type: generative, tasks: ["math"], ...}
     mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}
@@ -267,7 +266,7 @@ Compare different evaluation methods on same data:
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     direct: {evaluator_type: generative, tasks: ["gsm8k"], ...}
     importance: {evaluator_type: importance_weighted, trace_dir: "/traces/gsm8k", ...}
   aggregation: first_only  # Optimize for direct, log importance as validation
@@ -278,7 +277,7 @@ Combine reasoning, extraction, and multiple-choice:
 
 ```yaml
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}          # reasoning
     fda: {evaluator_type: generative, tasks: ["fda"], ...}              # extraction
     mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}            # multiple-choice
@@ -296,7 +295,7 @@ defaults:
 Update to:
 ```yaml
 defaults:
-  - /evaluator@evaluators.evaluators_dict.main: generative
+  - /evaluator@evaluators.configs.main: generative
 ```
 
 This loads the existing `evaluator/generative.yaml` config into the evaluators dict.

@@ -5,7 +5,7 @@
 #   python -m place_layers +experiments=explore_mock_mrf_range3
 defaults:
   - /command: explore_placements
-  - /evaluator: mock_mrf_range3
+  - /evaluator@evaluators.configs.main: mock_mrf_range3
   - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - _self_

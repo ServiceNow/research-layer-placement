@@ -2,7 +2,7 @@
 # Multi-evaluator example: GSM8K (generative) + MMLU (likelihood)
 # Weighted average: 60% GSM8K, 40% MMLU
 
-evaluators_dict:
+configs:
   gsm8k:
     evaluator_type: generative
     backend: ${backend}

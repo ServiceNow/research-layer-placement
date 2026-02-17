@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: likelihood
+  - /evaluator@evaluators.configs.main: likelihood
   - /backend: local_vllm
   - /task: mmlu
   - /generation: greedy

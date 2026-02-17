@@ -70,28 +70,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self._progress_estimator = progress_estimator
         self.eval_count = 0
 
-    async def _evaluate_with_details(
-        self, problem: CostConstrainedProblem, placement: LayerPlacement
-    ) -> tuple[float, dict[str, float] | None]:
-        """Evaluate placement and return both aggregated and auxiliary scores.
-
-        Args:
-            problem: The optimization problem
-            placement: The placement to evaluate
-
-        Returns:
-            Tuple of (aggregated_score, auxiliary_scores_dict)
-            auxiliary_scores_dict is None if not using multi-evaluator
-        """
-        from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
-
-        # Check if using multi-evaluator
-        if isinstance(problem.evaluator, EvaluatorInstances):
-            return await problem.evaluator.evaluate_with_details(placement)
-        else:
-            score = await problem.evaluator.evaluate(placement)
-            return score, None
-
     @overload
     async def search(
         self,
@@ -268,7 +246,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         allocations_explored: int,
     ) -> CostConstrainedSearchResult:
         """Create the final search result."""
-        assert best_entry.score is not None
+        assert best_entry.scores is not None
 
         # Compute cost from allocation (never stored, always computed fresh)
         final_cost = cost_model.allocation_cost(best_entry.allocation)
@@ -276,7 +254,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
-        logger.info(f"Best score: {best_entry.score:.4f}")
+        logger.info(f"Best scores: {best_entry.scores}")
         logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")
@@ -287,7 +265,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             from place_layers.search_strategy.progress import SearchCompletedEvent
 
             event = SearchCompletedEvent(
-                best_score=best_entry.score,
+                best_scores=best_entry.scores,
                 best_cost=final_cost,
                 total_evaluations=self.eval_count,
                 allocations_explored=allocations_explored,
@@ -297,7 +275,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         return CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=best_entry.assignments),
-            best_score=best_entry.score,
+            best_scores=best_entry.scores,
             total_evaluations=self.eval_count,
             final_cost=final_cost,
             mode=mode,

@@ -49,9 +49,6 @@ from place_layers.search_strategy.progress.events import (
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapEvaluatedEvent,
 )
 
 if TYPE_CHECKING:
@@ -243,24 +240,6 @@ class EventDiskWriter:
 
     def on_beam_candidate_evaluated(self, event: BeamCandidateEvaluatedEvent) -> None:
         """Handle beam candidate evaluated event."""
-        self._write_event(event)
-
-    # =========================================================================
-    # Swap-beam search event handlers
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: SwapBeamIterationStartedEvent
-    ) -> None:
-        """Handle swap-beam iteration started event."""
-        self._write_event(event)
-
-    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
-        """Handle swap evaluated event."""
-        self._write_event(event)
-
-    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
-        """Handle swap-beam iteration completed event."""
         self._write_event(event)
 
     # =========================================================================

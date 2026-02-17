@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: likelihood
+  - /evaluator@evaluators.configs.main: likelihood
   - /backend: transformers
   - /model: apriel2_0_5b_dev
   - /task: mmlu_quick

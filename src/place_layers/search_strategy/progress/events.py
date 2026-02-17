@@ -234,12 +234,10 @@ class AllocationCompletedEvent(BaseModel):
     mixer_names: tuple[str, ...]
     # Final assignments - tuple of mixer names, one per layer
     assignments: tuple[str, ...] | None  # None if no valid assignment found
-    score: float | None  # None if no valid assignment found
+    scores: dict[str, float] | None  # None if no valid assignment found
     # All top placements from this allocation (sorted by score descending)
-    # Each entry is (assignments, score)
+    # Each entry is (assignments, aggregated_score)
     top_placements: tuple[tuple[tuple[str, ...], float], ...] = ()
-    # Individual scores from auxiliary evaluators (if multi-evaluator mode)
-    auxiliary_scores: dict[str, float] | None = None
 
 
 class BestUpdatedEvent(BaseModel):
@@ -248,11 +246,10 @@ class BestUpdatedEvent(BaseModel):
     model_config = {"frozen": True}
 
     event_type: Literal["best_updated"] = "best_updated"
-    score: float
+    scores: dict[str, float]
     cost: float
     allocation: dict[str, int]
     assignments: tuple[str, ...]
-    auxiliary_scores: dict[str, float] | None = None
 
 
 class BoundsUpdatedEvent(BaseModel):
@@ -304,7 +301,7 @@ class SearchCompletedEvent(BaseModel):
     model_config = {"frozen": True}
 
     event_type: Literal["search_completed"] = "search_completed"
-    best_score: float
+    best_scores: dict[str, float]
     best_cost: float
     total_evaluations: int
     allocations_explored: int
@@ -432,104 +429,6 @@ class BeamCandidateEvaluatedEvent(BaseModel):
 
 
 # =============================================================================
-# Swap-beam search events
-# =============================================================================
-
-
-class SwapBeamNodeId(BaseModel):
-    """Stable identifier for swap-beam search nodes.
-
-    Unlike hierarchical search (which builds partial placements), swap-beam
-    always works with complete placements. IDs track iteration and sequence.
-
-    Fields:
-        allocation: Counts per mixer as tuple in phase_order,
-            e.g., (("FA", 4), ("SWA", 2), ("GDN", 2)).
-            IMPORTANT: The allocation dict MUST be in phase_order before
-            conversion. This is guaranteed when the dict comes from
-            cost_model methods. Convert with tuple(allocation.items()).
-        iteration: Iteration number (0 = initial evaluation).
-        seq: Sequence number within the iteration (0-based).
-    """
-
-    model_config = {"frozen": True}
-
-    allocation: tuple[tuple[str, int], ...]
-    iteration: int
-    seq: int
-
-
-class SwapCandidate(BaseModel):
-    """A swap candidate in swap-beam search.
-
-    Represents either an initial state or a state reached via a swap.
-    All placements are complete (no None values).
-    """
-
-    model_config = {"frozen": True}
-
-    id: SwapBeamNodeId
-    parent_id: SwapBeamNodeId | None  # None for initial state
-    swap: tuple[int, int]  # (layer_a, layer_b), or (-1, -1) for initial
-    assignments: tuple[str, ...]  # Complete placement
-    score: float
-
-
-class SwapBeamIterationStartedEvent(BaseModel):
-    """Emitted before evaluating candidates in a swap-beam iteration.
-
-    For iteration 0, this fires after the initial evaluation is complete
-    and shows the beam before any swaps. For subsequent iterations,
-    it shows the beam at the start of that iteration.
-    """
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["swap_beam_iteration_started"] = "swap_beam_iteration_started"
-    iteration: int  # 0 = initial, 1+ = swap iterations
-    max_iterations: int
-    num_candidates: int  # How many candidates will be evaluated
-    beam: tuple[SwapCandidate, ...]  # Current beam state
-
-
-class SwapEvaluatedEvent(BaseModel):
-    """Emitted after each swap is evaluated.
-
-    Allows displays to stream results as they come in.
-    """
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["swap_evaluated"] = "swap_evaluated"
-    iteration: int
-    id: SwapBeamNodeId
-    parent_id: SwapBeamNodeId
-    swap: tuple[int, int]  # (layer_a, layer_b)
-    assignments: tuple[str, ...]  # Complete placement after swap
-    score: float
-    eval_index: int  # 1-based index within iteration
-    total_evals: int  # Total evals expected in this iteration
-
-
-class SwapBeamIterationEvent(BaseModel):
-    """Emitted after a swap-beam iteration completes.
-
-    Contains the candidates tried and the resulting beam after selection.
-    """
-
-    model_config = {"frozen": True}
-
-    event_type: Literal["swap_beam_iteration"] = "swap_beam_iteration"
-    iteration: int
-    max_iterations: int
-    tried: tuple[SwapCandidate, ...]  # All candidates evaluated
-    beam: tuple[SwapCandidate, ...]  # Top-k after selection
-    best_candidate: SwapCandidate | None  # Best from this iteration
-    improved: bool  # Whether beam improved over previous iteration
-    converged: bool  # True if no improvement (early termination)
-
-
-# =============================================================================
 # Annealing search events (canonical definitions in annealing.events)
 # =============================================================================
 
@@ -598,10 +497,6 @@ AnySearchEvent = Annotated[
     | BeamGrowthStepStartedEvent
     | BeamGrowthStepEvent
     | BeamCandidateEvaluatedEvent
-    # Swap-beam events
-    | SwapBeamIterationStartedEvent
-    | SwapEvaluatedEvent
-    | SwapBeamIterationEvent
     # Annealing events
     | AnnealingStepEvent
     | AnnealingCompletedEvent
@@ -635,12 +530,6 @@ __all__ = [
     "BeamGrowthStepStartedEvent",
     "BeamGrowthStepEvent",
     "BeamCandidateEvaluatedEvent",
-    # Swap-beam types
-    "SwapBeamNodeId",
-    "SwapCandidate",
-    "SwapBeamIterationStartedEvent",
-    "SwapEvaluatedEvent",
-    "SwapBeamIterationEvent",
     # Annealing types
     "AnnealingStepEvent",
     "AnnealingCompletedEvent",

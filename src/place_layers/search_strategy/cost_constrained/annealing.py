@@ -89,7 +89,7 @@ class AnnealingSearch(AllocationIterationSearch):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score, auxiliary = await self._evaluate_with_details(problem, placement)
+            scores_dict = await problem.evaluate(placement)
             self.eval_count += 1
 
             # Notify observers
@@ -103,7 +103,7 @@ class AnnealingSearch(AllocationIterationSearch):
                     final_temperature=self.config.sa.initial_temperature,
                     termination_reason="no_swaps",
                     best_assignments=tuple(assignments),
-                    best_score=score,
+                    best_score=problem.evaluator.aggregate(scores_dict),
                     restarts_completed=0,
                     best_restart=0,
                     total_reheats=0,
@@ -115,19 +115,21 @@ class AnnealingSearch(AllocationIterationSearch):
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    score=score,
-                    auxiliary_scores=auxiliary,
+                    scores=scores_dict,
                 )
             ]
 
-        # Score function: evaluate + count + notify
+        # Score function: evaluate + count + notify (returns aggregate for SA)
+        _scores_cache: dict[tuple[str, ...], dict[str, float]] = {}
+
         async def score_fn(assignment: tuple[str, ...]) -> float:
             placement = LayerPlacement(assignments=assignment)
-            score = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
+            _scores_cache[assignment] = scores_dict
             self.eval_count += 1
             for obs in self.observers:
                 obs.on_eval_completed(self.eval_count)
-            return score
+            return problem.evaluator.aggregate(scores_dict)
 
         # Pass observers directly — SearchObserver satisfies SAObserver
         result = await run_multi_start_sa(
@@ -165,13 +167,18 @@ class AnnealingSearch(AllocationIterationSearch):
         if not result.candidates:
             return []
 
-        best_assignment, best_score = result.candidates[0]
+        best_assignment, _best_agg = result.candidates[0]
+        best_scores = _scores_cache.get(best_assignment)
+        if best_scores is None:
+            # Re-evaluate if not in cache (shouldn't happen)
+            placement = LayerPlacement(assignments=best_assignment)
+            best_scores = await problem.evaluate(placement)
+            self.eval_count += 1
         return [
             BeamEntry(
                 assignments=best_assignment,
                 allocation=allocation,
-                score=best_score,
-                # auxiliary_scores=best_auxiliary,  # TODO: log auxiliary scores for multi-eval
+                scores=best_scores,
             )
         ]
 

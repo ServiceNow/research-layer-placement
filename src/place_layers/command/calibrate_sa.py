@@ -36,7 +36,7 @@ from place_layers.annealing.moves import (
     random_assignment,
     sample_perturbation_size,
 )
-from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
@@ -107,9 +107,10 @@ class CalibrateSACommand(BaseCommand):
         )
 
         # Create evaluator with proper context management
-        async with self.config.evaluator.create_evaluator(
+        async with self.config.evaluators.create_evaluators(
             output_dir=output_dir
-        ) as evaluator:
+        ) as evals:
+            evaluator = next(iter(evals.evaluators.values()))
             result = await self._run_calibration(evaluator)
 
         if result is not None:
@@ -349,7 +350,7 @@ class CalibrateSACommandConfig(BaseCommandConfig):
     command: Literal["calibrate_sa"] = "calibrate_sa"
 
     # Problem setup
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    evaluators: EvaluatorsConfig = Field(description="Evaluator configuration")
     problem: ProblemConfig = Field(description="Problem configuration")
     result_handler: ResultHandlerConfig = Field(
         description="Result handler configuration",

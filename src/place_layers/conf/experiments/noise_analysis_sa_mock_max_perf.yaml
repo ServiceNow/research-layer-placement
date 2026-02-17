@@ -7,7 +7,7 @@
 
 defaults:
   - /command: noise_analysis
-  - /evaluator: mock_apriel_h_1_5_15b
+  - /evaluator@evaluators.configs.main: mock_apriel_h_1_5_15b
   - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - /search_strategy: cost_constrained_annealing

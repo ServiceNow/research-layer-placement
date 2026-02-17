@@ -321,20 +321,22 @@ class HierarchicalSearch(AllocationIterationSearch):
 
             # Final evaluation
             placement = LayerPlacement(assignments=tuple(assignments))
-            final_score, auxiliary = await self._evaluate_with_details(problem, placement)
+            scores = await problem.evaluate(placement)
             self.eval_count += 1
 
             results.append(
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    score=final_score,
-                    auxiliary_scores=auxiliary,
+                    scores=scores,
                 )
             )
 
-        # Sort by score descending (higher is better)
-        results.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        # Sort by aggregated score descending (higher is better)
+        results.sort(
+            key=lambda e: problem.evaluator.aggregate(e.scores) if e.scores else float("-inf"),
+            reverse=True,
+        )
         return results
 
     async def _run_phase(
@@ -612,7 +614,8 @@ class HierarchicalSearch(AllocationIterationSearch):
             )
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
-            score = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
+            score = problem.evaluator.aggregate(scores_dict)
             self.eval_count += 1
 
             # Generate ID for this candidate (step=0 for prescoring)
@@ -870,7 +873,8 @@ class HierarchicalSearch(AllocationIterationSearch):
             )
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
-            candidate["score"] = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
+            candidate["score"] = problem.evaluator.aggregate(scores_dict)
             candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
 

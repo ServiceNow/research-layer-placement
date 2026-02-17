@@ -110,7 +110,9 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
 
         # Evaluate all configurations
         logger.info("\nEvaluating all configurations...")
-        scores = await problem.evaluate_batch(all_configs)
+        scores_dicts = await problem.evaluate_batch(all_configs)
+        # Aggregate to scalar for sorting/comparison
+        scores = [problem.evaluator.aggregate(s) for s in scores_dicts]
 
         # Find best configuration
         if self.config.higher_is_better:
@@ -134,7 +136,7 @@ class ExhaustiveSearch(BaseSearchStrategy[LayerPlacement]):
 
         return SearchResult(
             best_parameters=best_config,
-            best_score=best_score,
+            best_scores=scores_dicts[best_idx],
             total_evaluations=len(all_configs),
         )
 

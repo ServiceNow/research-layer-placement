@@ -143,14 +143,16 @@ async def _build_exploration_dataset(
     batch = _sample_batch(num_samples, feasible, num_layers, rng)
 
     assignments: list[tuple[str, ...]] = []
-    scores: list[float] = []
+    scores: list[dict[str, float]] = []
+    scalar_scores: list[float] = []
     allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
-        scores.append(score)
+        scores.append({"main": score})
+        scalar_scores.append(score)
         alloc: dict[str, int] = {}
         for m in assignment:
             alloc[m] = alloc.get(m, 0) + 1
@@ -158,7 +160,7 @@ async def _build_exploration_dataset(
 
     rho = ridge_cv_rho(
         assignments=assignments,
-        scores=np.array(scores),
+        scores=np.array(scalar_scores),
         mixer_names=cost_model.phase_order,
         cv_folds=5,
         seed=42,
@@ -213,11 +215,10 @@ class TestSurrogateSearchIntegration:
 
         assert isinstance(result, CostConstrainedSearchResult)
         assert result.mode == "max_performance"
-        assert result.best_score is not None
+        assert result.best_scores is not None
         assert result.total_evaluations > 0
-        # With exploration dataset, total evals should be only from refinement
-        # (2 rounds * 20 evals_per_round = 40)
-        assert result.total_evaluations == 2 * 20
+        # 2 rounds × 20 evals_per_round + 1 final re-eval for dict scores
+        assert result.total_evaluations == 2 * 20 + 1
         # Cost should be within budget
         cost_budget = problem.config.cost_budget
         assert result.final_cost <= cost_budget + 1e-9
@@ -241,7 +242,7 @@ class TestSurrogateSearchIntegration:
 
         assert isinstance(result, CostConstrainedSearchResult)
         assert result.mode == "min_cost"
-        assert result.best_score is not None
+        assert result.best_scores is not None
         assert result.total_evaluations > 0
 
     async def test_dry_run(self, tmp_path: Path) -> None:
@@ -277,7 +278,7 @@ class TestSurrogateSearchIntegration:
         """CostConstrainedSearchResult should serialize and deserialize."""
         result = CostConstrainedSearchResult(
             best_parameters=LayerPlacement(assignments=("m0", "m1", "m0")),
-            best_score=0.85,
+            best_scores={"main": 0.85},
             total_evaluations=40,
             final_cost=2.0,
             mode="max_performance",
@@ -287,6 +288,6 @@ class TestSurrogateSearchIntegration:
 
         json_str = result.model_dump_json()
         loaded = CostConstrainedSearchResult.model_validate_json(json_str)
-        assert loaded.best_score == 0.85
+        assert loaded.best_scores == {"main": 0.85}
         assert loaded.mode == "max_performance"
         assert loaded.allocations_explored == 0

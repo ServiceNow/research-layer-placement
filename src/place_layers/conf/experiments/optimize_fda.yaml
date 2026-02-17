@@ -9,7 +9,7 @@
 
 defaults:
   - /command: optimize
-  - /evaluator@evaluators.evaluators_dict.main: extraction
+  - /evaluator@evaluators.configs.main: extraction
   - /generation: extraction
   - /backend: rest
   - /task: fda_optimize

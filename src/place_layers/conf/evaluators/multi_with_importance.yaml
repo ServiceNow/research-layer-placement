@@ -2,7 +2,7 @@
 # Multi-evaluator: Generative + Likelihood + Importance-weighted
 # Use case: Optimize for combination of direct metrics and importance sampling
 
-evaluators_dict:
+configs:
   gsm8k:
     evaluator_type: generative
     backend: ${backend}

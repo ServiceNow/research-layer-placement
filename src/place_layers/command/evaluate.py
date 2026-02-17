@@ -20,7 +20,6 @@ Usage
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +31,6 @@ from pydantic import BaseModel, Field
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
-from place_layers.evaluator import EvaluatorConfig
 from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.result_handler import ResultHandlerConfig
 
@@ -52,11 +50,7 @@ class EvaluationResult(BaseModel):
     placement_indices: list[int] | None = Field(
         description="Mixer indices per layer (null if no placement)"
     )
-    score: float = Field(description="Evaluation score")
-    auxiliary_scores: dict[str, float] | None = Field(
-        default=None,
-        description="Scores from auxiliary evaluators (if multi-evaluator mode)",
-    )
+    scores: dict[str, float] = Field(description="Per-evaluator scores")
 
 
 class EvaluateCommand(BaseCommand):
@@ -84,41 +78,29 @@ class EvaluateCommand(BaseCommand):
                 f"Evaluating with {len(evaluator_instances.evaluators)} "
                 f"evaluator(s) in parallel..."
             )
-            evaluator_tasks = [
-                evaluator.evaluate(resolved.placement)
-                for evaluator in evaluator_instances.evaluators.values()
-            ]
-            scores = await asyncio.gather(*evaluator_tasks)
+            scores = await evaluator_instances.evaluate(resolved.placement)
 
-            individual_scores = dict(
-                zip(evaluator_instances.evaluators.keys(), scores)
-            )
-            for name, score in individual_scores.items():
+            for name, score in scores.items():
                 logger.info(f"  {name}: {score:.6f}")
-
-            # Aggregate scores
-            aggregated_score = evaluator_instances._aggregate_scores(individual_scores)
-            if len(evaluator_instances.evaluators) > 1:
+            if len(scores) > 1:
+                agg = evaluator_instances.aggregate(scores)
                 logger.info(
                     f"Aggregated score ({self.config.evaluators.aggregation.value}): "
-                    f"{aggregated_score:.6f}"
+                    f"{agg:.6f}"
                 )
 
             # Build result
             evaluator_type = (
                 f"multi[{self.config.evaluators.aggregation.value}]"
                 if len(evaluator_instances.evaluators) > 1
-                else next(iter(self.config.evaluators.evaluators_dict.values())).evaluator_type
+                else next(iter(self.config.evaluators.configs.values())).evaluator_type
             )
             result = EvaluationResult(
                 timestamp=datetime.now().isoformat(),
                 evaluator_type=evaluator_type,
                 placement=resolved.placement_names,
                 placement_indices=resolved.placement_indices,
-                score=aggregated_score,
-                auxiliary_scores=individual_scores
-                if len(individual_scores) > 1
-                else None,
+                scores=scores,
             )
 
         # Save using result handler

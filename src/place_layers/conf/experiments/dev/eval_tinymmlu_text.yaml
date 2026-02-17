@@ -9,7 +9,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: likelihood
+  - /evaluator@evaluators.configs.main: likelihood
   - /backend: vllm
   - _self_
 

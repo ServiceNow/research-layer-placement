@@ -228,9 +228,9 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
 
                 # Build top_placements from all beam entries with valid scores
                 top_placements = tuple(
-                    (entry.assignments, entry.score)
+                    (entry.assignments, problem.evaluator.aggregate(entry.scores))
                     for entry in beam_results
-                    if entry.score is not None
+                    if entry.scores is not None
                 )
 
                 event = AllocationCompletedEvent(
@@ -243,8 +243,8 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                         if best_in_allocation is not None
                         else None
                     ),
-                    score=(
-                        best_in_allocation.score
+                    scores=(
+                        best_in_allocation.scores
                         if best_in_allocation is not None
                         else None
                     ),
@@ -258,16 +258,22 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                 continue
 
             # Entries returned from _search_within_allocation are always evaluated
-            assert best_in_allocation.score is not None
+            assert best_in_allocation.scores is not None
 
-            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
+            best_agg = problem.evaluator.aggregate(best_in_allocation.scores)
+            logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Update global best
-            if best_entry is None or best_in_allocation.score > (best_entry.score or float("-inf")):
+            old_best_agg = (
+                problem.evaluator.aggregate(best_entry.scores)
+                if best_entry is not None and best_entry.scores
+                else float("-inf")
+            )
+            if best_agg > old_best_agg:
                 best_entry = best_in_allocation
                 best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  NEW BEST: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
+                    f"  NEW BEST: score={best_agg:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -275,7 +281,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                     from place_layers.search_strategy.progress import BestUpdatedEvent
 
                     event = BestUpdatedEvent(
-                        score=best_in_allocation.score,
+                        scores=best_in_allocation.scores,
                         cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
@@ -295,12 +301,12 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             min_alloc = cost_model.min_cost_allocation(num_layers)
             assignments = self._allocation_to_assignment(min_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=min_alloc,
-                score=score,
+                scores=scores_dict,
             )
 
         return self._create_result(
@@ -434,9 +440,9 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
 
                 # Build top_placements from all beam entries with valid scores
                 top_placements = tuple(
-                    (entry.assignments, entry.score)
+                    (entry.assignments, problem.evaluator.aggregate(entry.scores))
                     for entry in beam_results
-                    if entry.score is not None
+                    if entry.scores is not None
                 )
 
                 event = AllocationCompletedEvent(
@@ -449,8 +455,8 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                         if best_in_allocation is not None
                         else None
                     ),
-                    score=(
-                        best_in_allocation.score
+                    scores=(
+                        best_in_allocation.scores
                         if best_in_allocation is not None
                         else None
                     ),
@@ -464,17 +470,18 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                 continue
 
             # Entries returned from _search_within_allocation are always evaluated
-            assert best_in_allocation.score is not None
+            assert best_in_allocation.scores is not None
 
-            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
+            best_agg = problem.evaluator.aggregate(best_in_allocation.scores)
+            logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Check if it meets the performance target
-            if best_in_allocation.score >= performance_target:
+            if best_agg >= performance_target:
                 # This allocation meets the target - it's the best (lowest cost) so far
                 best_entry = best_in_allocation
                 best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  MEETS TARGET: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
+                    f"  MEETS TARGET: score={best_agg:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -482,7 +489,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
                     from place_layers.search_strategy.progress import BestUpdatedEvent
 
                     event = BestUpdatedEvent(
-                        score=best_in_allocation.score,
+                        scores=best_in_allocation.scores,
                         cost=best_cost,
                         allocation=best_entry.allocation,
                         assignments=best_entry.assignments,
@@ -492,7 +499,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             else:
                 # Performance dropped below target - stop searching
                 logger.info(
-                    f"  Performance {best_in_allocation.score:.4f} < target {performance_target:.4f}"
+                    f"  Performance {best_agg:.4f} < target {performance_target:.4f}"
                 )
                 logger.info(
                     "  Stopping search (allocations getting cheaper won't help)"
@@ -511,16 +518,16 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             max_alloc = cost_model.max_cost_allocation(num_layers)
             assignments = self._allocation_to_assignment(max_alloc, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
             self.eval_count += 1
             best_entry = BeamEntry(
                 assignments=tuple(assignments),
                 allocation=max_alloc,
-                score=score,
+                scores=scores_dict,
             )
             logger.warning(
                 f"No allocation met performance target {performance_target}. "
-                f"Returning best effort: score={best_entry.score:.4f}"
+                f"Returning best effort: score={problem.evaluator.aggregate(scores_dict):.4f}"
             )
 
         return self._create_result(

@@ -27,9 +27,26 @@ from place_layers.problem import (
     MaxPerformanceProblemConfig,
     MinCostProblemConfig,
 )
-from place_layers.search_strategy import SwapBeamConfig
+from place_layers.annealing.sa_core import SAConfig
+from place_layers.search_strategy import AnnealingConfig
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
+
+# Small, fast SA config for integration tests
+_SMALL_SA_CONFIG = SAConfig(
+    num_restarts=1,
+    steps_per_restart=50,
+    initial_temperature=1.0,
+    cooling_rate=0.95,
+    min_temperature=0.01,
+    mutation_prob=0.3,
+    max_ruin_fraction=0.3,
+    contiguous_ruin_prob=0.5,
+    top_k=5,
+    no_op_retries=3,
+    reheat=None,
+    seed=42,
+)
 
 
 # =============================================================================
@@ -1063,8 +1080,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE mode should respect cost budget."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20
         )
         search = search_config.create_search_strategy()
 
@@ -1079,15 +1096,16 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST mode should meet performance target."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20
         )
         search = search_config.create_search_strategy()
 
         result = await search.search(small_problem_min_cost)
 
         # Performance should meet target
-        assert result.best_score >= 2.0
+        agg_score = sum(result.best_scores.values()) / len(result.best_scores)
+        assert agg_score >= 2.0
         # Should have done some evaluations
         assert result.total_evaluations > 0
 
@@ -1095,8 +1113,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE should respect budget (start at budget, explore cheaper)."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
         search = search_config.create_search_strategy()
 
@@ -1111,8 +1129,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST should start from most expensive config and downgrade."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
         search = search_config.create_search_strategy()
 
@@ -1144,8 +1162,8 @@ class TestCostConstrainedBeamSearch:
             cost_budget=4.0,
             cost_floor=None,
         )
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
 
         # Run twice
@@ -1159,7 +1177,7 @@ class TestCostConstrainedBeamSearch:
         search2 = search_config.create_search_strategy()
         result2 = await search2.search(problem2)
 
-        assert result1.best_score == result2.best_score
+        assert result1.best_scores == result2.best_scores
         assert result1.final_cost == result2.final_cost
         assert result1.best_parameters.assignments == result2.best_parameters.assignments
 
@@ -1238,8 +1256,8 @@ class TestCostFloorSearch:
         evaluator = evaluator_config.create_evaluator()
         problem = problem_config.create_problem(evaluator)
 
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
         search = search_config.create_search_strategy()
         result = await search.search(problem)

@@ -11,7 +11,7 @@ defaults:
   - /task@fda_task: fda_optimize
   - /task@swde_task: swde_optimize
 
-evaluators_dict:
+configs:
   mmlu:
     evaluator_type: likelihood
     backend: ${backend}
@@ -57,10 +57,8 @@ evaluators_dict:
   aime24:
     evaluator_type: trace_likelihood
     backend: ${backend}
-    # Trace sources - list of directories containing JSONL trace files
-    # Can be overridden via command line or environment variable
-    trace_sources:
-      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
+    # Override on CLI: evaluators.configs.aime24.trace_sources=["/path/to/traces"]
+    trace_sources: ???
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:
@@ -70,10 +68,8 @@ evaluators_dict:
   aime25:
     evaluator_type: trace_likelihood
     backend: ${backend}
-    # Trace sources - list of directories containing JSONL trace files
-    # Can be overridden via command line or environment variable
-    trace_sources:
-      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+    # Override on CLI: evaluators.configs.aime25.trace_sources=["/path/to/traces"]
+    trace_sources: ???
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:
@@ -83,10 +79,8 @@ evaluators_dict:
   math500:
     evaluator_type: trace_likelihood
     backend: ${backend}
-    # Trace sources - list of directories containing JSONL trace files
-    # Can be overridden via command line or environment variable
-    trace_sources:
-      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+    # Override on CLI: evaluators.configs.math500.trace_sources=["/path/to/traces"]
+    trace_sources: ???
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:

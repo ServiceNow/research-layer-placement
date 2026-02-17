@@ -98,14 +98,16 @@ async def _build_exploration_dataset(
     batch = _sample_batch(num_samples, feasible, num_layers, rng)
 
     assignments: list[tuple[str, ...]] = []
-    scores: list[float] = []
+    scores: list[dict[str, float]] = []
+    scalar_scores: list[float] = []
     allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
-        scores.append(score)
+        scores.append({"main": score})
+        scalar_scores.append(score)
         alloc: dict[str, int] = {}
         for m in assignment:
             alloc[m] = alloc.get(m, 0) + 1
@@ -113,7 +115,7 @@ async def _build_exploration_dataset(
 
     rho = ridge_cv_rho(
         assignments=assignments,
-        scores=np.array(scores),
+        scores=np.array(scalar_scores),
         mixer_names=cost_model.phase_order,
         cv_folds=5,
         seed=42,
@@ -373,7 +375,7 @@ class TestValidateLandscapePipeline:
                         ),
                         validated=PlacementResult(
                             cost=result.final_cost,
-                            score=result.best_score,
+                            score=sum(result.best_scores.values()) / len(result.best_scores),
                             assignments=result.best_parameters.assignments,
                         ),
                         total_evaluations=result.total_evaluations,
@@ -501,6 +503,10 @@ class TestValidateLandscapePipeline:
             (band_dir / "surrogate_dp.json").read_text()
         )
 
+        # best_scores is now a dict; aggregate for PlacementResult scalar
+        raw_scores = loaded_result["best_scores"]
+        loaded_score = sum(raw_scores.values()) / len(raw_scores)
+
         resumed_band = BandValidationResult(
             band_index=band.band_index,
             cost_low=band.cost_low,
@@ -508,7 +514,7 @@ class TestValidateLandscapePipeline:
             surrogate_dp=loaded_dp,
             validated=PlacementResult(
                 cost=loaded_result["final_cost"],
-                score=loaded_result["best_score"],
+                score=loaded_score,
                 assignments=tuple(
                     loaded_result["best_parameters"]["assignments"]
                 ),
@@ -518,7 +524,8 @@ class TestValidateLandscapePipeline:
 
         # Verify restored band matches original result
         assert resumed_band.total_evaluations == result.total_evaluations
-        assert resumed_band.validated.score == result.best_score
+        expected_score = sum(result.best_scores.values()) / len(result.best_scores)
+        assert resumed_band.validated.score == expected_score
         assert resumed_band.validated.cost == result.final_cost
         assert resumed_band.surrogate_dp.cost == band.cost
         assert resumed_band.surrogate_dp.score == band.score

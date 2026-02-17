@@ -307,7 +307,7 @@ class NoiseAnalysisCommand(BaseCommand):
             noise_seed_shift=evaluator.config.noise_seed_shift,
             optimal_true_score=optimal_true_score,
             found_true_score=found_true_score,
-            found_noisy_score=result.best_score,
+            found_noisy_score=sum(result.best_scores.values()) / len(result.best_scores),
             found_cost=result.final_cost,
             regret=regret,
             relative_regret=relative_regret,

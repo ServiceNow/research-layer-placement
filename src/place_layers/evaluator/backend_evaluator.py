@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
 
@@ -46,8 +46,10 @@ logger = logging.getLogger(__name__)
 class BackendEvaluator(BaseEvaluator[LayerPlacement]):
     """Base class for evaluators that use generation backends.
 
+    Backends are always injected (never created by the evaluator). Lifecycle
+    is managed by the caller (EvaluatorsConfig.create_evaluators).
+
     Provides common infrastructure:
-    - Backend lifecycle management (__aenter__, __aexit__)
     - Model structure discovery (num_layers, mixer_names)
     - Placement validation and setting
     - TraceWriter for streaming results to disk (placement-indexed subdirectories)
@@ -58,7 +60,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
     Must be used as an async context manager:
 
-        async with config.create_evaluator() as evaluator:
+        async with config.create_evaluator(output_dir, backend=backend) as evaluator:
             score = await evaluator.evaluate(placement)
 
     Output Directory Structure:
@@ -76,17 +78,12 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         config: "BackendEvaluatorConfig",
         *,
         output_dir: Path,
-        shared_backend: AsyncBackend | SyncBackend | None = None,
+        backend: AsyncBackend | SyncBackend,
     ) -> None:
         super().__init__(config)
 
-        # Create or use shared backend (but don't enter context yet if creating new)
-        if shared_backend is not None:
-            self._backend: AsyncBackend | SyncBackend = shared_backend
-            self._owns_backend = False  # Don't manage lifecycle
-        else:
-            self._backend = config.backend.create_backend()
-            self._owns_backend = True  # Manage lifecycle in __aenter__/__aexit__
+        # Backend is always injected, never created here
+        self._backend: AsyncBackend | SyncBackend = backend
 
         # Model structure (populated in __aenter__ from backend)
         self._num_layers: int | None = None
@@ -104,14 +101,10 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         self._trace_writer: TraceWriter | None = None
 
     async def __aenter__(self) -> Self:
-        """Enter context: initialize backend and get model structure."""
-        # Only enter backend context if we own it (not shared)
-        if self._owns_backend:
-            if isinstance(self._backend, AsyncBackend):
-                await self._backend.__aenter__()
-            else:
-                self._backend.__enter__()
+        """Enter context: discover model structure from backend.
 
+        Backend is already entered by the caller (EvaluatorsConfig.create_evaluators).
+        """
         # Try to get model structure from backend (optional - not all backends support it)
         structure = self._backend.model_structure
         if isinstance(structure, SupernetStructure):
@@ -136,13 +129,8 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit context: cleanup backend resources."""
-        # Only exit backend context if we own it (not shared)
-        if self._owns_backend:
-            if isinstance(self._backend, AsyncBackend):
-                await self._backend.__aexit__(exc_type, exc_val, exc_tb)
-            else:
-                self._backend.__exit__(exc_type, exc_val, exc_tb)
+        """Exit context. Backend lifecycle is managed by the caller."""
+        pass
 
     @property
     def num_layers(self) -> int:
@@ -373,18 +361,17 @@ class BackendEvaluatorConfig(BaseEvaluatorConfig):
     def create_evaluator(
         self,
         output_dir: Path | None = None,
-        shared_backend: AsyncBackend | SyncBackend | None = None,
+        *,
+        backend: "AsyncBackend | SyncBackend",
     ) -> "BackendEvaluator":  # type: ignore[override]
-        """Create evaluator with required output directory.
+        """Create evaluator with required output directory and injected backend.
 
         Args:
             output_dir: Base output directory for results. Required for BackendEvaluator.
-            shared_backend: Optional pre-created backend to share across evaluators.
-                If provided, this backend is used instead of creating a new one.
-
+            backend: Pre-created backend instance (lifecycle managed by caller).
         """
         if output_dir is None:
             raise ValueError("output_dir is required for BackendEvaluator")
         return self._impl_class(
-            config=self, output_dir=output_dir, shared_backend=shared_backend
+            config=self, output_dir=output_dir, backend=backend
         )

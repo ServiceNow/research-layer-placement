@@ -139,7 +139,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
         # Final evaluation
         assignments = [final_assignments[i] for i in range(num_layers)]
         final_config = LayerPlacement(assignments=tuple(assignments))
-        final_score = await problem.evaluate(final_config)
+        final_scores = await problem.evaluate(final_config)
+        final_agg = problem.evaluator.aggregate(final_scores)
         self.eval_count += 1
 
         logger.info(f"\n{'='*60}")
@@ -155,12 +156,12 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
             logger.info(
                 f"  {mixer_name}: {len(layers)} layers - {sorted(layers)}"
             )
-        logger.info(f"Final score: {final_score:.4f}")
+        logger.info(f"Final score: {final_agg:.4f}")
         logger.info(f"Total evaluations: {self.eval_count}")
 
         return HierarchicalBeamSearchResult(
             best_parameters=final_config,
-            best_score=final_score,
+            best_scores=final_scores,
             total_evaluations=self.eval_count,
             phase_results=phase_results,
         )
@@ -247,7 +248,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
+            score = problem.evaluator.aggregate(scores_dict)
             self.eval_count += 1
             layer_scores.append((layer_idx, score))
             logger.debug(f"  Layer {layer_idx}: {score:.4f}")
@@ -334,7 +336,8 @@ class HierarchicalBeamSearch(BaseSearchStrategy[LayerPlacement]):
                 num_layers=num_layers,
             )
             placement = LayerPlacement(assignments=tuple(assignments))
-            candidate["score"] = await problem.evaluate(placement)
+            scores_dict = await problem.evaluate(placement)
+            candidate["score"] = problem.evaluator.aggregate(scores_dict)
             self.eval_count += 1
 
             if (i + 1) % max(1, len(candidates) // 10) == 0:

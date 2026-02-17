@@ -17,6 +17,7 @@
 #   - YAML snippet ready to paste into a search strategy config
 
 defaults:
+  - /evaluators: from_evaluator
   - /result_handler: yaml
 
 command: calibrate_sa

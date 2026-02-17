@@ -60,14 +60,17 @@ logger = logging.getLogger(__name__)
 
 def _load_progress(
     path: Path,
-) -> tuple[list[tuple[str, ...]], list[float], list[dict[str, int]]]:
+) -> tuple[list[tuple[str, ...]], list[dict[str, float]], list[dict[str, int]]]:
     """Load incremental JSONL progress file.
+
+    Supports both legacy (``"score": float``) and current
+    (``"scores": dict``) formats for backward compatibility.
 
     Returns:
         (assignments, scores, allocations) — each a list of the same length.
     """
     assignments: list[tuple[str, ...]] = []
-    scores: list[float] = []
+    scores: list[dict[str, float]] = []
     allocations: list[dict[str, int]] = []
 
     if not path.exists():
@@ -80,7 +83,12 @@ def _load_progress(
                 continue
             record = json.loads(line)
             assignments.append(tuple(record["assignment"]))
-            scores.append(record["score"])
+            # Support both legacy scalar and current dict formats
+            raw_scores = record.get("scores", record.get("score"))
+            if isinstance(raw_scores, (int, float)):
+                scores.append({"main": float(raw_scores)})
+            else:
+                scores.append(raw_scores)
             allocations.append(record["allocation"])
 
     logger.info("Loaded %d samples from %s", len(assignments), path)
@@ -90,13 +98,13 @@ def _load_progress(
 def _append_to_jsonl(
     path: Path,
     assignment: tuple[str, ...] | list[str],
-    score: float,
+    scores: dict[str, float],
     allocation: dict[str, int],
 ) -> None:
     """Append one evaluated record to the progress JSONL file."""
     record = {
         "assignment": list(assignment),
-        "score": score,
+        "scores": scores,
         "allocation": allocation,
     }
     with path.open("a") as f:
@@ -329,7 +337,6 @@ class ExplorePlacementsCommand(BaseCommand):
 
             cost_model = self.config.cost_model.create_cost_model()
             num_layers = evaluator_instances.num_layers
-            
 
             # Determine cost budget and floor for feasibility filtering
             cost_budget: float | None = None
@@ -399,15 +406,21 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    scores_dict = await problem.evaluate(placement)
                     assignment_tuple = tuple(assignment)
                     allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
-                    all_scores.append(score)
+                    all_scores.append(scores_dict)
                     all_allocations.append(allocation)
                     _append_to_jsonl(
-                        progress_path, assignment_tuple, score, allocation
+                        progress_path, assignment_tuple, scores_dict, allocation
                     )
+
+            # Helper: aggregate dict scores to scalar array for surrogate quality
+            def _agg_scores() -> np.ndarray:
+                return np.array([
+                    evaluator_instances.aggregate(s) for s in all_scores
+                ])
 
             # --- Phase 2: Initial expansion selection ---
             # Expansion selection is re-run in the adaptive loop (Phase 3) after
@@ -421,7 +434,7 @@ class ExplorePlacementsCommand(BaseCommand):
             ):
                 expansion_result = select_expansion_level(
                     assignments=all_assignments,
-                    scores=np.array(all_scores),
+                    scores=_agg_scores(),
                     mixer_names=phase_order,
                     cv_folds=self.config.cv_folds,
                     target_rho=self.config.target_rank_correlation,
@@ -444,7 +457,7 @@ class ExplorePlacementsCommand(BaseCommand):
             if len(all_assignments) >= self.config.cv_folds:
                 rho = ridge_cv_rho(
                     assignments=all_assignments,
-                    scores=np.array(all_scores),
+                    scores=_agg_scores(),
                     mixer_names=phase_order,
                     feature_config=feature_config,
                     cv_folds=self.config.cv_folds,
@@ -501,14 +514,14 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    scores_dict = await problem.evaluate(placement)
                     assignment_tuple = tuple(assignment)
                     allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
-                    all_scores.append(score)
+                    all_scores.append(scores_dict)
                     all_allocations.append(allocation)
                     _append_to_jsonl(
-                        progress_path, assignment_tuple, score, allocation
+                        progress_path, assignment_tuple, scores_dict, allocation
                     )
 
                 # Re-run expansion selection with larger dataset.
@@ -520,7 +533,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 ):
                     expansion_result = select_expansion_level(
                         assignments=all_assignments,
-                        scores=np.array(all_scores),
+                        scores=_agg_scores(),
                         mixer_names=phase_order,
                         cv_folds=self.config.cv_folds,
                         target_rho=self.config.target_rank_correlation,
@@ -547,7 +560,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 # Re-check quality via Ridge CV
                 rho = ridge_cv_rho(
                     assignments=all_assignments,
-                    scores=np.array(all_scores),
+                    scores=_agg_scores(),
                     mixer_names=phase_order,
                     feature_config=feature_config,
                     cv_folds=self.config.cv_folds,
@@ -586,6 +599,8 @@ class ExplorePlacementsCommand(BaseCommand):
             assignments=all_assignments,
             scores=all_scores,
             allocations=all_allocations,
+            evaluator_weights=dict(evaluator_instances.weights),
+            aggregation=evaluator_instances.aggregation.value,
             num_layers=num_layers,
             mixer_names=phase_order,
             num_samples=len(all_assignments),

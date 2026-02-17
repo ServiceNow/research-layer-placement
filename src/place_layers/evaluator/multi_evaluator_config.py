@@ -29,7 +29,7 @@ Use Cases
 
 YAML structure:
     evaluators:
-      evaluators_dict:
+      configs:
         gsm8k:
           evaluator_type: generative
           backend: ${backend}
@@ -139,8 +139,8 @@ class EvaluatorInstances[ParametersT]:
         """Number of mixer types."""
         return len(self.mixer_names)
 
-    async def evaluate(self, parameters: ParametersT) -> float:
-        """Evaluate parameters using all evaluators in parallel and aggregate.
+    async def evaluate(self, parameters: ParametersT) -> dict[str, float]:
+        """Evaluate parameters using all evaluators in parallel.
 
         All evaluators run concurrently for maximum performance. The shared
         backend handles request throttling via max_concurrent_requests.
@@ -149,7 +149,7 @@ class EvaluatorInstances[ParametersT]:
             parameters: Parameters to evaluate
 
         Returns:
-            Aggregated score across all evaluators
+            Dict mapping evaluator name to score
         """
         # Create evaluation tasks for all evaluators
         eval_coros = [
@@ -161,61 +161,20 @@ class EvaluatorInstances[ParametersT]:
         score_list = await asyncio.gather(*eval_coros)
 
         # Map results back to evaluator names
-        scores = dict(zip(self.evaluators.keys(), score_list))
+        return dict(zip(self.evaluators.keys(), score_list))
 
-        # Aggregate based on strategy
-        return self._aggregate_scores(scores)
-
-    async def evaluate_with_details(
-        self, parameters: ParametersT
-    ) -> tuple[float, dict[str, float] | None]:
-        """Evaluate parameters in parallel and return both aggregated and individual scores.
-
-        All evaluators run concurrently for maximum performance.
-
-        Args:
-            parameters: Parameters to evaluate
-
-        Returns:
-            Tuple of (aggregated_score, auxiliary_scores_dict).
-            If only one evaluator, auxiliary_scores_dict is None.
-        """
-        # Create evaluation tasks for all evaluators
-        eval_coros = [
-            evaluator.evaluate(parameters)
-            for evaluator in self.evaluators.values()
-        ]
-
-        # Run all evaluators concurrently
-        score_list = await asyncio.gather(*eval_coros)
-
-        # Map results back to evaluator names
-        scores = dict(zip(self.evaluators.keys(), score_list))
-
-        # Aggregate based on strategy
-        aggregated = self._aggregate_scores(scores)
-
-        # Return individual scores only if there are multiple evaluators
-        auxiliary = scores if len(scores) > 1 else None
-
-        return aggregated, auxiliary
-
-    async def evaluate_batch(self, parameters_list: list[ParametersT]) -> list[float]:
+    async def evaluate_batch(self, parameters_list: list[ParametersT]) -> list[dict[str, float]]:
         """Evaluate multiple parameter settings in batch.
 
         Args:
             parameters_list: List of parameters to evaluate
 
         Returns:
-            List of aggregated scores
+            List of per-evaluator score dicts
         """
-        scores = []
-        for parameters in parameters_list:
-            score = await self.evaluate(parameters)
-            scores.append(score)
-        return scores
+        return [await self.evaluate(p) for p in parameters_list]
 
-    def _aggregate_scores(self, scores: dict[str, float]) -> float:
+    def aggregate(self, scores: dict[str, float]) -> float:
         """Aggregate scores from multiple evaluators.
 
         Args:
@@ -274,7 +233,7 @@ class EvaluatorsConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    evaluators_dict: dict[str, EvaluatorConfig] = Field(
+    configs: dict[str, EvaluatorConfig] = Field(
         description="Dict of named evaluator configurations"
     )
 
@@ -292,21 +251,21 @@ class EvaluatorsConfig(BaseModel):
     @model_validator(mode="after")
     def validate_weights(self) -> Self:
         """Validate that weights match evaluators and sum to 1.0."""
-        if not self.evaluators_dict:
+        if not self.configs:
             raise ValueError("Must provide at least one evaluator")
 
         # If weights not specified, use uniform weights
         if not self.weights:
-            n = len(self.evaluators_dict)
+            n = len(self.configs)
             object.__setattr__(
-                self, "weights", {name: 1.0 / n for name in self.evaluators_dict}
+                self, "weights", {name: 1.0 / n for name in self.configs}
             )
 
         # Check that weight keys match evaluator keys
-        if set(self.weights.keys()) != set(self.evaluators_dict.keys()):
+        if set(self.weights.keys()) != set(self.configs.keys()):
             raise ValueError(
                 f"Weight keys {set(self.weights.keys())} must match "
-                f"evaluator keys {set(self.evaluators_dict.keys())}"
+                f"evaluator keys {set(self.configs.keys())}"
             )
 
         # Check that weights sum to 1.0 (only for weighted_average)
@@ -332,10 +291,10 @@ class EvaluatorsConfig(BaseModel):
         Each evaluator gets its own output subdirectory:
         - {output_dir}/evals/{name}/
 
-        Backend sharing: If all evaluators use the same backend config, a single
-        shared backend instance is created and passed to all evaluators. This
-        improves connection pooling and avoids overwhelming servers with too many
-        concurrent requests from multiple backend instances.
+        Backend sharing: One backend per unique backend config. Evaluators
+        with identical backend configs share a single backend instance.
+        Non-backend evaluators (e.g., MockSupernetEvaluator) are created
+        without a backend.
 
         Args:
             output_dir: Base output directory for all evaluators
@@ -353,7 +312,10 @@ class EvaluatorsConfig(BaseModel):
                     individual_score = await evaluator.evaluate(placement)
                     logger.info(f"{name}: {individual_score:.4f}")
         """
+        import json
         import logging
+
+        from place_layers.backend.base import AsyncBackend, SyncBackend
         from place_layers.evaluator.backend_evaluator import BackendEvaluatorConfig
 
         logger = logging.getLogger(__name__)
@@ -363,36 +325,63 @@ class EvaluatorsConfig(BaseModel):
             evals_dir = output_dir / "evals"
             evals_dir.mkdir(parents=True, exist_ok=True)
 
-            # Check if all evaluators share the same backend config
-            backend_configs = [
-                config.backend
-                for config in self.evaluators_dict.values()
-                if isinstance(config, BackendEvaluatorConfig)
-            ]
+            # Create one backend per unique backend config
+            backend_cache: dict[str, AsyncBackend | SyncBackend] = {}
+            for name, config in self.configs.items():
+                if isinstance(config, BackendEvaluatorConfig):
+                    key = json.dumps(
+                        config.backend.model_dump(mode="json"), sort_keys=True
+                    )
+                    if key not in backend_cache:
+                        backend = config.backend.create_backend()
+                        if isinstance(backend, AsyncBackend):
+                            await stack.enter_async_context(backend)
+                        else:
+                            stack.enter_context(backend)
+                        backend_cache[key] = backend
 
-            shared_backend = None
-            if backend_configs and all(
-                bc.model_dump() == backend_configs[0].model_dump()
-                for bc in backend_configs
-            ):
-                # All backend configs are identical - create shared backend
-                logger.info(
-                    f"Creating shared backend for {len(backend_configs)} evaluator(s)"
-                )
-                shared_backend = backend_configs[0].create_backend()
-                # Enter backend context
-                if hasattr(shared_backend, "__aenter__"):
-                    await stack.enter_async_context(shared_backend)
-                else:
-                    stack.enter_context(shared_backend)
+            logger.info(
+                "Created %d backend(s) for %d evaluator(s)",
+                len(backend_cache),
+                len(self.configs),
+            )
 
             # Create all evaluators
             evaluators = {}
-            for name, config in self.evaluators_dict.items():
+            for name, config in self.configs.items():
                 eval_dir = evals_dir / name
                 eval_dir.mkdir(parents=True, exist_ok=True)
-                evaluator = config.create_evaluator(eval_dir, shared_backend=shared_backend)
+
+                if isinstance(config, BackendEvaluatorConfig):
+                    key = json.dumps(
+                        config.backend.model_dump(mode="json"), sort_keys=True
+                    )
+                    evaluator = config.create_evaluator(
+                        output_dir=eval_dir, backend=backend_cache[key]
+                    )
+                else:
+                    evaluator = config.create_evaluator(output_dir=eval_dir)
+
                 evaluators[name] = await stack.enter_async_context(evaluator)
+
+            # Cross-evaluator validation: all backend evaluators must agree
+            # on model structure (num_layers, mixer_names)
+            backend_evaluators = [
+                e for e in evaluators.values() if hasattr(e, "num_layers")
+            ]
+            if len(backend_evaluators) > 1:
+                first = backend_evaluators[0]
+                for e in backend_evaluators[1:]:
+                    if e.num_layers != first.num_layers:
+                        raise ValueError(
+                            f"Evaluator num_layers mismatch: "
+                            f"{first.num_layers} vs {e.num_layers}"
+                        )
+                    if e.mixer_names != first.mixer_names:
+                        raise ValueError(
+                            f"Evaluator mixer_names mismatch: "
+                            f"{first.mixer_names} vs {e.mixer_names}"
+                        )
 
             # Yield instances with aggregation logic
             instances = EvaluatorInstances(

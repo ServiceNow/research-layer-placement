@@ -9,7 +9,7 @@
 #       landscape.exploration_dataset_path=exploration_results.json
 defaults:
   - /command: validate_landscape
-  - /evaluator: generative
+  - /evaluator@evaluators.configs.main: generative
   - /backend: rest
   - /task: gsm8k
   - /generation: greedy

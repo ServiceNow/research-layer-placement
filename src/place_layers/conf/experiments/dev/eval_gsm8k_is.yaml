@@ -12,7 +12,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: importance_weighted
+  - /evaluator@evaluators.configs.main: importance_weighted
   - /model: apriel2_0_5b_dev
   - /placement: all-attention
   - _self_

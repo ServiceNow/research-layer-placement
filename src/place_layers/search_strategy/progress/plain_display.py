@@ -77,12 +77,9 @@ if TYPE_CHECKING:
         BoundsUpdatedEvent,
         SearchCompletedEvent,
         SearchStartedEvent,
-        SwapBeamIterationEvent,
         SurrogateDatasetLoadedEvent,
         SurrogateRoundCompletedEvent,
         SurrogateRoundStartedEvent,
-        SwapBeamIterationStartedEvent,
-        SwapEvaluatedEvent,
     )
 
 
@@ -222,17 +219,19 @@ class PlainDisplay(PlacementFormatterMixin):
 
         if self._config.show_allocation_complete:
             alloc_str = self._format_allocation(event.allocation)
-            if event.score is not None and event.assignments is not None:
+            if event.scores is not None and event.assignments is not None:
                 by_mixer = self._group_layers_by_mixer(event.assignments)
                 placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+                score_str = self._format_scores(event.scores)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
-                    f"{placement_str} -> {event.score:.4g}",
+                    f"{placement_str} -> {score_str}",
                 )
-            elif event.score is not None:
+            elif event.scores is not None:
+                score_str = self._format_scores(event.scores)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
-                    f"{alloc_str} -> {event.score:.4g}",
+                    f"{alloc_str} -> {score_str}",
                 )
             else:
                 self._print(
@@ -247,9 +246,10 @@ class PlainDisplay(PlacementFormatterMixin):
     def on_best_updated(self, event: "BestUpdatedEvent") -> None:
         """Handle best updated event."""
         if self._config.show_best_updated:
+            score_str = self._format_scores(event.scores)
             self._print(
                 "BEST_UPDATED",
-                f"score={event.score:.4g}, cost={event.cost:.4f}",
+                f"score={score_str}, cost={event.cost:.4f}",
             )
 
     def on_bounds_updated(self, event: "BoundsUpdatedEvent") -> None:
@@ -258,9 +258,10 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_search_completed(self, event: "SearchCompletedEvent") -> None:
         """Handle search completed event."""
+        score_str = self._format_scores(event.best_scores)
         self._print(
             "SEARCH_COMPLETE",
-            f"best={event.best_score:.4g}, evals={event.total_evaluations}, "
+            f"best={score_str}, evals={event.total_evaluations}, "
             f"allocations={event.allocations_explored}",
         )
 
@@ -397,54 +398,6 @@ class PlainDisplay(PlacementFormatterMixin):
                     f"({entry.score:.3g}){marker}",
                     indent=3,
                 )
-
-    # =========================================================================
-    # Swap-beam search event handlers
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: "SwapBeamIterationStartedEvent"
-    ) -> None:
-        """Handle swap-beam iteration started event."""
-        if not self._config.show_steps:
-            return
-
-        if event.iteration == 0:
-            # Initial state - show beam
-            by_mixer = self._group_layers_by_mixer(event.beam[0].assignments)
-            placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
-            self._print_line(
-                f"Initial: {placement_str} (score={event.beam[0].score:.4g})",
-                indent=1,
-            )
-        else:
-            self._print_line(
-                f"Iteration {event.iteration}/{event.max_iterations}: "
-                f"Evaluating {event.num_candidates} swaps...",
-                indent=1,
-            )
-
-    def on_swap_evaluated(self, event: "SwapEvaluatedEvent") -> None:
-        """Handle swap evaluated event (no-op for plain display)."""
-        # Could be made configurable to show per-swap progress
-        del event
-
-    def on_swap_beam_iteration(self, event: "SwapBeamIterationEvent") -> None:
-        """Handle swap-beam iteration completed event."""
-        if not self._config.show_steps:
-            return
-
-        if event.iteration == 0:
-            return  # Already shown in iteration_started
-
-        best = event.best_candidate
-        status = "converged" if event.converged else ("improved" if event.improved else "no change")
-        best_str = f"best={best.score:.4g}" if best else "no candidates"
-        self._print_line(
-            f"Iteration {event.iteration}/{event.max_iterations}: "
-            f"{status}, {best_str}",
-            indent=1,
-        )
 
     # =========================================================================
     # Annealing search event handlers

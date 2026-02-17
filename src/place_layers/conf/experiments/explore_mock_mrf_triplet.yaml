@@ -5,7 +5,7 @@
 #   python -m place_layers +experiments=explore_mock_mrf_triplet
 defaults:
   - /command: explore_placements
-  - /evaluator: mock_mrf_triplet
+  - /evaluator@evaluators.configs.main: mock_mrf_triplet
   - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - _self_

@@ -7,7 +7,7 @@
 #       landscape.exploration_dataset_path=exploration_results.json
 defaults:
   - /command: validate_landscape
-  - /evaluator: mock_apriel_h_1_5_15b
+  - /evaluator@evaluators.configs.main: mock_apriel_h_1_5_15b
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
   - _self_
@@ -18,5 +18,7 @@ hydra:
       console_rich:
         level: INFO
 
-evaluator:
-  noise_sigma: 0.0
+evaluators:
+  configs:
+    main:
+      noise_sigma: 0.0

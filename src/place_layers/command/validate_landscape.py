@@ -38,7 +38,7 @@ from place_layers.landscape import (
     load_and_fit_surrogate,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
-from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
@@ -108,7 +108,8 @@ class ValidateLandscapeCommand(BaseCommand):
         # 2. Per-band search with real evaluator (incremental save + resume)
         bands_dir = output_dir / "bands"
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
+        async with self.config.evaluators.create_evaluators(output_dir) as evals:
+            evaluator = next(iter(evals.evaluators.values()))
             validated_bands: list[BandValidationResult] = []
             total_evals = 0
 
@@ -128,6 +129,12 @@ class ValidateLandscapeCommand(BaseCommand):
                     surrogate_dp = PlacementResult.model_validate_json(
                         (band_dir / "surrogate_dp.json").read_text()
                     )
+                    # Support both old (best_score: float) and new (best_scores: dict) formats
+                    raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
+                    if isinstance(raw_scores, dict):
+                        loaded_score = sum(raw_scores.values()) / len(raw_scores)
+                    else:
+                        loaded_score = float(raw_scores)
                     validated_bands.append(
                         BandValidationResult(
                             band_index=band.band_index,
@@ -136,7 +143,7 @@ class ValidateLandscapeCommand(BaseCommand):
                             surrogate_dp=surrogate_dp,
                             validated=PlacementResult(
                                 cost=loaded_result["final_cost"],
-                                score=loaded_result["best_score"],
+                                score=loaded_score,
                                 assignments=tuple(
                                     loaded_result["best_parameters"]["assignments"]
                                 ),
@@ -197,6 +204,9 @@ class ValidateLandscapeCommand(BaseCommand):
 
                 total_evals += result.total_evaluations
 
+                # Aggregate dict scores to scalar for PlacementResult
+                validated_score = sum(result.best_scores.values()) / len(result.best_scores)
+
                 validated_bands.append(
                     BandValidationResult(
                         band_index=band.band_index,
@@ -205,7 +215,7 @@ class ValidateLandscapeCommand(BaseCommand):
                         surrogate_dp=surrogate_dp,
                         validated=PlacementResult(
                             cost=result.final_cost,
-                            score=result.best_score,
+                            score=validated_score,
                             assignments=result.best_parameters.assignments,
                         ),
                         total_evaluations=result.total_evaluations,
@@ -216,7 +226,7 @@ class ValidateLandscapeCommand(BaseCommand):
                     "Band %d: surrogate=%.4f, validated=%.4f, evals=%d",
                     band.band_index,
                     band.score,
-                    result.best_score,
+                    validated_score,
                     result.total_evaluations,
                 )
 
@@ -280,7 +290,7 @@ class ValidateLandscapeCommandConfig(BaseCommandConfig):
     landscape: LandscapeConfig = Field(
         description="Shared landscape configuration (binning, surrogate, cost model).",
     )
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration.")
+    evaluators: EvaluatorsConfig = Field(description="Evaluator configuration.")
 
     # Per-band search (ViterbiSurrogateSearch params, inlined)
     search_num_rounds: int = Field(

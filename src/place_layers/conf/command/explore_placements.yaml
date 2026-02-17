@@ -9,6 +9,7 @@
 #   python -m place_layers +command=explore_placements +evaluator=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
 
 defaults:
+  - /evaluators: from_evaluator
   - /result_handler: json
   - _self_
 

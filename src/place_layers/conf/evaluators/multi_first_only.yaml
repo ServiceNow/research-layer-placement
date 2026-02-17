@@ -3,7 +3,7 @@
 # Use case: Optimize for first evaluator, but track additional metrics
 # Useful for logging multiple metrics without affecting optimization
 
-evaluators_dict:
+configs:
   gsm8k:
     evaluator_type: generative
     backend: ${backend}

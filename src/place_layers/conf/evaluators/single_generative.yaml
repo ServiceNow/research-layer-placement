@@ -1,7 +1,7 @@
 # @package evaluators
 # Single evaluator example (backwards compatible with old 'evaluator' field)
 
-evaluators_dict:
+configs:
   gsm8k:
     evaluator_type: generative
     backend: ${backend}

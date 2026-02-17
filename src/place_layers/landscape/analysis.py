@@ -48,8 +48,8 @@ def load_and_fit_surrogate(
 
     cost_model = cost_model_config.create_cost_model()
 
-    # Model selection
-    scores_array = np.array(dataset.scores)
+    # Model selection (uses aggregated scalar scores for surrogate fitting)
+    scores_array = np.array(dataset.aggregated_scores())
     expansion_result = select_expansion_level(
         assignments=dataset.assignments,
         scores=scores_array,

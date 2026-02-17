@@ -9,7 +9,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: generative
+  - /evaluator@evaluators.configs.main: generative
   - /backend: transformers
   - /model: qwen2_0_5b
   - /task: gsm8k

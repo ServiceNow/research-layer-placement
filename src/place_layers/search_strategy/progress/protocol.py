@@ -29,9 +29,6 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapEvaluatedEvent,
 )
 
 
@@ -102,24 +99,6 @@ class SearchObserver(Protocol):
 
     def on_beam_candidate_evaluated(self, event: BeamCandidateEvaluatedEvent) -> None:
         """Called after each candidate evaluation during a beam growth step."""
-        ...
-
-    # =========================================================================
-    # Swap-beam search events
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: SwapBeamIterationStartedEvent
-    ) -> None:
-        """Called when a swap-beam iteration begins (before evaluations)."""
-        ...
-
-    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
-        """Called after each swap is evaluated during swap-beam search."""
-        ...
-
-    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
-        """Called after a swap-beam iteration completes."""
         ...
 
     # =========================================================================

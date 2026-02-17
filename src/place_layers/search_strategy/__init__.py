@@ -13,8 +13,6 @@ from place_layers.search_strategy.cost_constrained import (
     HierarchicalConfig,
     HierarchicalSearch,
     SurrogateSearchConfig,
-    SwapBeamConfig,
-    SwapBeamSearch,
     ViterbiSurrogateSearchConfig,
 )
 from place_layers.search_strategy.exhaustive_search import ExhaustiveSearchConfig
@@ -27,7 +25,6 @@ from place_layers.search_strategy.hierarchical_beam_search import (
 SearchStrategyConfig = Annotated[
     HierarchicalBeamSearchConfig
     | ExhaustiveSearchConfig
-    | SwapBeamConfig
     | HierarchicalConfig
     | AnnealingConfig
     | SurrogateSearchConfig

@@ -62,6 +62,17 @@ class BaseEvaluator[ParametersT]:
         """Number of mixer types."""
         return len(self.mixer_names)
 
+    def aggregate(self, scores: dict[str, float]) -> float:
+        """Aggregate per-evaluator scores to a single scalar.
+
+        Default: return the single value for single-evaluator case,
+        or arithmetic mean for multi-evaluator.
+        EvaluatorInstances overrides with configurable aggregation strategies.
+        """
+        if len(scores) == 1:
+            return next(iter(scores.values()))
+        return sum(scores.values()) / len(scores)
+
     async def evaluate(self, parameters: ParametersT) -> float:
         """
         Evaluate parameters and return a score.
