@@ -1,0 +1,6 @@
+# @package cost_model
+# Uniform (zero-cost) model for Apriel 15B mixer types.
+# All allocations are equally "cheap" — use for unconstrained exploration.
+
+cost_model_type: uniform
+mixer_names: [attention, sliding_window, kda, gdn]

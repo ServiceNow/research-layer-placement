@@ -400,7 +400,7 @@ class VLLMBackend(AsyncBackend):
 class VLLMBackendConfig(BaseBackendConfig):
     """Configuration for vLLM generation backend (local or remote)."""
 
-    _backend_class: ClassVar[type[AsyncBackend]] = VLLMBackend  # type: ignore[assignment]
+    _impl_class: ClassVar[type[AsyncBackend]] = VLLMBackend  # type: ignore[assignment]
 
     backend_type: Literal["vllm"] = "vllm"
     client: VLLMClientConfig = Field(

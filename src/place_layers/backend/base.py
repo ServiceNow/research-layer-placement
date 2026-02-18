@@ -1002,11 +1002,11 @@ class BaseBackendConfig(BaseModel):
 
     backend_type: str = Field(description="Type identifier for backend")
 
-    _backend_class: ClassVar[type[AsyncBackend] | type[SyncBackend]]
+    _impl_class: ClassVar[type[AsyncBackend] | type[SyncBackend]]
 
     def create_backend(self) -> AsyncBackend | SyncBackend:
         """Smart constructor: instantiate backend from config."""
-        return self._backend_class(config=self)
+        return self._impl_class(config=self)
 
 
 def get_model_path(config: BaseBackendConfig) -> str:

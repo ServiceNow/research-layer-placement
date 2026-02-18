@@ -6,6 +6,7 @@ defaults:
   - /command: optimize
   - /evaluator: mock_20_layers_4mix
   - /problem: cost_test_20_layers_4mix
+  - /cost_model: linear_test_4mix
   - /search_strategy: cost_constrained_hierarchical
   - /result_handler: json
   - _self_

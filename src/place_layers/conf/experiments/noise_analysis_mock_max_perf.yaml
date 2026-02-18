@@ -1,0 +1,29 @@
+# @package _global_
+# Noise degradation analysis using mock evaluator (Apriel-H 1.5 15B config)
+# Measures how evaluation noise degrades cost-constrained search quality
+#
+# Usage:
+#   python -m place_layers +experiments=noise_analysis_mock_max_perf
+
+defaults:
+  - /command: noise_analysis
+  - /evaluator: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
+  - /search_strategy: cost_constrained_hierarchical
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+search_strategy:
+  max_allocations: 10
+  beam_width: 3
+
+# 0.0 baseline + log-spaced from ~0.02 to 5.0
+# Dense at low sigma where noise transitions from helpful to harmful
+noise_sigmas: [0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0]
+num_seeds: 50

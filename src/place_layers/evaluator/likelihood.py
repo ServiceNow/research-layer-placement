@@ -525,7 +525,6 @@ class LikelihoodEvaluatorConfig(TaskBasedEvaluatorConfig):
 
     # Chat template control
     use_chat_template: bool = Field(
-        default=True,
         description="Whether to use chat template formatting. When False, prompts are "
         "formatted as raw text (context + choice) without any chat structure. "
         "Use False for evaluating base models or when chat template is undesired.",

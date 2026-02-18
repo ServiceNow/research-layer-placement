@@ -1,5 +1,7 @@
 """Mock supernet evaluator for layer placement optimization."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -10,6 +12,7 @@ from pydantic import Field
 
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
+from place_layers.mrf.model import ChainMRFModel
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
@@ -57,26 +60,35 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
     def __init__(self, config: "MockSupernetEvaluatorConfig") -> None:
         super().__init__(config)
 
-        # Generate landscape structure from seed
-        # This represents the supernet's learned preferences
-        rng = random.Random(self.config.seed)
+        self._mrf_model = ChainMRFModel(
+            mixer_names=tuple(self.config.mixer_names),
+            seed=self.config.seed,
+            num_layers=self.config.num_layers,
+            unary_bonus=self.config.unary_bonus,
+            unary_penalty=self.config.unary_penalty,
+            pairwise_scale=self.config.pairwise_scale,
+            pairwise_decay=self.config.pairwise_decay,
+            pairwise_max_range=self.config.pairwise_max_range,
+            triplet_scale=self.config.triplet_scale,
+        )
 
-        # Build name-to-index mapping for O(1) lookup in evaluate()
-        self._name_to_idx = {name: i for i, name in enumerate(self.config.mixer_names)}
+    @classmethod
+    def with_noise(
+        cls,
+        evaluator: MockSupernetEvaluator,
+        noise_sigma: float,
+        noise_seed_shift: int = 0,
+    ) -> MockSupernetEvaluator:
+        """Return a copy of *evaluator* with a different noise configuration."""
+        config = evaluator.config.model_copy(
+            update={"noise_sigma": noise_sigma, "noise_seed_shift": noise_seed_shift}
+        )
+        return cls(config)
 
-        # Unary potentials: Each layer's preferred implementation (stored as index)
-        num_mixers = len(self.config.mixer_names)
-        self.layer_needs = [
-            rng.randint(0, num_mixers - 1)
-            for _ in range(self.config.num_layers)
-        ]
-
-        # Pairwise potentials: Interaction strength between adjacent layers
-        # Positive weight: adjacent layers benefit from same implementation
-        # Negative weight: adjacent layers benefit from different implementations
-        self.pairwise_weights = [
-            rng.gauss(0.0, 1.0) for _ in range(self.config.num_layers - 1)
-        ]
+    @property
+    def mrf_model(self) -> ChainMRFModel:
+        """The underlying MRF model defining the score landscape."""
+        return self._mrf_model
 
     @property
     def num_layers(self) -> int:
@@ -91,7 +103,9 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         """
         return frozenset(self.config.mixer_names)
 
-    async def evaluate(self, parameters: LayerPlacement) -> float:
+    async def evaluate(
+        self, parameters: LayerPlacement, *, noise_sigma: float | None = None
+    ) -> float:
         """
         Evaluate parameters using the MRF energy model.
 
@@ -99,43 +113,31 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
 
         Args:
             parameters: Parameters to evaluate (assignments are mixer names).
+            noise_sigma: Override noise level. None uses config default, 0.0 means no noise.
 
         Returns:
             Score (higher is better).
         """
-        total_score = 0.0
+        effective_sigma = (
+            noise_sigma if noise_sigma is not None else self.config.noise_sigma
+        )
+        total_score = self._mrf_model.true_score(parameters)
 
-        # UNARY POTENTIALS: Does mixer match layer's intrinsic need?
-        for layer_idx, mixer_name in enumerate(parameters.assignments):
-            mixer_idx = self._name_to_idx[mixer_name]
-            if mixer_idx == self.layer_needs[layer_idx]:
-                # Correct mixer for this layer
-                total_score += self.config.unary_bonus
-            else:
-                # Wrong mixer for this layer
-                total_score -= self.config.unary_penalty
-
-        # PAIRWISE POTENTIALS: Do adjacent layers work well together?
-        for i in range(len(parameters.assignments) - 1):
-            mixer_i = parameters.assignments[i]
-            mixer_j = parameters.assignments[i + 1]
-
-            # Interaction weight (can be positive or negative)
-            weight = self.pairwise_weights[i]
-
-            # Similarity: 1 if same mixer, -1 if different
-            similarity = 1.0 if mixer_i == mixer_j else -1.0
-
-            # Contribution: weight * similarity * scale
-            total_score += weight * similarity * self.config.pairwise_scale
-
-        # DETERMINISTIC NOISE: Parameter-specific perturbation
-        params_hash = hashlib.sha256(
-            json.dumps(parameters.assignments).encode()
-        ).hexdigest()
-        noise_seed = self.config.seed ^ int(params_hash[:16], 16) & 0xFFFFFFFF
-        noise_rng = random.Random(noise_seed)
-        total_score += noise_rng.gauss(0.0, self.config.noise_sigma)
+        if effective_sigma > 0:
+            # DETERMINISTIC NOISE: Parameter-specific perturbation
+            # noise_seed_shift produces independent noise realizations
+            # over the same landscape
+            placement_hash = int(
+                hashlib.sha256(
+                    json.dumps(parameters.assignments).encode()
+                ).hexdigest()[:16],
+                16,
+            )
+            noise_seed = (
+                placement_hash + self.config.noise_seed_shift
+            ) % (2**64)
+            noise_rng = random.Random(noise_seed)
+            total_score += noise_rng.gauss(0.0, effective_sigma)
 
         # Optional delay for testing display dynamics
         if self.config.eval_delay_seconds > 0:
@@ -185,7 +187,31 @@ class MockSupernetEvaluatorConfig(BaseEvaluatorConfig):
         ge=0.0,
     )
 
+    noise_seed_shift: int = Field(
+        description="Additive shift applied to the placement hash before seeding "
+        "the noise RNG. Different shifts produce independent noise realizations "
+        "over the same MRF landscape.",
+    )
+
     eval_delay_seconds: float = Field(
         description="Artificial delay per evaluation (seconds) for testing display dynamics",
+        ge=0.0,
+    )
+
+    pairwise_decay: float = Field(
+        description="Geometric decay for skip-pairwise scales. "
+        "Scale at range r = pairwise_scale * pairwise_decay^(r-1).",
+        gt=0.0,
+    )
+
+    pairwise_max_range: int = Field(
+        description="Maximum pairwise interaction range. "
+        "1 = adjacent only (baseline), 2+ enables skip-pairwise.",
+        ge=1,
+    )
+
+    triplet_scale: float = Field(
+        description="Scale factor for 3-body (triplet) interaction potentials. "
+        "0.0 disables triplet interactions.",
         ge=0.0,
     )

@@ -1,12 +1,16 @@
 # @package evaluator
 # Apriel-H 1.5 15B architecture (48 layers)
-# Mixer types: FA (full attention), SWA (sliding window), GDN, KDA
+# Mixer types: attention (full attention), sliding_window, gdn, kda
 evaluator_type: mock_supernet
 num_layers: 48
-mixer_names: [FA, SWA, GDN, KDA]
+mixer_names: [attention, sliding_window, gdn, kda]
 seed: 42
 unary_bonus: 1.0
 unary_penalty: 0.5
 pairwise_scale: 0.3
 noise_sigma: 0.2
+noise_seed_shift: 0
 eval_delay_seconds: 0.0
+pairwise_decay: 0.5
+pairwise_max_range: 1
+triplet_scale: 0.0

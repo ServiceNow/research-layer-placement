@@ -8,11 +8,18 @@ from place_layers.search_strategy.base_search_strategy_config import (
 
 
 class BaseCostConstrainedConfig(BaseSearchStrategyConfig):
-    """
-    Base configuration shared by all cost-constrained search variants.
+    """Marker base for cost-constrained search strategies.
 
-    This defines the outer loop parameters that control allocation navigation.
-    Subclasses add their own inner loop parameters.
+    This is the shared base for all strategies that operate on
+    CostConstrainedProblem instances. It carries no extra fields.
+    """
+
+
+class AllocationIterationConfig(BaseCostConstrainedConfig):
+    """Configuration for strategies that iterate through allocations in cost order.
+
+    These strategies enumerate allocations, call _search_within_allocation()
+    for each, and track the global best.
     """
 
     max_allocations: int = Field(

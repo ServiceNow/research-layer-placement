@@ -1,0 +1,22 @@
+# @package _global_
+# Validate placement landscape via REST backend
+#
+# Requires model servers running and exploration_results.json from explore step.
+#
+# Usage:
+#   python -m place_layers +experiments=validate_gsm8k_rest \
+#       +model=apriel2_1p6_v2_annealed_0204 \
+#       landscape.exploration_dataset_path=exploration_results.json
+defaults:
+  - /command: validate_landscape
+  - /evaluator: generative
+  - /backend: rest
+  - /task: gsm8k
+  - /generation: greedy
+  - /cost_model: linear_apriel_15b
+  - /landscape: apriel_15b
+  - _self_
+
+backend:
+  servers:
+    - http://localhost:8080
