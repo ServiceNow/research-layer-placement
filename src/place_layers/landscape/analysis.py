@@ -7,6 +7,7 @@ used by both placement_landscape and validate_landscape commands.
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -50,24 +51,27 @@ def load_and_fit_surrogate(
 
     # Model selection (scalar scores for surrogate fitting)
     scores_array = np.array(dataset.scores)
+    t0 = time.perf_counter()
     expansion_result = select_expansion_level(
         assignments=dataset.assignments,
         scores=scores_array,
         mixer_names=dataset.mixer_names,
         seed=seed,
     )
+    t_model_sel = time.perf_counter() - t0
     feature_config = (
         expansion_result.selected_config
         if expansion_result.selected_config.max_order > 1
         else None
     )
     logger.info(
-        "Model selection: order=%d, range=%d, rho=%.4f",
+        "Model selection: order=%d, range=%d, rho=%.4f (%.3fs)",
         expansion_result.selected_order,
         expansion_result.selected_range,
         expansion_result.range_results[-1].rho
         if expansion_result.range_results
         else 0.0,
+        t_model_sel,
     )
 
     # Fit surrogate
@@ -76,8 +80,9 @@ def load_and_fit_surrogate(
         seed=seed,
         feature_config=feature_config,
     )
+    t0 = time.perf_counter()
     surrogate.fit(dataset.assignments, scores_array)
-    logger.info("Surrogate fitted")
+    logger.info("Surrogate fitted (%.3fs)", time.perf_counter() - t0)
 
     return dataset, surrogate, cost_model
 
@@ -140,24 +145,30 @@ def compute_dp_per_band(
         bin_to_allocs[int(bin_indices[i])].append(alloc)
 
     # Extract MRF model and solver
+    t0 = time.perf_counter()
     mrf_model = surrogate.extract_mrf_model(num_layers)
     solver = ExactMRFSolver(mrf_model)
     intercept = mrf_model.intercept
+    logger.info("MRF extraction: %.3fs", time.perf_counter() - t0)
 
     # Solve one unified DP per band
     occupied_bins = sorted(bin_to_allocs.keys())
     best_per_bin: dict[int, BandResult] = {}
+    t_dp_start = time.perf_counter()
 
     for step, b in enumerate(occupied_bins):
         band_allocs = bin_to_allocs[b]
+        t0 = time.perf_counter()
+        top = solver.solve_top_n(band_allocs, n=1)
+        t_band = time.perf_counter() - t0
         logger.info(
-            "DP band %d / %d (bin %d, %d allocations)",
+            "DP band %d / %d (bin %d, %d allocations, %.3fs)",
             step + 1,
             len(occupied_bins),
             b,
             len(band_allocs),
+            t_band,
         )
-        top = solver.solve_top_n(band_allocs, n=1)
         if not top:
             continue
 
@@ -179,6 +190,13 @@ def compute_dp_per_band(
             score=score,
             assignments=solution.placement.assignments,
         )
+
+    logger.info(
+        "DP complete: %d/%d bands solved in %.3fs",
+        len(best_per_bin),
+        len(occupied_bins),
+        time.perf_counter() - t_dp_start,
+    )
 
     # Sort by cost
     return [best_per_bin[b] for b in sorted(best_per_bin.keys())]

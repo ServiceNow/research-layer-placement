@@ -1,15 +1,10 @@
 # @package _global_
-# Unconstrained surrogate exploration using mock evaluator (48 layers, 4 mixers)
-# Same evaluator as explore_mock_max_perf but with no cost budget —
-# samples from ALL allocations uniformly.
-#
-# Usage:
-#   python -m place_layers +experiments=explore_mock_unconstrained
+# Consolidated mock exploration: all MRF variants, unconstrained
 defaults:
   - /command: explore_placements
-  - /evaluator@evaluators.configs.main: mock_apriel_h_1_5_15b
   - /problem: apriel_h_1_5_15b
   - /cost_model: uniform_apriel_15b
+  - override /evaluators: mock_mrf_variants
   - _self_
 
 hydra:

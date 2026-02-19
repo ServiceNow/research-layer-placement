@@ -45,7 +45,9 @@ from pydantic import BaseModel, Field, model_validator
 
 from place_layers.evaluator import EvaluatorConfig
 from place_layers.evaluator.objective import (
+    AggregatingObjectiveConfig,
     BaseObjective,
+    IndependentObjectiveConfig,
     ObjectiveConfig,
     WeightedAverageObjectiveConfig,
 )
@@ -219,9 +221,24 @@ class EvaluatorsConfig(BaseModel):
     )
 
     objective: ObjectiveConfig = Field(
-        default_factory=WeightedAverageObjectiveConfig,
         description="Objective function mapping evaluator scores to optimization objectives",
     )
+
+    @property
+    def objective_names(self) -> tuple[str, ...]:
+        """Derive objective names from pure config data — no object creation.
+
+        Mirrors the logic in the runtime objective classes but reads only
+        from config fields so it can be used before ``create_evaluators()``.
+        """
+        evaluator_names = tuple(self.configs.keys())
+        match self.objective:
+            case IndependentObjectiveConfig():
+                return evaluator_names
+            case AggregatingObjectiveConfig(include_individual=True):
+                return (self.objective.objective_type,) + evaluator_names
+            case _:
+                return (self.objective.objective_type,)
 
     @model_validator(mode="after")
     def validate_objective(self) -> Self:
@@ -247,6 +264,16 @@ class EvaluatorsConfig(BaseModel):
                 if any(w < 0 for w in self.objective.weights.values()):
                     raise ValueError("All weights must be non-negative")
             # Empty weights auto-filled at create_objective() time
+
+        if (
+            isinstance(self.objective, AggregatingObjectiveConfig)
+            and self.objective.include_individual
+            and self.objective.objective_type in self.configs
+        ):
+            raise ValueError(
+                f"Evaluator name '{self.objective.objective_type}' collides with "
+                f"aggregate objective type. Rename the evaluator."
+            )
 
         return self
 

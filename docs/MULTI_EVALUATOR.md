@@ -24,6 +24,9 @@ evaluators:
       backend: ${backend}
       tasks: ${task.tasks}
       generation: ${generation}
+  objective:
+    objective_type: weighted_average
+    include_individual: false
 
 placement: null
 ```
@@ -55,11 +58,12 @@ evaluators:
       tasks: ["mmlu"]
       max_problems_per_task: 100
 
-  weights:
-    gsm8k: 0.6
-    mmlu: 0.4
-
-  aggregation: weighted_average
+  objective:
+    objective_type: weighted_average
+    include_individual: false
+    weights:
+      gsm8k: 0.6
+      mmlu: 0.4
 
 placement: null
 ```
@@ -98,14 +102,17 @@ evaluators:
     mmlu:
       tasks: ["mmlu"]
       max_problems_per_task: 100
-  weights:
-    gsm8k: 0.6
-    mmlu: 0.4
+  objective:
+    objective_type: weighted_average
+    include_individual: false
+    weights:
+      gsm8k: 0.6
+      mmlu: 0.4
 ```
 
-## Aggregation Strategies
+## Objective Strategies
 
-Specify how to combine scores from multiple evaluators:
+Specify how to combine scores from multiple evaluators via the `objective:` block:
 
 ### `weighted_average` (default)
 Combines scores using weights: `score = sum(weight_i * score_i)`
@@ -115,27 +122,15 @@ evaluators:
   configs:
     gsm8k: {...}
     mmlu: {...}
-  weights:
-    gsm8k: 0.6
-    mmlu: 0.4
-  aggregation: weighted_average  # explicit, but this is the default
+  objective:
+    objective_type: weighted_average
+    include_individual: false
+    weights:
+      gsm8k: 0.6
+      mmlu: 0.4
 ```
 
 Weights must sum to 1.0. If no weights provided, uses uniform weights (1/N for each).
-
-### `first_only`
-Uses first evaluator for optimization, others for tracking/logging only:
-
-```yaml
-evaluators:
-  configs:
-    gsm8k: {...}      # Used for optimization
-    mmlu: {...}       # Logged but not used for optimization
-    arc_easy: {...}   # Logged but not used for optimization
-  aggregation: first_only
-```
-
-Useful for tracking auxiliary metrics without affecting the optimization objective.
 
 ### `min`
 Takes minimum score across all evaluators (optimize worst-case):
@@ -145,7 +140,9 @@ evaluators:
   configs:
     gsm8k: {...}
     mmlu: {...}
-  aggregation: min
+  objective:
+    objective_type: min
+    include_individual: false
 ```
 
 ### `max`
@@ -156,8 +153,44 @@ evaluators:
   configs:
     gsm8k: {...}
     mmlu: {...}
-  aggregation: max
+  objective:
+    objective_type: max
+    include_individual: false
 ```
+
+### `independent`
+Each evaluator is its own objective. Search solves N problems in parallel:
+
+```yaml
+evaluators:
+  configs:
+    gsm8k: {...}
+    mmlu: {...}
+  objective:
+    objective_type: independent
+```
+
+### `include_individual` (aggregating objectives only)
+
+The three aggregating objectives (`weighted_average`, `min`, `max`) support an
+`include_individual` flag. When `true`, individual evaluator scores are exposed
+as additional objectives alongside the aggregate:
+
+```yaml
+evaluators:
+  configs:
+    gsm8k: {...}
+    mmlu: {...}
+  objective:
+    objective_type: weighted_average
+    include_individual: true
+    weights:
+      gsm8k: 0.6
+      mmlu: 0.4
+```
+
+This produces three objectives: `weighted_average`, `gsm8k`, and `mmlu` — the
+aggregate plus per-evaluator breakdowns without needing `independent`.
 
 ## Output Organization
 
@@ -206,8 +239,8 @@ python -m place_layers +experiments=multi_gsm8k_mmlu
 
 # Override on CLI
 python -m place_layers +experiments=multi_gsm8k_mmlu \
-  evaluators.weights.gsm8k=0.7 \
-  evaluators.weights.mmlu=0.3
+  evaluators.objective.weights.gsm8k=0.7 \
+  evaluators.objective.weights.mmlu=0.3
 ```
 
 ### Optimize Command
@@ -234,7 +267,6 @@ Several preset evaluator configs are available in `conf/evaluators/`:
 - **`single_generative.yaml`**: Single generative evaluator
 - **`multi_gsm8k_mmlu.yaml`**: GSM8K (60%) + MMLU (40%), weighted average
 - **`multi_uniform_weights.yaml`**: Multiple evaluators with equal weights
-- **`multi_first_only.yaml`**: First for optimization, rest for tracking
 - **`multi_with_importance.yaml`**: Generative + Likelihood + Importance-weighted
 
 Use them with:
@@ -258,7 +290,10 @@ evaluators:
     gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}
     math: {evaluator_type: generative, tasks: ["math"], ...}
     mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}
-  weights: {gsm8k: 0.4, math: 0.3, mmlu: 0.3}
+  objective:
+    objective_type: weighted_average
+    include_individual: false
+    weights: {gsm8k: 0.4, math: 0.3, mmlu: 0.3}
 ```
 
 ### Multi-method Evaluation
@@ -269,7 +304,10 @@ evaluators:
   configs:
     direct: {evaluator_type: generative, tasks: ["gsm8k"], ...}
     importance: {evaluator_type: importance_weighted, trace_dir: "/traces/gsm8k", ...}
-  aggregation: first_only  # Optimize for direct, log importance as validation
+  objective:
+    objective_type: weighted_average
+    include_individual: true
+    weights: {direct: 0.8, importance: 0.2}
 ```
 
 ### Mixed Task Types
@@ -281,7 +319,10 @@ evaluators:
     gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}          # reasoning
     fda: {evaluator_type: generative, tasks: ["fda"], ...}              # extraction
     mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}            # multiple-choice
-  weights: {gsm8k: 0.5, fda: 0.3, mmlu: 0.2}
+  objective:
+    objective_type: weighted_average
+    include_individual: false
+    weights: {gsm8k: 0.5, fda: 0.3, mmlu: 0.2}
 ```
 
 ## Migration from Old Configs

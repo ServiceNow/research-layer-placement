@@ -56,6 +56,7 @@ async def test_evaluate_dict_scores():
         },
         objective=WeightedAverageObjectiveConfig(
             weights={"eval1": 0.6, "eval2": 0.4},
+            include_individual=False,
         ),
     )
 

@@ -20,9 +20,10 @@ configs:
     trace_dir: ${oc.env:HOME}/traces/gsm8k
     num_samples: 8
 
-weights:
-  gsm8k: 0.5
-  mmlu: 0.3
-  importance: 0.2
-
-aggregation: weighted_average
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    gsm8k: 0.5
+    mmlu: 0.3
+    importance: 0.2

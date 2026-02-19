@@ -1,0 +1,23 @@
+# @package _global_
+# Pipeline step 3: placement landscape for mock MRF variants (matches explore_mock_unconstrained).
+#
+# Usage:
+#   python -m place_layers +experiments=landscape_mock_unconstrained \
+#       landscape.explore_output_dir=/path/to/explore/output
+#
+# With validation overlay:
+#   python -m place_layers +experiments=landscape_mock_unconstrained \
+#       landscape.explore_output_dir=/path/to/explore/output \
+#       validation_output_dir=/path/to/validate/output
+defaults:
+  - /command: placement_landscape
+  - /cost_model: linear_apriel_15b
+  - /landscape: apriel_15b
+  - override /evaluators: mock_mrf_variants
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO

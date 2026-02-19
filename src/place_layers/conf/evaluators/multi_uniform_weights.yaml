@@ -20,4 +20,6 @@ configs:
     tasks: ["arc_easy"]
 
 # No weights specified = uniform weights (0.33, 0.33, 0.34)
-aggregation: weighted_average
+objective:
+  objective_type: weighted_average
+  include_individual: false

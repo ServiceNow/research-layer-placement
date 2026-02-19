@@ -28,6 +28,7 @@ from place_layers.command.base_command import BaseCommand, CommandError
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model import CostModelConfig
+from place_layers.landscape.config import objective_result_path
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.backend import BackendConfig
@@ -626,7 +627,7 @@ class ExplorePlacementsCommand(BaseCommand):
         result_handler = self.config.result_handler.create_result_handler()
         await result_handler.save(
             dataset,
-            output_dir / f"exploration_results_{obj_name}.json",
+            objective_result_path(output_dir, "exploration_results", obj_name),
         )
 
         logger.info(

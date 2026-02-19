@@ -1,11 +1,12 @@
 # @package _global_
 #
 # Experiment: placement landscape density plot.
-# Requires a pre-built exploration dataset (provide landscape.exploration_dataset_path on CLI).
+# Requires exploration_results_{obj_name}.json from explore_placements.
 #
 # Usage:
 #   python -m place_layers +experiments=placement_landscape \
-#       landscape.exploration_dataset_path=exploration_results.json
+#       +evaluator@evaluators.configs.main=mock_apriel_h_1_5_15b \
+#       landscape.explore_output_dir=/path/to/explore/output
 
 defaults:
   - /command: placement_landscape

@@ -14,8 +14,9 @@ configs:
     backend: ${backend}
     tasks: ["mmlu"]
 
-weights:
-  gsm8k: 0.6
-  mmlu: 0.4
-
-aggregation: weighted_average
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    gsm8k: 0.6
+    mmlu: 0.4

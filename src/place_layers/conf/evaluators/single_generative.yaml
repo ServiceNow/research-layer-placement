@@ -8,5 +8,6 @@ configs:
     tasks: ${task.tasks}
     generation: ${generation}
 
-# Weights and aggregation are optional for single evaluator
-# Default: uniform weights (1.0) with weighted_average (which is just the score)
+objective:
+  objective_type: weighted_average
+  include_individual: false

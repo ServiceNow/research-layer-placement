@@ -11,7 +11,7 @@ def make_evaluators(evaluator, name: str = "main") -> Evaluators:
         evaluators={name: evaluator},
         num_layers=evaluator.num_layers,
         mixer_names=evaluator.mixer_names,
-        objective=WeightedAverageObjectiveConfig().create_objective(names),
+        objective=WeightedAverageObjectiveConfig(include_individual=False).create_objective(names),
     )
 
 

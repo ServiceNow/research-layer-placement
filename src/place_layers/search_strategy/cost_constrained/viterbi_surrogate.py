@@ -12,6 +12,7 @@ uncertain regions.  This gives automatic exploration/exploitation:
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -223,7 +224,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             seed=self.config.seed,
             feature_config=exploration.feature_config,
         )
+        t0 = time.perf_counter()
         surrogate.fit(all_assignments, np.array(all_scores))
+        logger.info(
+            "Initial surrogate fit: %.3fs (%d samples)",
+            time.perf_counter() - t0,
+            len(all_assignments),
+        )
         f_best = float(np.max(all_scores))
 
         for round_num in range(self.config.num_rounds):
@@ -236,9 +243,12 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             )
 
             # Step 1: Extract MRF models from bootstrap ensemble
+            t0 = time.perf_counter()
             mrf_models = surrogate.extract_bootstrap_mrf_models(num_layers)
+            t_extract = time.perf_counter() - t0
 
             # Step 2: For each MRF model, run Viterbi to get globally top-M
+            t0 = time.perf_counter()
             candidate_set: set[tuple[str, ...]] = set()
             for mrf_model in mrf_models:
                 solver = ExactMRFSolver(mrf_model)
@@ -247,12 +257,19 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 )
                 for solution in top_n:
                     candidate_set.add(solution.placement.assignments)
+            t_viterbi = time.perf_counter() - t0
 
             candidate_list = list(candidate_set)
-            logger.debug(
-                "Viterbi produced %d distinct candidates from %d models",
-                len(candidate_list),
+            logger.info(
+                "Round %d/%d: MRF extract %.3fs, Viterbi DP %.3fs "
+                "(%d models × %d allocs → %d candidates)",
+                round_num + 1,
+                self.config.num_rounds,
+                t_extract,
+                t_viterbi,
                 len(mrf_models),
+                len(feasible_allocations),
+                len(candidate_list),
             )
 
             if not candidate_list:
@@ -350,15 +367,22 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 prediction_correlation = 0.0
 
             # Step 6: Refit surrogate
+            t0 = time.perf_counter()
             surrogate.fit(all_assignments, np.array(all_scores))
+            t_refit = time.perf_counter() - t0
 
+            t0 = time.perf_counter()
             rho = surrogate.cross_validate(
                 all_assignments, np.array(all_scores),
                 cv_folds=self.config.cv_folds,
             )
-            logger.debug(
-                "Round %d complete: best=%.6f, rho=%.4f, pred_corr=%.4f",
+            t_cv = time.perf_counter() - t0
+            logger.info(
+                "Round %d complete: refit %.3fs, CV %.3fs, "
+                "best=%.6f, rho=%.4f, pred_corr=%.4f",
                 round_num + 1,
+                t_refit,
+                t_cv,
                 f_best,
                 rho,
                 prediction_correlation,

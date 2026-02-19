@@ -6,6 +6,7 @@ Tests the full pipeline:
 3. Verify ValidationResults structure and serialization
 4. Verify placement_landscape can load validation results
 5. Verify incremental per-band saving and resume-on-restart
+6. Verify multi-objective support
 """
 
 import json
@@ -27,13 +28,20 @@ from place_layers.landscape import (
     compute_band_edges,
     compute_dp_per_band,
     load_and_fit_surrogate,
+    objective_result_path,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
     MockSupernetEvaluator,
     MockSupernetEvaluatorConfig,
+)
+from place_layers.evaluator.objective import (
+    IndependentObjectiveConfig,
+    MaxObjectiveConfig,
+    WeightedAverageObjectiveConfig,
 )
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
@@ -82,9 +90,31 @@ def _make_evaluator(noise_sigma: float = 0.0) -> MockSupernetEvaluator:
     return MockSupernetEvaluator(config=config)
 
 
+def _make_evaluator_config(
+    noise_sigma: float = 0.0,
+    noise_seed_shift: int = 0,
+) -> MockSupernetEvaluatorConfig:
+    return MockSupernetEvaluatorConfig(
+        evaluator_type="mock_supernet",
+        num_layers=_NUM_LAYERS,
+        mixer_names=["m0", "m1"],
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=noise_sigma,
+        noise_seed_shift=noise_seed_shift,
+        eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
+    )
+
+
 async def _build_exploration_dataset(
     evaluator: MockSupernetEvaluator,
     num_samples: int = 100,
+    objective_name: str = "weighted_average",
 ) -> ExplorationDataset:
     """Build a small exploration dataset programmatically."""
     cost_model = _COST_MODEL_CONFIG.create_cost_model()
@@ -124,7 +154,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=scores,
         allocations=allocations,
-        objective_name="weighted_average",
+        objective_name=objective_name,
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
@@ -229,6 +259,7 @@ class TestPydanticModels:
     def test_validation_results_roundtrip(self, tmp_path: Path) -> None:
         """ValidationResults should serialize and deserialize correctly."""
         results = ValidationResults(
+            objective_name="gsm8k",
             num_layers=12,
             baseline_cost=12.0,
             num_cost_bins=10,
@@ -261,6 +292,7 @@ class TestPydanticModels:
         results.save(path)
         loaded = ValidationResults.load(path)
 
+        assert loaded.objective_name == "gsm8k"
         assert loaded.num_layers == 12
         assert loaded.baseline_cost == 12.0
         assert len(loaded.bands) == 1
@@ -268,9 +300,30 @@ class TestPydanticModels:
         assert loaded.bands[0].validated.score == 0.28
         assert loaded.summary.spearman_rho == 0.95
 
+    def test_validation_results_backward_compat(self, tmp_path: Path) -> None:
+        """ValidationResults without objective_name loads with default ""."""
+        results = ValidationResults(
+            num_layers=12,
+            baseline_cost=12.0,
+            num_cost_bins=10,
+            cost_bin_edges=[6.0, 7.0, 8.0],
+            bands=[],
+            summary=ValidationSummary(
+                spearman_rho=0.0,
+                mean_residual=0.0,
+                total_bands=0,
+                total_evaluations=0,
+            ),
+        )
+        path = tmp_path / "validation_results.json"
+        results.save(path)
+        loaded = ValidationResults.load(path)
+        assert loaded.objective_name == ""
+
     def test_landscape_data_roundtrip(self, tmp_path: Path) -> None:
         """LandscapeData should serialize and deserialize correctly."""
         data = LandscapeData(
+            objective_name="mmlu",
             num_layers=12,
             baseline_cost=12.0,
             num_cost_bins=10,
@@ -291,9 +344,24 @@ class TestPydanticModels:
         data.save(path)
         loaded = LandscapeData.load(path)
 
+        assert loaded.objective_name == "mmlu"
         assert loaded.num_layers == 12
         assert len(loaded.bands) == 1
         assert loaded.bands[0].cost == 6.5
+
+    def test_landscape_data_backward_compat(self, tmp_path: Path) -> None:
+        """LandscapeData without objective_name loads with default ""."""
+        data = LandscapeData(
+            num_layers=12,
+            baseline_cost=12.0,
+            num_cost_bins=10,
+            cost_bin_edges=[6.0, 7.0, 8.0],
+            bands=[],
+        )
+        path = tmp_path / "landscape_data.json"
+        data.save(path)
+        loaded = LandscapeData.load(path)
+        assert loaded.objective_name == ""
 
 
 # =============================================================================
@@ -548,21 +616,185 @@ class TestLandscapeConfig:
         """LandscapeConfig can be constructed with all fields."""
         cfg = LandscapeConfig(
             cost_model=_COST_MODEL_CONFIG,
-            exploration_dataset_path="/tmp/test.json",
+            explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
         )
         assert cfg.seed == 42
         assert cfg.num_cost_bins == 80
-        assert cfg.exploration_dataset_path == "/tmp/test.json"
+        assert cfg.explore_output_dir == "/tmp/test_dir"
 
     def test_landscape_config_frozen(self) -> None:
         """LandscapeConfig should be immutable."""
         cfg = LandscapeConfig(
             cost_model=_COST_MODEL_CONFIG,
-            exploration_dataset_path="/tmp/test.json",
+            explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
         )
         with pytest.raises(Exception):
             cfg.seed = 99  # type: ignore[misc]
+
+
+# =============================================================================
+# Tests: objective_result_path helper
+# =============================================================================
+
+
+class TestObjectiveResultPath:
+    """Test the shared objective_result_path helper."""
+
+    def test_produces_correct_path(self) -> None:
+        """objective_result_path produces expected filename."""
+        p = objective_result_path(Path("/out"), "exploration_results", "gsm8k")
+        assert p == Path("/out/exploration_results_gsm8k.json")
+
+    def test_different_prefixes(self) -> None:
+        """Works with different prefixes."""
+        p1 = objective_result_path(Path("/d"), "exploration_results", "mmlu")
+        p2 = objective_result_path(Path("/d"), "validation_results", "mmlu")
+        p3 = objective_result_path(Path("/d"), "landscape_data", "mmlu")
+        assert p1 == Path("/d/exploration_results_mmlu.json")
+        assert p2 == Path("/d/validation_results_mmlu.json")
+        assert p3 == Path("/d/landscape_data_mmlu.json")
+
+    def test_objective_name_with_special_chars(self) -> None:
+        """Objective names are used as-is in the filename."""
+        p = objective_result_path(Path("/d"), "exploration_results", "weighted_average")
+        assert p == Path("/d/exploration_results_weighted_average.json")
+
+
+# =============================================================================
+# Tests: EvaluatorsConfig.objective_names property
+# =============================================================================
+
+
+class TestEvaluatorsConfigObjectiveNames:
+    """Test EvaluatorsConfig.objective_names derives names from config data."""
+
+    def test_independent_objective(self) -> None:
+        """Independent objective -> evaluator names as objectives."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=IndependentObjectiveConfig(objective_type="independent"),
+        )
+        assert cfg.objective_names == ("gsm8k", "mmlu")
+
+    def test_weighted_average_no_individual(self) -> None:
+        """Weighted average without include_individual -> single aggregate name."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=False,
+                weights={"gsm8k": 0.5, "mmlu": 0.5},
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average",)
+
+    def test_weighted_average_with_individual(self) -> None:
+        """Weighted average with include_individual -> aggregate + evaluator names."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=True,
+                weights={"gsm8k": 0.5, "mmlu": 0.5},
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average", "gsm8k", "mmlu")
+
+    def test_max_objective_with_individual(self) -> None:
+        """Max objective with include_individual -> ('max',) + evaluator names."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=MaxObjectiveConfig(
+                objective_type="max",
+                include_individual=True,
+            ),
+        )
+        assert cfg.objective_names == ("max", "gsm8k", "mmlu")
+
+    def test_single_evaluator_weighted_average(self) -> None:
+        """Single evaluator with weighted_average -> ('weighted_average',)."""
+        cfg = EvaluatorsConfig(
+            configs={"main": _make_evaluator_config()},
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=False,
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average",)
+
+
+# =============================================================================
+# Tests: multi-objective validation pipeline
+# =============================================================================
+
+
+class TestMultiObjectiveValidation:
+    """Test multi-objective support in the validation pipeline."""
+
+    async def test_multi_objective_exploration_datasets(self, tmp_path: Path) -> None:
+        """Save and load per-objective exploration datasets via objective_result_path."""
+        evaluator = _make_evaluator()
+        explore_dir = tmp_path / "explore_output"
+        explore_dir.mkdir()
+
+        # Simulate 2-objective exploration output
+        for obj_name in ("gsm8k", "mmlu"):
+            dataset = await _build_exploration_dataset(
+                evaluator, num_samples=50, objective_name=obj_name,
+            )
+            path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            path.write_text(dataset.model_dump_json(indent=2))
+
+        # Verify both files exist and can be loaded
+        for obj_name in ("gsm8k", "mmlu"):
+            path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            assert path.exists()
+            loaded = ExplorationDataset.load(path)
+            assert loaded.objective_name == obj_name
+            assert loaded.num_samples == 50
+
+    async def test_multi_objective_validation_results(self, tmp_path: Path) -> None:
+        """Save per-objective validation results via objective_result_path."""
+        output_dir = tmp_path / "validate_output"
+        output_dir.mkdir()
+
+        for obj_name in ("gsm8k", "mmlu"):
+            results = ValidationResults(
+                objective_name=obj_name,
+                num_layers=12,
+                baseline_cost=12.0,
+                num_cost_bins=5,
+                cost_bin_edges=[6.0, 8.0, 10.0, 12.0],
+                bands=[],
+                summary=ValidationSummary(
+                    spearman_rho=0.9,
+                    mean_residual=0.01,
+                    total_bands=0,
+                    total_evaluations=0,
+                ),
+            )
+            path = objective_result_path(output_dir, "validation_results", obj_name)
+            results.save(path)
+
+        # Verify both exist and have correct objective_name
+        for obj_name in ("gsm8k", "mmlu"):
+            path = objective_result_path(output_dir, "validation_results", obj_name)
+            assert path.exists()
+            loaded = ValidationResults.load(path)
+            assert loaded.objective_name == obj_name

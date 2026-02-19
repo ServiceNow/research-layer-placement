@@ -89,12 +89,13 @@ configs:
       high: -176.630313   # Target log-likelihood (best expected performance)
   
 
-weights:
-  mmlu: 0.167
-  fda: 0.167
-  swde: 0.167
-  aime24: 0.167
-  aime25: 0.167
-  math500: 0.167
-
-aggregation: weighted_average
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    mmlu: 0.167
+    fda: 0.167
+    swde: 0.167
+    aime24: 0.167
+    aime25: 0.167
+    math500: 0.167

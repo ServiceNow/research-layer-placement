@@ -5,13 +5,16 @@ scores to objective scores, or ``Evaluators.evaluate()`` to run all
 evaluators.  ``evaluate_objectives()`` selectively runs only the evaluators
 needed for specific objectives.
 
-Five concrete objectives are provided:
+Four concrete objectives are provided:
 
 - **WeightedAverage** (N->1): weighted sum of all evaluator scores.
-- **FirstOnly** (N->1): first evaluator's score only.
 - **Min** (N->1): minimum across all evaluator scores.
 - **Max** (N->1): maximum across all evaluator scores.
 - **Independent** (N->N): each evaluator is its own objective.
+
+The three aggregating objectives (WeightedAverage, Min, Max) support an
+``include_individual`` flag that, when True, exposes individual evaluator
+scores as additional objectives alongside the aggregate.
 """
 
 from __future__ import annotations
@@ -63,7 +66,36 @@ class BaseObjective:
         raise NotImplementedError
 
 
-class WeightedAverageObjective(BaseObjective):
+class AggregatingObjective(BaseObjective):
+    """Base for objectives that reduce N evaluator scores to 1 aggregate."""
+
+    config: "AggregatingObjectiveConfig"
+
+    def _aggregate(self, scores: dict[str, float]) -> float:
+        raise NotImplementedError
+
+    @property
+    def objective_names(self) -> tuple[str, ...]:
+        base = (self.config.objective_type,)
+        if self.config.include_individual:
+            return base + self._evaluator_names
+        return base
+
+    def required_evaluators(self, objective_name: str | None = None) -> frozenset[str]:
+        if objective_name is None:
+            return frozenset(self._evaluator_names)
+        if self.config.include_individual and objective_name in self._evaluator_names:
+            return frozenset({objective_name})
+        return frozenset(self._evaluator_names)
+
+    def objectives(self, scores: dict[str, float]) -> dict[str, float]:
+        result = {self.config.objective_type: self._aggregate(scores)}
+        if self.config.include_individual:
+            result.update(scores)
+        return result
+
+
+class WeightedAverageObjective(AggregatingObjective):
     """N evaluator scores -> 1 objective via weighted sum."""
 
     def __init__(
@@ -78,58 +110,22 @@ class WeightedAverageObjective(BaseObjective):
             n = len(evaluator_names)
             self._weights = {name: 1.0 / n for name in evaluator_names}
 
-    @property
-    def objective_names(self) -> tuple[str, ...]:
-        return (self.config.objective_type,)
-
-    def required_evaluators(self, objective_name: str | None = None) -> frozenset[str]:
-        return frozenset(self._evaluator_names)
-
-    def objectives(self, scores: dict[str, float]) -> dict[str, float]:
-        name = self.config.objective_type
-        return {name: sum(self._weights[k] * scores[k] for k in scores)}
+    def _aggregate(self, scores: dict[str, float]) -> float:
+        return sum(self._weights[k] * scores[k] for k in scores)
 
 
-class FirstOnlyObjective(BaseObjective):
-    """Use first evaluator's score only (others are auxiliary metrics)."""
-
-    @property
-    def objective_names(self) -> tuple[str, ...]:
-        return (self.config.objective_type,)
-
-    def required_evaluators(self, objective_name: str | None = None) -> frozenset[str]:
-        return frozenset({self._evaluator_names[0]})
-
-    def objectives(self, scores: dict[str, float]) -> dict[str, float]:
-        return {self.config.objective_type: scores[self._evaluator_names[0]]}
-
-
-class MinObjective(BaseObjective):
+class MinObjective(AggregatingObjective):
     """Minimum across all evaluator scores."""
 
-    @property
-    def objective_names(self) -> tuple[str, ...]:
-        return (self.config.objective_type,)
-
-    def required_evaluators(self, objective_name: str | None = None) -> frozenset[str]:
-        return frozenset(self._evaluator_names)
-
-    def objectives(self, scores: dict[str, float]) -> dict[str, float]:
-        return {self.config.objective_type: min(scores.values())}
+    def _aggregate(self, scores: dict[str, float]) -> float:
+        return min(scores.values())
 
 
-class MaxObjective(BaseObjective):
+class MaxObjective(AggregatingObjective):
     """Maximum across all evaluator scores."""
 
-    @property
-    def objective_names(self) -> tuple[str, ...]:
-        return (self.config.objective_type,)
-
-    def required_evaluators(self, objective_name: str | None = None) -> frozenset[str]:
-        return frozenset(self._evaluator_names)
-
-    def objectives(self, scores: dict[str, float]) -> dict[str, float]:
-        return {self.config.objective_type: max(scores.values())}
+    def _aggregate(self, scores: dict[str, float]) -> float:
+        return max(scores.values())
 
 
 class IndependentObjective(BaseObjective):
@@ -165,7 +161,15 @@ class BaseObjectiveConfig(BaseModel):
         return self._impl_class(config=self, evaluator_names=evaluator_names)
 
 
-class WeightedAverageObjectiveConfig(BaseObjectiveConfig):
+class AggregatingObjectiveConfig(BaseObjectiveConfig):
+    """Base config for aggregating objectives (weighted_average, min, max)."""
+
+    include_individual: bool = Field(
+        description="When True, also expose individual evaluator scores as separate objectives.",
+    )
+
+
+class WeightedAverageObjectiveConfig(AggregatingObjectiveConfig):
     _impl_class: ClassVar[type[BaseObjective]] = WeightedAverageObjective
 
     objective_type: Literal["weighted_average"] = "weighted_average"
@@ -175,19 +179,13 @@ class WeightedAverageObjectiveConfig(BaseObjectiveConfig):
     )
 
 
-class FirstOnlyObjectiveConfig(BaseObjectiveConfig):
-    _impl_class: ClassVar[type[BaseObjective]] = FirstOnlyObjective
-
-    objective_type: Literal["first_only"] = "first_only"
-
-
-class MinObjectiveConfig(BaseObjectiveConfig):
+class MinObjectiveConfig(AggregatingObjectiveConfig):
     _impl_class: ClassVar[type[BaseObjective]] = MinObjective
 
     objective_type: Literal["min"] = "min"
 
 
-class MaxObjectiveConfig(BaseObjectiveConfig):
+class MaxObjectiveConfig(AggregatingObjectiveConfig):
     _impl_class: ClassVar[type[BaseObjective]] = MaxObjective
 
     objective_type: Literal["max"] = "max"
@@ -202,7 +200,6 @@ class IndependentObjectiveConfig(BaseObjectiveConfig):
 # Discriminated union
 ObjectiveConfig = Annotated[
     WeightedAverageObjectiveConfig
-    | FirstOnlyObjectiveConfig
     | MinObjectiveConfig
     | MaxObjectiveConfig
     | IndependentObjectiveConfig,
