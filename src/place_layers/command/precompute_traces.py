@@ -86,10 +86,9 @@ class PrecomputeTracesCommand(BaseCommand):
                 resolved = resolve_placement(self.config.placement, evals)
 
                 # Run trace generation
-                scores = await evals.evaluate(resolved.placement)
-                objective_name = evals.objective_names[0]
-                accuracy = evals.objectives(scores)[objective_name]
-                logger.info(f"Teacher accuracy: {accuracy:.1%}")
+                obj_scores = await evals.evaluate_objectives(resolved.placement)
+                for obj_name, obj_score in obj_scores.items():
+                    logger.info(f"Teacher accuracy ({obj_name}): {obj_score:.1%}")
 
         logger.info("Trace precomputation complete!")
 

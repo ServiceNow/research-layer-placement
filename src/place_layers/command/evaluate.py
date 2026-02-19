@@ -23,6 +23,7 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
 from place_layers.evaluator.evaluators import EvaluatorsConfig
+from place_layers.landscape.config import objective_result_path
 from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,14 @@ class EvaluationResult(BaseModel):
     model_config = {"frozen": True}
 
     timestamp: str = Field(description="ISO timestamp of evaluation")
-    evaluator_type: str = Field(description="Type of evaluator used")
     placement: list[str] | None = Field(
         description="Mixer names per layer (null if no placement)"
     )
     placement_indices: list[int] | None = Field(
         description="Mixer indices per layer (null if no placement)"
     )
-    scores: dict[str, float] = Field(description="Per-evaluator scores")
+    objective_name: str = Field(description="Name of the objective")
+    score: float = Field(description="Objective score")
 
 
 class EvaluateCommand(BaseCommand):
@@ -64,39 +65,25 @@ class EvaluateCommand(BaseCommand):
             ) as evals:
                 resolved = resolve_placement(self.config.placement, evals)
 
-                # Evaluate with all evaluators in parallel
-                logger.info(
-                    f"Evaluating with {len(evals.evaluators)} "
-                    f"evaluator(s) in parallel..."
-                )
-                scores = await evals.evaluate(resolved.placement)
+                obj_scores = await evals.evaluate_objectives(resolved.placement)
 
-                for name, score in scores.items():
-                    logger.info(f"  {name}: {score:.6f}")
-                if len(scores) > 1:
-                    obj_scores = evals.objectives(scores)
-                    for obj_name, obj_score in obj_scores.items():
-                        logger.info(
-                            f"Objective ({obj_name}): {obj_score:.6f}"
-                        )
+                for obj_name, obj_score in obj_scores.items():
+                    logger.info(f"  {obj_name}: {obj_score:.6f}")
 
-                # Build result
-                evaluator_type = (
-                    f"multi[{self.config.evaluators.objective.objective_type}]"
-                    if len(evals.evaluators) > 1
-                    else next(iter(self.config.evaluators.configs.values())).evaluator_type
-                )
-                result = EvaluationResult(
-                    timestamp=datetime.now().isoformat(),
-                    evaluator_type=evaluator_type,
-                    placement=resolved.placement_names,
-                    placement_indices=resolved.placement_indices,
-                    scores=scores,
-                )
-
-        # Save using result handler
-        result_handler = self.config.result_handler.create_result_handler()
-        await result_handler.save(result, output_dir / "evaluation_results.json")
+                # Save per-objective results
+                result_handler = self.config.result_handler.create_result_handler()
+                for obj_name in evals.objective_names:
+                    result = EvaluationResult(
+                        timestamp=datetime.now().isoformat(),
+                        placement=resolved.placement_names,
+                        placement_indices=resolved.placement_indices,
+                        objective_name=obj_name,
+                        score=obj_scores[obj_name],
+                    )
+                    result_path = objective_result_path(
+                        output_dir, "evaluation_results", obj_name
+                    )
+                    await result_handler.save(result, result_path)
 
         logger.info("Evaluation complete!")
 
