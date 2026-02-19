@@ -4,3 +4,4 @@
 
 observer_type: layermap
 char_style: letters
+surrogate_top_k: 10

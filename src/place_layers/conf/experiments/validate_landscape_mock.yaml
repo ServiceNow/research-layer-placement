@@ -1,13 +1,13 @@
 # @package _global_
 # Pipeline step 2: validate placement landscape against mock evaluator.
-# Requires exploration_results.json from explore_placements.
+# Requires exploration_results_{obj_name}.json from explore_placements.
 #
 # Usage:
 #   python -m place_layers +experiments=validate_landscape_mock \
-#       landscape.exploration_dataset_path=exploration_results.json
+#       landscape.explore_output_dir=/path/to/explore/output
 defaults:
   - /command: validate_landscape
-  - /evaluator: mock_apriel_h_1_5_15b
+  - /evaluator@evaluators.configs.mock: mock_apriel_h_1_5_15b
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
   - _self_
@@ -18,5 +18,7 @@ hydra:
       console_rich:
         level: INFO
 
-evaluator:
-  noise_sigma: 0.0
+evaluators:
+  configs:
+    mock:
+      noise_sigma: 0.0

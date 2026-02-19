@@ -27,8 +27,8 @@ defaults:
   - /command: parse_multi_eval_results
   - _self_
 
-# Override these on command line
-exploration_dir: /mnt/evaluations/layer_placement/explore/2026-02-13/+backend=rest_dns,+evaluators=apriel2_mix,+experiments=explore_mock_unconstrained,+generation=extraction,+observers=headless,backend.num_servers=54,backend.server_id_offset=96/
+# Override on command line: exploration_dir=/path/to/exploration/run
+exploration_dir: ???
 
 # Parallel processing settings
 num_workers: 4  # Number of evaluators to process in parallel

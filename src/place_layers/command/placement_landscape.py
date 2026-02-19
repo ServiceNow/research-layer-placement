@@ -1,13 +1,14 @@
 """Placement landscape command: density plot of cost-vs-quality landscape.
 
-Generates a paper-quality figure showing:
+Generates a paper-quality figure per objective showing:
 1. Density of random placements — most configurations at any cost are bad
 2. DP-optimal line — the surrogate's Viterbi solution at each cost level
 3. (Optional) Validated line — real evaluated scores from validate_landscape
 
-Input: exploration_results.json from explore_placements + a cost model config.
-       Optionally: validation_results.json from validate_landscape.
-Output: placement_landscape.pdf + .png + landscape_data.json in Hydra output dir.
+Input: explore_output_dir (contains exploration_results_{obj_name}.json per objective)
+       + evaluators config (for objective_names) + a cost model config.
+       Optionally: validation_output_dir with validation_results_{obj_name}.json.
+Output: placement_landscape_{obj_name}.pdf/png + landscape_data_{obj_name}.json per objective.
 """
 
 from __future__ import annotations
@@ -30,9 +31,11 @@ from place_layers.landscape import (
     compute_band_edges,
     compute_dp_per_band,
     load_and_fit_surrogate,
+    objective_result_path,
 )
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +79,37 @@ class PlacementLandscapeCommand(BaseCommand):
     config: "PlacementLandscapeCommandConfig"
 
     async def run(self) -> None:
-        """Execute placement landscape generation."""
+        """Execute placement landscape generation for each objective."""
         hydra_cfg = HydraConfig.get()
         output_dir = Path(hydra_cfg.runtime.output_dir)
         logger.info("Output directory: %s", output_dir)
 
         landscape = self.config.landscape
+        explore_dir = Path(landscape.explore_output_dir)
+
+        for obj_name in self.config.evaluators.objective_names:
+            dataset_path = objective_result_path(
+                explore_dir, "exploration_results", obj_name,
+            )
+            await self._generate_landscape(
+                obj_name=obj_name,
+                dataset_path=dataset_path,
+                output_dir=output_dir,
+            )
+
+    async def _generate_landscape(
+        self,
+        *,
+        obj_name: str,
+        dataset_path: Path,
+        output_dir: Path,
+    ) -> None:
+        """Generate landscape for a single objective."""
+        logger.info("=== Generating landscape for objective: %s ===", obj_name)
+
+        landscape = self.config.landscape
         dataset, surrogate, cost_model = load_and_fit_surrogate(
-            landscape.exploration_dataset_path,
+            str(dataset_path),
             landscape.cost_model,
             landscape.seed,
         )
@@ -147,26 +173,40 @@ class PlacementLandscapeCommand(BaseCommand):
             alloc_costs, baseline_cost, landscape.num_cost_bins,
         )
         landscape_data = LandscapeData(
+            objective_name=obj_name,
             num_layers=num_layers,
             baseline_cost=baseline_cost,
             num_cost_bins=landscape.num_cost_bins,
             cost_bin_edges=cost_bin_edges.tolist(),
             bands=band_results,
         )
-        landscape_data.save(output_dir / "landscape_data.json")
-        logger.info("Saved landscape_data.json")
+        landscape_data.save(
+            objective_result_path(output_dir, "landscape_data", obj_name)
+        )
+        logger.info("Saved landscape_data_%s.json", obj_name)
 
         # Load validation data if provided
         validation: ValidationResults | None = None
-        if self.config.validation_results_path is not None:
-            validation = ValidationResults.load(
-                Path(self.config.validation_results_path)
+        if self.config.validation_output_dir is not None:
+            validation_path = objective_result_path(
+                Path(self.config.validation_output_dir),
+                "validation_results",
+                obj_name,
             )
-            logger.info(
-                "Loaded validation results: %d bands, rho=%.4f",
-                len(validation.bands),
-                validation.summary.spearman_rho,
-            )
+            if validation_path.exists():
+                validation = ValidationResults.load(validation_path)
+                logger.info(
+                    "Loaded validation results for %s: %d bands, rho=%.4f",
+                    obj_name,
+                    len(validation.bands),
+                    validation.summary.spearman_rho,
+                )
+            else:
+                logger.warning(
+                    "Validation results not found for %s at %s, skipping overlay",
+                    obj_name,
+                    validation_path,
+                )
 
         # Observed data overlay
         observed_costs: np.ndarray | None = None
@@ -176,6 +216,9 @@ class PlacementLandscapeCommand(BaseCommand):
                 [cost_model.allocation_cost(a) for a in dataset.allocations]
             )
             observed_scores = np.array(dataset.scores)
+
+        # Score label with objective name suffix
+        score_label = f"{self.config.score_label} ({obj_name})"
 
         # Plot
         self._plot(
@@ -188,6 +231,8 @@ class PlacementLandscapeCommand(BaseCommand):
             observed_costs,
             observed_scores,
             output_dir,
+            obj_name,
+            score_label,
             validation,
         )
 
@@ -247,6 +292,8 @@ class PlacementLandscapeCommand(BaseCommand):
         observed_costs: np.ndarray | None,
         observed_scores: np.ndarray | None,
         output_dir: Path,
+        obj_name: str,
+        score_label: str,
         validation: ValidationResults | None = None,
     ) -> None:
         """Render two-panel figure: density + layermap."""
@@ -337,7 +384,7 @@ class PlacementLandscapeCommand(BaseCommand):
             "Random chance", fontsize=8, color="tab:blue", va="bottom",
         )
 
-        ax_density.set_ylabel(cfg.score_label)
+        ax_density.set_ylabel(score_label)
         ax_density.legend(loc="upper left", fontsize=8)
         ax_density.tick_params(labelbottom=False)
 
@@ -404,8 +451,8 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Save
-        pdf_path = output_dir / "placement_landscape.pdf"
-        png_path = output_dir / "placement_landscape.png"
+        pdf_path = output_dir / f"placement_landscape_{obj_name}.pdf"
+        png_path = output_dir / f"placement_landscape_{obj_name}.png"
         fig.savefig(pdf_path, bbox_inches="tight")
         fig.savefig(png_path, bbox_inches="tight")
         plt.close(fig)
@@ -428,6 +475,10 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
         description="Shared landscape configuration (binning, surrogate, cost model).",
     )
 
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (config-only, used for objective_names).",
+    )
+
     # Sampling
     samples_per_allocation: int = Field(
         description="Random permutations per allocation for density estimation.",
@@ -447,7 +498,9 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
     )
 
     # Validation overlay (optional — YAML supplies null)
-    validation_results_path: str | None = Field(
-        description="Path to validation_results.json from validate_landscape. "
+    validation_output_dir: str | None = Field(
+        default=None,
+        description="Path to the output directory from validate_landscape "
+        "(contains validation_results_{obj_name}.json files). "
         "If provided, overlays real evaluated scores and uses validated placements in layermap.",
     )

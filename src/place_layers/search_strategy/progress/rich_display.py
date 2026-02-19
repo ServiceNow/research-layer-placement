@@ -45,11 +45,9 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapEvaluatedEvent,
 )
 from place_layers.search_strategy.progress.formatter import PlacementFormatterMixin
 
@@ -91,17 +89,6 @@ class PhaseData(BaseModel):
     completion_text: str | None = None  # Set when phase completes
 
 
-class SwapBeamIterationData(BaseModel):
-    """Data for a completed swap-beam iteration."""
-
-    iteration: int
-    max_iterations: int
-    num_tried: int
-    best_score: float | None
-    improved: bool
-    converged: bool
-
-
 class AnnealingStepSample(BaseModel):
     """Sampled annealing step data for history display."""
 
@@ -134,9 +121,11 @@ class RichDisplay(PlacementFormatterMixin):
     def __init__(
         self,
         console: Console | None = None,
+        surrogate_top_k: int | None = 10,
     ) -> None:
         self._console = console or Console()
         self._live: Live | None = None
+        self._surrogate_top_k = surrogate_top_k
         # Mixin attributes (set in on_search_started)
         self._mixer_names: tuple[str, ...] = ()
         self._num_layers: int = 0
@@ -177,14 +166,6 @@ class RichDisplay(PlacementFormatterMixin):
         self._current_step: int = 0
         self._current_total_steps: int = 0
 
-        # Swap-beam search state
-        self._swap_beam_iterations: list[SwapBeamIterationData] = []
-        self._swap_beam_current_iteration: int = 0
-        self._swap_beam_max_iterations: int = 0
-        self._swap_beam_best_score: float | None = None
-        self._swap_beam_eval_count: int = 0
-        self._swap_beam_total_evals: int = 0
-
         # Annealing search state
         self._annealing_steps: list[AnnealingStepSample] = []
         self._annealing_current_step: int = 0
@@ -198,7 +179,11 @@ class RichDisplay(PlacementFormatterMixin):
         self._annealing_reheat_count: int = 0
 
         # Track which search strategy is active (for display selection)
-        self._active_strategy: str | None = None  # "hierarchical", "swap_beam", "annealing"
+        self._active_strategy: str | None = None  # "hierarchical", "annealing"
+
+        # Surrogate top-k display state
+        self._surrogate_top_scores: list[float] = []
+        self._surrogate_evals_seen: int = 0
 
     def __enter__(self) -> "RichDisplay":
         """Start the Live display."""
@@ -267,12 +252,7 @@ class RichDisplay(PlacementFormatterMixin):
         )
 
         # Render based on active strategy
-        if self._active_strategy == "swap_beam":
-            # Swap-beam visualization
-            swap_panel = self._build_swap_beam_panel()
-            if swap_panel:
-                components.append(swap_panel)
-        elif self._active_strategy == "annealing":
+        if self._active_strategy == "annealing":
             # Annealing visualization
             annealing_panel = self._build_annealing_panel()
             if annealing_panel:
@@ -324,48 +304,6 @@ class RichDisplay(PlacementFormatterMixin):
             title=f"[bold green]Phase {phase.phase_index}/{phase.total_phases}[/bold green]: "
             f"Place [cyan]{phase.mixer_name}[/cyan] (budget={phase.budget})",
             border_style="green" if phase.completion_text else "blue",
-        )
-
-    def _build_swap_beam_panel(self) -> Panel | None:
-        """Build swap-beam search visualization panel."""
-        if not self._swap_beam_iterations and self._swap_beam_current_iteration == 0:
-            return None
-
-        lines: list[Text] = []
-
-        # Current progress
-        if self._swap_beam_current_iteration > 0:
-            progress_text = (
-                f"[dim]Iteration {self._swap_beam_current_iteration}/"
-                f"{self._swap_beam_max_iterations}: "
-                f"evaluating {self._swap_beam_eval_count}/{self._swap_beam_total_evals}[/dim]"
-            )
-            if self._swap_beam_best_score is not None:
-                progress_text += f" [green]best: {self._swap_beam_best_score:.4g}[/green]"
-            lines.append(Text.from_markup(progress_text))
-
-        # Iteration history
-        if self._swap_beam_iterations:
-            lines.append(Text.from_markup("\n[bold]Iterations:[/bold]"))
-            for iter_data in self._swap_beam_iterations[-5:]:  # Show last 5
-                if iter_data.converged:
-                    status = "[green]✓ converged[/green]"
-                elif iter_data.improved:
-                    status = "[green]✓ improved[/green]"
-                else:
-                    status = "[dim]no improvement[/dim]"
-
-                score_str = f"{iter_data.best_score:.4g}" if iter_data.best_score else "N/A"
-                lines.append(
-                    Text.from_markup(
-                        f"  {iter_data.iteration}. {status} → {score_str}"
-                    )
-                )
-
-        return Panel(
-            Group(*lines) if lines else Text(""),
-            title="[bold cyan]Swap-Beam Search[/bold cyan]",
-            border_style="cyan",
         )
 
     def _build_annealing_panel(self) -> Panel | None:
@@ -553,10 +491,11 @@ class RichDisplay(PlacementFormatterMixin):
         placement_str = self._format_placement(
             by_mixer, max_layers_per_mixer=8, escape_brackets=True
         )
+        score_str = self._format_score(event.score)
 
         self._console.print(
             f"[bold cyan]✓ Allocation {event.allocation_index} complete[/bold cyan]: "
-            f"{placement_str} → {event.score:.4g}"
+            f"{placement_str} → {score_str}"
         )
 
     def _format_expand_section(self, event: BeamGrowthStepEvent) -> str:
@@ -674,7 +613,8 @@ class RichDisplay(PlacementFormatterMixin):
         summary.add_column(style="bold")
         summary.add_column(style="green" if event.best_score else "")
 
-        summary.add_row("Best score", f"{event.best_score:.4f}")
+        score_str = self._format_score(event.best_score)
+        summary.add_row("Best score", score_str)
         summary.add_row("Best cost", f"{event.best_cost:.4f}")
         summary.add_row("Evaluations", f"{event.total_evaluations:,}")
         summary.add_row("Allocations explored", str(event.allocations_explored))
@@ -790,14 +730,6 @@ class RichDisplay(PlacementFormatterMixin):
         self._completed_phases = []
         self._current_phase = None
         self._current_step_content = ""
-
-        # Reset swap-beam state
-        self._swap_beam_iterations = []
-        self._swap_beam_current_iteration = 0
-        self._swap_beam_max_iterations = 0
-        self._swap_beam_best_score = None
-        self._swap_beam_eval_count = 0
-        self._swap_beam_total_evals = 0
 
         # Reset annealing state
         self._annealing_steps = []
@@ -976,74 +908,6 @@ class RichDisplay(PlacementFormatterMixin):
         self._update_live()
 
     # =========================================================================
-    # Swap-beam search event handlers
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: SwapBeamIterationStartedEvent
-    ) -> None:
-        """Handle swap-beam iteration started - initialize iteration tracking."""
-        self._active_strategy = "swap_beam"
-        self._swap_beam_current_iteration = event.iteration
-        self._swap_beam_max_iterations = event.max_iterations
-        self._swap_beam_total_evals = event.num_candidates
-        self._swap_beam_eval_count = 0
-
-        # Set initial best score from beam if available
-        if event.beam:
-            self._swap_beam_best_score = event.beam[0].score
-
-        self._update_live()
-
-    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
-        """Handle swap evaluated - track progress and best score."""
-        self._swap_beam_eval_count = event.eval_index
-
-        # Track best score seen
-        if self._swap_beam_best_score is None or event.score > self._swap_beam_best_score:
-            self._swap_beam_best_score = event.score
-
-        # Throttle updates
-        if event.eval_index % self._EVAL_UPDATE_INTERVAL == 0:
-            self._update_live()
-
-    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
-        """Handle swap-beam iteration completed - add to history and print summary."""
-        # Get best score for this iteration
-        best_score = event.best_candidate.score if event.best_candidate else None
-
-        # Add to history
-        iter_data = SwapBeamIterationData(
-            iteration=event.iteration,
-            max_iterations=event.max_iterations,
-            num_tried=len(event.tried),
-            best_score=best_score,
-            improved=event.improved,
-            converged=event.converged,
-        )
-        self._swap_beam_iterations.append(iter_data)
-
-        # Print permanent summary line
-        if event.iteration > 0:  # Skip iteration 0 (initial eval)
-            if event.converged:
-                status = "[green]✓ converged[/green]"
-            elif event.improved:
-                status = "[green]✓ improved[/green]"
-            else:
-                status = "[dim]no improvement[/dim]"
-
-            score_str = f"{best_score:.4g}" if best_score else "N/A"
-            self._console.print(
-                f"  [cyan]Iter {event.iteration}[/cyan]: {status} → {score_str}"
-            )
-
-        # Reset for next iteration
-        self._swap_beam_eval_count = 0
-        self._swap_beam_total_evals = 0
-
-        self._update_live()
-
-    # =========================================================================
     # Annealing search event handlers
     # =========================================================================
 
@@ -1139,11 +1003,45 @@ class RichDisplay(PlacementFormatterMixin):
 
     def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:
         """Handle surrogate round started - print permanent line."""
+        self._surrogate_top_scores = []
+        self._surrogate_evals_seen = 0
         self._console.print(
             f"  [cyan]ROUND {event.round}/{event.total_rounds}[/cyan]: "
             f"{event.num_candidates} candidates, "
             f"evaluating top {event.evals_planned} by EI"
         )
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Handle surrogate candidate evaluated - print compact line (top-k filtered)."""
+        import bisect
+
+        self._surrogate_evals_seen += 1
+        k = self._surrogate_top_k
+
+        # Decide whether to show this candidate
+        if k is None or event.is_new_best:
+            show = True
+        elif len(self._surrogate_top_scores) < k:
+            show = True
+        elif event.score > self._surrogate_top_scores[0]:
+            show = True
+        else:
+            show = False
+
+        # Maintain sorted top-k list (ascending, so [0] is min)
+        bisect.insort(self._surrogate_top_scores, event.score)
+        if k is not None and len(self._surrogate_top_scores) > k:
+            self._surrogate_top_scores.pop(0)
+
+        if show:
+            marker = " [bold yellow]★[/bold yellow]" if event.is_new_best else ""
+            self._console.print(
+                f"    #{event.eval_index}/{event.evals_planned}: "
+                f"[green]{event.score:.4g}[/green] "
+                f"(μ̂ {event.surrogate_mu:.4g}){marker}"
+            )
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Handle surrogate round completed - print permanent line."""

@@ -144,7 +144,7 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
         config: "ImportanceWeightedEvaluatorConfig",
         *,
         output_dir: Path,
-        shared_backend: "AsyncBackend | SyncBackend | None" = None,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
         self._weight_clip_min = config.weight_clip_min
         self._weight_clip_max = config.weight_clip_max
@@ -154,7 +154,7 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
         self._log_weight_clip_max = math.log(self._weight_clip_max)
 
         # Call parent init (sets up backend, trace loading, task weights, etc.)
-        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     def _compute_problem_record(
         self,

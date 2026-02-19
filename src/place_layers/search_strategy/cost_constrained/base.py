@@ -25,7 +25,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+    from place_layers.evaluator.evaluators import Evaluators
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -70,28 +70,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self._progress_estimator = progress_estimator
         self.eval_count = 0
 
-    async def _evaluate_with_details(
-        self, problem: CostConstrainedProblem, placement: LayerPlacement
-    ) -> tuple[float, dict[str, float] | None]:
-        """Evaluate placement and return both aggregated and auxiliary scores.
-
-        Args:
-            problem: The optimization problem
-            placement: The placement to evaluate
-
-        Returns:
-            Tuple of (aggregated_score, auxiliary_scores_dict)
-            auxiliary_scores_dict is None if not using multi-evaluator
-        """
-        from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
-
-        # Check if using multi-evaluator
-        if isinstance(problem.evaluator, EvaluatorInstances):
-            return await problem.evaluator.evaluate_with_details(placement)
-        else:
-            score = await problem.evaluator.evaluate(placement)
-            return score, None
-
     @overload
     async def search(
         self,
@@ -131,7 +109,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.num_layers
         num_mixers = cost_model.num_mixers
         mixer_names = cost_model.phase_order
 
@@ -276,7 +254,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
-        logger.info(f"Best score: {best_entry.score:.4f}")
+        logger.info(f"Best score: {best_entry.score}")
         logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")

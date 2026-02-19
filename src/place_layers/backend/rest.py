@@ -340,6 +340,11 @@ class RESTBackend(AsyncBackend):
         )
 
     @property
+    def config(self) -> "RESTBackendConfig | RESTDNSBackendConfig":
+        """Backend configuration."""
+        return self._config
+
+    @property
     def max_concurrent_requests(self) -> int:
         """Maximum concurrent requests across all servers."""
         return self._config.max_concurrent_per_server * len(self._server_pool.servers)

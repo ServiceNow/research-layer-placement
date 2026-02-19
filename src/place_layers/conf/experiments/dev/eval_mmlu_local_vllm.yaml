@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: local_vllm
   - /model: apriel2_0_5b_dev
   - /task: mmlu_quick
@@ -21,6 +21,7 @@ backend:
   client:
     gpu_memory_utilization: 0.7
 
-evaluator:
-  use_chat_template: true
-  batch_size: 8
+evaluators:
+  configs:
+    mmlu:
+      use_chat_template: true

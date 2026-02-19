@@ -4,3 +4,4 @@
 
 observer_type: layermap
 char_style: blocks
+surrogate_top_k: 10

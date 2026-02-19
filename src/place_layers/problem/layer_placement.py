@@ -14,7 +14,7 @@ from place_layers.problem.base_problem_config import BaseProblemConfig
 
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.base_evaluator import BaseEvaluator
+    from place_layers.evaluator.evaluators import Evaluators
 
 
 logger = logging.getLogger(__name__)
@@ -25,15 +25,16 @@ class LayerPlacementProblem(BaseProblem[LayerPlacement]):
 
     def __init__(
         self,
-        evaluator: BaseEvaluator[LayerPlacement],
+        evaluators: "Evaluators[LayerPlacement]",
         config: LayerPlacementProblemConfig,
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluator, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: LayerPlacementProblemConfig  # Type narrowing
 
         # Validate budgets against evaluator dimensions
-        num_layers = evaluator.num_layers
-        num_mixers = evaluator.num_mixers
+        num_layers = evaluators.num_layers
+        num_mixers = evaluators.num_mixers
 
         if len(config.budgets) >= num_mixers:
             raise ValueError(
@@ -86,26 +87,26 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
 
     def __init__(
         self,
-        evaluator: BaseEvaluator[LayerPlacement],
+        evaluators: "Evaluators[LayerPlacement]",
         config: "CostConstrainedProblemConfig",
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluator, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
         # Create cost model first, then validate mixer names
         self.cost_model = config.cost_model.create_cost_model()
 
         # Validate cost model mixer names match evaluator mixer names
-        # evaluator.mixer_names is a frozenset (for validation only)
         config_mixer_names = set(self.cost_model.phase_order)
-        if config_mixer_names != evaluator.mixer_names:
+        if config_mixer_names != evaluators.mixer_names:
             raise ValueError(
                 f"Cost model mixer names {config_mixer_names} "
-                f"must match evaluator mixer names {evaluator.mixer_names}"
+                f"must match evaluator mixer names {evaluators.mixer_names}"
             )
 
         # Validate constraint based on problem type
-        num_layers = evaluator.num_layers
+        num_layers = evaluators.num_layers
         min_cost = self.cost_model.min_cost(num_layers)
         max_cost = self.cost_model.max_cost(num_layers)
 

@@ -8,7 +8,7 @@
 #       +model=apriel2_1p6_v2_annealed_0204
 defaults:
   - /command: explore_placements
-  - /evaluator: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: rest
   - /task: gsm8k
   - /generation: greedy

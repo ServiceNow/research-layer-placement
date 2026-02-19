@@ -12,6 +12,7 @@ uncertain regions.  This gives automatic exploration/exploitation:
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -133,10 +134,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             cost_budget=None,
         )
 
-        best_entry: BeamEntry | None = None
         best_cost = float("inf")
-        fallback_entry: BeamEntry | None = None
         fallback_score = float("-inf")
+
+        best_assignment: tuple[str, ...] | None = None
+        best_alloc: dict[str, int] | None = None
+        fallback_assignment: tuple[str, ...] | None = None
+        fallback_alloc: dict[str, int] | None = None
 
         for assignment, score in zip(all_assignments, all_scores):
             alloc = dict(Counter(assignment))
@@ -144,27 +148,33 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
             if score >= performance_target and cost < best_cost:
                 best_cost = cost
-                best_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                best_assignment = assignment
+                best_alloc = alloc
             if score > fallback_score:
                 fallback_score = score
-                fallback_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                fallback_assignment = assignment
+                fallback_alloc = alloc
 
-        if best_entry is None:
+        if best_assignment is None:
             logger.warning(
                 "No placement met performance target %s. "
                 "Returning best by score.",
                 performance_target,
             )
-            assert fallback_entry is not None
-            best_entry = fallback_entry
+            assert fallback_assignment is not None and fallback_alloc is not None
+            best_assignment = fallback_assignment
+            best_alloc = fallback_alloc
+
+        assert best_alloc is not None
+        # Re-evaluate to get scalar score for BeamEntry
+        placement = LayerPlacement(assignments=best_assignment)
+        best_score_val = await problem.evaluate(placement)
+        self.eval_count += 1
+        best_entry = BeamEntry(
+            assignments=best_assignment,
+            allocation=best_alloc,
+            score=best_score_val,
+        )
 
         return self._create_result(
             best_entry=best_entry,
@@ -214,7 +224,13 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             seed=self.config.seed,
             feature_config=exploration.feature_config,
         )
+        t0 = time.perf_counter()
         surrogate.fit(all_assignments, np.array(all_scores))
+        logger.info(
+            "Initial surrogate fit: %.3fs (%d samples)",
+            time.perf_counter() - t0,
+            len(all_assignments),
+        )
         f_best = float(np.max(all_scores))
 
         for round_num in range(self.config.num_rounds):
@@ -227,9 +243,12 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             )
 
             # Step 1: Extract MRF models from bootstrap ensemble
+            t0 = time.perf_counter()
             mrf_models = surrogate.extract_bootstrap_mrf_models(num_layers)
+            t_extract = time.perf_counter() - t0
 
             # Step 2: For each MRF model, run Viterbi to get globally top-M
+            t0 = time.perf_counter()
             candidate_set: set[tuple[str, ...]] = set()
             for mrf_model in mrf_models:
                 solver = ExactMRFSolver(mrf_model)
@@ -238,12 +257,19 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 )
                 for solution in top_n:
                     candidate_set.add(solution.placement.assignments)
+            t_viterbi = time.perf_counter() - t0
 
             candidate_list = list(candidate_set)
-            logger.debug(
-                "Viterbi produced %d distinct candidates from %d models",
-                len(candidate_list),
+            logger.info(
+                "Round %d/%d: MRF extract %.3fs, Viterbi DP %.3fs "
+                "(%d models × %d allocs → %d candidates)",
+                round_num + 1,
+                self.config.num_rounds,
+                t_extract,
+                t_viterbi,
                 len(mrf_models),
+                len(feasible_allocations),
+                len(candidate_list),
             )
 
             if not candidate_list:
@@ -277,7 +303,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             predicted_scores = mu[top_indices].copy()
 
             # Step 5: Evaluate with real evaluator
-            for idx in top_indices:
+            for eval_i, idx in enumerate(top_indices):
                 candidate = candidate_list[idx]
                 placement = LayerPlacement(assignments=candidate)
                 score = await problem.evaluate(placement)
@@ -286,21 +312,23 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 all_assignments.append(candidate)
                 all_scores.append(score)
 
+                alloc = dict(Counter(candidate))
+                candidate_cost = cost_model.allocation_cost(alloc)
+
+                is_new_best = False
                 if score > f_best:
                     f_best = score
+                    is_new_best = True
 
                     if self.observers:
-                        best_alloc = dict(Counter(candidate))
-                        best_cost = cost_model.allocation_cost(best_alloc)
-
                         from place_layers.search_strategy.progress import (
                             BestUpdatedEvent,
                         )
 
                         event = BestUpdatedEvent(
                             score=score,
-                            cost=best_cost,
-                            allocation=best_alloc,
+                            cost=candidate_cost,
+                            allocation=alloc,
                             assignments=candidate,
                         )
                         for observer in self.observers:
@@ -309,6 +337,26 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 if self.observers:
                     for observer in self.observers:
                         observer.on_eval_completed(self.eval_count)
+
+                    from place_layers.search_strategy.progress import (
+                        SurrogateCandidateEvaluatedEvent,
+                    )
+
+                    eval_event = SurrogateCandidateEvaluatedEvent(
+                        round=round_num + 1,
+                        total_rounds=self.config.num_rounds,
+                        eval_index=eval_i + 1,
+                        evals_planned=n_select,
+                        assignments=candidate,
+                        score=score,
+                        surrogate_mu=float(mu[idx]),
+                        ei_value=float(ei[idx]),
+                        cost=candidate_cost,
+                        is_new_best=is_new_best,
+                        f_best=f_best,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_candidate_evaluated(eval_event)
 
             # Compute prediction correlation for this round's candidates
             actual_scores = np.array(all_scores[-n_select:])
@@ -319,15 +367,22 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 prediction_correlation = 0.0
 
             # Step 6: Refit surrogate
+            t0 = time.perf_counter()
             surrogate.fit(all_assignments, np.array(all_scores))
+            t_refit = time.perf_counter() - t0
 
+            t0 = time.perf_counter()
             rho = surrogate.cross_validate(
                 all_assignments, np.array(all_scores),
                 cv_folds=self.config.cv_folds,
             )
-            logger.debug(
-                "Round %d complete: best=%.6f, rho=%.4f, pred_corr=%.4f",
+            t_cv = time.perf_counter() - t0
+            logger.info(
+                "Round %d complete: refit %.3fs, CV %.3fs, "
+                "best=%.6f, rho=%.4f, pred_corr=%.4f",
                 round_num + 1,
+                t_refit,
+                t_cv,
                 f_best,
                 rho,
                 prediction_correlation,

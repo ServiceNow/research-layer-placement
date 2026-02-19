@@ -1,5 +1,10 @@
 """Parse multi-evaluator exploration results into per-evaluator files.
 
+.. deprecated::
+    New exploration runs store per-evaluator score dicts natively in
+    ``exploration_results.json``.  This command is only needed for legacy
+    exploration runs that stored a single aggregated float score.
+
 Reads exploration_results.json and trace files from a multi-evaluator exploration run,
 extracts per-evaluator scores, and generates individual exploration_results.json files
 for each evaluator. This enables running placement_landscape on individual evaluators.
@@ -193,7 +198,7 @@ def process_evaluator(
     assignments: list[list[str]],
     mixer_names: list[str],
     num_workers: int,
-) -> tuple[str, list[float]]:
+) -> tuple[str, list[list[str]], list[float]]:
     """Process one evaluator: extract scores for all placements.
 
     Args:
@@ -204,12 +209,13 @@ def process_evaluator(
         num_workers: Number of parallel workers for score computation
 
     Returns:
-        Tuple of (evaluator_name, scores_list)
+        Tuple of (evaluator_name, filtered_assignments, scores_list).
+        Assignments and scores are filtered together so they stay aligned.
     """
     evaluator_dir = evals_dir / evaluator_name
     if not evaluator_dir.exists():
         logger.warning(f"Evaluator directory not found: {evaluator_dir}")
-        return evaluator_name, []
+        return evaluator_name, [], []
 
     logger.info(f"Processing evaluator: {evaluator_name}")
 
@@ -240,6 +246,7 @@ def process_evaluator(
             work_items.append((assignment_tuple, None))
 
     # Process in parallel with progress tracking
+    filtered_assignments: list[list[str]] = []
     if num_workers > 1:
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             future_to_idx = {}
@@ -247,11 +254,9 @@ def process_evaluator(
                 if trace_dir is not None:
                     future = executor.submit(compute_evaluator_score, trace_dir)
                     future_to_idx[future] = idx
-                else:
-                    scores.append(None)  # Placeholder
 
             # Collect results in order
-            results = [None] * len(work_items)
+            results: list[float | None] = [None] * len(work_items)
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 try:
@@ -263,8 +268,11 @@ def process_evaluator(
                     )
                     results[idx] = None
 
-            # Fill in scores (skipping placeholders)
-            scores = [r for r in results if r is not None]
+            # Filter assignments and results together to maintain alignment
+            for assignment, result in zip(assignments, results):
+                if result is not None:
+                    filtered_assignments.append(assignment)
+                    scores.append(result)
     else:
         # Sequential processing
         for assignment_tuple, trace_dir in work_items:
@@ -272,6 +280,7 @@ def process_evaluator(
                 try:
                     score = compute_evaluator_score(trace_dir)
                     scores.append(score)
+                    filtered_assignments.append(list(assignment_tuple))
                 except Exception as e:
                     logger.error(
                         f"Failed to compute score for {trace_dir}: {e}"
@@ -282,7 +291,7 @@ def process_evaluator(
                 )
 
     logger.info(f"Extracted {len(scores)} scores for {evaluator_name}")
-    return evaluator_name, scores
+    return evaluator_name, filtered_assignments, scores
 
 
 # ============================================================================
@@ -344,7 +353,7 @@ class ParseMultiEvalResultsCommand(BaseCommand):
         logger.info(f"Found {len(evaluators)} evaluators: {evaluators}")
 
         # Process each evaluator in parallel
-        evaluator_scores: dict[str, list[float]] = {}
+        evaluator_results: dict[str, tuple[list[list[str]], list[float]]] = {}
 
         if self.config.num_workers > 1 and len(evaluators) > 1:
             logger.info(f"Processing evaluators with {self.config.num_workers} workers")
@@ -364,8 +373,8 @@ class ParseMultiEvalResultsCommand(BaseCommand):
                 for future in as_completed(futures):
                     evaluator_name = futures[future]
                     try:
-                        name, scores = future.result()
-                        evaluator_scores[name] = scores
+                        name, filtered_assigns, scores = future.result()
+                        evaluator_results[name] = (filtered_assigns, scores)
                     except Exception as e:
                         logger.error(
                             f"Failed to process evaluator {evaluator_name}: {e}"
@@ -373,17 +382,17 @@ class ParseMultiEvalResultsCommand(BaseCommand):
         else:
             # Sequential processing
             for evaluator_name in evaluators:
-                name, scores = process_evaluator(
+                name, filtered_assigns, scores = process_evaluator(
                     evaluator_name,
                     evals_dir,
                     assignments,
                     mixer_names,
                     self.config.num_score_workers,
                 )
-                evaluator_scores[name] = scores
+                evaluator_results[name] = (filtered_assigns, scores)
 
         # Write per-evaluator result files
-        for evaluator_name, scores in evaluator_scores.items():
+        for evaluator_name, (eval_assignments, scores) in evaluator_results.items():
             if not scores:
                 logger.warning(
                     f"No scores extracted for {evaluator_name}, skipping"
@@ -394,14 +403,14 @@ class ParseMultiEvalResultsCommand(BaseCommand):
             eval_output_dir = output_dir / evaluator_name
             eval_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Build per-evaluator result
+            # Build per-evaluator result with aligned assignments and scores
             per_eval_result = {
-                "assignments": assignments,
+                "assignments": eval_assignments,
                 "scores": scores,
                 "allocations": allocations,
                 "num_layers": num_layers,
                 "mixer_names": mixer_names,
-                "num_samples": num_samples,
+                "num_samples": len(scores),
                 "termination_reason": termination_reason,
                 "feature_config": feature_config,
                 # Leave rho fields empty - not recomputed (set to 0.0 for compatibility)
@@ -420,7 +429,7 @@ class ParseMultiEvalResultsCommand(BaseCommand):
             )
 
         logger.info(
-            f"Successfully parsed {len(evaluator_scores)} evaluators"
+            f"Successfully parsed {len(evaluator_results)} evaluators"
         )
 
 

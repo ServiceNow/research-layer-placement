@@ -4,6 +4,6 @@
 # Used by both placement_landscape and validate_landscape commands.
 
 cost_model: ${cost_model}
-exploration_dataset_path: ???
+explore_output_dir: ???
 seed: 42
 num_cost_bins: 80

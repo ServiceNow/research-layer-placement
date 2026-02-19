@@ -3,6 +3,7 @@
 # Shows detailed phase/step output similar to RichSearchDisplay
 
 observer_type: plain
+surrogate_top_k: 10
 show_allocation_start: true
 show_allocation_complete: true
 show_best_updated: true

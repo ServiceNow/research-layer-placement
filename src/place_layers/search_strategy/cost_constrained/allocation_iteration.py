@@ -1,7 +1,7 @@
 """Allocation-iteration search: iterates allocations in cost order.
 
 This module provides the intermediate class that implements the outer loop
-of iterating through allocations. Concrete strategies (hierarchical, swap-beam,
+of iterating through allocations. Concrete strategies (hierarchical, SA,
 annealing) subclass this and implement _search_within_allocation().
 """
 
@@ -260,14 +260,20 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             # Entries returned from _search_within_allocation are always evaluated
             assert best_in_allocation.score is not None
 
-            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
+            best_agg = best_in_allocation.score
+            logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Update global best
-            if best_entry is None or best_in_allocation.score > (best_entry.score or float("-inf")):
+            old_best_agg = (
+                best_entry.score
+                if best_entry is not None and best_entry.score is not None
+                else float("-inf")
+            )
+            if best_agg > old_best_agg:
                 best_entry = best_in_allocation
                 best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  NEW BEST: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
+                    f"  NEW BEST: score={best_agg:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -466,15 +472,16 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             # Entries returned from _search_within_allocation are always evaluated
             assert best_in_allocation.score is not None
 
-            logger.info(f"  Best in allocation: score={best_in_allocation.score:.4f}")
+            best_agg = best_in_allocation.score
+            logger.info(f"  Best in allocation: score={best_agg:.4f}")
 
             # Check if it meets the performance target
-            if best_in_allocation.score >= performance_target:
+            if best_agg >= performance_target:
                 # This allocation meets the target - it's the best (lowest cost) so far
                 best_entry = best_in_allocation
                 best_cost = cost_model.allocation_cost(best_entry.allocation)
                 logger.info(
-                    f"  MEETS TARGET: score={best_in_allocation.score:.4f}, cost={best_cost:.4f}"
+                    f"  MEETS TARGET: score={best_agg:.4f}, cost={best_cost:.4f}"
                 )
 
                 # Emit best updated event
@@ -492,7 +499,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             else:
                 # Performance dropped below target - stop searching
                 logger.info(
-                    f"  Performance {best_in_allocation.score:.4f} < target {performance_target:.4f}"
+                    f"  Performance {best_agg:.4f} < target {performance_target:.4f}"
                 )
                 logger.info(
                     "  Stopping search (allocations getting cheaper won't help)"
@@ -520,7 +527,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             )
             logger.warning(
                 f"No allocation met performance target {performance_target}. "
-                f"Returning best effort: score={best_entry.score:.4f}"
+                f"Returning best effort: score={score:.4f}"
             )
 
         return self._create_result(
@@ -542,7 +549,10 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
         """Search for the best assignment within a fixed allocation.
 
         This is the inner loop that subclasses must implement.
-        Different strategies (swap beam, hierarchical, SA) provide different implementations.
+        Different strategies (hierarchical, SA) provide different implementations.
+
+        Returns list of BeamEntry results sorted by score descending,
+        or empty list if no valid assignments exist.
 
         Args:
             problem: The optimization problem (for evaluation).
@@ -551,8 +561,7 @@ class AllocationIterationSearch(BaseCostConstrainedSearch):
             num_layers: Total number of layers.
 
         Returns:
-            List of BeamEntry results sorted by score descending, or empty list
-            if no valid assignments exist.
+            List of BeamEntry results sorted by score descending.
         """
         pass
 

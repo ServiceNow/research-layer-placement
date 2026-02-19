@@ -14,17 +14,11 @@
 # Traces from all sources are merged by task_name. Optional task_weights
 # allow weighting different tasks differently in the final score.
 #
-# This config uses interpolation to compose with other config groups:
-#   - backend: Generation backend (transformers, vllm, or rest)
-#
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=trace_likelihood \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=trace_likelihood \
 #       +backend=transformers +model=apriel2_0_5b_dev
 
 evaluator_type: trace_likelihood
-
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
 
 # Trace sources - list of directories containing JSONL trace files
 # Traces are merged by task_name across all sources

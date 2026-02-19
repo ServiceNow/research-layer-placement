@@ -46,12 +46,10 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapEvaluatedEvent,
 )
 
 if TYPE_CHECKING:
@@ -246,24 +244,6 @@ class EventDiskWriter:
         self._write_event(event)
 
     # =========================================================================
-    # Swap-beam search event handlers
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: SwapBeamIterationStartedEvent
-    ) -> None:
-        """Handle swap-beam iteration started event."""
-        self._write_event(event)
-
-    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
-        """Handle swap evaluated event."""
-        self._write_event(event)
-
-    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
-        """Handle swap-beam iteration completed event."""
-        self._write_event(event)
-
-    # =========================================================================
     # Annealing search event handlers
     # =========================================================================
 
@@ -297,4 +277,10 @@ class EventDiskWriter:
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Handle surrogate round completed event."""
+        self._write_event(event)
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Handle surrogate candidate evaluated event."""
         self._write_event(event)

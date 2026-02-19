@@ -6,10 +6,11 @@
 # Uses adaptive sampling: evaluates batches until surrogate quality plateaus.
 #
 # Usage:
-#   python -m place_layers +command=explore_placements +evaluator=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
+#   python -m place_layers +command=explore_placements +evaluator@evaluators.configs.mock=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
 
 defaults:
   - /result_handler: json
+  - /objective@evaluators.objective: weighted_average
   - _self_
 
 command: explore_placements
@@ -31,3 +32,4 @@ seed: 42
 # Feature expansion selection
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
 expansion_max_range: 10         # ceiling for pairwise range search (auto-stops early)
+
