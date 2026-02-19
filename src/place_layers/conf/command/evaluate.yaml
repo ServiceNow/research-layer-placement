@@ -17,8 +17,8 @@
 #   python -m place_layers ... placement=all_attention,every_4th_gdn --multirun
 
 defaults:
-  - /evaluators: from_evaluator
   - /result_handler: json
+  - /objective@evaluators.objective: weighted_average
 
 command: evaluate
 

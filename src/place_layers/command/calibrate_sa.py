@@ -43,6 +43,7 @@ from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
+from place_layers.landscape.config import objective_result_path
 from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
@@ -114,19 +115,20 @@ class CalibrateSACommand(BaseCommand):
             async with self.config.evaluators.create_evaluators(
                 output_dir=output_dir, backend=backend
             ) as evals:
-                result = await self._run_calibration(evals)
+                for obj_name in evals.objective_names:
+                    result = await self._run_calibration(evals, obj_name)
 
-        if result is not None:
-            # Save using result handler
-            ext = self.config.result_handler.handler_type
-            result_handler = self.config.result_handler.create_result_handler()
-            output_path = output_dir / f"calibration_results.{ext}"
-            await result_handler.save(result, output_path)
-            logger.info("Calibration results saved to %s", output_path)
+                    if result is not None:
+                        result_handler = self.config.result_handler.create_result_handler()
+                        output_path = objective_result_path(
+                            output_dir, "calibration_results", obj_name
+                        )
+                        await result_handler.save(result, output_path)
+                        logger.info("Calibration results saved to %s", output_path)
 
-    async def _run_calibration(self, evals) -> None | CalibrationResult:
-        """Run calibration with evaluators."""
-        objective_name = evals.objective_names[0]
+    async def _run_calibration(self, evals, objective_name: str) -> None | CalibrationResult:
+        """Run calibration with evaluators for a single objective."""
+        logger.info("=== Calibrating objective: %s ===", objective_name)
         problem = self.config.problem.create_problem(evals, objective_name=objective_name)
 
         if not isinstance(problem, CostConstrainedProblem):
@@ -147,7 +149,7 @@ class CalibrateSACommand(BaseCommand):
         cost_budget = problem_config.cost_budget
 
         # Find a representative allocation at the cost bound
-        num_layers = evals.num_layers
+        num_layers = problem.num_layers
         allocation = cost_model.allocation_at_cost_bound(
             num_layers, cost_budget, from_above=True
         )
@@ -274,7 +276,7 @@ class CalibrateSACommand(BaseCommand):
         current = random_assignment(self._rng, allocation, num_layers)
 
         placement = LayerPlacement(assignments=tuple(current))
-        current_agg = await problem.evaluate(placement)
+        current_score = await problem.evaluate(placement)
 
         deltas = []
         for _ in range(self.config.num_samples):
@@ -297,15 +299,15 @@ class CalibrateSACommand(BaseCommand):
                 continue
 
             placement = LayerPlacement(assignments=tuple(proposed))
-            proposed_agg = await problem.evaluate(placement)
-            delta = proposed_agg - current_agg
+            proposed_score = await problem.evaluate(placement)
+            delta = proposed_score - current_score
             deltas.append(delta)
 
             # Walk state forward: accept improving always,
             # worsening with 50% to sample diverse states
             if delta > 0 or self._rng.random() < 0.5:
                 current = proposed
-                current_agg = proposed_agg
+                current_score = proposed_score
 
         return deltas
 

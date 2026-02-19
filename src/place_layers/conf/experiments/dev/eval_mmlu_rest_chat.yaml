@@ -9,7 +9,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.configs.main: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: rest
   - /task: mmlu
   - _self_

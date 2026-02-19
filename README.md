@@ -356,7 +356,7 @@ See `CLAUDE.md` for detailed configuration patterns and architecture documentati
 ## Output
 
 Results are saved to `outputs/<config-name>/`:
-- `evaluation_results.json` - scores and placement details
+- `evaluation_results_{objective}.json` - per-objective scores and placement details
 - `validation.jsonl` - individual completions (for generative eval)
 - `exploration_progress.jsonl` - incremental surrogate exploration data
 - `exploration_results.json` - final exploration dataset

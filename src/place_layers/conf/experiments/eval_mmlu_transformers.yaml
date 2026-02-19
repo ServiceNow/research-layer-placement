@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.configs.main: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: transformers
   - /task: mmlu
   - /generation: greedy

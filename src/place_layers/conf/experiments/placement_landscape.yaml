@@ -5,7 +5,7 @@
 #
 # Usage:
 #   python -m place_layers +experiments=placement_landscape \
-#       +evaluator@evaluators.configs.main=mock_apriel_h_1_5_15b \
+#       +evaluator@evaluators.configs.mock=mock_apriel_h_1_5_15b \
 #       landscape.explore_output_dir=/path/to/explore/output
 
 defaults:

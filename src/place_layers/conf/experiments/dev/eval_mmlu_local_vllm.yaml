@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.configs.main: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: local_vllm
   - /model: apriel2_0_5b_dev
   - /task: mmlu_quick

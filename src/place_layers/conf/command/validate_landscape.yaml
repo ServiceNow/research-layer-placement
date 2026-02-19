@@ -6,16 +6,16 @@
 # Requires exploration_results_{obj_name}.json files from explore_placements.
 #
 # The evaluator is composed via:
-#   +evaluator@evaluators.configs.main=generative
+#   +evaluator@evaluators.configs.<name>=generative
 #
 # Usage:
 #   python -m place_layers +command=validate_landscape \
-#       +evaluator@evaluators.configs.main=mock_apriel_h_1_5_15b \
+#       +evaluator@evaluators.configs.mock=mock_apriel_h_1_5_15b \
 #       +cost_model=linear_apriel_15b +landscape=apriel_15b \
 #       landscape.explore_output_dir=/path/to/explore/output
 
 defaults:
-  - /evaluators: from_evaluator
+  - /objective@evaluators.objective: weighted_average
 
 command: validate_landscape
 landscape: ${landscape}
@@ -26,3 +26,4 @@ search_candidates_per_model: 200
 search_cv_folds: 5
 search_ei_xi: 0.01
 search_seed: 42
+

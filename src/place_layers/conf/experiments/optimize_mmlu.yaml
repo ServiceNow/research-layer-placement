@@ -10,7 +10,7 @@
 
 defaults:
   - /command: optimize
-  - /evaluator@evaluators.configs.main: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: rest
   - /task: mmlu_optimize
   - /problem: cost_apriel_0_5b

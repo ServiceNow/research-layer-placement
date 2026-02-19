@@ -9,7 +9,7 @@
 #       landscape.explore_output_dir=/path/to/explore/output
 defaults:
   - /command: validate_landscape
-  - /evaluator@evaluators.configs.main: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: rest
   - /task: gsm8k
   - /generation: greedy

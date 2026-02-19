@@ -1,8 +1,8 @@
 # @package _global_
 
 defaults:
-  - /evaluators: from_evaluator
   - /observers: default
+  - /objective@evaluators.objective: weighted_average
   - _self_
 
 command: optimize

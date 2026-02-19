@@ -11,7 +11,7 @@
 
 defaults:
   - /command: precompute_traces
-  - /evaluator@evaluators.configs.main: trace_precompute
+  - /evaluator@evaluators.configs.gsm8k: trace_precompute
   - /backend: vllm
   - /task: gsm8k
   - /generation: sampling

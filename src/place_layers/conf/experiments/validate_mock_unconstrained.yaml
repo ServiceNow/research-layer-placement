@@ -8,7 +8,7 @@ defaults:
   - /command: validate_landscape
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
-  - override /evaluators: mock_mrf_variants
+  - /evaluators: mock_mrf_variants
   - _self_
 
 hydra:

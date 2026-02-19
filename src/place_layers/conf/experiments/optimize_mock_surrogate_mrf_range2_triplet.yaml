@@ -6,7 +6,7 @@
 
 defaults:
   - /command: optimize
-  - /evaluator@evaluators.configs.main: mock_mrf_range2_triplet
+  - /evaluator@evaluators.configs.range2_triplet: mock_mrf_range2_triplet
   - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - /search_strategy: surrogate

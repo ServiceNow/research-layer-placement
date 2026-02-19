@@ -2,18 +2,18 @@
 # Precompute traces command - generate completions for importance weighting
 #
 # Required config groups (must be specified by user or experiment):
-#   - evaluator@evaluators.configs.main: trace_precompute
+#   - evaluator@evaluators.configs.<name>: trace_precompute
 #   - backend: vllm, transformers
 #   - task: gsm8k, etc.
 #   - generation: sampling (typically)
 #
 # Usage:
 #   python -m place_layers +command=precompute_traces \
-#       +evaluator@evaluators.configs.main=trace_precompute \
+#       +evaluator@evaluators.configs.gsm8k=trace_precompute \
 #       +backend=vllm +task=gsm8k +generation=sampling
 
 defaults:
-  - /evaluators: from_evaluator
+  - /objective@evaluators.objective: weighted_average
 
 command: precompute_traces
 
