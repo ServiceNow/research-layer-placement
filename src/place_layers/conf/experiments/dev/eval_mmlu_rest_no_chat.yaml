@@ -18,5 +18,7 @@ backend:
   servers:
     - http://localhost:8000
 
-evaluator:
-  use_chat_template: false
+evaluators:
+  configs:
+    mmlu:
+      use_chat_template: false

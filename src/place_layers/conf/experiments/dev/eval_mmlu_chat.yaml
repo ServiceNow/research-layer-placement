@@ -18,6 +18,7 @@ backend:
 task:
   max_problems_per_task: 10
 
-evaluator:
-  use_chat_template: true
-  batch_size: 8
+evaluators:
+  configs:
+    mmlu:
+      use_chat_template: true

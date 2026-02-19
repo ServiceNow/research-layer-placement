@@ -18,10 +18,12 @@ defaults:
   - _self_
 
 # Override evaluator settings for this model
-evaluator:
-  model_path: ${model.model_path}
-  trace_sources:
-    - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
-  # Optional: weight tasks differently (defaults to equal weights)
-  # task_weights:
-  #   gsm8k: 1.0
+evaluators:
+  configs:
+    gsm8k:
+      model_path: ${model.model_path}
+      trace_sources:
+        - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
+      # Optional: weight tasks differently (defaults to equal weights)
+      # task_weights:
+      #   gsm8k: 1.0

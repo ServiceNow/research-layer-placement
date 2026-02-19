@@ -17,6 +17,7 @@ defaults:
 model:
   model_path: /tmp/apriel2-0.5b-dev
 
-evaluator:
-  use_chat_template: true
-  batch_size: 8
+evaluators:
+  configs:
+    mmlu:
+      use_chat_template: true
