@@ -2,7 +2,7 @@
 # Evaluate command - run evaluation on a single placement
 #
 # Required config groups:
-#   - evaluator: generative, likelihood, etc.
+#   - evaluator@evaluators.configs.<name>: generative, likelihood, etc.
 #   - backend: transformers, rest, vllm
 #   - task: gsm8k, mmlu, etc.
 #   - generation: greedy, sampling (for generative evaluator)

@@ -186,18 +186,6 @@ class Evaluators[ParametersT]:
         """Evaluate multiple parameter settings."""
         return [await self.evaluate(p) for p in parameters_list]
 
-    # -- Lifecycle ------------------------------------------------------------
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: "TracebackType | None",
-    ) -> None:
-        pass  # Lifecycle managed by EvaluatorsConfig via AsyncExitStack
 
 
 # ---------------------------------------------------------------------------

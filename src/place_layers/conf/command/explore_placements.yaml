@@ -6,7 +6,7 @@
 # Uses adaptive sampling: evaluates batches until surrogate quality plateaus.
 #
 # Usage:
-#   python -m place_layers +command=explore_placements +evaluator=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
+#   python -m place_layers +command=explore_placements +evaluator@evaluators.configs.mock=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
 
 defaults:
   - /result_handler: json

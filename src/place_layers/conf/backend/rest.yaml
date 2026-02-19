@@ -9,7 +9,7 @@
 # Usage (no model config needed - structure discovered from servers):
 #   python -m place_layers +command=evaluate +backend=rest \
 #       backend.servers='["http://localhost:8080","http://localhost:8081"]' \
-#       +evaluator=generative +task=gsm8k +generation=greedy
+#       +evaluator@evaluators.configs.gsm8k=generative +task=gsm8k +generation=greedy
 
 backend_type: rest
 

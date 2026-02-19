@@ -11,7 +11,7 @@
 #   - backend: Generation backend (transformers, vllm, or rest)
 #
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=importance_weighted \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=importance_weighted \
 #       +backend=transformers +model=apriel2_0_5b_dev
 
 evaluator_type: importance_weighted

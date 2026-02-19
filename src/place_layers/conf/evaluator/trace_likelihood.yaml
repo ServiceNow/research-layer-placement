@@ -18,7 +18,7 @@
 #   - backend: Generation backend (transformers, vllm, or rest)
 #
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=trace_likelihood \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=trace_likelihood \
 #       +backend=transformers +model=apriel2_0_5b_dev
 
 evaluator_type: trace_likelihood
