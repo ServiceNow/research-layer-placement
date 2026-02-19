@@ -1,0 +1,4 @@
+# @package _global_
+# Placement obtained via beam-search on Apriel2-mix
+# Model: apriel2_1p6_v2_annealed_0204
+placement: ['sliding_window', 'kda', 'gdn', 'kda', 'gdn', 'gdn', 'sliding_window', 'kda', 'gdn', 'gdn', 'gdn', 'sliding_window', 'gdn', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'kda', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'gdn', 'sliding_window', 'kda', 'sliding_window', 'gdn', 'gdn', 'gdn', 'sliding_window', 'gdn', 'sliding_window', 'kda', 'sliding_window', 'sliding_window', 'sliding_window', 'kda']
