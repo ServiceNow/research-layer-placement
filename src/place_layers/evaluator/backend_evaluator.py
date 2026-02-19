@@ -17,14 +17,11 @@ from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
-from pydantic import Field
-
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
 
 from place_layers.backend import (
     AsyncBackend,
-    BackendConfig,
     BackendError,
     ScoreChatRequest,
     ScoreChatResult,
@@ -112,14 +109,14 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             self._mixer_names = frozenset(structure.mixer_names)
             logger.info(
                 f"{self.__class__.__name__} initialized: {self._num_layers} layers, "
-                f"{len(self._mixer_names)} mixers, backend={self.config.backend.backend_type}"
+                f"{len(self._mixer_names)} mixers, backend={self._backend.config.backend_type}"
             )
         else:
             # Model structure not available (NoStructure)
             # This is fine if we're not doing placement switching
             logger.info(
                 f"{self.__class__.__name__} initialized: model structure not available "
-                f"(backend={self.config.backend.backend_type}). "
+                f"(backend={self._backend.config.backend_type}). "
                 f"Placement switching will not be supported."
             )
 
@@ -176,7 +173,7 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
         from place_layers.evaluator.traces.writer import compute_config_hash
 
         return OutputMetadata(
-            model_name=get_model_path(self.config.backend),
+            model_name=get_model_path(self._backend.config),
             config_hash=compute_config_hash(self.config.model_dump(mode="json")),
             placement=self._current_placement,
         )
@@ -353,10 +350,6 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
 
 class BackendEvaluatorConfig(BaseEvaluatorConfig):
     """Base config for evaluators using generation backends (vLLM, Transformers, REST)."""
-
-    backend: BackendConfig = Field(
-        description="Generation backend configuration (vllm, transformers, or rest)"
-    )
 
     def create_evaluator(
         self,

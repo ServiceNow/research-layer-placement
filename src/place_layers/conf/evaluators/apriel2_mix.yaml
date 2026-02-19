@@ -14,7 +14,6 @@ defaults:
 configs:
   mmlu:
     evaluator_type: likelihood
-    backend: ${backend}
     tasks: ${evaluators.mmlu_task.tasks}
     num_fewshot: ${evaluators.mmlu_task.num_fewshot}
     max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
@@ -24,7 +23,6 @@ configs:
 
   fda:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.fda_task.tasks}
     num_fewshot: ${evaluators.fda_task.num_fewshot}
     max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
@@ -40,7 +38,6 @@ configs:
 
   swde:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.swde_task.tasks}
     num_fewshot: ${evaluators.swde_task.num_fewshot}
     max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
@@ -56,7 +53,6 @@ configs:
 
   aime24:
     evaluator_type: trace_likelihood
-    backend: ${backend}
     # Override on CLI: evaluators.configs.aime24.trace_sources=["/path/to/traces"]
     trace_sources: ???
     # Optional per-task weights (null = equal weighting)
@@ -67,7 +63,6 @@ configs:
       high: -1137.852662   # Target log-likelihood (best expected performance)
   aime25:
     evaluator_type: trace_likelihood
-    backend: ${backend}
     # Override on CLI: evaluators.configs.aime25.trace_sources=["/path/to/traces"]
     trace_sources: ???
     # Optional per-task weights (null = equal weighting)
@@ -78,7 +73,6 @@ configs:
       high: -988.175923   # Target log-likelihood (best expected performance)
   math500:
     evaluator_type: trace_likelihood
-    backend: ${backend}
     # Override on CLI: evaluators.configs.math500.trace_sources=["/path/to/traces"]
     trace_sources: ???
     # Optional per-task weights (null = equal weighting)

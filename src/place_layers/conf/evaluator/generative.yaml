@@ -2,7 +2,6 @@
 # Generative evaluator - measures accuracy through direct generation
 #
 # This config uses interpolation to compose with other config groups:
-#   - backend: Generation backend (vllm or transformers)
 #   - task: Benchmark configuration (tasks, num_fewshot)
 #   - generation: Decoding parameters (temperature, samples)
 #
@@ -14,9 +13,6 @@
 #       +backend=transformers +model=apriel2_0_5b_dev +task=gsm8k +generation=greedy
 
 evaluator_type: generative
-
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
 
 # Task configuration (composed from task/ config group)
 tasks: ${task.tasks}

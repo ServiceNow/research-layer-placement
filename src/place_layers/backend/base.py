@@ -698,6 +698,12 @@ class AsyncBackend(ABC):
 
     @property
     @abstractmethod
+    def config(self) -> "BaseBackendConfig":
+        """Backend configuration."""
+        ...
+
+    @property
+    @abstractmethod
     def max_concurrent_requests(self) -> int:
         """Maximum number of concurrent requests this backend supports."""
         pass
@@ -862,6 +868,12 @@ class SyncBackend(ABC):
     Scoring methods yield results in input order as batches complete.
     Batching is handled internally - caller just iterates.
     """
+
+    @property
+    @abstractmethod
+    def config(self) -> "BaseBackendConfig":
+        """Backend configuration."""
+        ...
 
     @abstractmethod
     def __enter__(self) -> Self:

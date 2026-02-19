@@ -5,18 +5,15 @@
 configs:
   gsm8k:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ["gsm8k"]
     generation: ${generation}
 
   mmlu:
     evaluator_type: likelihood
-    backend: ${backend}
     tasks: ["mmlu"]
 
   arc_easy:
     evaluator_type: likelihood
-    backend: ${backend}
     tasks: ["arc_easy"]
 
 # No weights specified = uniform weights (0.33, 0.33, 0.34)

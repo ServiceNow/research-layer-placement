@@ -62,12 +62,10 @@ Define evaluators directly in a config file:
 configs:
   gsm8k:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ["gsm8k"]
     generation: ${generation}
   mmlu:
     evaluator_type: likelihood
-    backend: ${backend}
     tasks: ["mmlu"]
 
 objective:
@@ -173,7 +171,6 @@ This produces three objectives: `weighted_average`, `gsm8k`, and `mmlu`.
 configs:
   aime24:
     evaluator_type: trace_likelihood
-    backend: ${backend}
     trace_sources: ???
     normalization:
       type: linear

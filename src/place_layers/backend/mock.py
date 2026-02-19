@@ -123,6 +123,11 @@ class MockBackend(AsyncBackend):
             self._current_placement = [config.mixer_names[0]] * config.num_layers
 
     @property
+    def config(self) -> "MockBackendConfig":
+        """Backend configuration."""
+        return self._config
+
+    @property
     def max_concurrent_requests(self) -> int:
         """Maximum concurrent requests (configurable)."""
         return self._config.max_concurrent_requests

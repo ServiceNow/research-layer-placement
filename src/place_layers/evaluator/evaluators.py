@@ -13,11 +13,9 @@ Configuration
       configs:
         gsm8k:
           evaluator_type: generative
-          backend: ${backend}
           tasks: ["gsm8k"]
         mmlu:
           evaluator_type: likelihood
-          backend: ${backend}
           tasks: ["mmlu"]
       objective:
         objective_type: weighted_average

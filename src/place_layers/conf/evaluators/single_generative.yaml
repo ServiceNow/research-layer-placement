@@ -4,7 +4,6 @@
 configs:
   gsm8k:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${task.tasks}
     generation: ${generation}
 

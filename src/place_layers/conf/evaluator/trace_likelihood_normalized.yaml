@@ -15,9 +15,6 @@
 
 evaluator_type: trace_likelihood
 
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
-
 # Trace sources - list of directories containing JSONL trace files
 trace_sources:
   - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
