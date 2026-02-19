@@ -347,9 +347,13 @@ class LikelihoodEvaluator(TaskBasedEvaluator):
     config: "LikelihoodEvaluatorConfig"
 
     def __init__(
-        self, config: "LikelihoodEvaluatorConfig", *, output_dir: "Path"
+        self,
+        config: "LikelihoodEvaluatorConfig",
+        *,
+        output_dir: "Path",
+        shared_backend: "AsyncBackend | SyncBackend | None" = None,
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
 
     # -------------------------------------------------------------------------
     # Abstract hook implementations from TaskBasedEvaluator

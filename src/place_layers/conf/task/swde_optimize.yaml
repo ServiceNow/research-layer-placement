@@ -1,0 +1,9 @@
+# @package task
+# SWDE extraction task for optimization
+
+tasks:
+  - swde
+
+num_fewshot: 5
+max_problems_per_task: 500  # null = full test set
+split: test

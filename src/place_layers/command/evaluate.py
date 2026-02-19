@@ -20,6 +20,7 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ class EvaluationResult(BaseModel):
         description="Mixer indices per layer (null if no placement)"
     )
     score: float = Field(description="Evaluation score")
+    auxiliary_scores: dict[str, float] | None = Field(
+        default=None,
+        description="Scores from auxiliary evaluators (if multi-evaluator mode)",
+    )
 
 
 class EvaluateCommand(BaseCommand):
@@ -66,21 +72,53 @@ class EvaluateCommand(BaseCommand):
         logger.info(f"Output directory: {output_dir}")
         logger.info("Starting evaluation...")
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
-            # Resolve placement specification
-            resolved = resolve_placement(self.config.placement, evaluator)
+        async with self.config.evaluators.create_evaluators(
+            output_dir
+        ) as evaluator_instances:
+            # Use first evaluator to resolve placement
+            first_evaluator = next(iter(evaluator_instances.evaluators.values()))
+            resolved = resolve_placement(self.config.placement, first_evaluator)
 
-            # Evaluate
-            score = await evaluator.evaluate(resolved.placement)
-            logger.info(f"Score: {score:.6f}")
+            # Evaluate with all evaluators in parallel
+            logger.info(
+                f"Evaluating with {len(evaluator_instances.evaluators)} "
+                f"evaluator(s) in parallel..."
+            )
+            evaluator_tasks = [
+                evaluator.evaluate(resolved.placement)
+                for evaluator in evaluator_instances.evaluators.values()
+            ]
+            scores = await asyncio.gather(*evaluator_tasks)
+
+            individual_scores = dict(
+                zip(evaluator_instances.evaluators.keys(), scores)
+            )
+            for name, score in individual_scores.items():
+                logger.info(f"  {name}: {score:.6f}")
+
+            # Aggregate scores
+            aggregated_score = evaluator_instances._aggregate_scores(individual_scores)
+            if len(evaluator_instances.evaluators) > 1:
+                logger.info(
+                    f"Aggregated score ({self.config.evaluators.aggregation.value}): "
+                    f"{aggregated_score:.6f}"
+                )
 
             # Build result
+            evaluator_type = (
+                f"multi[{self.config.evaluators.aggregation.value}]"
+                if len(evaluator_instances.evaluators) > 1
+                else next(iter(self.config.evaluators.evaluators_dict.values())).evaluator_type
+            )
             result = EvaluationResult(
                 timestamp=datetime.now().isoformat(),
-                evaluator_type=self.config.evaluator.evaluator_type,
+                evaluator_type=evaluator_type,
                 placement=resolved.placement_names,
                 placement_indices=resolved.placement_indices,
-                score=score,
+                score=aggregated_score,
+                auxiliary_scores=individual_scores
+                if len(individual_scores) > 1
+                else None,
             )
 
         # Save using result handler
@@ -97,7 +135,9 @@ class EvaluateCommandConfig(BaseCommandConfig):
 
     command: Literal["evaluate"] = "evaluate"
 
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single or multiple with aggregation)"
+    )
 
     placement: list[str] | None = Field(
         description="Layer placement as list of mixer names. Extended cyclically "

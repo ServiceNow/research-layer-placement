@@ -89,7 +89,7 @@ class AnnealingSearch(AllocationIterationSearch):
             # All layers on one mixer - just return canonical
             assignments = self._allocation_to_assignment(allocation, num_layers)
             placement = LayerPlacement(assignments=tuple(assignments))
-            score = await problem.evaluate(placement)
+            score, auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
 
             # Notify observers
@@ -116,6 +116,7 @@ class AnnealingSearch(AllocationIterationSearch):
                     assignments=tuple(assignments),
                     allocation=allocation,
                     score=score,
+                    auxiliary_scores=auxiliary,
                 )
             ]
 
@@ -170,6 +171,7 @@ class AnnealingSearch(AllocationIterationSearch):
                 assignments=best_assignment,
                 allocation=allocation,
                 score=best_score,
+                # auxiliary_scores=best_auxiliary,  # TODO: log auxiliary scores for multi-eval
             )
         ]
 

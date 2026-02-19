@@ -81,7 +81,7 @@ class SwapBeamSearch(AllocationIterationSearch):
         # Generate initial assignment (canonical assignment for this allocation)
         initial_assignments = self._allocation_to_assignment(allocation, num_layers)
         initial_placement = LayerPlacement(assignments=tuple(initial_assignments))
-        initial_score = await problem.evaluate(initial_placement)
+        initial_score, initial_auxiliary = await self._evaluate_with_details(problem, initial_placement)
         self.eval_count += 1
 
         # Notify observers of eval completion
@@ -105,6 +105,7 @@ class SwapBeamSearch(AllocationIterationSearch):
                 assignments=tuple(initial_assignments),
                 allocation=allocation,
                 score=initial_score,
+                auxiliary_scores=initial_auxiliary,
             )
         ]
         beam_candidates = [initial_candidate]
@@ -177,7 +178,7 @@ class SwapBeamSearch(AllocationIterationSearch):
             for eval_idx, (candidate, parent_seq, swap) in enumerate(unique_candidates):
                 if candidate.score is None:
                     placement = LayerPlacement(assignments=candidate.assignments)
-                    score = await problem.evaluate(placement)
+                    score, auxiliary = await self._evaluate_with_details(problem, placement)
                     self.eval_count += 1
 
                     # Notify observers of eval completion
@@ -188,6 +189,7 @@ class SwapBeamSearch(AllocationIterationSearch):
                         assignments=candidate.assignments,
                         allocation=candidate.allocation,
                         score=score,
+                        auxiliary_scores=auxiliary,
                     )
                     evaluated.append(evaluated_entry)
 

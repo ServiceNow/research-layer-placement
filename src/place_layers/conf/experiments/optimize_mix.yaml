@@ -1,0 +1,25 @@
+# @package _global_
+# Cost-constrained layer placement optimization on a mix of evals
+#
+# Optimizes layer placement for Apriel supernet models using likelihood-based
+# and generation-based evals.
+# Uses hierarchical beam search for deterministic, efficient search.
+#
+# Usage:
+#   python -m place_layers +experiments=optimize_mix +model=apriel2_0_5b_dev
+
+defaults:
+  - /command: optimize
+  - /generation: extraction
+  - /evaluators: apriel2_mix
+  - /backend: rest
+  - /problem: cost_apriel_0_5b
+  - /cost_model: linear_apriel_v2
+  - /search_strategy: cost_constrained_hierarchical
+  - /result_handler: json
+  - _self_
+
+# Quick search settings (override for thorough search)
+search_strategy:
+  max_allocations: 10  # Start small
+  beam_width: 3

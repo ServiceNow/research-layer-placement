@@ -1,0 +1,27 @@
+# @package _global_
+# Multi-evaluator example: Evaluate on both GSM8K (generative) and MMLU (likelihood)
+# Combined score: 60% GSM8K + 40% MMLU
+#
+# Usage:
+#   python -m place_layers +experiments=dev/eval_multi_gsm8k_mmlu
+
+defaults:
+  - /command: evaluate
+  - /evaluators: multi_gsm8k_mmlu
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - /generation: greedy
+  - _self_
+
+# Override GSM8K to use fewer problems for quick testing
+evaluators:
+  evaluators_dict:
+    gsm8k:
+      tasks: ["gsm8k"]
+      generation: ${generation}
+      max_problems_per_task: 100
+    mmlu:
+      tasks: ["mmlu"]
+      max_problems_per_task: 100
+
+placement: null  # Set to specific placement or use sweep

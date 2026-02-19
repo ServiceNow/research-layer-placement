@@ -25,6 +25,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
+    from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -68,6 +69,28 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self.config: BaseCostConstrainedConfig
         self._progress_estimator = progress_estimator
         self.eval_count = 0
+
+    async def _evaluate_with_details(
+        self, problem: CostConstrainedProblem, placement: LayerPlacement
+    ) -> tuple[float, dict[str, float] | None]:
+        """Evaluate placement and return both aggregated and auxiliary scores.
+
+        Args:
+            problem: The optimization problem
+            placement: The placement to evaluate
+
+        Returns:
+            Tuple of (aggregated_score, auxiliary_scores_dict)
+            auxiliary_scores_dict is None if not using multi-evaluator
+        """
+        from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+
+        # Check if using multi-evaluator
+        if isinstance(problem.evaluator, EvaluatorInstances):
+            return await problem.evaluator.evaluate_with_details(placement)
+        else:
+            score = await problem.evaluator.evaluate(placement)
+            return score, None
 
     @overload
     async def search(

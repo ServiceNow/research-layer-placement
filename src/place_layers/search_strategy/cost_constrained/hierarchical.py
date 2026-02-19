@@ -321,7 +321,7 @@ class HierarchicalSearch(AllocationIterationSearch):
 
             # Final evaluation
             placement = LayerPlacement(assignments=tuple(assignments))
-            final_score = await problem.evaluate(placement)
+            final_score, auxiliary = await self._evaluate_with_details(problem, placement)
             self.eval_count += 1
 
             results.append(
@@ -329,6 +329,7 @@ class HierarchicalSearch(AllocationIterationSearch):
                     assignments=tuple(assignments),
                     allocation=allocation,
                     score=final_score,
+                    auxiliary_scores=auxiliary,
                 )
             )
 

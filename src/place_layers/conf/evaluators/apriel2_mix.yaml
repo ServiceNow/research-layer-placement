@@ -1,0 +1,106 @@
+# @package evaluators
+# Multi-evaluator config for Apriel2 optimization
+# Combines MMLU (likelihood), FDA (generative extraction), SWDE (generative extraction),
+# and importance-weighted evaluation from precomputed traces
+#
+# Task configurations are embedded via defaults and can be overridden:
+#   +evaluators=apriel2_mix evaluators.mmlu_task=mmlu_quick
+
+defaults:
+  - /task@mmlu_task: mmlu_optimize
+  - /task@fda_task: fda_optimize
+  - /task@swde_task: swde_optimize
+
+evaluators_dict:
+  mmlu:
+    evaluator_type: likelihood
+    backend: ${backend}
+    tasks: ${evaluators.mmlu_task.tasks}
+    num_fewshot: ${evaluators.mmlu_task.num_fewshot}
+    max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
+    split: ${evaluators.mmlu_task.split}
+    use_chat_template: true
+    doc_prefetch_count: 2
+
+  fda:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.fda_task.tasks}
+    num_fewshot: ${evaluators.fda_task.num_fewshot}
+    max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
+    split: ${evaluators.fda_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: false
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
+
+  swde:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.swde_task.tasks}
+    num_fewshot: ${evaluators.swde_task.num_fewshot}
+    max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
+    split: ${evaluators.swde_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: false
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
+
+  aime24:
+    evaluator_type: trace_likelihood
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -5505.176779   # Baseline log-likelihood (worst expected performance)
+      high: -1137.852662   # Target log-likelihood (best expected performance)
+  aime25:
+    evaluator_type: trace_likelihood
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -4945.062467   # Baseline log-likelihood (worst expected performance)
+      high: -988.175923   # Target log-likelihood (best expected performance)
+  math500:
+    evaluator_type: trace_likelihood
+    backend: ${backend}
+    # Trace sources - list of directories containing JSONL trace files
+    # Can be overridden via command line or environment variable
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -549.356176   # Baseline log-likelihood (worst expected performance)
+      high: -176.630313   # Target log-likelihood (best expected performance)
+  
+
+weights:
+  mmlu: 0.167
+  fda: 0.167
+  swde: 0.167
+  aime24: 0.167
+  aime25: 0.167
+  math500: 0.167
+
+aggregation: weighted_average

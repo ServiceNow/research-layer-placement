@@ -31,6 +31,7 @@ from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.multi_evaluator_config import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
@@ -321,11 +322,14 @@ class ExplorePlacementsCommand(BaseCommand):
         logger.info("Output directory: %s", output_dir)
         logger.info("Starting placement exploration...")
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
-            problem = self.config.problem.create_problem(evaluator)
+        async with self.config.evaluators.create_evaluators(
+            output_dir
+        ) as evaluator_instances:
+            problem = self.config.problem.create_problem(evaluator_instances)
 
             cost_model = self.config.cost_model.create_cost_model()
-            num_layers = evaluator.num_layers
+            num_layers = evaluator_instances.num_layers
+            
 
             # Determine cost budget and floor for feasibility filtering
             cost_budget: float | None = None
@@ -620,7 +624,9 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
 
     command: Literal["explore_placements"] = "explore_placements"
 
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single or multiple with aggregation)"
+    )
     problem: ProblemConfig = Field(description="Problem configuration")
     cost_model: CostModelConfig = Field(
         description="Cost model for allocation enumeration and sampling weights.",
