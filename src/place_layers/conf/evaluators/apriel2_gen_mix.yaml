@@ -1,0 +1,162 @@
+# @package evaluators
+# Multi-evaluator config for Apriel2 optimization
+# Combines MMLU (likelihood), FDA (generative extraction), SWDE (generative extraction),
+# and importance-weighted evaluation from precomputed traces
+#
+# Task configurations are embedded via defaults and can be overridden:
+#   +evaluators=apriel2_mix evaluators.mmlu_task=mmlu_quick
+
+defaults:
+  - /task@mmlu_task: mmlu_optimize
+  - /task@fda_task: fda_optimize
+  - /task@swde_task: swde_optimize
+  - /task@aime24_task: aime24_strip_end
+  - /task@aime25_task: aime25_strip_end
+  - /task@math500_task: math_500_strip_end
+  - /generation@aime_generation: greedy_very_very_long
+  - /generation@math_generation: greedy_long
+  # Long-context
+  - /task@niah_task: niah_single_2
+  - /task@ruler_task: ruler_qa_squad
+  # Generation config for long-context tasks (NIAH, RULER)
+  - /generation@long_context_generation: greedy_very_short
+
+evaluators_dict:
+  mmlu:
+    evaluator_type: likelihood
+    backend: ${backend}
+    tasks: ${evaluators.mmlu_task.tasks}
+    num_fewshot: ${evaluators.mmlu_task.num_fewshot}
+    max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
+    split: ${evaluators.mmlu_task.split}
+    use_chat_template: true
+    doc_prefetch_count: 2
+
+  fda:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.fda_task.tasks}
+    num_fewshot: ${evaluators.fda_task.num_fewshot}
+    max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
+    split: ${evaluators.fda_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: false
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
+
+  swde:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.swde_task.tasks}
+    num_fewshot: ${evaluators.swde_task.num_fewshot}
+    max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
+    split: ${evaluators.swde_task.split}
+    # Generation parameters
+    samples_per_problem: ${generation.samples_per_problem}
+    max_new_tokens: ${generation.max_new_tokens}
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    use_chat_template: false
+    evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
+    doc_prefetch_count: 2
+
+  aime24:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.aime24_task.tasks}
+    num_fewshot: ${evaluators.aime24_task.num_fewshot}
+    max_problems_per_task: ${evaluators.aime24_task.max_problems_per_task}
+    split: ${evaluators.aime24_task.split}
+    # Generation parameters
+    samples_per_problem: ${evaluators.aime_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.aime_generation.max_new_tokens}
+    temperature: ${evaluators.aime_generation.temperature}
+    top_p: ${evaluators.aime_generation.top_p}
+    use_chat_template: true
+    evaluate_truncated_samples: false  # Math tasks should not evaluate truncated samples
+    doc_prefetch_count: 2
+
+  aime25:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.aime25_task.tasks}
+    num_fewshot: ${evaluators.aime25_task.num_fewshot}
+    max_problems_per_task: ${evaluators.aime25_task.max_problems_per_task}
+    split: ${evaluators.aime25_task.split}
+    # Generation parameters
+    samples_per_problem: ${evaluators.aime_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.aime_generation.max_new_tokens}
+    temperature: ${evaluators.aime_generation.temperature}
+    top_p: ${evaluators.aime_generation.top_p}
+    use_chat_template: true
+    evaluate_truncated_samples: false  # Math tasks should not evaluate truncated samples
+    doc_prefetch_count: 2
+
+  math500:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.math500_task.tasks}
+    num_fewshot: ${evaluators.math500_task.num_fewshot}
+    max_problems_per_task: ${evaluators.math500_task.max_problems_per_task}
+    split: ${evaluators.math500_task.split}
+    # Generation parameters
+    samples_per_problem: ${evaluators.math_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.math_generation.max_new_tokens}
+    temperature: ${evaluators.math_generation.temperature}
+    top_p: ${evaluators.math_generation.top_p}
+    use_chat_template: true
+    evaluate_truncated_samples: false  # Math tasks should not evaluate truncated samples
+    doc_prefetch_count: 2
+  
+  niah_single_2:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.niah_task.tasks}
+    num_fewshot: ${evaluators.niah_task.num_fewshot}
+    max_problems_per_task: ${evaluators.niah_task.max_problems_per_task}
+    split: ${evaluators.niah_task.split}
+    samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
+    temperature: ${evaluators.long_context_generation.temperature}
+    top_p: ${evaluators.long_context_generation.top_p}
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: 16384
+    doc_prefetch_count: 2
+
+  ruler_qa_squad:
+    evaluator_type: generative
+    backend: ${backend}
+    tasks: ${evaluators.ruler_task.tasks}
+    num_fewshot: ${evaluators.ruler_task.num_fewshot}
+    max_problems_per_task: ${evaluators.ruler_task.max_problems_per_task}
+    split: ${evaluators.ruler_task.split}
+    samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
+    temperature: ${evaluators.long_context_generation.temperature}
+    top_p: ${evaluators.long_context_generation.top_p}
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: 16384
+    doc_prefetch_count: 2
+
+
+weights:
+  mmlu: 0.125
+  fda: 0.125
+  swde: 0.125
+  aime24: 0.125
+  aime25: 0.125
+  math500: 0.125
+  niah_single_2: 0.125
+  ruler_qa_squad: 0.125
+
+aggregation: weighted_average
