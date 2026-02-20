@@ -568,11 +568,16 @@ For hybrid models, all KV cache pages must be the same size. `get_unified_page_s
 
 ## Analysis Documents
 
-The `ai/` directory contains analysis and design documents:
+The following are available as auto-triggered skills (see `.claude/skills/`):
+
+| Skill | Triggers On |
+|-------|-------------|
+| `vllm-kv-cache` | KV cache memory management, paged attention, block allocation, hybrid model cache, supernet cache bugs |
+| `cuda-graph-crashes` | CUDA graph capture crashes, `is_hybrid=False` classification gap, MambaModelConfig integration |
+| `gdn-throughput` | GDN/KDA throughput regressions, stochastic wrapper overhead, benchmark optimization |
+
+Additional analysis documents in `__ai/`:
 
 | File | Purpose |
 |------|---------|
-| `ai/VLLM.md` | Comprehensive guide to vLLM KV cache memory management, paged attention, block pools, and hybrid model support |
-| `ai/cuda-graph-crash-analysis.md` | Root cause analysis of CUDA graph crashes with pure-mamba placements; `is_hybrid=False` implications, `mamba_block_size` fix |
-| `ai/gdn-throughput-analysis.md` | GDN throughput analysis |
-| `ai/per-mixer-cuda-graph-plan.md` | Design + implementation for per-mixer CUDA graph caching in stochastic mixers (env var `APRIEL2_MIXER_CUDA_GRAPHS`) |
+| `__ai/per-mixer-cuda-graph-plan.md` | Design + implementation for per-mixer CUDA graph caching in stochastic mixers (env var `APRIEL2_MIXER_CUDA_GRAPHS`) |
