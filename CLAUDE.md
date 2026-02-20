@@ -20,6 +20,8 @@ This codebase implements inference benchmarking for supernet layer placement opt
 10. [Testing](#testing)
 11. [Key Dependencies](#key-dependencies)
 12. [Key File Locations](#key-file-locations)
+13. [Apriel2 vLLM Model Architecture](#apriel2-vllm-model-architecture)
+14. [Analysis Documents](#analysis-documents)
 
 ---
 
@@ -495,3 +497,83 @@ pytest tests/test_cost_constrained_search.py
 | `src/place_layers/evaluator/traces/writer.py` | Trace recording |
 | `src/place_layers/server/app.py` | FastAPI server |
 | `src/place_layers/core/types.py` | Core type definitions |
+
+---
+
+## Apriel2 vLLM Model Architecture
+
+The primary model this project evaluates is **Apriel2**, a hybrid supernet with heterogeneous mixer types. Its vLLM implementation lives in a separate repo:
+
+**File**: `/home/toolkit/dev/Fast-LLM/fast_llm_external_models/apriel2/vllm/modeling_apriel2.py`
+
+### Mixer Types
+
+| Mixer | Class | Custom Op | State Type |
+|-------|-------|-----------|------------|
+| Attention | `Apriel2Attention` | `vllm::unified_attention` (via vLLM `Attention`) | KV cache (FullAttentionSpec) |
+| GDN (Gated DeltaNet) | `Apriel2GatedDeltaNet` | `vllm::apriel2_gdn_attention_core` | Recurrent state (MambaSpec) |
+| KDA | `Apriel2KDAMixer` | `vllm::kda_attention` | Recurrent state (MambaSpec) |
+| Mamba | `Apriel2MambaMixer` | `vllm::mamba_mixer` (via vLLM `MambaMixer`) | Recurrent state (MambaSpec) |
+| Stochastic | `Apriel2StochasticMixer` | `vllm::stochastic_mixer_dispatch` | Delegates to active sub-mixer |
+
+### Stochastic Mixer (Supernet Layer)
+
+`Apriel2StochasticMixer` contains multiple sub-mixers in an `nn.ModuleDict`. At runtime, it routes to the **active** mixer via a custom op that causes a graph break in `torch.compile`.
+
+- Each sub-mixer gets a **virtual layer index** (`layer_idx + (mixer_index+1) * num_layers`) for KV cache slot isolation
+- All sub-mixer weights are loaded; switching is just changing `active_mixer_name`
+- Placement switching: `model.set_layer_placements(["attention", "gdn", ...])` via `collective_rpc`
+- After switching, KV cache is zeroed to prevent stale data from incompatible mixer formats
+
+### `is_hybrid = False` Design Decision
+
+`Apriel2ForCausalLM` deliberately sets `is_hybrid = False` (unlike `AprielHForCausalLM`). This avoids triggering `HybridAttentionMambaModelConfig.verify_and_update_config()`, which assumes **homogeneous** mamba layer shapes — it calls `model_cls.get_mamba_state_shape_from_config()` returning a **single** shape tuple. Apriel2 has heterogeneous blocks (GDN and KDA with different state dimensions), so the single-shape assumption breaks.
+
+Instead, each layer implements its own `get_kv_cache_spec()` and calls `get_unified_page_size_for_config()` to compute the convex hull across all mixer types, ensuring compatible `page_size_bytes` for the unified KV cache allocator.
+
+### CUDA Graph Modes
+
+| Config | CUDA Graph Mode | Behavior |
+|--------|----------------|----------|
+| Non-stochastic (fixed placement) | FULL / FULL_AND_PIECEWISE | Standard vLLM capture |
+| Stochastic (supernet) | **PIECEWISE** (forced) | Graph breaks at `stochastic_mixer_dispatch` so Python dispatch selects the active mixer at runtime |
+| Stochastic + `APRIEL2_MIXER_CUDA_GRAPHS=1` | PIECEWISE + per-mixer graphs | Each sub-mixer's forward is captured as a separate CUDA graph during `capture_model()`, replayed on decode |
+
+### Page Size Unification
+
+For hybrid models, all KV cache pages must be the same size. `get_unified_page_size_for_config()` (module-level, cached) computes:
+1. `attn_page_per_token` — bytes per token for attention KV cache
+2. `max_mamba_page` — largest recurrent state across all mixer types
+3. `block_size` — minimum attention block size such that `block_size * attn_page_per_token >= max_mamba_page`
+4. Aligns to kernel requirements (16-token alignment) and hash block size (256)
+
+### Key vLLM Integration Points
+
+| Concept | Location | Notes |
+|---------|----------|-------|
+| `static_forward_context` | `compilation_config.static_forward_context[prefix]` | Registry for layers that need runtime lookup via custom ops |
+| `no_compile_layers` | `ForwardContext.no_compile_layers` | Populated from `static_forward_context` each forward; used by custom ops to find layer instances |
+| `_attention_ops` | `CompilationConfig._attention_ops` | List of custom ops that cause graph breaks in PIECEWISE mode |
+| `cudagraph_capturing_enabled` | `vllm.compilation.monitor` | Global flag, True only during `capture_model()` |
+| `GDNAttentionMetadata.num_prefills` | `vllm.v1.attention.backends.gdn_attn` | Detects mixed prefill+decode batches (CUDA graphs can't handle prefill) |
+
+### Related Repos
+
+| Repo | Path | Contains |
+|------|------|----------|
+| Fast-LLM | `/home/toolkit/dev/Fast-LLM/` | Apriel2 vLLM model (`fast_llm_external_models/apriel2/vllm/modeling_apriel2.py`) |
+| apriel-internal | `/home/toolkit/dev/apriel-internal/` | Older AprielH model + vLLM plugin with `register_plugin.py` monkey-patching |
+| vllm-SLAM | `/home/toolkit/dev/vllm-SLAM/` | Older SLAM fork with `AprielSSMHybridForCausalLM` |
+
+---
+
+## Analysis Documents
+
+The `ai/` directory contains analysis and design documents:
+
+| File | Purpose |
+|------|---------|
+| `ai/VLLM.md` | Comprehensive guide to vLLM KV cache memory management, paged attention, block pools, and hybrid model support |
+| `ai/cuda-graph-crash-analysis.md` | Root cause analysis of CUDA graph crashes with pure-mamba placements; `is_hybrid=False` implications, `mamba_block_size` fix |
+| `ai/gdn-throughput-analysis.md` | GDN throughput analysis |
+| `ai/per-mixer-cuda-graph-plan.md` | Design + implementation for per-mixer CUDA graph caching in stochastic mixers (env var `APRIEL2_MIXER_CUDA_GRAPHS`) |
