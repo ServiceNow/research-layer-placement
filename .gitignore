@@ -84,3 +84,5 @@ tests/.archive/
 tests/.archive/
 .scratch/
 scripts/
+
+settings.local.json
