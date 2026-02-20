@@ -13,6 +13,7 @@ from place_layers.search_strategy.cost_constrained import (
     HierarchicalConfig,
     HierarchicalSearch,
     SurrogateSearchConfig,
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
 
@@ -22,6 +23,7 @@ SearchStrategyConfig = Annotated[
     HierarchicalConfig
     | AnnealingConfig
     | SurrogateSearchConfig
-    | ViterbiSurrogateSearchConfig,
+    | ViterbiSurrogateSearchConfig
+    | ViterbiBayesianSurrogateSearchConfig,
     Field(discriminator="strategy_type"),
 ]

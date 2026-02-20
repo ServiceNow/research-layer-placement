@@ -1,4 +1,4 @@
-"""Integration tests for ViterbiSurrogateSearch strategy."""
+"""Integration tests for ViterbiSurrogateSearch and ViterbiBayesianSurrogateSearch."""
 
 import random
 from pathlib import Path
@@ -24,6 +24,7 @@ from place_layers.search_strategy.cost_constrained.types import (
     CostConstrainedSearchResult,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
 from place_layers.surrogate.model_selection import ridge_cv_rho
@@ -39,11 +40,15 @@ _VITERBI_CONFIG_DEFAULTS = dict(
     strategy_type="viterbi_surrogate",
     exploration_dataset_path="PLACEHOLDER",
     cv_folds=3,
-    ei_xi=0.01,
     num_rounds=2,
     evals_per_round=20,
     seed=42,
     candidates_per_model=50,
+    surrogate=dict(
+        surrogate_type="ridge",
+        n_bootstraps=50,
+        ei_xi=0.01,
+    ),
 )
 
 
@@ -265,15 +270,25 @@ class TestViterbiSurrogateSearchIntegration:
         )
         dataset_path = _save_exploration_dataset(exploration, tmp_path)
 
-        config = ViterbiSurrogateSearchConfig(
-            **{
-                **_VITERBI_CONFIG_DEFAULTS,
-                "exploration_dataset_path": str(dataset_path),
-                "surrogate_type": "bayesian_ridge",
-                "lcb_betas": [0.0, 1.0, 2.0],
-                "lcb_quotas": [0.5, 0.3, 0.2],
-                "max_frontier_size": 200,
-            }
+        config = ViterbiBayesianSurrogateSearchConfig(
+            strategy_type="viterbi_bayesian_surrogate",
+            exploration_dataset_path=str(dataset_path),
+            cv_folds=3,
+            num_rounds=2,
+            evals_per_round=20,
+            seed=42,
+            candidates_per_model=50,
+            surrogate=dict(
+                surrogate_type="bayesian_ridge",
+                prior_alpha=1.0,
+                prior_a0=1e-6,
+                prior_b0=1e-6,
+                lcb_kappa=2.0,
+            ),
+            lcb_betas=[0.0, 1.0, 2.0],
+            lcb_quotas=[0.5, 0.3, 0.2],
+            ranking_beta=0.0,
+            max_frontier_size=200,
         )
         strategy = config.create_search_strategy()
         result = await strategy.search(problem)

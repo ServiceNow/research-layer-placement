@@ -39,7 +39,6 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
     strategy_type="surrogate",
     exploration_dataset_path="PLACEHOLDER",
     cv_folds=3,
-    ei_xi=0.01,
     num_rounds=2,
     evals_per_round=20,
     sa=dict(
@@ -55,6 +54,11 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
         no_op_retries=0,
         reheat=None,
         seed=42,
+    ),
+    surrogate=dict(
+        surrogate_type="ridge",
+        n_bootstraps=50,
+        ei_xi=0.01,
     ),
 )
 

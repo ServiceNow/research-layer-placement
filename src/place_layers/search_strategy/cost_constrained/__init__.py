@@ -1,10 +1,12 @@
 """Cost-constrained search strategy implementations.
 
-This module provides three variants of cost-constrained search:
+This module provides several variants of cost-constrained search:
 
 1. HierarchicalSearch: Phase-by-phase hierarchical beam search (~10x faster)
 2. AnnealingSearch: Simulated annealing (controllable evaluation budget)
-3. SurrogateSearch: Surrogate-assisted search (RF + Expected Improvement)
+3. SurrogateSearch: Surrogate-assisted SA search (Ridge/Bayesian Ridge + acquisition)
+4. ViterbiSurrogateSearch: Ridge Bootstrap Viterbi DP + EI selection
+5. ViterbiBayesianSurrogateSearch: Bayesian Viterbi with Pareto LCB
 
 All variants support two optimization modes:
 - MAX_PERFORMANCE: Maximize performance subject to cost <= budget
@@ -34,8 +36,10 @@ from place_layers.search_strategy.cost_constrained.surrogate import (
     SurrogateSearch,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
-    ViterbiSurrogateSearchConfig,
+    ViterbiBayesianSurrogateSearch,
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearch,
+    ViterbiSurrogateSearchConfig,
 )
 from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
@@ -47,6 +51,7 @@ CostConstrainedConfig = Annotated[
     HierarchicalConfig
     | AnnealingConfig
     | SurrogateSearchConfig
-    | ViterbiSurrogateSearchConfig,
+    | ViterbiSurrogateSearchConfig
+    | ViterbiBayesianSurrogateSearchConfig,
     Field(discriminator="strategy_type"),
 ]

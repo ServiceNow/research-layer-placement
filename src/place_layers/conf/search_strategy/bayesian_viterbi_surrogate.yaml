@@ -1,13 +1,24 @@
 # @package search_strategy
+#
+# Bayesian Viterbi surrogate search with Pareto LCB.
+#
+# Uses exact NIG posterior for uncertainty, runs Pareto DP with
+# (mean, variance) frontier tracking across beta values, selects via
+# full-posterior LCB ranking.
 
-strategy_type: viterbi_surrogate
+strategy_type: viterbi_bayesian_surrogate
 exploration_dataset_path: ???
 cv_folds: 5
 num_rounds: 4
 evals_per_round: 500
 seed: 42
 candidates_per_model: 200
-surrogate_type: bayesian_ridge
+surrogate:
+  surrogate_type: bayesian_ridge
+  prior_alpha: 1.0
+  prior_a0: 1.0e-6
+  prior_b0: 1.0e-6
+  lcb_kappa: 2.0
 lcb_betas: [0.0, 0.5, 1.0, 2.0]
 lcb_quotas: [0.4, 0.3, 0.2, 0.1]
 ranking_beta: 0.0

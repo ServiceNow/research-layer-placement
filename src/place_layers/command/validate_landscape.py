@@ -49,6 +49,7 @@ from place_layers.problem.layer_placement import (
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
     ViterbiSurrogateSearchConfig,
 )
+from place_layers.surrogate.config import RidgeSurrogateConfig
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,10 @@ class ValidateLandscapeCommand(BaseCommand):
                 evals_per_round=self.config.search_evals_per_round,
                 candidates_per_model=self.config.search_candidates_per_model,
                 cv_folds=self.config.search_cv_folds,
-                ei_xi=self.config.search_ei_xi,
+                surrogate=RidgeSurrogateConfig(
+                    n_bootstraps=self.config.search_n_bootstraps,
+                    ei_xi=self.config.search_ei_xi,
+                ),
                 seed=self.config.search_seed,
             )
             strategy = search_config.create_search_strategy()
@@ -374,6 +378,10 @@ class ValidateLandscapeCommandConfig(BaseCommandConfig):
     search_cv_folds: int = Field(
         description="Cross-validation folds for surrogate quality.",
         gt=1,
+    )
+    search_n_bootstraps: int = Field(
+        description="Number of bootstrap models for Ridge surrogate.",
+        gt=0,
     )
     search_ei_xi: float = Field(
         description="Exploration parameter for Expected Improvement.",

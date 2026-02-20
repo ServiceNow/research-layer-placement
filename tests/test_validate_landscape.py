@@ -426,7 +426,11 @@ class TestValidateLandscapePipeline:
                     evals_per_round=10,
                     candidates_per_model=50,
                     cv_folds=3,
-                    ei_xi=0.01,
+                    surrogate=dict(
+                        surrogate_type="ridge",
+                        n_bootstraps=50,
+                        ei_xi=0.01,
+                    ),
                     seed=42,
                 )
                 strategy = search_config.create_search_strategy()
@@ -558,7 +562,11 @@ class TestValidateLandscapePipeline:
                 evals_per_round=10,
                 candidates_per_model=50,
                 cv_folds=3,
-                ei_xi=0.01,
+                surrogate=dict(
+                    surrogate_type="ridge",
+                    n_bootstraps=50,
+                    ei_xi=0.01,
+                ),
                 seed=42,
             )
             strategy = search_config.create_search_strategy()

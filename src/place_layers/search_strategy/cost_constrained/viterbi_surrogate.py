@@ -1,14 +1,16 @@
-"""Viterbi surrogate search strategy for layer placement optimization.
+"""Viterbi surrogate search strategies for layer placement optimization.
 
-Supports two surrogate types:
+Two concrete strategies:
 
-1. **ridge** (default): Bootstrap Viterbi — extracts MRF potentials from each
-   bootstrap Ridge model's coefficients, runs Viterbi DP on each to find exact
+1. **ViterbiSurrogateSearch** (``strategy_type="viterbi_surrogate"``):
+   Ridge Bootstrap Viterbi — extracts MRF potentials from each bootstrap
+   Ridge model's coefficients, runs Viterbi DP on each to find exact
    optimal placements, selects via Expected Improvement.
 
-2. **bayesian_ridge**: Bayesian Viterbi with Pareto LCB — uses exact NIG
-   posterior for uncertainty, runs Pareto DP with (mean, variance) frontier
-   tracking across a sweep of β values, selects via full-posterior LCB.
+2. **ViterbiBayesianSurrogateSearch** (``strategy_type="viterbi_bayesian_surrogate"``):
+   Bayesian Viterbi with Pareto LCB — uses exact NIG posterior for
+   uncertainty, runs Pareto DP with (mean, variance) frontier tracking
+   across a sweep of beta values, selects via full-posterior LCB.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from scipy.stats import spearmanr
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import BaseCostModel
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.mrf.solver import ExactMRFSolver
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
@@ -35,10 +38,12 @@ from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
     CostConstrainedSearchResult,
 )
-from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.acquisition import expected_improvement
+from place_layers.surrogate.config import (
+    BayesianRidgeSurrogateConfig,
+    RidgeSurrogateConfig,
+)
 from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 if TYPE_CHECKING:
     from place_layers.cost_model.base_cost_model import Allocation
@@ -51,23 +56,17 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Strategy
+# Strategy base
 # ============================================================================
 
 
-class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
-    """Viterbi surrogate search with Ridge (bootstrap) or Bayesian Ridge (Pareto LCB).
+class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
+    """Shared search_max_performance / search_min_cost for Viterbi surrogate strategies.
 
-    For surrogate_type="ridge": extracts MRF potentials from each bootstrap
-    Ridge model's coefficients, runs Viterbi DP to find globally top-N
-    placements per model, pools and deduplicates, selects via EI.
-
-    For surrogate_type="bayesian_ridge": uses exact NIG posterior, runs Pareto
-    DP with (mean, variance) frontier tracking across β values, selects via
-    full-posterior LCB ranking.
+    Subclasses implement ``_run_surrogate_loop()`` with the concrete surrogate type.
     """
 
-    config: "ViterbiSurrogateSearchConfig"
+    config: "_BaseViterbiSurrogateConfig"
 
     async def _search_max_performance(
         self,
@@ -199,15 +198,20 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         cost_budget: float | None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Load exploration data and run Viterbi refinement loop."""
-        if self.config.surrogate_type == "bayesian_ridge":
-            return await self._run_bayesian_loop(
-                problem, cost_model, num_layers, feasible_allocations, cost_budget
-            )
-        return await self._run_ridge_loop(
-            problem, cost_model, num_layers, feasible_allocations, cost_budget
-        )
+        raise NotImplementedError
 
-    async def _run_ridge_loop(
+
+# ============================================================================
+# Ridge Viterbi strategy
+# ============================================================================
+
+
+class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
+    """Bootstrap Ridge Viterbi: MRF extraction + Viterbi DP + EI selection."""
+
+    config: "ViterbiSurrogateSearchConfig"
+
+    async def _run_surrogate_loop(
         self,
         problem: CostConstrainedProblem,
         cost_model: BaseCostModel,
@@ -215,7 +219,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
-        """Original bootstrap Viterbi loop (surrogate_type='ridge')."""
+        """Bootstrap Viterbi loop."""
         mixer_names = cost_model.phase_order
 
         # Load exploration dataset
@@ -242,7 +246,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 observer.on_surrogate_dataset_loaded(dataset_event)
 
         # Initial surrogate fit
-        surrogate = RidgeSurrogate(
+        surrogate = self.config.surrogate.create_surrogate(
             mixer_names=mixer_names,
             seed=self.config.seed,
             feature_config=exploration.feature_config,
@@ -301,7 +305,9 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
             # Step 3: Score with EI (full predict: mu and sigma)
             mu, sigma = surrogate.predict(candidate_list)
-            ei = expected_improvement(mu, sigma, f_best, xi=self.config.ei_xi)
+            ei = expected_improvement(
+                mu, sigma, f_best, xi=self.config.surrogate.ei_xi
+            )
 
             # Step 4: Select top evals_per_round by EI
             n_select = min(self.config.evals_per_round, len(candidate_list))
@@ -430,7 +436,18 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
         return all_assignments, all_scores
 
-    async def _run_bayesian_loop(
+
+# ============================================================================
+# Bayesian Viterbi strategy
+# ============================================================================
+
+
+class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
+    """Bayesian Viterbi: Pareto LCB DP + per-beta quota selection."""
+
+    config: "ViterbiBayesianSurrogateSearchConfig"
+
+    async def _run_surrogate_loop(
         self,
         problem: CostConstrainedProblem,
         cost_model: BaseCostModel,
@@ -438,9 +455,8 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
-        """Bayesian Viterbi loop with Pareto LCB (surrogate_type='bayesian_ridge')."""
+        """Bayesian Viterbi loop with Pareto LCB."""
         from place_layers.mrf.pareto_lcb_solver import ParetoLCBSolver
-        from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 
         mixer_names = cost_model.phase_order
 
@@ -468,7 +484,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 observer.on_surrogate_dataset_loaded(dataset_event)
 
         # Initial surrogate fit
-        surrogate = BayesianRidgeSurrogate(
+        surrogate = self.config.surrogate.create_surrogate(
             mixer_names=mixer_names,
             seed=self.config.seed,
             feature_config=exploration.feature_config,
@@ -499,12 +515,12 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
             mean_model, var_model = surrogate.extract_mean_var_mrf_models(num_layers)
             t_extract = time.perf_counter() - t0
 
-            # Step 2: For each β, run Pareto DP → top-K candidates
+            # Step 2: For each beta, run Pareto DP -> top-K candidates
             t0 = time.perf_counter()
             solver = ParetoLCBSolver(
                 mean_model, var_model, surrogate.noise_scale_sq
             )
-            # Track which β generated each candidate
+            # Track which beta generated each candidate
             candidate_set: set[tuple[str, ...]] = set()
             candidates_by_beta: dict[float, list[tuple[str, ...]]] = {
                 b: [] for b in lcb_betas
@@ -538,7 +554,7 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 logger.warning("No candidates from Pareto DP, skipping round")
                 continue
 
-            # Step 3: Full-posterior LCB ranking with per-β quotas
+            # Step 3: Full-posterior LCB ranking with per-beta quotas
             n_select = min(self.config.evals_per_round, len(candidate_set))
             selected: list[tuple[str, ...]] = []
             selected_set: set[tuple[str, ...]] = set()
@@ -699,23 +715,12 @@ class ViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
 
 # ============================================================================
-# Config
+# Configs
 # ============================================================================
 
 
-class ViterbiSurrogateSearchConfig(BaseCostConstrainedConfig):
-    """Configuration for Viterbi surrogate search.
-
-    Supports two modes:
-    - surrogate_type="ridge": Bootstrap Viterbi with EI selection (original).
-    - surrogate_type="bayesian_ridge": Bayesian Viterbi with Pareto LCB.
-
-    Requires a pre-built exploration dataset from the explore_placements command.
-    """
-
-    _impl_class: ClassVar[type["BaseSearchStrategy"]] = ViterbiSurrogateSearch
-
-    strategy_type: Literal["viterbi_surrogate"] = "viterbi_surrogate"
+class _BaseViterbiSurrogateConfig(BaseCostConstrainedConfig):
+    """Shared fields for both Viterbi surrogate variants."""
 
     exploration_dataset_path: str = Field(
         description="Path to JSON dataset from explore_placements command.",
@@ -724,12 +729,6 @@ class ViterbiSurrogateSearchConfig(BaseCostConstrainedConfig):
     cv_folds: int = Field(
         description="Cross-validation folds for surrogate quality.",
         gt=1,
-    )
-
-    ei_xi: float = Field(
-        default=0.01,
-        description="Exploration parameter for Expected Improvement (ridge mode only).",
-        ge=0,
     )
 
     num_rounds: int = Field(
@@ -747,40 +746,68 @@ class ViterbiSurrogateSearchConfig(BaseCostConstrainedConfig):
     )
 
     candidates_per_model: int = Field(
-        description="Number of top placements to harvest per model (ridge) or per β (bayesian_ridge).",
+        description="Number of top placements to harvest per model (ridge) or per beta (bayesian).",
         gt=0,
     )
 
-    surrogate_type: Literal["ridge", "bayesian_ridge"] = Field(
-        default="ridge",
-        description="Surrogate model type: 'ridge' (bootstrap) or 'bayesian_ridge' (NIG posterior).",
+
+class ViterbiSurrogateSearchConfig(_BaseViterbiSurrogateConfig):
+    """Configuration for Ridge Bootstrap Viterbi search.
+
+    Extracts MRF potentials from bootstrap Ridge models, runs Viterbi DP
+    on each to find exact optimal placements, selects via EI.
+
+    Requires a pre-built exploration dataset from the explore_placements command.
+    """
+
+    _impl_class: ClassVar[type["BaseSearchStrategy"]] = ViterbiSurrogateSearch
+
+    strategy_type: Literal["viterbi_surrogate"] = "viterbi_surrogate"
+
+    surrogate: RidgeSurrogateConfig = Field(
+        description="Ridge surrogate model configuration.",
+    )
+
+
+class ViterbiBayesianSurrogateSearchConfig(_BaseViterbiSurrogateConfig):
+    """Configuration for Bayesian Viterbi with Pareto LCB search.
+
+    Uses exact NIG posterior for uncertainty, runs Pareto DP with
+    (mean, variance) frontier tracking across beta values, selects via
+    full-posterior LCB ranking.
+
+    Requires a pre-built exploration dataset from the explore_placements command.
+    """
+
+    _impl_class: ClassVar[type["BaseSearchStrategy"]] = ViterbiBayesianSurrogateSearch
+
+    strategy_type: Literal["viterbi_bayesian_surrogate"] = "viterbi_bayesian_surrogate"
+
+    surrogate: BayesianRidgeSurrogateConfig = Field(
+        description="Bayesian Ridge surrogate model configuration.",
     )
 
     lcb_betas: list[float] = Field(
-        default=[0.0, 0.5, 1.0, 2.0],
-        description="LCB β values for Bayesian mode. Higher β → more conservative (stronger uncertainty penalty).",
+        description="LCB beta values. Higher beta -> more conservative (stronger uncertainty penalty).",
     )
 
     lcb_quotas: list[float] = Field(
-        default=[0.4, 0.3, 0.2, 0.1],
-        description="Per-β evaluation budget fractions for Bayesian mode.",
+        description="Per-beta evaluation budget fractions.",
     )
 
     ranking_beta: float = Field(
-        default=0.0,
-        description="β used for full-LCB ranking of fill candidates after per-β quotas. "
+        description="Beta used for full-LCB ranking of fill candidates after per-beta quotas. "
                     "0.0 = rank by mean only.",
         ge=0.0,
     )
 
     max_frontier_size: int = Field(
-        default=500,
-        description="Safety cap on Pareto frontier size per DP state (Bayesian mode).",
+        description="Safety cap on Pareto frontier size per DP state.",
         gt=0,
     )
 
     @model_validator(mode="after")
-    def _validate_lcb_config(self) -> "ViterbiSurrogateSearchConfig":
+    def _validate_lcb_config(self) -> "ViterbiBayesianSurrogateSearchConfig":
         if len(self.lcb_betas) != len(self.lcb_quotas):
             raise ValueError(
                 f"lcb_betas ({len(self.lcb_betas)}) and lcb_quotas "

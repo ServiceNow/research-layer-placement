@@ -24,6 +24,7 @@ search_num_rounds: 1
 search_evals_per_round: 20
 search_candidates_per_model: 200
 search_cv_folds: 5
+search_n_bootstraps: 50
 search_ei_xi: 0.01
 search_seed: 42
 

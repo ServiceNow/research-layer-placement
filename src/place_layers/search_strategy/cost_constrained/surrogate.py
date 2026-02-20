@@ -1,14 +1,16 @@
 """Surrogate-assisted search strategy for layer placement optimization.
 
-Uses a Ridge + Bootstrap ensemble surrogate trained on a pre-built
-exploration dataset to guide evaluation toward promising placements via
-Expected Improvement acquisition.
+Uses a surrogate model trained on a pre-built exploration dataset to guide
+evaluation toward promising placements via acquisition function scoring.
+
+Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + LCB) via
+the ``SurrogateConfig`` discriminated union.
 
 The surrogate is a DRAFTER: it proposes candidates cheaply,
 but the real evaluator (via problem.evaluate) validates them.
 
 Requires an exploration dataset (from explore_placements command).
-Refinement: surrogate drafts candidates -> EI selects top-k -> real evaluator validates.
+Refinement: surrogate drafts candidates -> acquisition selects top-k -> real evaluator validates.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from scipy.stats import spearmanr
 from place_layers.annealing.sa_core import SAConfig, run_multi_start_sa
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import BaseCostModel
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
 from place_layers.search_strategy.cost_constrained.base_config import (
@@ -35,10 +38,13 @@ from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
     CostConstrainedSearchResult,
 )
-from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.acquisition import expected_improvement, lower_confidence_bound
+from place_layers.surrogate.config import (
+    BayesianRidgeSurrogateConfig,
+    RidgeSurrogateConfig,
+    SurrogateConfig,
+)
 from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 if TYPE_CHECKING:
     from place_layers.cost_model.base_cost_model import Allocation
@@ -56,11 +62,14 @@ logger = logging.getLogger(__name__)
 
 
 class SurrogateSearch(BaseCostConstrainedSearch):
-    """Surrogate-assisted search using Ridge + Bootstrap ensemble + EI.
+    """Surrogate-assisted search using SA drafting + acquisition scoring.
 
     Searches across the full placement space simultaneously (no per-allocation
     inner loop). Requires a pre-built exploration dataset. Refinement uses
-    EI-guided selection of SA-generated candidates.
+    acquisition-guided selection of SA-generated candidates.
+
+    Uses ``match``/``case`` on the surrogate config type to select the
+    appropriate acquisition function (EI for Ridge, LCB for Bayesian Ridge).
     """
 
     config: "SurrogateSearchConfig"
@@ -234,21 +243,12 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         # Refinement via SA against surrogate
         logger.debug("Refinement: %d rounds", self.config.num_rounds)
 
-        use_bayesian = self.config.surrogate_type == "bayesian_ridge"
-        if use_bayesian:
-            from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
-
-            surrogate: RidgeSurrogate | BayesianRidgeSurrogate = BayesianRidgeSurrogate(
-                mixer_names=mixer_names,
-                seed=self.config.sa.seed or 0,
-                feature_config=exploration.feature_config,
-            )
-        else:
-            surrogate = RidgeSurrogate(
-                mixer_names=mixer_names,
-                seed=self.config.sa.seed or 0,
-                feature_config=exploration.feature_config,
-            )
+        # Smart constructor handles both surrogate types
+        surrogate = self.config.surrogate.create_surrogate(
+            mixer_names=mixer_names,
+            seed=self.config.sa.seed or 0,
+            feature_config=exploration.feature_config,
+        )
         surrogate.fit(all_assignments, np.array(all_scores))
 
         f_best = float(np.max(all_scores))
@@ -281,12 +281,13 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             logger.debug("SA produced %d distinct candidates", len(top_candidates))
 
-            # Step 2: Score with acquisition function
+            # Step 2: Score with acquisition function — match/case on surrogate type
             mu, sigma = surrogate.predict(top_candidates)
-            if use_bayesian:
-                acq_scores = lower_confidence_bound(mu, sigma, kappa=self.config.lcb_kappa)
-            else:
-                acq_scores = expected_improvement(mu, sigma, f_best, xi=self.config.ei_xi)
+            match self.config.surrogate:
+                case RidgeSurrogateConfig(ei_xi=xi):
+                    acq_scores = expected_improvement(mu, sigma, f_best, xi=xi)
+                case BayesianRidgeSurrogateConfig(lcb_kappa=kappa):
+                    acq_scores = lower_confidence_bound(mu, sigma, kappa=kappa)
 
             # Step 3: Select top evals_per_round by acquisition score
             n_select = min(self.config.evals_per_round, len(top_candidates))
@@ -417,9 +418,11 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 class SurrogateSearchConfig(BaseCostConstrainedConfig):
     """Configuration for surrogate-assisted search.
 
-    The surrogate (Ridge + Bootstrap ensemble) is a drafter that proposes
-    candidates cheaply.  The real evaluator (via problem.evaluate) validates
-    the top candidates.
+    The surrogate model is a drafter that proposes candidates cheaply.
+    The real evaluator (via problem.evaluate) validates the top candidates.
+
+    Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + LCB)
+    via the nested ``surrogate`` config (discriminated union).
 
     Requires a pre-built exploration dataset from the explore_placements command.
     """
@@ -438,33 +441,20 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
         gt=1,
     )
 
-    # Surrogate model
-    ei_xi: float = Field(
-        description="Exploration parameter for Expected Improvement.",
-        ge=0,
-    )
-
     # Refinement loop
     num_rounds: int = Field(
         description="Number of surrogate-guided refinement rounds.",
         gt=0,
     )
     evals_per_round: int = Field(
-        description="Top candidates by EI evaluated per round.",
+        description="Top candidates by acquisition evaluated per round.",
         gt=0,
     )
 
     # SA configuration for surrogate refinement
     sa: SAConfig = Field(description="SA configuration for surrogate refinement")
 
-    surrogate_type: Literal["ridge", "bayesian_ridge"] = Field(
-        default="ridge",
-        description="Surrogate model type: 'ridge' (bootstrap) or 'bayesian_ridge' (NIG posterior).",
-    )
-
-    lcb_kappa: float = Field(
-        default=2.0,
-        description="Uncertainty penalty strength for LCB acquisition (bayesian_ridge mode). "
-                    "Higher values are more conservative.",
-        ge=0.0,
+    # Surrogate model configuration (discriminated union)
+    surrogate: SurrogateConfig = Field(
+        description="Surrogate model configuration (ridge or bayesian_ridge).",
     )
