@@ -41,9 +41,12 @@ The stochastic mixer forces PIECEWISE cudagraph mode (`modeling_apriel2.py:922-9
 
 The comment at line 937-939 even notes: *"This is only needed for STOCHASTIC mixers where runtime switching between mixers is required. Standalone GDN/KDA/Mamba models (non-stochastic) can use FULL cudagraph mode without issues."*
 
+**Mitigation implemented**: Per-mixer CUDA graph caching (`APRIEL2_MIXER_CUDA_GRAPHS=1`) captures a separate CUDA graph per mixer variant per batch size. While the outer model still uses PIECEWISE mode (dispatch remains a graph break), each sub-mixer's forward is replayed from a cached graph instead of running eagerly. This eliminates per-kernel launch overhead within each mixer forward. See the [per-mixer CUDA graph guide](../cuda-graph-crashes/per-mixer-cuda-graphs.md) for details.
+
 **Files**:
 - `modeling_apriel2.py:922-957` — `_force_piecewise_cudagraph_for_stochastic_mixers()`
 - `modeling_apriel2.py:914-917` — adds `stochastic_mixer_dispatch` to splitting ops
+- `modeling_apriel2.py:~118-199` — `MixerGraphCache` implementation
 
 ### 3. Custom Op Dispatch Overhead Per Layer
 
