@@ -107,7 +107,7 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
                 }
 
             gen = Generation(
-                prompt_tokens=(),  # TODO: quick fix to evoid geneative evaluators do not save tokens, which is not needed. WE need to have a flag that goes all the way to the remote vllm server and disable requesting tokens for alle vals other than trace generation.
+                prompt_tokens=(),
                 completion_tokens=(),
                 correct=correct,
                 correct_by_filter=correct_by_filter,
