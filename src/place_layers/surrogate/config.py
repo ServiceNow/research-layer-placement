@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from place_layers.surrogate.encoding import FeatureScaling
+
 if TYPE_CHECKING:
     from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
     from place_layers.surrogate.encoding import FeatureExpansionConfig
@@ -89,6 +91,9 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         description="LCB uncertainty penalty strength.",
         ge=0.0,
     )
+    feature_scaling: FeatureScaling = Field(
+        description="Feature scaling mode: none, counts_only, or all.",
+    )
 
     def create_surrogate(
         self,
@@ -105,6 +110,7 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
             prior_alpha=self.prior_alpha,
             prior_a0=self.prior_a0,
             prior_b0=self.prior_b0,
+            feature_scaling=self.feature_scaling,
         )
 
 

@@ -7,7 +7,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.encoding import FeatureExpansionConfig
+from place_layers.surrogate.model_selection import ExpansionSelectionResult
 
 
 class ExplorationDataset(BaseModel):
@@ -36,6 +38,10 @@ class ExplorationDataset(BaseModel):
 
     # Feature expansion (None = Level 0 / unary only)
     feature_config: FeatureExpansionConfig | None = None
+
+    # Surrogate provenance (None for backward compat with pre-existing JSON)
+    surrogate_config: SurrogateConfig | None = None
+    expansion_result: ExpansionSelectionResult | None = None
 
     # Learning curve
     rho_history: list[float]

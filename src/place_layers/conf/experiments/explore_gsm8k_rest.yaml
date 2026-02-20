@@ -15,6 +15,11 @@ defaults:
   - /cost_model: uniform_apriel_15b
   - _self_
 
+surrogate:
+  surrogate_type: ridge
+  n_bootstraps: 50
+  ei_xi: 0.01
+
 backend:
   servers:
     - http://localhost:8080

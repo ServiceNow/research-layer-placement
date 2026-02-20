@@ -15,6 +15,7 @@ from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
     StepResult,
     ridge_cv_rho,
-    select_expansion_level,
+    select_expansion_bayes_evidence,
+    select_expansion_ridge_cv,
 )
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate

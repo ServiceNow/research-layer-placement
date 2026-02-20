@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
+    FeatureScaling,
     build_type_mapping,
     encode_batch,
     encode_config,
@@ -49,6 +50,7 @@ class BayesianRidgeSurrogate:
         prior_alpha: float = 1.0,
         prior_a0: float = 1e-6,
         prior_b0: float = 1e-6,
+        feature_scaling: FeatureScaling = FeatureScaling.COUNTS_ONLY,
     ) -> None:
         self._seed = seed
         self._type_to_int, self._int_to_type = build_type_mapping(mixer_names)
@@ -56,15 +58,20 @@ class BayesianRidgeSurrogate:
         self._prior_alpha = prior_alpha
         self._prior_a0 = prior_a0
         self._prior_b0 = prior_b0
+        self._feature_scaling = feature_scaling
 
         # Fitted state
-        self._mu_n: np.ndarray | None = None  # Posterior mean (d,)
+        self._mu_n: np.ndarray | None = None  # Posterior mean in scaled space (d,)
+        self._mu_n_original: np.ndarray | None = None  # Posterior mean in original space (d,)
         self._L: np.ndarray | None = None  # Cholesky factor: LL^T = X^TX + αI
         self._X_mean: np.ndarray | None = None  # Feature means for centering
-        self._diag_Vn: np.ndarray | None = None  # diag(V_n) for decomposition
+        self._diag_Vn: np.ndarray | None = None  # diag(V_n) in scaled space
+        self._feature_scale: np.ndarray | None = None  # Per-feature divisor
         self._a_n: float = 0.0
         self._b_n: float = 0.0
         self._intercept: float = 0.0
+        self._n_samples: int = 0
+        self._n_features: int = 0
 
     def fit(self, assignments: list[tuple[str, ...]], y: np.ndarray) -> None:
         """Exact NIG conjugate update.
@@ -75,6 +82,9 @@ class BayesianRidgeSurrogate:
         """
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
         n, d = X.shape
+        self._n_samples = n
+        self._n_features = d
+        num_layers = len(assignments[0])
 
         # Center y to handle intercept (standard approach for Ridge)
         y_mean = float(np.mean(y))
@@ -83,40 +93,92 @@ class BayesianRidgeSurrogate:
         X_centered = X - X_mean
         y_centered = y - y_mean
 
+        # Feature scaling: standardize after centering
+        if self._feature_scaling is not FeatureScaling.NONE:
+            feature_scale = self._build_feature_scale(X_centered, num_layers=num_layers)
+            self._feature_scale = feature_scale
+            X_work = X_centered / feature_scale
+        else:
+            self._feature_scale = None
+            X_work = X_centered
+
         alpha = self._prior_alpha
 
-        # A = X_c^T X_c + αI
-        A = X_centered.T @ X_centered + alpha * np.eye(d, dtype=np.float64)
+        # A = X_work^T X_work + αI (in scaled space)
+        A = X_work.T @ X_work + alpha * np.eye(d, dtype=np.float64)
 
         # Cholesky factorization: A = L L^T
         self._L = np.linalg.cholesky(A)
 
-        # Posterior mean: μ_n = V_n X_c^T y_c = A^{-1} X_c^T y_c
-        # Solve via Cholesky: A μ_n = X_c^T y_c
-        Xty = X_centered.T @ y_centered
+        # Posterior mean in scaled space: μ_n = A^{-1} X_work^T y_c
+        Xty = X_work.T @ y_centered
         z = np.linalg.solve(self._L, Xty)  # L z = Xty
         self._mu_n = np.linalg.solve(self._L.T, z)  # L^T μ_n = z
 
-        # Intercept: y_mean - X_mean @ μ_n
-        self._intercept = float(y_mean - X_mean @ self._mu_n)
+        # Map back to original space for mean prediction + MRF
+        if self._feature_scale is not None:
+            self._mu_n_original = self._mu_n / self._feature_scale
+        else:
+            self._mu_n_original = self._mu_n
+
+        # Intercept: y_mean - X_mean @ μ_n_original
+        self._intercept = float(y_mean - X_mean @ self._mu_n_original)
 
         # Posterior hyperparameters for σ²
         self._a_n = self._prior_a0 + n / 2.0
 
-        # Safe b_n computation: b_n = b_0 + 0.5*(y_c^T y_c - μ_n^T A μ_n)
-        # μ_n^T A μ_n = ||L^T μ_n||² (no explicit inverse needed)
-        Lt_mu = self._L.T @ self._mu_n
-        self._b_n = self._prior_b0 + 0.5 * (
-            float(y_centered @ y_centered) - float(Lt_mu @ Lt_mu)
-        )
-        # Ensure non-negative (numerical safety)
-        self._b_n = max(self._b_n, 1e-12)
+        # b_n computed fully in centered+scaled space (no coordinate mixing)
+        # SSE in scaled space: ||y_c - X_work @ μ_scaled||²
+        fitted_residuals = y_centered - X_work @ self._mu_n
+        SSE = float(fitted_residuals @ fitted_residuals)
+        # Prior quadratic in scaled space: α * ||μ_scaled||²
+        prior_quad = alpha * float(self._mu_n @ self._mu_n)
+        self._b_n = max(self._prior_b0 + 0.5 * (SSE + prior_quad), 1e-12)
 
-        # Diagonal of V_n = A^{-1}: solve A V = I column by column is expensive.
-        # Instead: V_n = L^{-T} L^{-1}, so diag(V_n) = sum of squares of rows of L^{-1}
-        # L_inv = inv(L), then diag(V_n) = (L_inv**2).sum(axis=0)
+        # Diagonal of V_n = A^{-1} (in scaled space)
         L_inv = np.linalg.solve(self._L, np.eye(d, dtype=np.float64))
         self._diag_Vn = np.sum(L_inv ** 2, axis=0)
+
+    def log_marginal_likelihood(self) -> float:
+        """Log marginal likelihood of the data under the NIG model.
+
+        Computed in scaled space (scaling is part of the model).
+        All terms use quantities computed by fit().
+        """
+        assert self._L is not None, "Must call fit() first"
+        from scipy.special import gammaln
+
+        n, d = self._n_samples, self._n_features
+        log_det_A = 2.0 * float(np.sum(np.log(np.diag(self._L))))
+        return float(
+            -0.5 * n * np.log(2.0 * np.pi)
+            + 0.5 * d * np.log(self._prior_alpha)
+            - 0.5 * log_det_A
+            + self._prior_a0 * np.log(self._prior_b0)
+            - self._a_n * np.log(self._b_n)
+            + gammaln(self._a_n)
+            - gammaln(self._prior_a0)
+        )
+
+    def _build_feature_scale(
+        self, X_centered: np.ndarray, *, num_layers: int
+    ) -> np.ndarray:
+        """Build per-feature scale vector based on feature_scaling mode."""
+        d = X_centered.shape[1]
+        match self._feature_scaling:
+            case FeatureScaling.NONE:
+                return np.ones(d, dtype=np.float64)
+            case FeatureScaling.COUNTS_ONLY:
+                scale = np.ones(d, dtype=np.float64)
+                fc = self._feature_config or FeatureExpansionConfig()
+                if fc.allocation_counts:
+                    K = len(self._type_to_int)
+                    scale[-K:] = float(num_layers)
+                return scale
+            case FeatureScaling.ALL:
+                scale = np.std(X_centered, axis=0)
+                scale[scale < 1e-12] = 1.0
+                return scale
 
     def predict(
         self, assignments: list[tuple[str, ...]]
@@ -133,16 +195,17 @@ class BayesianRidgeSurrogate:
         """
         assert self._mu_n is not None, "Must call fit() first"
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
-        mu = X @ self._mu_n + self._intercept
+        # Mean prediction uses original-space weights
+        mu = X @ self._mu_n_original + self._intercept
 
-        # Compute variance via Cholesky solve
+        # Compute variance via Cholesky solve (in scaled space)
         c = self._b_n / self._a_n
-        # Center X before quadratic form (L was built from centered data)
         X_centered = X - self._X_mean
-        # Solve L z = X_c^T for each sample (X_centered rows)
-        # L_inv_X = L^{-1} X_c^T, shape (d, n)
-        L_inv_X = np.linalg.solve(self._L, X_centered.T)
-        # Variance for each sample: c * (1 + ||L^{-1} x_i||²)
+        if self._feature_scale is not None:
+            X_work = X_centered / self._feature_scale
+        else:
+            X_work = X_centered
+        L_inv_X = np.linalg.solve(self._L, X_work.T)
         quad_forms = np.sum(L_inv_X ** 2, axis=0)
         sigma = np.sqrt(c * (1.0 + quad_forms))
 
@@ -154,18 +217,18 @@ class BayesianRidgeSurrogate:
         Returns:
             Predicted means, shape (n_samples,).
         """
-        assert self._mu_n is not None, "Must call fit() first"
+        assert self._mu_n_original is not None, "Must call fit() first"
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
-        return X @ self._mu_n + self._intercept
+        return X @ self._mu_n_original + self._intercept
 
     def predict_mean_one(self, assignment: tuple[str, ...] | list[str]) -> float:
         """Single-assignment mean prediction for SA hot loop.
 
         Uses a direct dot product — faster than going through batch encoding.
         """
-        assert self._mu_n is not None, "Must call fit() first"
+        assert self._mu_n_original is not None, "Must call fit() first"
         x = encode_config(assignment, self._type_to_int, self._feature_config)
-        return float(self._mu_n @ x + self._intercept)
+        return float(self._mu_n_original @ x + self._intercept)
 
     def cross_validate(
         self,
@@ -206,11 +269,11 @@ class BayesianRidgeSurrogate:
         """Extract MRF model from MAP weights μ_n (same as RidgeSurrogate)."""
         from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
-        assert self._mu_n is not None, "Must call fit() first"
+        assert self._mu_n_original is not None, "Must call fit() first"
         sorted_names = tuple(sorted(self._type_to_int.keys()))
         feature_config = self._feature_config or FeatureExpansionConfig()
         return SurrogateMRFModel(
-            coef=self._mu_n,
+            coef=self._mu_n_original,
             intercept=self._intercept,
             num_layers=num_layers,
             mixer_names=sorted_names,
@@ -229,7 +292,7 @@ class BayesianRidgeSurrogate:
         """
         from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
-        assert self._mu_n is not None, "Must call fit() first"
+        assert self._mu_n_original is not None, "Must call fit() first"
         assert self._diag_Vn is not None
 
         sorted_names = tuple(sorted(self._type_to_int.keys()))
@@ -249,18 +312,22 @@ class BayesianRidgeSurrogate:
             num_layers, len(sorted_names), feature_config_no_counts
         )
 
-        # Mean model: μ_n[:dim_no_counts]
+        # Mean model uses original-space weights
         mean_model = SurrogateMRFModel(
-            coef=self._mu_n[:dim_no_counts],
+            coef=self._mu_n_original[:dim_no_counts],
             intercept=self._intercept,
             num_layers=num_layers,
             mixer_names=sorted_names,
             feature_config=feature_config_no_counts,
         )
 
-        # Var model: diag(V_n)[:dim_no_counts]
+        # Var model uses original-space diagonal variance
+        if self._feature_scale is not None:
+            diag_vn_original = self._diag_Vn / (self._feature_scale ** 2)
+        else:
+            diag_vn_original = self._diag_Vn
         var_model = SurrogateMRFModel(
-            coef=self._diag_Vn[:dim_no_counts],
+            coef=diag_vn_original[:dim_no_counts],
             intercept=0.0,
             num_layers=num_layers,
             mixer_names=sorted_names,
@@ -286,6 +353,12 @@ class BayesianRidgeSurrogate:
         return mu - beta * sigma
 
     @property
+    def degrees_of_freedom(self) -> float:
+        """Degrees of freedom for the Student-t predictive: nu = 2*a_n."""
+        assert self._a_n > 0, "Must call fit() first"
+        return 2.0 * self._a_n
+
+    @property
     def noise_scale_sq(self) -> float:
         """b_n / a_n — the posterior estimate of σ²."""
         assert self._b_n > 0, "Must call fit() first"
@@ -293,6 +366,8 @@ class BayesianRidgeSurrogate:
 
     @property
     def diag_Vn(self) -> np.ndarray:
-        """Diagonal of the posterior covariance V_n."""
+        """Diagonal of the posterior covariance V_n (original space)."""
         assert self._diag_Vn is not None, "Must call fit() first"
+        if self._feature_scale is not None:
+            return self._diag_Vn / (self._feature_scale ** 2)
         return self._diag_Vn

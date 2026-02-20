@@ -3,11 +3,13 @@
 import numpy as np
 
 from place_layers.surrogate.encoding import FeatureExpansionConfig
+from place_layers.surrogate.encoding import FeatureScaling
 from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
     StepResult,
     ridge_cv_rho,
-    select_expansion_level,
+    select_expansion_bayes_evidence,
+    select_expansion_ridge_cv,
 )
 
 
@@ -29,11 +31,11 @@ def _random_placements(
 
 
 # =============================================================================
-# select_expansion_level tests
+# select_expansion_ridge_cv tests
 # =============================================================================
 
 
-class TestSelectExpansionLevel:
+class TestSelectExpansionRidgeCv:
     def test_easy_landscape_with_pairwise_signal(self) -> None:
         """On MRF-like data with pairwise signal, range search should find
         that pairwise features improve significantly over unary baseline."""
@@ -60,7 +62,7 @@ class TestSelectExpansionLevel:
                 else:
                     scores[idx] -= 0.3
 
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
@@ -76,12 +78,12 @@ class TestSelectExpansionLevel:
         # range_results[0] is unary baseline, range_results[1+] are pairwise
         assert len(result.range_results) >= 2
 
-        # Unary baseline should have lower rho than first pairwise step
-        unary_rho = result.range_results[0].rho
-        pairwise_rho = result.range_results[1].rho
-        assert pairwise_rho > unary_rho + 0.05, (
+        # Unary baseline should have lower score than first pairwise step
+        unary_score = result.range_results[0].score
+        pairwise_score = result.range_results[1].score
+        assert pairwise_score > unary_score + 0.05, (
             f"Expected pairwise to improve significantly: "
-            f"unary={unary_rho:.4f}, pairwise={pairwise_rho:.4f}"
+            f"unary={unary_score:.4f}, pairwise={pairwise_score:.4f}"
         )
 
         # Selected range should be >= 1 since pairwise features help
@@ -101,7 +103,7 @@ class TestSelectExpansionLevel:
             sum(1.0 for m in a if m == "a") for a in assignments
         ], dtype=np.float64)
 
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
@@ -114,10 +116,10 @@ class TestSelectExpansionLevel:
         )
 
         assert isinstance(result, ExpansionSelectionResult)
-        # Unary baseline should already have very high rho for this linear signal
-        unary_rho = result.range_results[0].rho
-        assert unary_rho > 0.9, (
-            f"Expected high rho for linear signal: unary={unary_rho:.4f}"
+        # Unary baseline should already have very high score for this linear signal
+        unary_score = result.range_results[0].score
+        assert unary_score > 0.9, (
+            f"Expected high score for linear signal: unary={unary_score:.4f}"
         )
         # Should select order <= 2 (likely 1 since unary captures the signal)
         assert result.selected_order <= 2
@@ -129,7 +131,7 @@ class TestSelectExpansionLevel:
         assignments = _random_placements(rng, mixer_names, num_layers=6, n=60)
         scores = rng.randn(60)
 
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
@@ -144,12 +146,14 @@ class TestSelectExpansionLevel:
             assert isinstance(step, StepResult)
             assert isinstance(step.config, FeatureExpansionConfig)
             assert step.num_features > 0
-            assert isinstance(step.rho, float)
+            assert isinstance(step.score, float)
+            assert step.rho is not None  # ridge_cv path always sets rho
         for step in result.order_results:
             assert isinstance(step, StepResult)
             assert isinstance(step.config, FeatureExpansionConfig)
             assert step.num_features > 0
-            assert isinstance(step.rho, float)
+            assert isinstance(step.score, float)
+            assert step.rho is not None  # ridge_cv path always sets rho
 
         # Exactly one step in range_results should have a non-None stop_reason
         range_stops = [s for s in result.range_results if s.stop_reason is not None]
@@ -169,16 +173,19 @@ class TestSelectExpansionLevel:
                 StepResult(
                     config=FeatureExpansionConfig(max_order=1),
                     num_features=10,
+                    score=0.5,
                     rho=0.5,
                 ),
                 StepResult(
                     config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1),
                     num_features=20,
+                    score=0.7,
                     rho=0.7,
                 ),
                 StepResult(
                     config=cfg,
                     num_features=30,
+                    score=0.9,
                     rho=0.9,
                     stop_reason="target_reached",
                 ),
@@ -222,7 +229,7 @@ class TestSelectExpansionLevel:
         # Order 3 range 1 = 252 features → blocked
         small = _random_placements(rng, mixer_names, num_layers, 50)
         small_scores = np.array([score_fn(a) for a in small])
-        result_small = select_expansion_level(
+        result_small = select_expansion_ridge_cv(
             assignments=small, scores=small_scores,
             mixer_names=mixer_names, cv_folds=5, target_rho=0.99,
             max_pairwise_range=3, max_order=3, seed=42,
@@ -233,7 +240,7 @@ class TestSelectExpansionLevel:
         # Order 3 range 1 = 252 features → fits
         large = _random_placements(np.random.RandomState(42), mixer_names, num_layers, 200)
         large_scores = np.array([score_fn(a) for a in large])
-        result_large = select_expansion_level(
+        result_large = select_expansion_ridge_cv(
             assignments=large, scores=large_scores,
             mixer_names=mixer_names, cv_folds=5, target_rho=0.99,
             max_pairwise_range=3, max_order=3, seed=42,
@@ -254,7 +261,7 @@ class TestSelectExpansionLevel:
             sum(1.0 for m in a if m == "a") for a in assignments
         ], dtype=np.float64)
 
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
@@ -295,7 +302,7 @@ class TestSelectExpansionLevel:
         # Order 3 features would exceed guard → feature_guard
         small = _random_placements(rng, mixer_names, num_layers, 50)
         small_scores = np.array([score_fn(a) for a in small])
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=small, scores=small_scores,
             mixer_names=mixer_names, cv_folds=5, target_rho=0.99,
             max_pairwise_range=3, max_order=3, seed=42,
@@ -325,7 +332,7 @@ class TestSelectExpansionLevel:
         assignments = _random_placements(rng, mixer_names, num_layers=6, n=60)
         scores = rng.randn(60)
 
-        result = select_expansion_level(
+        result = select_expansion_ridge_cv(
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
@@ -404,3 +411,95 @@ class TestRidgeCvRho:
             seed=42,
         )
         assert abs(rho) < 0.4
+
+
+# =============================================================================
+# select_expansion_bayes_evidence tests
+# =============================================================================
+
+
+class TestSelectExpansionBayesEvidence:
+    def test_unary_prefers_simpler(self) -> None:
+        """Unary signal with noise, evidence should select order=1."""
+        rng = np.random.RandomState(42)
+        mixer_names = ["a", "b"]
+        num_layers = 12
+        n_samples = 200
+
+        assignments = _random_placements(rng, mixer_names, num_layers, n_samples)
+
+        scores = np.array([
+            sum(1.0 for m in a if m == "a") for a in assignments
+        ], dtype=np.float64)
+        scores += 0.5 * rng.randn(n_samples)  # Add noise
+
+        result = select_expansion_bayes_evidence(
+            assignments=assignments,
+            scores=scores,
+            mixer_names=mixer_names,
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+            feature_scaling=FeatureScaling.COUNTS_ONLY,
+            max_pairwise_range=5,
+            max_order=3,
+        )
+
+        assert isinstance(result, ExpansionSelectionResult)
+        assert result.selected_order == 1
+
+    def test_genuine_pairwise_selects_order2(self) -> None:
+        """Non-unary-expressible signal (adjacent-different count),
+        evidence should select order>=2."""
+        rng = np.random.RandomState(42)
+        mixer_names = ["a", "b"]
+        num_layers = 12
+        n_samples = 200
+
+        assignments = _random_placements(rng, mixer_names, num_layers, n_samples)
+
+        # Adjacent-different count: sum(1 if a[i] != a[i+1] else 0)
+        scores = np.array([
+            sum(1 if a[i] != a[i + 1] else 0 for i in range(len(a) - 1))
+            for a in assignments
+        ], dtype=np.float64)
+
+        result = select_expansion_bayes_evidence(
+            assignments=assignments,
+            scores=scores,
+            mixer_names=mixer_names,
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+            max_pairwise_range=5,
+            max_order=3,
+        )
+
+        assert isinstance(result, ExpansionSelectionResult)
+        assert result.selected_order >= 2
+
+    def test_result_structure(self) -> None:
+        """Verify ExpansionSelectionResult fields for evidence path."""
+        rng = np.random.RandomState(42)
+        mixer_names = ["a", "b"]
+        assignments = _random_placements(rng, mixer_names, num_layers=6, n=60)
+        scores = rng.randn(60)
+
+        result = select_expansion_bayes_evidence(
+            assignments=assignments,
+            scores=scores,
+            mixer_names=mixer_names,
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+            max_pairwise_range=3,
+            max_order=2,
+        )
+
+        assert result.phase1_stop_reason == "exhaustive_argmax"
+        assert result.phase2_stop_reason is None
+        # All steps from evidence path have rho=None
+        for step in result.range_results:
+            assert step.rho is None
+        for step in result.order_results:
+            assert step.rho is None

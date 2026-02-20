@@ -18,9 +18,18 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from enum import Enum
 
 import numpy as np
 from pydantic import BaseModel
+
+
+class FeatureScaling(str, Enum):
+    """Feature scaling mode for Bayesian Ridge surrogate."""
+
+    NONE = "none"
+    COUNTS_ONLY = "counts_only"
+    ALL = "all"
 
 
 class FeatureExpansionConfig(BaseModel):

@@ -18,7 +18,7 @@ from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.landscape.models import BandResult
 from place_layers.mrf.solver import ExactMRFSolver
 from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.model_selection import select_expansion_level
+from place_layers.surrogate.model_selection import select_expansion_ridge_cv
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def load_and_fit_surrogate(
     # Model selection (scalar scores for surrogate fitting)
     scores_array = np.array(dataset.scores)
     t0 = time.perf_counter()
-    expansion_result = select_expansion_level(
+    expansion_result = select_expansion_ridge_cv(
         assignments=dataset.assignments,
         scores=scores_array,
         mixer_names=dataset.mixer_names,
@@ -68,7 +68,7 @@ def load_and_fit_surrogate(
         "Model selection: order=%d, range=%d, rho=%.4f (%.3fs)",
         expansion_result.selected_order,
         expansion_result.selected_range,
-        expansion_result.range_results[-1].rho
+        expansion_result.range_results[-1].score
         if expansion_result.range_results
         else 0.0,
         t_model_sel,

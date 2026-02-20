@@ -40,7 +40,8 @@ class TestBayesianRidgeSurrogateConfig:
 
     def test_create_surrogate(self) -> None:
         config = BayesianRidgeSurrogateConfig(
-            prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4, lcb_kappa=1.5
+            prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4, lcb_kappa=1.5,
+            feature_scaling="none",
         )
         surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42)
         assert isinstance(surrogate, BayesianRidgeSurrogate)
@@ -53,7 +54,8 @@ class TestBayesianRidgeSurrogateConfig:
     def test_validation_constraints(self) -> None:
         with pytest.raises(ValidationError):
             BayesianRidgeSurrogateConfig(
-                prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6, lcb_kappa=2.0
+                prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6, lcb_kappa=2.0,
+                feature_scaling="none",
             )  # prior_alpha gt=0
 
 
@@ -77,6 +79,7 @@ class TestSurrogateConfigUnion:
                 "prior_a0": 1e-6,
                 "prior_b0": 1e-6,
                 "lcb_kappa": 2.0,
+                "feature_scaling": "none",
             }
         )
         assert isinstance(config, BayesianRidgeSurrogateConfig)

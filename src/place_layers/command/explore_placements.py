@@ -39,10 +39,12 @@ from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
+from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig, SurrogateConfig
 from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
     ridge_cv_rho,
-    select_expansion_level,
+    select_expansion_bayes_evidence,
+    select_expansion_ridge_cv,
 )
 
 
@@ -207,14 +209,19 @@ def _log_expansion_result(
     n_samples: int,
     num_types: int,
     num_layers: int,
+    surrogate_config: SurrogateConfig,
     previous_config: FeatureExpansionConfig | None = None,
 ) -> None:
     """Log a structured, indented expansion selection result block."""
+    is_bayesian = isinstance(surrogate_config, BayesianRidgeSurrogateConfig)
+    method = "Bayesian evidence" if is_bayesian else "RidgeCV Spearman"
+    score_label = "evidence" if is_bayesian else "rho"
+
     if previous_config is not None:
-        header = f"Expansion re-selection ({n_samples} samples):"
+        header = f"Expansion re-selection via {method} ({n_samples} samples):"
     else:
         header = (
-            f"Expansion selection "
+            f"Expansion selection via {method} "
             f"({n_samples} samples, {num_types} types, {num_layers} layers):"
         )
 
@@ -222,20 +229,20 @@ def _log_expansion_result(
 
     # --- Phase 1 ---
     lines.append("  Phase 1 (range at order=2):")
-    prev_rho: float | None = None
+    prev_score: float | None = None
     for step in result.range_results:
         if step.config.max_order == 1:
             label = "unary baseline"
         else:
             label = f"pairwise range={step.config.pairwise_max_range}"
-        entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, rho={step.rho:.4f}"
-        if prev_rho is not None:
-            delta = step.rho - prev_rho
+        entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, {score_label}={step.score:.4f}"
+        if prev_score is not None:
+            delta = step.score - prev_score
             entry += f" ({delta:+.4f})"
         if step.stop_reason is not None:
             entry += f" <- {_stop_reason_label(step.stop_reason, n_samples)}"
         lines.append(entry)
-        prev_rho = step.rho
+        prev_score = step.score
 
     lines.append(f"  Selected range: {result.selected_range}")
 
@@ -244,17 +251,17 @@ def _log_expansion_result(
         lines.append(
             f"  Phase 2 (order at range={result.selected_range}):"
         )
-        # prev_rho carries over from phase 1's last step
+        # prev_score carries over from phase 1's last step
         for step in result.order_results:
             label = f"order={step.config.max_order}"
-            entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, rho={step.rho:.4f}"
-            if prev_rho is not None:
-                delta = step.rho - prev_rho
+            entry = f"    {label}:{' ' * max(1, 20 - len(label))}{step.num_features} features, {score_label}={step.score:.4f}"
+            if prev_score is not None:
+                delta = step.score - prev_score
                 entry += f" ({delta:+.4f})"
             if step.stop_reason is not None:
                 entry += f" <- {_stop_reason_label(step.stop_reason, n_samples)}"
             lines.append(entry)
-            prev_rho = step.rho
+            prev_score = step.score
     else:
         # Phase 2 skipped — derive reason
         if result.phase1_stop_reason == "target_reached":
@@ -270,11 +277,11 @@ def _log_expansion_result(
 
     # --- Result line ---
     cfg = result.selected_config
-    final_rho = prev_rho if prev_rho is not None else 0.0
+    final_score = prev_score if prev_score is not None else 0.0
     selected_features = compute_feature_dim(num_layers, num_types, cfg)
     result_line = (
         f"  Result: order={result.selected_order}, range={result.selected_range}, "
-        f"{selected_features} features, rho={final_rho:.4f}"
+        f"{selected_features} features, {score_label}={final_score:.4f}"
     )
 
     # Upgrade annotation
@@ -301,6 +308,7 @@ def _stop_reason_label(reason: str, n_samples: int) -> str:
         "feature_guard": f"feature guard (next would exceed {2 * n_samples})",
         "max_range": "max range",
         "max_order": "max order",
+        "exhaustive_argmax": "exhaustive argmax",
     }
     return labels.get(reason, reason)
 
@@ -352,6 +360,7 @@ class ExplorePlacementsCommand(BaseCommand):
     ) -> None:
         """Run the adaptive exploration loop for a single objective."""
         logger.info("Exploring objective: %s", obj_name)
+        logger.info("Surrogate: %s", self.config.surrogate.surrogate_type)
 
         problem = self.config.problem.create_problem(
             evaluator_instances, objective_name=obj_name
@@ -437,29 +446,25 @@ class ExplorePlacementsCommand(BaseCommand):
 
         # --- Phase 2: Initial expansion selection ---
         # Expansion selection is re-run in the adaptive loop (Phase 3) after
-        # each batch. The feature-to-sample guard in select_expansion_level()
+        # each batch. The feature-to-sample guard in _select_expansion()
         # relaxes as more data arrives, potentially unlocking higher-order
-        # features. Re-running is cheap (a few Ridge CV fits).
+        # features. Re-running is cheap (a few surrogate fits).
         feature_config: FeatureExpansionConfig | None = None
+        last_expansion_result: ExpansionSelectionResult | None = None
         if (
             self.config.expansion_max_order > 1
             and len(all_assignments) >= self.config.cv_folds
         ):
-            expansion_result = select_expansion_level(
-                assignments=all_assignments,
-                scores=np.array(all_scores),
-                mixer_names=phase_order,
-                cv_folds=self.config.cv_folds,
-                target_rho=self.config.target_rank_correlation,
-                max_pairwise_range=self.config.expansion_max_range,
-                max_order=self.config.expansion_max_order,
-                seed=self.config.seed,
+            expansion_result = self._select_expansion(
+                all_assignments, np.array(all_scores), phase_order,
             )
+            last_expansion_result = expansion_result
             _log_expansion_result(
                 expansion_result,
                 n_samples=len(all_assignments),
                 num_types=len(phase_order),
                 num_layers=num_layers,
+                surrogate_config=self.config.surrogate,
             )
             if expansion_result.selected_config.max_order > 1:
                 feature_config = expansion_result.selected_config
@@ -544,16 +549,10 @@ class ExplorePlacementsCommand(BaseCommand):
                 self.config.expansion_max_order > 1
                 and len(all_assignments) >= self.config.cv_folds
             ):
-                expansion_result = select_expansion_level(
-                    assignments=all_assignments,
-                    scores=np.array(all_scores),
-                    mixer_names=phase_order,
-                    cv_folds=self.config.cv_folds,
-                    target_rho=self.config.target_rank_correlation,
-                    max_pairwise_range=self.config.expansion_max_range,
-                    max_order=self.config.expansion_max_order,
-                    seed=self.config.seed,
+                expansion_result = self._select_expansion(
+                    all_assignments, np.array(all_scores), phase_order,
                 )
+                last_expansion_result = expansion_result
                 new_config = (
                     expansion_result.selected_config
                     if expansion_result.selected_config.max_order > 1
@@ -567,6 +566,7 @@ class ExplorePlacementsCommand(BaseCommand):
                         n_samples=len(all_assignments),
                         num_types=len(phase_order),
                         num_layers=num_layers,
+                        surrogate_config=self.config.surrogate,
                         previous_config=old_feature_config,
                     )
 
@@ -618,6 +618,8 @@ class ExplorePlacementsCommand(BaseCommand):
             num_samples=len(all_assignments),
             termination_reason=termination_reason,
             feature_config=feature_config,
+            surrogate_config=self.config.surrogate,
+            expansion_result=last_expansion_result,
             rho_history=rho_history,
             samples_at_check=samples_at_check,
             final_rho=rho_history[-1] if rho_history else 0.0,
@@ -632,13 +634,50 @@ class ExplorePlacementsCommand(BaseCommand):
 
         logger.info(
             "Exploration complete for %s: %d/%d samples, "
-            "final rho=%.4g, stopped=%s",
+            "final rho=%.4g, stopped=%s, surrogate=%s",
             obj_name,
             dataset.num_samples,
             self.config.max_samples,
             dataset.final_rho,
             dataset.termination_reason,
+            self.config.surrogate.surrogate_type,
         )
+
+    def _select_expansion(
+        self,
+        assignments: list[tuple[str, ...]],
+        scores: np.ndarray,
+        mixer_names: list[str],
+    ) -> ExpansionSelectionResult:
+        """Dispatch expansion selection based on surrogate type.
+
+        Bayesian Ridge surrogate → evidence-based selection.
+        Ridge surrogate → RidgeCV Spearman.
+        """
+        match self.config.surrogate:
+            case BayesianRidgeSurrogateConfig() as cfg:
+                return select_expansion_bayes_evidence(
+                    assignments=assignments,
+                    scores=scores,
+                    mixer_names=mixer_names,
+                    prior_alpha=cfg.prior_alpha,
+                    prior_a0=cfg.prior_a0,
+                    prior_b0=cfg.prior_b0,
+                    feature_scaling=cfg.feature_scaling,
+                    max_pairwise_range=self.config.expansion_max_range,
+                    max_order=self.config.expansion_max_order,
+                )
+            case RidgeSurrogateConfig():
+                return select_expansion_ridge_cv(
+                    assignments=assignments,
+                    scores=scores,
+                    mixer_names=mixer_names,
+                    cv_folds=self.config.cv_folds,
+                    target_rho=self.config.target_rank_correlation,
+                    max_pairwise_range=self.config.expansion_max_range,
+                    max_order=self.config.expansion_max_order,
+                    seed=self.config.seed,
+                )
 
 
 # ============================================================================
@@ -709,6 +748,12 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     )
 
     seed: int = Field(description="Random seed for reproducibility.")
+
+    surrogate: SurrogateConfig = Field(
+        description="Surrogate model configuration (ridge or bayesian_ridge). "
+        "Determines expansion selection method: Bayesian evidence for bayesian_ridge, "
+        "RidgeCV Spearman for ridge.",
+    )
 
     # Feature expansion selection
     expansion_max_order: int = Field(

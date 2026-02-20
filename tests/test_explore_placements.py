@@ -15,6 +15,7 @@ from place_layers.command.explore_placements import (
     _sample_batch,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
@@ -195,6 +196,9 @@ class TestHelpers:
             mixer_names=["m0", "m1"],
             num_samples=1,
             termination_reason="max_samples",
+            surrogate_config=RidgeSurrogateConfig(
+                n_bootstraps=50, ei_xi=0.01,
+            ),
             rho_history=[0.3],
             samples_at_check=[1],
             final_rho=0.3,
@@ -207,6 +211,8 @@ class TestHelpers:
         assert loaded.assignments == [("m0", "m1")]
         assert loaded.final_rho == 0.3
         assert loaded.objective_name == "weighted_average"
+        assert loaded.surrogate_config is not None
+        assert loaded.surrogate_config.surrogate_type == "ridge"
 
     def test_jsonl_roundtrip(self, tmp_path: Path) -> None:
         """Write and read progress JSONL."""
@@ -305,6 +311,9 @@ class TestExploreIntegration:
             mixer_names=["m0", "m1"],
             num_samples=2,
             termination_reason="max_samples",
+            surrogate_config=RidgeSurrogateConfig(
+                n_bootstraps=50, ei_xi=0.01,
+            ),
             rho_history=[0.3],
             samples_at_check=[2],
             final_rho=0.3,
@@ -319,3 +328,58 @@ class TestExploreIntegration:
         assert loaded.scores == [0.5, 0.7]
         assert loaded.objective_name == "weighted_average"
         assert loaded.termination_reason == "max_samples"
+        assert loaded.surrogate_config is not None
+        assert loaded.surrogate_config.surrogate_type == "ridge"
+
+    async def test_exploration_dataset_backward_compat(self) -> None:
+        """Legacy JSON without surrogate_config/expansion_result should load fine."""
+        legacy = {
+            "assignments": [["m0", "m1"]],
+            "scores": [0.5],
+            "allocations": [{"m0": 1, "m1": 1}],
+            "objective_name": "weighted_average",
+            "num_layers": 2,
+            "mixer_names": ["m0", "m1"],
+            "num_samples": 1,
+            "termination_reason": "max_samples",
+            "rho_history": [0.3],
+            "samples_at_check": [1],
+            "final_rho": 0.3,
+        }
+        import json
+
+        loaded = ExplorationDataset.model_validate_json(json.dumps(legacy))
+        assert loaded.surrogate_config is None
+        assert loaded.expansion_result is None
+        assert loaded.num_samples == 1
+
+    async def test_exploration_dataset_bayesian_surrogate(self) -> None:
+        """ExplorationDataset with BayesianRidgeSurrogateConfig round-trips."""
+        cfg = BayesianRidgeSurrogateConfig(
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+            lcb_kappa=2.0,
+            feature_scaling="counts_only",
+        )
+        dataset = ExplorationDataset(
+            assignments=[("m0", "m1")],
+            scores=[0.5],
+            allocations=[{"m0": 1, "m1": 1}],
+            objective_name="weighted_average",
+            num_layers=2,
+            mixer_names=["m0", "m1"],
+            num_samples=1,
+            termination_reason="max_samples",
+            surrogate_config=cfg,
+            rho_history=[0.3],
+            samples_at_check=[1],
+            final_rho=0.3,
+        )
+
+        json_str = dataset.model_dump_json()
+        loaded = ExplorationDataset.model_validate_json(json_str)
+        assert loaded.surrogate_config is not None
+        assert loaded.surrogate_config.surrogate_type == "bayesian_ridge"
+        assert isinstance(loaded.surrogate_config, BayesianRidgeSurrogateConfig)
+        assert loaded.surrogate_config.prior_alpha == 1.0

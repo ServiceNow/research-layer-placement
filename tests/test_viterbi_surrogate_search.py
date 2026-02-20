@@ -284,6 +284,7 @@ class TestViterbiSurrogateSearchIntegration:
                 prior_a0=1e-6,
                 prior_b0=1e-6,
                 lcb_kappa=2.0,
+                feature_scaling="none",
             ),
             lcb_betas=[0.0, 1.0, 2.0],
             lcb_quotas=[0.5, 0.3, 0.2],
