@@ -113,7 +113,7 @@ class SurrogateDisplayEntry(BaseModel):
     assignments: tuple[str, ...]
     score: float
     surrogate_mu: float
-    ei_value: float
+    acq_value: float
     is_new_best: bool
 
 
@@ -605,7 +605,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         result.append(f"  (μ̂ {entry.surrogate_mu:.4g})", style="dim")
 
         # EI value
-        result.append(f"  EI {entry.ei_value:.3g}", style="dim")
+        result.append(f"  acq {entry.acq_value:.3g}", style="dim")
 
         # New best marker
         if entry.is_new_best:
@@ -1127,7 +1127,7 @@ class LayermapDisplay(PlacementFormatterMixin):
                 assignments=event.assignments,
                 score=event.score,
                 surrogate_mu=event.surrogate_mu,
-                ei_value=event.ei_value,
+                acq_value=event.acq_value,
                 is_new_best=event.is_new_best,
             )
         )

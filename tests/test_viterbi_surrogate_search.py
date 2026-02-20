@@ -254,3 +254,34 @@ class TestViterbiSurrogateSearchIntegration:
         strategy = config.create_search_strategy()
         result = await strategy.search(problem, dry_run=True)
         assert result is None
+
+    async def test_max_performance_bayesian(self, tmp_path: Path) -> None:
+        """Run max_performance search with bayesian_ridge surrogate."""
+        evaluator = _make_small_evaluator(num_layers=12)
+        problem = _make_max_perf_problem(evaluator)
+
+        exploration = await _build_exploration_dataset(
+            evaluator, problem, num_samples=100
+        )
+        dataset_path = _save_exploration_dataset(exploration, tmp_path)
+
+        config = ViterbiSurrogateSearchConfig(
+            **{
+                **_VITERBI_CONFIG_DEFAULTS,
+                "exploration_dataset_path": str(dataset_path),
+                "surrogate_type": "bayesian_ridge",
+                "lcb_betas": [0.0, 1.0, 2.0],
+                "lcb_quotas": [0.5, 0.3, 0.2],
+                "max_frontier_size": 200,
+            }
+        )
+        strategy = config.create_search_strategy()
+        result = await strategy.search(problem)
+
+        assert isinstance(result, CostConstrainedSearchResult)
+        assert result.mode == "max_performance"
+        assert result.best_score is not None
+        assert result.total_evaluations > 0
+        # Cost should be within budget
+        cost_budget = problem.config.cost_budget
+        assert result.final_cost <= cost_budget + 1e-9

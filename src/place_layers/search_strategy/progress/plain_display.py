@@ -516,7 +516,7 @@ class PlainDisplay(PlacementFormatterMixin):
                 f"#{event.eval_index}/{event.evals_planned}: "
                 f"score={event.score:.4g}, "
                 f"mu={event.surrogate_mu:.4g}, "
-                f"EI={event.ei_value:.3g}{marker}",
+                f"acq={event.acq_value:.3g}{marker}",
                 indent=2,
             )
 

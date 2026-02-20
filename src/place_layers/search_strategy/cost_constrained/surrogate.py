@@ -36,7 +36,7 @@ from place_layers.search_strategy.cost_constrained.types import (
     CostConstrainedSearchResult,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
-from place_layers.surrogate.acquisition import expected_improvement
+from place_layers.surrogate.acquisition import expected_improvement, lower_confidence_bound
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
@@ -234,11 +234,21 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         # Refinement via SA against surrogate
         logger.debug("Refinement: %d rounds", self.config.num_rounds)
 
-        surrogate = RidgeSurrogate(
-            mixer_names=mixer_names,
-            seed=self.config.sa.seed,
-            feature_config=exploration.feature_config,
-        )
+        use_bayesian = self.config.surrogate_type == "bayesian_ridge"
+        if use_bayesian:
+            from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+
+            surrogate: RidgeSurrogate | BayesianRidgeSurrogate = BayesianRidgeSurrogate(
+                mixer_names=mixer_names,
+                seed=self.config.sa.seed or 0,
+                feature_config=exploration.feature_config,
+            )
+        else:
+            surrogate = RidgeSurrogate(
+                mixer_names=mixer_names,
+                seed=self.config.sa.seed or 0,
+                feature_config=exploration.feature_config,
+            )
         surrogate.fit(all_assignments, np.array(all_scores))
 
         f_best = float(np.max(all_scores))
@@ -271,13 +281,16 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             logger.debug("SA produced %d distinct candidates", len(top_candidates))
 
-            # Step 2: Score with EI (full predict: mu and sigma)
+            # Step 2: Score with acquisition function
             mu, sigma = surrogate.predict(top_candidates)
-            ei = expected_improvement(mu, sigma, f_best, xi=self.config.ei_xi)
+            if use_bayesian:
+                acq_scores = lower_confidence_bound(mu, sigma, kappa=self.config.lcb_kappa)
+            else:
+                acq_scores = expected_improvement(mu, sigma, f_best, xi=self.config.ei_xi)
 
-            # Step 3: Select top evals_per_round by EI
+            # Step 3: Select top evals_per_round by acquisition score
             n_select = min(self.config.evals_per_round, len(top_candidates))
-            top_indices = np.argsort(ei)[-n_select:][::-1]
+            top_indices = np.argsort(acq_scores)[-n_select:][::-1]
 
             # Emit round started event
             if self.observers:
@@ -345,7 +358,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                         assignments=candidate,
                         score=score,
                         surrogate_mu=float(mu[idx]),
-                        ei_value=float(ei[idx]),
+                        acq_value=float(acq_scores[idx]),
                         cost=candidate_cost,
                         is_new_best=is_new_best,
                         f_best=f_best,
@@ -443,3 +456,15 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
 
     # SA configuration for surrogate refinement
     sa: SAConfig = Field(description="SA configuration for surrogate refinement")
+
+    surrogate_type: Literal["ridge", "bayesian_ridge"] = Field(
+        default="ridge",
+        description="Surrogate model type: 'ridge' (bootstrap) or 'bayesian_ridge' (NIG posterior).",
+    )
+
+    lcb_kappa: float = Field(
+        default=2.0,
+        description="Uncertainty penalty strength for LCB acquisition (bayesian_ridge mode). "
+                    "Higher values are more conservative.",
+        ge=0.0,
+    )

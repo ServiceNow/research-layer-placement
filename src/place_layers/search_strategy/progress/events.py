@@ -494,7 +494,7 @@ class SurrogateCandidateEvaluatedEvent(BaseModel):
     assignments: tuple[str, ...]  # full placement
     score: float  # objective score
     surrogate_mu: float  # surrogate's mean prediction
-    ei_value: float  # EI that selected this candidate
+    acq_value: float  # Acquisition score (EI or LCB)
     cost: float  # placement cost
     is_new_best: bool  # beat f_best?
     f_best: float  # current best (after update)
