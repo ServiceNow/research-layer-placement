@@ -11,7 +11,12 @@ from place_layers.surrogate.encoding import FeatureExpansionConfig
 
 
 class ExplorationDataset(BaseModel):
-    """Serializable dataset of evaluated placements."""
+    """Serializable dataset of evaluated placements for a single objective.
+
+    Each dataset stores scalar scores for one objective (identified by
+    ``objective_name``).  When the optimizer has M objectives, the explore
+    command produces M independent datasets.
+    """
 
     model_config = {"frozen": True}
 
@@ -19,6 +24,9 @@ class ExplorationDataset(BaseModel):
     assignments: list[tuple[str, ...]]
     scores: list[float]
     allocations: list[dict[str, int]]
+
+    # Which objective this dataset is for
+    objective_name: str
 
     # Metadata
     num_layers: int

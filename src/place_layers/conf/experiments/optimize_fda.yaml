@@ -9,12 +9,12 @@
 
 defaults:
   - /command: optimize
-  - /evaluator: extraction
+  - /evaluator@evaluators.configs.fda: extraction
   - /generation: extraction
   - /backend: rest
   - /task: fda_optimize
   - /problem: cost_apriel_0_5b
-  - /cost_model: linear_apriel_v2
+  - /cost_model: linear_apriel_15b
   - /search_strategy: cost_constrained_hierarchical
   - /result_handler: json
   - _self_

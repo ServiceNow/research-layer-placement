@@ -27,6 +27,7 @@ from place_layers.search_strategy.cost_constrained.surrogate import (
     SurrogateSearchConfig,
 )
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -99,8 +100,9 @@ def _make_max_perf_problem(
             mixer_costs=mixer_costs,
         ),
         cost_budget=num_layers * 0.8,
+        cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 def _make_min_cost_problem(
@@ -115,8 +117,9 @@ def _make_min_cost_problem(
             mixer_costs=mixer_costs,
         ),
         performance_target=0.0,  # Easy target so test can find it
+        cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 async def _build_exploration_dataset(
@@ -166,6 +169,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=scores,
         allocations=allocations,
+        objective_name="weighted_average",
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
@@ -213,8 +217,7 @@ class TestSurrogateSearchIntegration:
         assert result.mode == "max_performance"
         assert result.best_score is not None
         assert result.total_evaluations > 0
-        # With exploration dataset, total evals should be only from refinement
-        # (2 rounds * 20 evals_per_round = 40)
+        # 2 rounds × 20 evals_per_round
         assert result.total_evaluations == 2 * 20
         # Cost should be within budget
         cost_budget = problem.config.cost_budget

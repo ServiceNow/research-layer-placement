@@ -2,11 +2,11 @@
 # Evaluate extracted every2nd-gdn checkpoint on GSM8K with local vLLM (no compile)
 #
 # Usage:
-#   python -m place_layers +experiments=eval_gsm8k_extracted_vllm_nocompile
+#   python -m place_layers +experiments=dev/eval_gsm8k_extracted_vllm_nocompile
 
 defaults:
   - /command: evaluate
-  - /evaluator: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: local_vllm
   - /task: gsm8k
   - /generation: greedy

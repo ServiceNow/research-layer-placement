@@ -1,0 +1,56 @@
+# @package evaluator
+# Trace-based likelihood evaluator
+#
+# Computes average log-likelihood of pre-computed traces under different
+# model configurations. Unlike importance_weighted, this does NOT use
+# importance sampling or consider correctness - just measures how probable
+# the traces are under the model.
+#
+# Use Case:
+#   - Measuring perplexity/likelihood on teacher-generated completions
+#   - Evaluating how well subnet matches teacher's probability distribution
+#   - Faster evaluation when you only care about likelihood, not accuracy
+#
+# Traces from all sources are merged by task_name. Optional task_weights
+# allow weighting different tasks differently in the final score.
+#
+# Example usage:
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=trace_likelihood \
+#       +backend=transformers +model=apriel2_0_5b_dev
+
+evaluator_type: trace_likelihood
+
+# Trace sources - list of directories containing JSONL trace files
+# Traces are merged by task_name across all sources
+trace_sources:
+  - ${oc.env:TRACE_PATH,/workspace/outputs/gsm8k_traces}
+
+# Optional per-task weights for the final weighted mean log-likelihood
+# If null, all tasks are weighted equally
+# Missing tasks default to 1.0 with a warning
+# Extra keys are ignored with a warning
+task_weights: null
+# Example with custom weights:
+# task_weights:
+#   gsm8k: 1.0
+#   math: 2.0    # MATH weighted 2x
+#   aime: 3.0    # AIME weighted 3x
+
+# Score normalization (optional)
+# Default: no normalization (returns raw log-likelihoods)
+normalization:
+  type: none
+
+# Example: Linear normalization to [0, 1]
+# This maps log-likelihood values linearly:
+#   - 'low' (e.g., -1000) maps to 0.0 (baseline/worst performance)
+#   - 'high' (e.g., -100) maps to 1.0 (target/best performance)
+# Useful for:
+#   - Making scores interpretable
+#   - Multi-objective optimization with other metrics
+#   - Setting meaningful search bounds
+#
+# normalization:
+#   type: linear
+#   low: -1000.0   # baseline log-likelihood
+#   high: -100.0   # target log-likelihood

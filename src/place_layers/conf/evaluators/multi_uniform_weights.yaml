@@ -1,0 +1,22 @@
+# @package evaluators
+# Multi-evaluator with uniform weights (auto-computed)
+# Each evaluator gets equal weight: 1/N
+
+configs:
+  gsm8k:
+    evaluator_type: generative
+    tasks: ["gsm8k"]
+    generation: ${generation}
+
+  mmlu:
+    evaluator_type: likelihood
+    tasks: ["mmlu"]
+
+  arc_easy:
+    evaluator_type: likelihood
+    tasks: ["arc_easy"]
+
+# No weights specified = uniform weights (0.33, 0.33, 0.34)
+objective:
+  objective_type: weighted_average
+  include_individual: false

@@ -11,3 +11,4 @@ cost_model: ${cost_model}
 # Formula: budget = num_layers / target_speedup
 # Example: 6x speedup -> 24 / 6 = 4.0
 cost_budget: 4.0
+cost_floor: null

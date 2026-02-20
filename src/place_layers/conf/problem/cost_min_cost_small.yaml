@@ -11,3 +11,4 @@ cost_model: ${cost_model}
 # Note: Actual target depends on the evaluator's score range
 # For MockSupernetEvaluator with default settings, scores typically range from -5 to +15
 performance_target: 5.0
+cost_floor: null

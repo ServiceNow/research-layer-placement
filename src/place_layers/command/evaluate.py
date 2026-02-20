@@ -5,22 +5,12 @@ without running any optimization search. Useful for:
 - Testing evaluator setup
 - Evaluating baseline placements (e.g., all-attention)
 - Comparing specific placements (use Hydra --multirun for sweeps)
-
-Usage
------
-    # Single placement
-    python -m place_layers command=evaluate placement=all_attention
-
-    # Sweep over placements
-    python -m place_layers command=evaluate placement=all_attention,every_4th_gdn --multirun
-
-    # No placement (for non-supernet models)
-    python -m place_layers command=evaluate placement=null
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -28,10 +18,12 @@ from typing import Any, ClassVar, Literal
 from hydra.core.hydra_config import HydraConfig
 from pydantic import BaseModel, Field
 
+from place_layers.backend import BackendConfig
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
-from place_layers.evaluator import EvaluatorConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
+from place_layers.landscape.config import objective_result_path
 from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
@@ -43,28 +35,14 @@ class EvaluationResult(BaseModel):
     model_config = {"frozen": True}
 
     timestamp: str = Field(description="ISO timestamp of evaluation")
-    evaluator_type: str = Field(description="Type of evaluator used")
     placement: list[str] | None = Field(
         description="Mixer names per layer (null if no placement)"
     )
     placement_indices: list[int] | None = Field(
         description="Mixer indices per layer (null if no placement)"
     )
-    score: float = Field(description="Evaluation score")
-    filter_problem_accuracy: dict[str, float] | None = Field(
-        default=None,
-        description="Per-filter pass@k accuracy (problem-level). Only populated for "
-        "generation-based evaluators.",
-    )
-    filter_sample_accuracy: dict[str, float] | None = Field(
-        default=None,
-        description="Per-filter sample accuracy (sample-level). Only populated for "
-        "generation-based evaluators.",
-    )
-    extra: dict[str, Any] | None = Field(
-        default=None,
-        description="Additional evaluator-specific details (best-effort).",
-    )
+    objective_name: str = Field(description="Name of the objective")
+    score: float = Field(description="Objective score")
 
 
 class EvaluateCommand(BaseCommand):
@@ -80,66 +58,32 @@ class EvaluateCommand(BaseCommand):
         logger.info(f"Output directory: {output_dir}")
         logger.info("Starting evaluation...")
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
-            # Resolve placement specification
-            resolved = resolve_placement(self.config.placement, evaluator)
+        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        async with backend_cm as backend:
+            async with self.config.evaluators.create_evaluators(
+                output_dir, backend=backend
+            ) as evals:
+                resolved = resolve_placement(self.config.placement, evals)
 
-            # Evaluate
-            score = await evaluator.evaluate(resolved.placement)
-            logger.info(f"Score: {score:.6f}")
+                obj_scores = await evals.evaluate_objectives(resolved.placement)
 
-            # Best-effort: compute per-filter metrics for generation-based runs
-            filter_problem_accuracy: dict[str, float] | None = None
-            filter_sample_accuracy: dict[str, float] | None = None
-            extra: dict[str, Any] | None = None
-            try:
-                from place_layers.evaluator.traces.writer import (
-                    summarize_generations_by_filter,
-                )
+                for obj_name, obj_score in obj_scores.items():
+                    logger.info(f"  {obj_name}: {obj_score:.6f}")
 
-                run_output_dir = getattr(evaluator, "output_dir", None)
-                if isinstance(run_output_dir, Path):
-                    summaries = summarize_generations_by_filter(run_output_dir)
-                    filter_problem_accuracy = {
-                        name: s.problem_accuracy for name, s in summaries.items()
-                    }
-                    filter_sample_accuracy = {
-                        name: s.sample_accuracy for name, s in summaries.items()
-                    }
-                    extra = {
-                        "filter_task_stats": {
-                            name: {
-                                task_name: {
-                                    "problem_accuracy": stats.problem_accuracy,
-                                    "sample_accuracy": stats.sample_accuracy,
-                                    "num_problems": stats.num_problems,
-                                    "num_samples": stats.num_samples,
-                                }
-                                for task_name, stats in s.task_stats.items()
-                            }
-                            for name, s in summaries.items()
-                        }
-                    }
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.warning(f"Failed to compute per-filter results: {e}")
-
-            # Build result
-            result = EvaluationResult(
-                timestamp=datetime.now().isoformat(),
-                evaluator_type=self.config.evaluator.evaluator_type,
-                placement=resolved.placement_names,
-                placement_indices=resolved.placement_indices,
-                score=score,
-                filter_problem_accuracy=filter_problem_accuracy,
-                filter_sample_accuracy=filter_sample_accuracy,
-                extra=extra,
-            )
-
-        # Save using result handler
-        result_handler = self.config.result_handler.create_result_handler()
-        await result_handler.save(result, output_dir / "evaluation_results.json")
+                # Save per-objective results
+                result_handler = self.config.result_handler.create_result_handler()
+                for obj_name in evals.objective_names:
+                    result = EvaluationResult(
+                        timestamp=datetime.now().isoformat(),
+                        placement=resolved.placement_names,
+                        placement_indices=resolved.placement_indices,
+                        objective_name=obj_name,
+                        score=obj_scores[obj_name],
+                    )
+                    result_path = objective_result_path(
+                        output_dir, "evaluation_results", obj_name
+                    )
+                    await result_handler.save(result, result_path)
 
         logger.info("Evaluation complete!")
 
@@ -151,7 +95,14 @@ class EvaluateCommandConfig(BaseCommandConfig):
 
     command: Literal["evaluate"] = "evaluate"
 
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    backend: BackendConfig | None = Field(
+        default=None,
+        description="Backend configuration. None for mock evaluators.",
+    )
+
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single or multiple with aggregation)"
+    )
 
     placement: list[str] | None = Field(
         description="Layer placement as list of mixer names. Extended cyclically "

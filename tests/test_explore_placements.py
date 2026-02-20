@@ -27,6 +27,7 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -76,8 +77,9 @@ def _make_small_problem(
             mixer_costs=mixer_costs,
         ),
         cost_budget=num_layers * 0.8,  # Budget between min and max
+        cost_floor=None,
     )
-    return CostConstrainedProblem(evaluator=evaluator, config=config)
+    return CostConstrainedProblem(evaluators=wrap_evaluator(evaluator), config=config, objective_name="weighted_average")
 
 
 # =============================================================================
@@ -188,6 +190,7 @@ class TestHelpers:
             assignments=[("m0", "m1")],
             scores=[0.5],
             allocations=[{"m0": 1, "m1": 1}],
+            objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
             num_samples=1,
@@ -203,6 +206,7 @@ class TestHelpers:
         assert loaded.num_samples == 1
         assert loaded.assignments == [("m0", "m1")]
         assert loaded.final_rho == 0.3
+        assert loaded.objective_name == "weighted_average"
 
     def test_jsonl_roundtrip(self, tmp_path: Path) -> None:
         """Write and read progress JSONL."""
@@ -296,6 +300,7 @@ class TestExploreIntegration:
             assignments=[("m0", "m1"), ("m1", "m0")],
             scores=[0.5, 0.7],
             allocations=[{"m0": 1, "m1": 1}, {"m0": 1, "m1": 1}],
+            objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
             num_samples=2,
@@ -312,4 +317,5 @@ class TestExploreIntegration:
         assert loaded.num_samples == 2
         assert loaded.assignments == [("m0", "m1"), ("m1", "m0")]
         assert loaded.scores == [0.5, 0.7]
+        assert loaded.objective_name == "weighted_average"
         assert loaded.termination_reason == "max_samples"

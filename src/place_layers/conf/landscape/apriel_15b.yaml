@@ -1,0 +1,9 @@
+# @package landscape
+#
+# Shared landscape configuration for Apriel-15B.
+# Used by both placement_landscape and validate_landscape commands.
+
+cost_model: ${cost_model}
+explore_output_dir: ???
+seed: 42
+num_cost_bins: 80

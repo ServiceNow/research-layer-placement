@@ -75,11 +75,8 @@ class AnnealingSearch(AllocationIterationSearch):
         """
         Search for the best assignment within a fixed allocation using simulated annealing.
 
-        Uses multiple random restarts, each running a SA trajectory with
-        ruin-and-recreate moves and adaptive reheating.
-
         Returns:
-            List containing a single BeamEntry result (SA only tracks best),
+            List containing a single BeamEntry (SA only tracks best),
             or empty list if no valid assignments exist.
         """
         from place_layers.annealing.events import AnnealingCompletedEvent
@@ -111,15 +108,14 @@ class AnnealingSearch(AllocationIterationSearch):
                 for observer in self.observers:
                     observer.on_annealing_completed(event)
 
-            return [
-                BeamEntry(
-                    assignments=tuple(assignments),
-                    allocation=allocation,
-                    score=score,
-                )
-            ]
+            entry = BeamEntry(
+                assignments=tuple(assignments),
+                allocation=allocation,
+                score=score,
+            )
+            return [entry]
 
-        # Score function: evaluate + count + notify
+        # Score function: evaluate + count + notify (returns objective score for SA)
         async def score_fn(assignment: tuple[str, ...]) -> float:
             placement = LayerPlacement(assignments=assignment)
             score = await problem.evaluate(placement)

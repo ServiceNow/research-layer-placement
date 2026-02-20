@@ -36,12 +36,14 @@ from place_layers.annealing.moves import (
     random_assignment,
     sample_perturbation_size,
 )
-from place_layers.evaluator import EvaluatorConfig
+from place_layers.backend import BackendConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
+from place_layers.landscape.config import objective_result_path
 from place_layers.result_handler import ResultHandlerConfig
 
 logger = logging.getLogger(__name__)
@@ -106,23 +108,28 @@ class CalibrateSACommand(BaseCommand):
             self.config.contiguous_ruin_probability,
         )
 
-        # Create evaluator with proper context management
-        async with self.config.evaluator.create_evaluator(
-            output_dir=output_dir
-        ) as evaluator:
-            result = await self._run_calibration(evaluator)
+        from contextlib import nullcontext
 
-        if result is not None:
-            # Save using result handler
-            ext = self.config.result_handler.handler_type
-            result_handler = self.config.result_handler.create_result_handler()
-            output_path = output_dir / f"calibration_results.{ext}"
-            await result_handler.save(result, output_path)
-            logger.info("Calibration results saved to %s", output_path)
+        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        async with backend_cm as backend:
+            async with self.config.evaluators.create_evaluators(
+                output_dir=output_dir, backend=backend
+            ) as evals:
+                for obj_name in evals.objective_names:
+                    result = await self._run_calibration(evals, obj_name)
 
-    async def _run_calibration(self, evaluator) -> None | CalibrationResult:
-        """Run calibration with evaluator."""
-        problem = self.config.problem.create_problem(evaluator)
+                    if result is not None:
+                        result_handler = self.config.result_handler.create_result_handler()
+                        output_path = objective_result_path(
+                            output_dir, "calibration_results", obj_name
+                        )
+                        await result_handler.save(result, output_path)
+                        logger.info("Calibration results saved to %s", output_path)
+
+    async def _run_calibration(self, evals, objective_name: str) -> None | CalibrationResult:
+        """Run calibration with evaluators for a single objective."""
+        logger.info("=== Calibrating objective: %s ===", objective_name)
+        problem = self.config.problem.create_problem(evals, objective_name=objective_name)
 
         if not isinstance(problem, CostConstrainedProblem):
             raise ValueError(
@@ -142,7 +149,7 @@ class CalibrateSACommand(BaseCommand):
         cost_budget = problem_config.cost_budget
 
         # Find a representative allocation at the cost bound
-        num_layers = evaluator.num_layers
+        num_layers = problem.num_layers
         allocation = cost_model.allocation_at_cost_bound(
             num_layers, cost_budget, from_above=True
         )
@@ -349,7 +356,11 @@ class CalibrateSACommandConfig(BaseCommandConfig):
     command: Literal["calibrate_sa"] = "calibrate_sa"
 
     # Problem setup
-    evaluator: EvaluatorConfig = Field(description="Evaluator configuration")
+    backend: BackendConfig | None = Field(
+        default=None,
+        description="Backend configuration. None for mock evaluators.",
+    )
+    evaluators: EvaluatorsConfig = Field(description="Evaluator configuration")
     problem: ProblemConfig = Field(description="Problem configuration")
     result_handler: ResultHandlerConfig = Field(
         description="Result handler configuration",

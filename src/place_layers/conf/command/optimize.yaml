@@ -2,6 +2,7 @@
 
 defaults:
   - /observers: default
+  - /objective@evaluators.objective: weighted_average
   - _self_
 
 command: optimize

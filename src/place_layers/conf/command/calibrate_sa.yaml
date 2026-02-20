@@ -18,6 +18,7 @@
 
 defaults:
   - /result_handler: yaml
+  - /objective@evaluators.objective: weighted_average
 
 command: calibrate_sa
 
@@ -32,3 +33,4 @@ seed: 42                # Random seed for reproducibility
 initial_temperature_guess: 4.4  # Guess for k-distribution; re-run if result is far off
 max_ruin_fraction: 0.25         # Max fraction of layers ruined at full temperature
 contiguous_ruin_probability: 0.3  # Probability of contiguous vs scattered ruin
+

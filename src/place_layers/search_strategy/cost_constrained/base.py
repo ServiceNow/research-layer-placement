@@ -25,6 +25,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
+    from place_layers.evaluator.evaluators import Evaluators
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -108,7 +109,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.num_layers
         num_mixers = cost_model.num_mixers
         mixer_names = cost_model.phase_order
 
@@ -135,6 +136,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         if dry_run:
             return None
 
+        cost_floor = config.cost_floor
+
         match config:
             case MaxPerformanceProblemConfig(cost_budget=budget):
                 return await self._search_max_performance(
@@ -142,6 +145,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     cost_model=cost_model,
                     num_layers=num_layers,
                     cost_budget=budget,
+                    cost_floor=cost_floor,
                 )
             case MinCostProblemConfig(performance_target=target):
                 return await self._search_min_cost(
@@ -149,6 +153,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     cost_model=cost_model,
                     num_layers=num_layers,
                     performance_target=target,
+                    cost_floor=cost_floor,
                 )
             case _:
                 raise TypeError(f"Unexpected config type: {type(config)}")
@@ -187,6 +192,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         ...
@@ -198,6 +204,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
         ...
@@ -247,7 +254,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
-        logger.info(f"Best score: {best_entry.score:.4f}")
+        logger.info(f"Best score: {best_entry.score}")
         logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")
@@ -285,3 +292,5 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info(f"Total layers: {num_layers}")
         logger.info(f"Number of mixer types: {num_mixers}")
         logger.info(f"Mode: {config.problem_type}")
+        if config.cost_floor is not None:
+            logger.info(f"Cost floor: {config.cost_floor}")

@@ -44,7 +44,7 @@
 # Can be used as a standalone evaluator config group for composability.
 #
 # Example usage:
-#   python -m place_layers +command=precompute_traces +evaluator=trace_precompute \
+#   python -m place_layers +command=precompute_traces +evaluator@evaluators.configs.gsm8k=trace_precompute \
 #       +backend=vllm +task=gsm8k +generation=sampling
 
 defaults:

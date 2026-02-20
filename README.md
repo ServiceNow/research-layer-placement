@@ -4,9 +4,9 @@ A toolkit for evaluating and optimizing layer placements in supernet models (mod
 
 ## Installation
 
-> ⚠️ **Environment setup is a work in progress.** Team setup for Superpod is in progress.
+> **Environment setup is a work in progress.** Team setup for Superpod is in progress.
 
-**For developers with Docker access:** Use the devcontainer (`.devcontainer/`) - this is the reference setup.
+**For developers with Docker access:** Use the devcontainer (`.devcontainer/`) - this is the reference setup. All dependencies are pre-installed.
 
 **Required dependencies** (CUDA kernel builds for mixer types):
 ```bash
@@ -29,372 +29,227 @@ See `.devcontainer/Dockerfile` for exact versions, base images, and CUDA archite
 
 ## Quick Start
 
-Evaluate a checkpoint on GSM8K with all-attention placement:
-
+**1. Serve the model** (one GPU):
 ```bash
-python -m place_layers +experiments=eval_gsm8k_attention
+python -m place_layers +experiments=serve_vllm +model=apriel2_1p6_v2_annealed_0204
 ```
 
-## Backend Support
+**2. Evaluate** (separate terminal):
+```bash
+python -m place_layers +experiments=eval_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 +placement=all-attention
+```
+
+## Deployment
+
+### Backend Support
 
 The key differentiator between backends is **placement switching** - the ability to dynamically change which mixer each layer uses. This is required for supernet evaluation and optimization.
 
 | Backend | Placement Switching | Best For |
 |---------|---------------------|----------|
-| **Transformers** | ✅ Yes | Single-GPU supernet evaluation/optimization |
-| **REST** | ✅ Yes | Multi-GPU distributed supernet evaluation/optimization |
-| **vLLM** | ❌ No | Fast trace generation from standard (non-supernet) teachers |
+| **Transformers** | Yes | Single-GPU supernet evaluation/optimization |
+| **Local vLLM** | Yes | Fast single-GPU supernet evaluation (Apriel2 models) |
+| **Remote vLLM** | No | Fast trace generation from standard (non-supernet) teachers |
+| **REST** | Yes | Multi-GPU distributed supernet evaluation/optimization |
 
-**Why vLLM doesn't support placement switching:**
+**Local vs. Remote vLLM:**
 
-vLLM is a standard inference server - it doesn't know about supernet architecture. The model runs with its default/compiled placement. This is fine for:
-- Generating traces from standard teachers (e.g., `Qwen/Qwen2-0.5B-Instruct`)
-- Evaluating non-supernet models
+- **Local vLLM** (`+backend=local_vllm`) runs an in-process vLLM engine and uses `collective_rpc` for placement control. It supports supernet evaluation and optimization with Apriel2 models. It can also be served (`+experiments=serve_vllm`) for multi-GPU setups.
+- **Remote vLLM** (`+backend=vllm`) is a standard HTTP client to an external vLLM server. It cannot reach engine internals for placement switching, so it is limited to trace generation from non-supernet teachers and evaluating standard models.
 
-But it cannot be used for supernet optimization or comparing different placements.
+### Architecture
 
-## Commands
+```
+┌──────────────────────────────────────────────────────────┐
+│           Client (evaluate, explore_placements, ...)     │
+│           Uses: backend=rest                             │
+│           Round-robins requests across servers           │
+└──────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│  GPU 0:8080  │      │  GPU 1:8081  │      │  GPU 2:8082  │
+│  serve_vllm  │      │  serve_vllm  │      │  serve_vllm  │
+│  local_vllm  │      │  local_vllm  │      │  local_vllm  │
+└──────────────┘      └──────────────┘      └──────────────┘
+```
 
-### 1. Evaluate (`command=evaluate`)
+### Starting Servers
 
-#### Generative Evaluation
+Start one server per GPU using the `serve_vllm` experiment:
 
-Generate completions and check correctness. Accurate but slow.
-
-**Single placement:**
 ```bash
-python -m place_layers \
-    +command=evaluate \
-    +evaluator=generative \
-    +backend=transformers \
-    +model=apriel2_0_5b_dev \
-    +task=gsm8k \
-    +generation=greedy \
-    +placement=all_attention
+for GPU in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$GPU python -m place_layers \
+      +experiments=serve_vllm +model=apriel2_1p6_v2_annealed_0204 \
+      port=$((8080+GPU)) &
+done
 ```
 
-**Sweep over placements:**
+Then point any client command at the servers:
+
 ```bash
-python -m place_layers \
-    +command=evaluate \
-    +evaluator=generative \
-    +backend=transformers \
-    +model=apriel2_0_5b_dev \
-    +task=gsm8k \
-    +generation=greedy \
-    +placement=all_attention,every_2nd_gdn,every_4th_gdn \
-    --multirun
+python -m place_layers +experiments=eval_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 +placement=all-attention \
+    'backend.servers=["http://localhost:8080","http://localhost:8081","http://localhost:8082","http://localhost:8083"]'
 ```
 
-**Pre-configured experiments:**
+### REST Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `backend.servers` | `["http://localhost:8080"]` | List of server URLs |
+| `backend.max_concurrent_per_server` | 8 | Max parallel requests per server |
+| `backend.timeout_seconds` | 300 | Request timeout |
+
+For Kubernetes deployments with predictable DNS naming, use `+backend=rest_dns` with `DNS_PREFIX` and `NUM_SERVERS` environment variables.
+
+## Landscape Pipeline
+
+The primary workflow for mapping the cost-vs-quality Pareto frontier. Three steps: **explore** (build surrogate dataset) → **validate** (confirm surrogate accuracy) → **visualize** (render landscape plot).
+
+### Step 1: Explore Placements
+
+Adaptively sample placements using a surrogate model. Uses `uniform_apriel_15b` cost model for unconstrained exploration (all allocations sampled equally). Terminates when the surrogate's cross-validated Spearman rho plateaus.
+
 ```bash
-# Apriel2-0.5B-dev with all-attention
-python -m place_layers +experiments=eval_gsm8k_attention
-
-# Apriel2-0.5B-dev with GDN at every 4th layer
-python -m place_layers +experiments=eval_gsm8k_every4th_gdn
-
-# Qwen2-0.5B-Instruct baseline (non-supernet)
-python -m place_layers +experiments=eval_qwen2_gsm8k
+python -m place_layers +experiments=explore_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204
 ```
 
-**Pre-configured placements:**
-- `all_attention` - baseline, all attention layers
-- `every_2nd_gdn` - GDN at layers 1,3,5,... (12 GDN layers for 24-layer model)
-- `every_3rd_gdn` - GDN at layers 2,5,8,... (8 GDN layers)
-- `every_4th_gdn` - GDN at layers 3,7,11,... (6 GDN layers)
-- `every_2nd_kda`, `every_3rd_kda`, `every_4th_kda` - KDA variants
+Key parameters (override on CLI):
 
-#### IS Evaluation
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_samples` | 10000 | Hard cap on total evaluations |
+| `target_rank_correlation` | 0.95 | Stop when Ridge CV Spearman rho reaches this |
+| `plateau_patience` | 3 | Batches without improvement before stopping |
 
-Fast evaluation using importance sampling. Requires precomputed traces (see [Precompute Traces](#2-precompute-traces-commandprecompute_traces) below).
+Output: `exploration_progress.jsonl` (incremental), `exploration_results.json` (final).
 
-**Step 1:** Precompute traces (once) — see [Section 2](#2-precompute-traces-commandprecompute_traces)
+### Step 2: Validate Landscape
 
-**Step 2:** Run IS evaluation (fast, forward passes only):
+Run per-band real evaluation to confirm surrogate accuracy. Uses `linear_apriel_15b` cost model (baked into the experiment config) since validation needs real cost bands.
+
 ```bash
-TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is
-
-# Compare placements quickly
-TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is \
-    placement=all_attention,every_4th_gdn --multirun
+python -m place_layers +experiments=validate_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 \
+    landscape.exploration_dataset_path=exploration_results.json
 ```
 
-**Multi-GPU IS evaluation:**
+Output: `validation_results.json` with per-band surrogate vs. real scores and Spearman rho summary.
+
+### Step 3: Visualize Landscape
+
+Fit a Ridge surrogate, solve per-band DP-optimal placements via MRF Viterbi, and render a density plot with layermap.
+
 ```bash
-# Start servers (one per GPU)
-CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
-CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
+# Surrogate-only preview
+python -m place_layers +experiments=placement_landscape \
+    landscape.exploration_dataset_path=exploration_results.json
 
-# Run IS evaluation over REST
-TRACE_PATH=/path/to/traces python -m place_layers +experiments=eval_gsm8k_is \
-    backend=rest 'backend.servers=["http://localhost:8080","http://localhost:8081"]'
+# With validation overlay (dashed surrogate line + solid validated line)
+python -m place_layers +experiments=placement_landscape \
+    landscape.exploration_dataset_path=exploration_results.json \
+    placement_landscape.validation_results_path=validation_results.json
 ```
 
-IS evaluation reports ESS (effective sample size) alongside the score estimate.
+Output: `placement_landscape.pdf`, `placement_landscape.png`, `landscape_data.json`.
 
-### 2. Precompute Traces (`command=precompute_traces`)
+## Cost-Constrained Optimization
 
-Generate teacher completions with log-probabilities. Required for IS evaluation and placement optimization.
+When you need a single optimal placement for a specific cost budget, the optimizer builds on exploration data from the landscape pipeline. You've already mapped the space with `explore_placements` — now point the optimizer at a target budget and let the Viterbi surrogate search find the best placement.
 
-**With vLLM (faster):**
+### Running Optimization
+
 ```bash
-# Start server
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2-0.5B-Instruct \
-    --port 8000 \
-    --max-model-len 4096 \
-    --gpu-memory-utilization 0.8
+# Step 1: Explore (reuse exploration_results.json from landscape pipeline, or run fresh)
+python -m place_layers +experiments=explore_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204
 
-# Generate traces
-VLLM_MODEL="Qwen/Qwen2-0.5B-Instruct" python -m place_layers \
-    command=precompute_traces \
-    backend=vllm \
-    task=gsm8k \
-    generation=sampling
+# Step 2: Find optimal placement at a specific cost budget
+python -m place_layers +command=optimize \
+    +evaluator=generative +backend=rest +task=gsm8k +generation=greedy \
+    +model=apriel2_1p6_v2_annealed_0204 \
+    +cost_model=linear_apriel_15b +problem=cost_max_perf_apriel_15b_v2 \
+    +search_strategy=viterbi_surrogate +result_handler=json \
+    search_strategy.exploration_dataset_path=exploration_results.json
 ```
 
-**With Transformers (slower but consistent):**
-```bash
-python -m place_layers \
-    command=precompute_traces \
-    backend=transformers \
-    model=qwen2_0_5b \
-    task=gsm8k \
-    generation=sampling
-```
+### Cost Model
 
-> **Note:** Using Transformers for trace generation ensures numerical consistency between teacher and student log-probabilities, which may improve IS sample efficiency. vLLM is significantly faster but may introduce minor log-prob discrepancies.
+The cost model assumes per-token latency is additive across layers. Normalize so FA = 1.0.
 
-**Output:** `validation.jsonl` with traces containing `teacher_log_prob` for each completion.
-
-### 3. Placement Optimization (`command=optimize`)
-
-Find optimal placements within a latency budget using cost-constrained search with IS evaluation.
-
-#### Step 1: Precompute Traces
-
-See [Section 2](#2-precompute-traces-commandprecompute_traces) above.
-
-#### Step 2: Define Cost Model
-
-Derive mixer costs by fitting a linear model to microbenchmark data.
-
-**1. Run microbenchmarks:**
-- Sample many mixer allocations (e.g., 10 FA + 20 SWA + 18 GDN)
-- Placement order doesn't affect latency, only counts matter
-- Measure tokens/s for each allocation
-- Use sufficiently long context (e.g., 16k tokens) to capture realistic attention costs
-- Can use an untrained model (latency depends on architecture, not weights)
-
-**2. Fit linear model to inverse throughput:**
-
-The cost model assumes per-token latency is additive across layers:
-```
-latency ∝ Σ (count_i × cost_i)
-```
-Fit to 1/throughput (not throughput directly) since latency is additive but throughput is not. Normalize so FA = 1.0.
-
-Example fitted values for Apriel 15B:
+Fitted values for Apriel 15B:
 
 | Mixer | Cost | Approx. Speedup |
 |-------|------|-----------------|
-| FA | 1.0 | 1.0× (baseline) |
-| SWA | 0.156 | ~6× |
-| GDN | 0.09 | ~11× |
-| KDA | 0.11 | ~9× |
+| FA | 1.0 | 1.0x (baseline) |
+| SWA | 0.156 | ~6x |
+| KDA | 0.11 | ~9x |
+| GDN | 0.09 | ~11x |
 
-**3. Set cost budget:**
+Budget = num_layers / target_speedup. Example: 48 layers, 7.5x target -> budget = 6.4.
 
-Budget = baseline_cost / target_speedup = num_layers / target_speedup (when FA=1.0)
-- Example: 48 layers, 7.5× target → budget = 48 / 7.5 = 6.4
-
-**4. Create problem config** (`conf/problem/cost_mymodel.yaml`):
-```yaml
-# @package problem
-problem_type: cost_max_performance
-
-cost_model:
-  cost_model_type: linear
-  mixer_costs: [1.0, 0.156, 0.09, 0.11]  # [FA, SWA, GDN, KDA]
-
-cost_budget: 6.4  # 48 layers / 7.5x target
-```
-
-See `conf/problem/cost_max_perf_apriel_15b.yaml` for a complete example.
-
-#### Step 3: Optimize
-
-Run cost-constrained optimization using IS evaluation:
-
-```bash
-python -m place_layers \
-    command=optimize \
-    evaluator=importance_weighted \
-    problem=cost_mymodel \
-    search_strategy=cost_constrained_hierarchical \
-    result_handler=json
-```
-
-The optimizer uses a two-level hierarchical search:
-
-1. **Outer loop**: Iterates over **allocations** (mixer counts) in cost order
-2. **Inner loop**: For each allocation, finds the best **layer assignment** using beam search
-3. Returns the best placement found within the cost budget
-
-**Key insight**: Cost depends only on allocation (how many layers use each mixer), but performance depends on assignment (which specific layers use which mixer). This decomposition makes the search tractable.
+See `conf/problem/cost_max_perf_apriel_15b_v2.yaml` for a complete problem config.
 
 <details>
-<summary><strong>How the algorithm works (click to expand)</strong></summary>
+<summary><strong>Algorithm details (click to expand)</strong></summary>
 
-#### Algorithm Overview
+The optimizer fits a Ridge surrogate to the exploration dataset, then uses the Viterbi algorithm to find globally optimal placements — no greedy phases, no beam width, no approximation.
 
-```
-OUTER LOOP: for each allocation (expensive → cheap)              Budget ≤ 4.0
-│
-├─► Allocation (2,2,2) cost=3.6
-│   │
-│   │   INNER LOOP: hierarchical beam search
-│   ├──► Phase 0: select 2 layers for mixer 0  →  {3,1}
-│   │         ↓ lock in
-│   ├──► Phase 1: select 2 layers for mixer 1  →  {0,4}
-│   │         ↓ lock in
-│   └──► Phase 2: assign remaining to mixer 2  →  {2,5}
-│             ↓
-│         [1,0,2,0,1,2]  score=0.85                             ← best
-│
-├─► Allocation (1,3,2) cost=3.4  →  beam search  →  score=0.81
-├─► Allocation (1,2,3) cost=3.1  →  beam search  →  score=0.78
-│
-└─► ... stop after max_allocations
+1. **Surrogate as MRF**: The Ridge surrogate learned during exploration decomposes into chain-structured Markov random field (MRF) potentials — unary (how good is mixer X at layer Y), pairwise (how well do adjacent mixer choices interact), and optionally triplet terms. Each Ridge coefficient maps directly to a potential.
 
-Return: best scoring assignment found
-```
+2. **Exact DP**: Because layers form a chain, the Viterbi algorithm finds the globally optimal placement in O(N·K²) time. For each feasible allocation (mixer count that satisfies the cost budget), DP finds THE best layer assignment.
 
-The **outer loop** enumerates allocations from expensive to cheap, skipping any above the cost budget. The **inner loop** (hierarchical beam search) finds the best layer assignment for each allocation — one phase per mixer, with decisions cascading down.
+3. **Bootstrap ensemble**: The surrogate maintains 50 bootstrap Ridge models. Each has slightly different coefficients, yielding slightly different MRF potentials and slightly different Viterbi optima. Pooling candidates from all bootstrap models gives automatic exploration/exploitation: when the surrogate is uncertain, bootstrap models disagree and propose diverse candidates; when confident, they converge.
 
----
+4. **Expected Improvement**: From the pooled candidates, EI selects the most promising for real evaluation — balancing predicted quality (exploit) with surrogate uncertainty (explore).
 
-#### Worked Example
-
-Tracing the inner loop for allocation `(2,2,2)` with `beam_width=2`.
-
-**Notation:**
-- **Selection** `{3,1}` — layers chosen for the current mixer
-- **Assignment** `[1,0,2,0,1,2]` — complete layer→mixer mapping (position=layer, value=mixer)
-
-To evaluate a selection, undecided layers get a **fallback mixer**, creating a complete assignment we can score.
-
----
-
-#### Phase 0: Find Best 2 Layers for Mixer 0
-
-Fallback mixer = 1 (undecided layers temporarily assigned here).
-
-**Step 1: Score each layer individually**
-
-| Selection | Assignment | Allocation | Matches? | Score |
-|-----------|------------|------------|----------|-------|
-| {0} | `[0,1,1,1,1,1]` | (1, 5, 0) | ❌ | 0.68 |
-| {1} | `[1,0,1,1,1,1]` | (1, 5, 0) | ❌ | 0.71 |
-| {2} | `[1,1,0,1,1,1]` | (1, 5, 0) | ❌ | 0.65 |
-| {3} | `[1,1,1,0,1,1]` | (1, 5, 0) | ❌ | **0.73** ← best |
-| {4} | `[1,1,1,1,0,1]` | (1, 5, 0) | ❌ | 0.70 |
-| {5} | `[1,1,1,1,1,0]` | (1, 5, 0) | ❌ | 0.66 |
-
-Top 2 selections initialize the beam: `{3}` and `{1}`.
-
-**Step 2: Grow beam to size 2**
-
-Expand each beam entry by adding one more layer:
-
-| Selection | Assignment | Allocation | Matches? | Score |
-|-----------|------------|------------|----------|-------|
-| {3, 1} | `[1,0,1,0,1,1]` | (2, 4, 0) | ❌ | **0.79** ← best |
-| {3, 4} | `[1,1,1,0,0,1]` | (2, 4, 0) | ❌ | 0.77 |
-| {3, 0} | `[0,1,1,0,1,1]` | (2, 4, 0) | ❌ | 0.75 |
-| {1, 4} | `[1,0,1,1,0,1]` | (2, 4, 0) | ❌ | 0.76 |
-| ... | | | | |
-
-Still no match to `(2, 2, 2)` — allocation is `(2, 4, 0)`. But we've found the best pair.
-
-**Phase 0 result:** layers **{3, 1}** → mixer 0 (locked in)
-
----
-
-#### Phase 1: Find Best 2 Layers for Mixer 1
-
-**Fixed from Phase 0:** layers 1 and 3 → mixer 0
-
-Remaining layers: {0, 2, 4, 5}. Fallback shifts to mixer 2.
-
-**Step 1: Score each remaining layer**
-
-| Selection | Assignment | Allocation | Matches? | Score |
-|-----------|------------|------------|----------|-------|
-| {0} | `[1,0,2,0,2,2]` | (2, 1, 3) | ❌ | 0.81 |
-| {2} | `[2,0,1,0,2,2]` | (2, 1, 3) | ❌ | 0.78 |
-| {4} | `[2,0,2,0,1,2]` | (2, 1, 3) | ❌ | **0.83** ← best |
-| {5} | `[2,0,2,0,2,1]` | (2, 1, 3) | ❌ | 0.80 |
-
-Allocation `(2, 1, 3)` — still doesn't match target `(2, 2, 2)`.
-
-**Step 2: Grow beam to size 2**
-
-| Selection | Assignment | Allocation | Matches? | Score |
-|-----------|------------|------------|----------|-------|
-| {0, 4} | `[1,0,2,0,1,2]` | **(2, 2, 2)** | ✅ | **0.86** |
-| {4, 5} | `[2,0,2,0,1,1]` | (2, 2, 2) | ✅ | 0.85 |
-| {2, 4} | `[2,0,1,0,1,2]` | (2, 2, 2) | ✅ | 0.84 |
-| ... | | | | |
-
-**Now** the allocations match! When the selection reaches target size, we get valid assignments.
-
-**Phase 1 result:** layers **{0, 4}** → mixer 1 (locked in)
-
----
-
-#### Phase 2: Remainder
-
-**Fixed from Phase 0:** layers 1 and 3 → mixer 0
-**Fixed from Phase 1:** layers 0 and 4 → mixer 1
-
-Remaining layers {2, 5} are assigned to the last mixer (no search needed).
-
-| Selection | Assignment | Allocation | Matches? | Score |
-|-----------|------------|------------|----------|-------|
-| {2, 5} | `[1,0,2,0,1,2]` | **(2, 2, 2)** | ✅ | **0.86** |
-
-**Phase 2 result:** layers **{2, 5}** → mixer 2
-
----
-
-#### Final Result
+5. **Iterative refinement**: Each round evaluates ~20 candidates with the real model, refits the surrogate, and repeats. The surrogate sharpens exactly where it matters (near the optimum). Typically converges in 2-4 rounds.
 
 ```
-Layer:      0    1    2    3    4    5
-Mixer:      1    0    2    0    1    2
-            ─────────────────────────────
-Assignment: [1,   0,   2,   0,   1,   2]
-Allocation: (2, 2, 2) ✅
+exploration_results.json (from explore_placements)
+        │
+        ▼
+  ┌─────────────┐
+  │  Fit Ridge  │  50 bootstrap resamples
+  │  surrogate  │  → 50 sets of MRF potentials
+  └──────┬──────┘
+         │
+    ┌────┴────┐
+    ▼         ▼         ...
+  Viterbi   Viterbi          (one per bootstrap model)
+  DP #1     DP #2            each finds exact top-N placements
+    │         │               within feasible allocations
+    └────┬────┘
+         ▼
+  Pool & deduplicate candidates
+         │
+         ▼
+  Score with Expected Improvement (μ + uncertainty)
+         │
+         ▼
+  Evaluate top-K with real model     ← only ~20 real evals per round
+         │
+         ▼
+  Refit surrogate with new data
+         │
+         ▼
+  Repeat (2-4 rounds)
 ```
-
----
 
 #### Why This Design?
 
 | Property | Benefit |
 |----------|---------|
-| **Outer loop by cost** | Efficiently navigate cost-performance frontier |
-| **Phase-by-phase** | Reduces search space exponentially |
-| **Proxy scores** | Enable evaluation before full assignment is known |
-| **Beam search** | Explores multiple promising paths, not purely greedy |
-| **Deterministic** | Reproducible results, no random seed sensitivity |
-
-| Tradeoff | |
-|----------|---------|
-| **Proxy scores** | Intermediate evaluations don't match target allocation — may mislead in some cases |
-| **Greedy phases** | Cannot reconsider earlier phase decisions |
+| **Exact DP** | Globally optimal placement per allocation — no greedy approximation |
+| **Layer interactions** | Pairwise/triplet MRF potentials capture how mixer choices at adjacent layers affect each other |
+| **Bootstrap diversity** | Automatic exploration/exploitation — no tuning required |
+| **Expected Improvement** | Directs real evaluations where the surrogate is most uncertain |
+| **Data reuse** | Builds on exploration dataset — no wasted evaluations |
 
 </details>
 
@@ -402,181 +257,79 @@ Allocation: (2, 2, 2) ✅
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `search_strategy.beam_width` | 5 | Wider beam explores more candidates per phase |
-| `search_strategy.max_allocations` | 50 | More allocations = better cost-performance coverage |
+| `search_strategy.num_rounds` | 4 | Refinement iterations (2-4 usually sufficient) |
+| `search_strategy.evals_per_round` | 500 | Real evaluations per round |
+| `search_strategy.candidates_per_model` | 200 | Top-N placements from each bootstrap Viterbi solve |
+| `search_strategy.ei_xi` | 0.01 | EI exploration parameter (higher = more exploration) |
 
-**Evaluation count:**
+### Validate Winning Placement
 
-For N layers, M mixers, beam_width k, A allocations, with n = N/M layers per mixer:
-
-```
-Raw candidates (before deduplication):
-
-  Evals_raw = A × { Σᵢ [Rᵢ × (1 + k(n-1)) - k×n(n-1)/2] + 1 }
-
-  where Rᵢ = N - i×n (remaining layers at phase i), summed over i = 0 to M-2
-
-Deduplication savings:
-
-  Fixed (step 1, always):    D_fixed = A × (M-1) × k(k-1)/2
-  Variable (steps 2+):       D_var ∈ [0, A × (M-1) × (n-2) × k(k-1)/2]
-
-Actual evals:
-
-  Evals ∈ [Evals_raw - D_fixed - D_var_max, Evals_raw - D_fixed]
-```
-
-**Why bounds, not exact?** Deduplication occurs when beam entries share s-1 layers. At step 1, beam entries are singletons, so `{Li}+Lj` always collides with `{Lj}+Li` → **step-1 dedup is deterministic**. At steps 2+, whether entries share layers depends on which candidates scored highest → **varies with evaluator scores**.
-
-The bounds are tight (~6% apart). Early stopping typically reduces evals by ~70%, but this is empirical (depends on score landscape, not computable a priori).
-
-Example (N=48, M=4, n=12):
-
-| Setting | Per Alloc | Total | With Early Stop | Use Case |
-|---------|-----------|-------|-----------------|----------|
-| A=5, k=1 | 1,099 | 5,495 | ~1,600 | Quick test |
-| A=5, k=5 | [4,729 – 5,029] | [23k – 25k] | ~7,500 | Quick, wide beam |
-| A=5, k=8 | [7,105 – 7,945] | [35k – 39k] | ~12k | Quick, widest beam |
-| A=50, k=5 | [4,729 – 5,029] | [236k – 251k] | ~75k | Production |
-| A=50, k=8 | [7,105 – 7,945] | [355k – 397k] | ~120k | Production, wide beam |
-| A=100, k=8 | [7,105 – 7,945] | [710k – 795k] | ~240k | Thorough |
-
-Note: k=1 has no deduplication (single beam path). For k>1, range reflects [max dedup, min dedup].
-
-**Cross-phase beam (c = `cross_phase_beam_width`):** Above formulas assume c=1 (default). With c>1, phases 1 through M-2 run c× (once per candidate path), so multiply those phases by c. Phase 0 is unchanged (always starts with 1 path).
-
-#### Step 4: Validate
-
-Evaluate the winning placements with generative evaluation:
+Evaluate the winning placement with generative evaluation:
 
 ```bash
-python -m place_layers \
-    command=evaluate \
-    evaluator=generative \
-    placement='[attention, gdn, attention, ...]'  # winning placement
+python -m place_layers +experiments=eval_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 \
+    placement='[attention, gdn, attention, ...]'
 ```
 
-## Multi-GPU Parallelization
+## Evaluation Commands
 
-For large-scale evaluation or trace generation, you can distribute work across multiple GPUs using the REST server/client architecture.
+### Generative Evaluation
 
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│              Client (evaluate, precompute_traces)           │
-│              Uses: backend=rest                             │
-│              Round-robins requests across servers           │
-└─────────────────────────────────────────────────────────────┘
-                              │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│  GPU 0:8080  │      │  GPU 1:8081  │      │  GPU 2:8082  │
-│  serve cmd   │      │  serve cmd   │      │  serve cmd   │
-│  Transformers│      │  Transformers│      │  Transformers│
-└──────────────┘      └──────────────┘      └──────────────┘
-```
-
-### Step 1: Start Servers
-
-Start one server per GPU, each on a different port:
+Generate completions and check correctness. Accurate but slow.
 
 ```bash
-# Terminal 1 (GPU 0)
-CUDA_VISIBLE_DEVICES=0 python -m place_layers \
-    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8080
+# Single placement
+python -m place_layers +experiments=eval_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 +placement=all-attention
 
-# Terminal 2 (GPU 1)
-CUDA_VISIBLE_DEVICES=1 python -m place_layers \
-    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8081
-
-# Terminal 3 (GPU 2)
-CUDA_VISIBLE_DEVICES=2 python -m place_layers \
-    +command=serve +backend=transformers +model=apriel2_0_5b_dev port=8082
+# Sweep over placements (multirun)
+python -m place_layers +experiments=eval_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 \
+    +placement=all-attention,every2nd-gdn,every4th-gdn \
+    --multirun
 ```
 
-Each server loads the model and exposes it via REST API. Servers are stateless for placement - the client includes the desired placement in each request.
+### Likelihood Evaluation
 
-### Step 2: Run Commands with REST Backend
+Multiple-choice scoring (MMLU). Faster than generative - scores each answer choice without generation.
 
-Use `backend=rest` with any command that supports backends:
-
-**Generative Evaluation (distributed):**
 ```bash
-python -m place_layers \
-    +command=evaluate \
-    +evaluator=generative \
-    +backend=rest \
-    'backend.servers=["http://localhost:8080","http://localhost:8081","http://localhost:8082"]' \
-    +model=apriel2_0_5b_dev \
-    +task=gsm8k \
-    +generation=greedy \
-    +placement=all_attention
+python -m place_layers +experiments=eval_mmlu_rest \
+    +model=apriel2_1p6_v2_annealed_0204 +placement=all-attention
 ```
 
-**Trace Precomputation (distributed):**
+### IS Evaluation
+
+Fast evaluation using importance sampling with precomputed traces. See [Precompute Traces](#precompute-traces) for trace generation. Use `+experiments=dev/eval_gsm8k_is` for a pre-configured setup.
+
+### Available Placements
+
+Pattern-based configs (repeat cyclically across all layers):
+
+- `all-attention` - baseline, all attention layers
+- `every2nd-gdn` - alternating attention/GDN (24 GDN layers for 48-layer model)
+- `every4th-gdn` - GDN at every 4th layer (12 GDN layers)
+- `every2nd-kda`, `every4th-kda` - KDA variants
+- `every2nd-swa`, `every4th-swa` - SWA (sliding window) variants
+- `all-gdn`, `all-kda`, `all-swa` - all one mixer type
+
+Structural configs (48-layer model):
+
+- `bookend-attn-gdn` - first 2 + last 2 layers attention, rest GDN
+- `bookend-attn-kda`, `bookend-attn-swa` - same pattern, other mixers
+
+## Precompute Traces
+
+Generate teacher completions with log-probabilities. Required for IS evaluation and placement optimization.
+
 ```bash
-python -m place_layers \
-    +command=precompute_traces \
-    +backend=rest \
-    'backend.servers=["http://localhost:8080","http://localhost:8081","http://localhost:8082"]' \
-    +model=apriel2_0_5b_dev \
-    +task=gsm8k \
-    +generation=sampling
+# Start teacher model server, then:
+python -m place_layers +command=precompute_traces \
+    +backend=rest +task=gsm8k +generation=sampling
 ```
 
-### Configuration
-
-**REST Backend (`backend=rest`):**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `servers` | `["http://localhost:8080"]` | List of server URLs |
-| `max_concurrent_per_server` | 8 | Max parallel requests per server |
-| `timeout_seconds` | 300 | Request timeout |
-
-**Serve Command (`command=serve`):**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address |
-| `port` | `8080` | Listen port |
-| `backend` | (required) | Must be `transformers` |
-
-### Performance
-
-| GPUs | Approximate Speedup |
-|------|---------------------|
-| 1 | 1× (baseline) |
-| 4 | ~4× |
-| 8 | ~8× |
-
-The REST backend distributes requests using round-robin. Each server processes requests independently, so speedup scales linearly with GPU count.
-
-### Applicable Commands
-
-The REST backend works with commands that use the `backend` config group:
-
-| Command | Evaluator | Use Case |
-|---------|-----------|----------|
-| `evaluate` | `generative` | Distribute generation across GPUs |
-| `evaluate` | `importance_weighted` | Distribute IS log-prob computation across GPUs |
-| `precompute_traces` | - | Distribute trace generation across GPUs |
-
-> **Note:** The `serve` command only supports `backend=transformers`. You cannot serve a vLLM backend (vLLM is already a server).
-
-### Tips
-
-1. **Same model everywhere:** All servers must load the same model checkpoint.
-
-2. **Placement handling:** The client stores placement locally and includes it in every request. Servers set placement before processing (no-op if unchanged). This enables load balancing without coordination.
-
-3. **Environment variables:** Use `REST_SERVER_0`, `REST_SERVER_1`, etc. for server URLs:
-   ```bash
-   REST_SERVER_0=http://node1:8080 REST_SERVER_1=http://node2:8080 \
-       python -m place_layers +command=evaluate +backend=rest ...
-   ```
-
-4. **Health checks:** The REST backend verifies server connectivity on startup.
+Output: `validation.jsonl` with traces containing `teacher_log_prob` for each completion. See `conf/experiments/dev/precompute_gsm8k_vllm.yaml` for an example setup.
 
 ## Configuration
 
@@ -584,21 +337,30 @@ This project uses [Hydra](https://hydra.cc/) for configuration. Key config group
 
 | Group | Options | Description |
 |-------|---------|-------------|
-| `command` | evaluate, optimize, precompute_traces, serve | What to run |
-| `evaluator` | generative, likelihood, importance_weighted, mock_* | How to score placements |
-| `backend` | transformers, vllm, rest | Model inference backend |
-| `model` | apriel2_0_5b_dev, qwen2_0_5b | Model loading config |
-| `task` | gsm8k, gsm8k_quick | Evaluation task |
+| `command` | evaluate, optimize, explore_placements, validate_landscape, placement_landscape, precompute_traces, serve | What to run |
+| `evaluator` | generative, likelihood, importance_weighted, extraction | How to score placements |
+| `backend` | **local_vllm**, **rest**, transformers, vllm, rest_dns | Model inference backend |
+| `model` | **apriel2_1p6_v2_annealed_0204**, apriel2_1p6_v2_0202, apriel2_0_5b_dev | Model loading config |
+| `task` | gsm8k, gsm8k_quick, mmlu, mmlu_optimize | Evaluation task |
 | `generation` | greedy, greedy_short, sampling | Generation parameters |
-| `placement` | all_attention, every_Nth_gdn/kda | Layer placement |
-| `search_strategy` | hierarchical_beam, cost_constrained_* | Optimization algorithm |
-| `problem` | layer_placement, cost_* | Optimization problem definition |
+| `placement` | all-attention, every2nd-gdn, every4th-gdn, ... | Layer placement |
+| `cost_model` | linear_apriel_15b, uniform_apriel_15b | Per-mixer cost coefficients |
+| `landscape` | apriel_15b | Shared landscape settings |
+| `search_strategy` | viterbi_surrogate, cost_constrained_hierarchical | Optimization algorithm |
+| `problem` | cost_max_perf_apriel_15b_v2, cost_apriel_0_5b | Optimization problem definition |
+
+Development configs (`conf/experiments/dev/`, `mock_*` evaluators) exist for local testing with the smaller Apriel2-0.5B-dev model. Analysis tools (`calibrate_sa`, `noise_analysis` commands) are available for SA tuning and evaluator noise estimation.
 
 See `CLAUDE.md` for detailed configuration patterns and architecture documentation.
 
 ## Output
 
 Results are saved to `outputs/<config-name>/`:
-- `evaluation_results.json` - scores and placement details
+- `evaluation_results_{objective}.json` - per-objective scores and placement details
 - `validation.jsonl` - individual completions (for generative eval)
+- `exploration_progress.jsonl` - incremental surrogate exploration data
+- `exploration_results.json` - final exploration dataset
+- `validation_results.json` - per-band surrogate vs. real scores
+- `placement_landscape.pdf` / `placement_landscape.png` - landscape plot
+- `landscape_data.json` - landscape plot data
 - `.hydra/config.yaml` - resolved configuration

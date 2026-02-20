@@ -28,6 +28,9 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
 
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
+
 from place_layers.clients.types import GenerationResult
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.base_generative_evaluator import (
@@ -64,9 +67,13 @@ class TracePrecomputeEvaluator(BaseGenerativeEvaluator):
     config: "TracePrecomputeEvaluatorConfig"
 
     def __init__(
-        self, config: "TracePrecomputeEvaluatorConfig", *, output_dir: "Path"
+        self,
+        config: "TracePrecomputeEvaluatorConfig",
+        *,
+        output_dir: "Path",
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     def _get_fewshot_seed(self) -> int | None:
         """Return seed for few-shot sampling."""

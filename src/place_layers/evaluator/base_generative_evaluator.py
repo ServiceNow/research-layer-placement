@@ -69,9 +69,13 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
     config: "BaseGenerativeEvaluatorConfig"
 
     def __init__(
-        self, config: "BaseGenerativeEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "BaseGenerativeEvaluatorConfig",
+        *,
+        output_dir: Path,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     @abstractmethod
     def _make_records(

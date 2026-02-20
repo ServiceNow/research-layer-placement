@@ -10,6 +10,7 @@ This requires exactly three things:
 3. Iterator-Bound Agreement - stopping iterator at bound gives same result as allocation_at_cost_bound
 """
 
+import logging
 import math
 import random
 from collections import deque
@@ -26,9 +27,27 @@ from place_layers.problem import (
     MaxPerformanceProblemConfig,
     MinCostProblemConfig,
 )
-from place_layers.search_strategy import SwapBeamConfig
+from place_layers.annealing.sa_core import SAConfig
+from place_layers.search_strategy import AnnealingConfig
+from tests.helpers import wrap_evaluator
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
+
+# Small, fast SA config for integration tests
+_SMALL_SA_CONFIG = SAConfig(
+    num_restarts=1,
+    steps_per_restart=50,
+    initial_temperature=1.0,
+    cooling_rate=0.95,
+    min_temperature=0.01,
+    mutation_prob=0.3,
+    max_ruin_fraction=0.3,
+    contiguous_ruin_prob=0.5,
+    top_k=5,
+    no_op_retries=3,
+    reheat=None,
+    seed=42,
+)
 
 
 # =============================================================================
@@ -831,11 +850,12 @@ class TestCostConstrainedProblem:
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
             cost_budget=1.0,  # Min cost is 10 * 0.2 = 2.0
+            cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="less than minimum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_budget_validation_too_high(self) -> None:
         """Budget above maximum cost should fail (trivially satisfied)."""
@@ -856,11 +876,12 @@ class TestCostConstrainedProblem:
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
             cost_budget=100.0,  # Max cost is 10 * 1.0 = 10.0
+            cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_mixer_name_mismatch(self) -> None:
         """Mixer name mismatch should fail."""
@@ -881,11 +902,119 @@ class TestCostConstrainedProblem:
         problem_config = MaxPerformanceProblemConfig(
             cost_model=LinearCostModelConfig(mixer_costs={"wrong_name": 1.0, "mixer_1": 0.5}),  # Wrong names
             cost_budget=5.0,
+            cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="must match"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+
+    def test_cost_floor_above_budget_fails(self) -> None:
+        """cost_floor >= cost_budget should fail (empty search range)."""
+        evaluator_config = MockSupernetEvaluatorConfig(
+            num_layers=10,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
+            seed=42,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            noise_sigma=0.2,
+            noise_seed_shift=0,
+            eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        problem_config = MaxPerformanceProblemConfig(
+            cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
+            cost_budget=4.0,
+            cost_floor=6.0,  # Floor above budget
+        )
+        evaluator = evaluator_config.create_evaluator()
+
+        with pytest.raises(ValueError, match="cost_floor.*must be less than"):
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+
+    def test_cost_floor_above_max_cost_fails(self) -> None:
+        """cost_floor above maximum possible cost should fail."""
+        evaluator_config = MockSupernetEvaluatorConfig(
+            num_layers=10,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
+            seed=42,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            noise_sigma=0.2,
+            noise_seed_shift=0,
+            eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        problem_config = MaxPerformanceProblemConfig(
+            cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
+            cost_budget=8.0,
+            cost_floor=100.0,  # Max cost is 10 * 1.0 = 10.0
+        )
+        evaluator = evaluator_config.create_evaluator()
+
+        with pytest.raises(ValueError, match="exceeds maximum possible cost"):
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+
+    def test_cost_floor_below_min_cost_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """cost_floor below minimum possible cost should warn but not error."""
+        evaluator_config = MockSupernetEvaluatorConfig(
+            num_layers=10,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
+            seed=42,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            noise_sigma=0.2,
+            noise_seed_shift=0,
+            eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        problem_config = MaxPerformanceProblemConfig(
+            cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
+            cost_budget=8.0,
+            cost_floor=0.1,  # Min cost is 10 * 0.2 = 2.0
+        )
+        evaluator = evaluator_config.create_evaluator()
+
+        with caplog.at_level(logging.WARNING):
+            problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+
+        assert problem is not None
+        assert "below minimum possible cost" in caplog.text
+
+    def test_cost_floor_valid(self) -> None:
+        """Valid cost_floor within [min_cost, cost_budget) should succeed."""
+        evaluator_config = MockSupernetEvaluatorConfig(
+            num_layers=10,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
+            seed=42,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            noise_sigma=0.2,
+            noise_seed_shift=0,
+            eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        problem_config = MaxPerformanceProblemConfig(
+            cost_model=LinearCostModelConfig(mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}),
+            cost_budget=8.0,
+            cost_floor=3.0,  # Between min (2.0) and budget (8.0)
+        )
+        evaluator = evaluator_config.create_evaluator()
+
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+        assert problem is not None
 
 
 # =============================================================================
@@ -917,9 +1046,10 @@ class TestCostConstrainedBeamSearch:
         problem_config = MaxPerformanceProblemConfig(
             cost_model=cost_model,
             cost_budget=4.0,  # Between min (2.0) and max (10.0)
+            cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     @pytest.fixture
     def small_problem_min_cost(self) -> CostConstrainedProblem:
@@ -942,16 +1072,17 @@ class TestCostConstrainedBeamSearch:
         problem_config = MinCostProblemConfig(
             cost_model=cost_model,
             performance_target=2.0,  # Modest target
+            cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     async def test_max_performance_respects_budget(
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE mode should respect cost budget."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20
         )
         search = search_config.create_search_strategy()
 
@@ -966,8 +1097,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST mode should meet performance target."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20
         )
         search = search_config.create_search_strategy()
 
@@ -982,8 +1113,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE should respect budget (start at budget, explore cheaper)."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
         search = search_config.create_search_strategy()
 
@@ -998,8 +1129,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST should start from most expensive config and downgrade."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
         search = search_config.create_search_strategy()
 
@@ -1029,22 +1160,112 @@ class TestCostConstrainedBeamSearch:
         problem_config = MaxPerformanceProblemConfig(
             cost_model=cost_model,
             cost_budget=4.0,
+            cost_floor=None,
         )
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
         )
 
         # Run twice
         evaluator1 = evaluator_config.create_evaluator()
-        problem1 = problem_config.create_problem(evaluator1)
+        problem1 = problem_config.create_problem(wrap_evaluator(evaluator1), objective_name="weighted_average")
         search1 = search_config.create_search_strategy()
         result1 = await search1.search(problem1)
 
         evaluator2 = evaluator_config.create_evaluator()
-        problem2 = problem_config.create_problem(evaluator2)
+        problem2 = problem_config.create_problem(wrap_evaluator(evaluator2), objective_name="weighted_average")
         search2 = search_config.create_search_strategy()
         result2 = await search2.search(problem2)
 
         assert result1.best_score == result2.best_score
         assert result1.final_cost == result2.final_cost
         assert result1.best_parameters.assignments == result2.best_parameters.assignments
+
+
+# =============================================================================
+# TestCostFloorSearch - Behavioral tests for cost_floor
+# =============================================================================
+
+
+class TestCostFloorSearch:
+    """Tests that cost_floor correctly restricts the search space."""
+
+    def test_enumerate_with_floor(self) -> None:
+        """enumerate_feasible_allocations excludes allocations below floor."""
+        from place_layers.cost_model.enumeration import enumerate_feasible_allocations
+
+        cost_model_config = LinearCostModelConfig(
+            mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}
+        )
+        cost_model = cost_model_config.create_cost_model()
+        num_layers = 10
+
+        # Without floor: all allocations within budget
+        all_allocs = enumerate_feasible_allocations(
+            cost_model, num_layers, cost_budget=8.0
+        )
+
+        # With floor: only allocations with cost >= 4.0
+        floor_allocs = enumerate_feasible_allocations(
+            cost_model, num_layers, cost_budget=8.0, cost_floor=4.0
+        )
+
+        # Floor should exclude cheap allocations
+        assert len(floor_allocs) < len(all_allocs)
+        assert len(floor_allocs) > 0
+
+        # All returned allocations should have cost >= floor
+        for alloc in floor_allocs:
+            alloc_cost = cost_model.allocation_cost(alloc)
+            assert alloc_cost >= 4.0 - 1e-9, (
+                f"Allocation {alloc} has cost {alloc_cost} below floor 4.0"
+            )
+
+        # All returned allocations should have cost <= budget
+        for alloc in floor_allocs:
+            alloc_cost = cost_model.allocation_cost(alloc)
+            assert alloc_cost <= 8.0 + 1e-9, (
+                f"Allocation {alloc} has cost {alloc_cost} above budget 8.0"
+            )
+
+    async def test_max_perf_with_floor_skips_cheap(self) -> None:
+        """Search with cost_floor should not explore allocations below the floor."""
+        cost_model_config = LinearCostModelConfig(
+            mixer_costs={"mixer_0": 1.0, "mixer_1": 0.5, "mixer_2": 0.2}
+        )
+        evaluator_config = MockSupernetEvaluatorConfig(
+            num_layers=10,
+            mixer_names=["mixer_0", "mixer_1", "mixer_2"],
+            seed=42,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            noise_sigma=0.2,
+            noise_seed_shift=0,
+            eval_delay_seconds=0.0,
+            pairwise_decay=0.5,
+            pairwise_max_range=1,
+            triplet_scale=0.0,
+        )
+        # Set floor at 4.0 — search should only explore [4.0, 8.0]
+        problem_config = MaxPerformanceProblemConfig(
+            cost_model=cost_model_config,
+            cost_budget=8.0,
+            cost_floor=4.0,
+        )
+        evaluator = evaluator_config.create_evaluator()
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
+
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10
+        )
+        search = search_config.create_search_strategy()
+        result = await search.search(problem)
+
+        # Result cost should be within [floor, budget]
+        assert result.final_cost >= 4.0 - 1e-9, (
+            f"Result cost {result.final_cost} is below floor 4.0"
+        )
+        assert result.final_cost <= 8.0 + 1e-9, (
+            f"Result cost {result.final_cost} is above budget 8.0"
+        )

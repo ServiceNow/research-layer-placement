@@ -14,7 +14,7 @@ from place_layers.problem.base_problem_config import BaseProblemConfig
 
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.base_evaluator import BaseEvaluator
+    from place_layers.evaluator.evaluators import Evaluators
 
 
 logger = logging.getLogger(__name__)
@@ -25,15 +25,16 @@ class LayerPlacementProblem(BaseProblem[LayerPlacement]):
 
     def __init__(
         self,
-        evaluator: BaseEvaluator[LayerPlacement],
+        evaluators: "Evaluators[LayerPlacement]",
         config: LayerPlacementProblemConfig,
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluator, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: LayerPlacementProblemConfig  # Type narrowing
 
         # Validate budgets against evaluator dimensions
-        num_layers = evaluator.num_layers
-        num_mixers = evaluator.num_mixers
+        num_layers = evaluators.num_layers
+        num_mixers = evaluators.num_mixers
 
         if len(config.budgets) >= num_mixers:
             raise ValueError(
@@ -86,26 +87,26 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
 
     def __init__(
         self,
-        evaluator: BaseEvaluator[LayerPlacement],
+        evaluators: "Evaluators[LayerPlacement]",
         config: "CostConstrainedProblemConfig",
+        objective_name: str,
     ) -> None:
-        super().__init__(evaluator, config)
+        super().__init__(evaluators, config, objective_name)
         self.config: CostConstrainedProblemConfig  # Type narrowing
 
         # Create cost model first, then validate mixer names
         self.cost_model = config.cost_model.create_cost_model()
 
         # Validate cost model mixer names match evaluator mixer names
-        # evaluator.mixer_names is a frozenset (for validation only)
         config_mixer_names = set(self.cost_model.phase_order)
-        if config_mixer_names != evaluator.mixer_names:
+        if config_mixer_names != evaluators.mixer_names:
             raise ValueError(
                 f"Cost model mixer names {config_mixer_names} "
-                f"must match evaluator mixer names {evaluator.mixer_names}"
+                f"must match evaluator mixer names {evaluators.mixer_names}"
             )
 
         # Validate constraint based on problem type
-        num_layers = evaluator.num_layers
+        num_layers = evaluators.num_layers
         min_cost = self.cost_model.min_cost(num_layers)
         max_cost = self.cost_model.max_cost(num_layers)
 
@@ -133,6 +134,27 @@ class CostConstrainedProblem(BaseProblem[LayerPlacement]):
                     f"performance_target ({config.performance_target}) is <= 0.0, "
                     "which is trivially satisfied by any configuration."
                 )
+
+        # Validate cost_floor
+        cost_floor = config.cost_floor
+        if cost_floor is not None:
+            if cost_floor > max_cost:
+                raise ValueError(
+                    f"cost_floor ({cost_floor}) exceeds maximum possible cost "
+                    f"({max_cost}). No feasible allocations exist above the floor."
+                )
+            if cost_floor < min_cost:
+                logger.warning(
+                    f"cost_floor ({cost_floor}) is below minimum possible cost "
+                    f"({min_cost}). The floor has no effect."
+                )
+            if isinstance(config, MaxPerformanceProblemConfig):
+                if cost_floor >= config.cost_budget:
+                    raise ValueError(
+                        f"cost_floor ({cost_floor}) must be less than "
+                        f"cost_budget ({config.cost_budget}). "
+                        "The search range [cost_floor, cost_budget] is empty."
+                    )
 
     def compute_cost(self, placement: LayerPlacement) -> float:
         """Compute the cost of a placement configuration."""
@@ -164,6 +186,12 @@ class BaseCostConstrainedProblemConfig(BaseProblemConfig):
 
     cost_model: CostModelConfig = Field(
         description="Cost model configuration defining per-mixer costs"
+    )
+
+    cost_floor: float | None = Field(
+        description="Lower bound on cost. Allocations below this are excluded from search. "
+        "null means no lower bound.",
+        ge=0,
     )
 
 

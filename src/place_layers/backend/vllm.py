@@ -74,6 +74,11 @@ class VLLMBackend(AsyncBackend):
         self._current_placement: list[str] | None = None
 
     @property
+    def config(self) -> "VLLMBackendConfig":
+        """Backend configuration."""
+        return self._config
+
+    @property
     def max_concurrent_requests(self) -> int:
         """Maximum number of concurrent requests."""
         return self._config.client.max_concurrent_requests

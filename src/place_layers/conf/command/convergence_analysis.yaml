@@ -1,6 +1,0 @@
-# @package _global_
-
-command: convergence_analysis
-
-# Number of beam search runs
-n_runs: 1000

@@ -1,6 +1,0 @@
-# @package _global_
-
-command: hyperparameter_analysis
-
-# Beam widths to test
-beam_widths: [2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96]

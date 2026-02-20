@@ -71,13 +71,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         cost_budget: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MAX_PERFORMANCE mode: maximize performance subject to cost <= budget."""
         logger.debug("Mode: MAX_PERFORMANCE (surrogate-assisted), budget=%.4f", cost_budget)
 
         # Enumerate feasible allocations within budget
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget
+            cost_model, num_layers, cost_budget, cost_floor=cost_floor
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
 
@@ -91,6 +92,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=cost_budget,
+            cost_floor=cost_floor,
         )
 
         # Select best only from within-budget placements (exploration may be unconstrained)
@@ -105,10 +107,11 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         best_feasible = feasible_indices[int(np.argmax(feasible_scores))]
         best_assignment = all_assignments[best_feasible]
         best_alloc = dict(Counter(best_assignment))
+        best_score = all_scores[best_feasible]
         best_entry = BeamEntry(
             assignments=best_assignment,
             allocation=best_alloc,
-            score=all_scores[best_feasible],
+            score=best_score,
         )
 
         return self._create_result(
@@ -125,13 +128,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         cost_model: BaseCostModel,
         num_layers: int,
         performance_target: float,
+        cost_floor: float | None = None,
     ) -> CostConstrainedSearchResult:
         """MIN_COST mode: minimize cost subject to performance >= target."""
         logger.debug("Mode: MIN_COST (surrogate-assisted), target=%.4f", performance_target)
 
         # Enumerate ALL allocations (no budget filter for min_cost)
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None
+            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
 
@@ -145,13 +149,16 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=None,
+            cost_floor=cost_floor,
         )
 
         # Find cheapest that meets target
-        best_entry: BeamEntry | None = None
+        best_assignment: tuple[str, ...] | None = None
+        best_alloc: dict[str, int] | None = None
         best_cost = float("inf")
         # Also track best by score as fallback
-        fallback_entry: BeamEntry | None = None
+        fallback_assignment: tuple[str, ...] | None = None
+        fallback_alloc: dict[str, int] | None = None
         fallback_score = float("-inf")
 
         for assignment, score in zip(all_assignments, all_scores):
@@ -160,27 +167,33 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             if score >= performance_target and cost < best_cost:
                 best_cost = cost
-                best_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                best_assignment = assignment
+                best_alloc = alloc
             if score > fallback_score:
                 fallback_score = score
-                fallback_entry = BeamEntry(
-                    assignments=assignment,
-                    allocation=alloc,
-                    score=score,
-                )
+                fallback_assignment = assignment
+                fallback_alloc = alloc
 
-        if best_entry is None:
+        if best_assignment is None:
             logger.warning(
                 "No placement met performance target %s. "
                 "Returning best by score.",
                 performance_target,
             )
-            assert fallback_entry is not None
-            best_entry = fallback_entry
+            assert fallback_assignment is not None and fallback_alloc is not None
+            best_assignment = fallback_assignment
+            best_alloc = fallback_alloc
+
+        assert best_alloc is not None
+        # Get score for best assignment
+        placement = LayerPlacement(assignments=best_assignment)
+        best_score_val = await problem.evaluate(placement)
+        self.eval_count += 1
+        best_entry = BeamEntry(
+            assignments=best_assignment,
+            allocation=best_alloc,
+            score=best_score_val,
+        )
 
         return self._create_result(
             best_entry=best_entry,
@@ -197,6 +210,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         num_layers: int,
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
+        cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Load exploration data and run refinement, return (all_assignments, all_scores)."""
         rng = random.Random(self.config.sa.seed)
@@ -268,6 +282,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 cost_budget=cost_budget,
                 config=self.config.sa,
                 rng=rng,
+                cost_floor=cost_floor,
             )
             top_candidates = [c for c, _s in sa_result.candidates]
 
@@ -300,7 +315,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             predicted_scores = mu[top_indices].copy()
 
             # Step 4: Evaluate with real evaluator
-            for idx in top_indices:
+            for eval_i, idx in enumerate(top_indices):
                 candidate = top_candidates[idx]
                 placement = LayerPlacement(assignments=candidate)
                 score = await problem.evaluate(placement)
@@ -309,21 +324,23 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 all_assignments.append(candidate)
                 all_scores.append(score)
 
+                alloc = dict(Counter(candidate))
+                candidate_cost = cost_model.allocation_cost(alloc)
+
+                is_new_best = False
                 if score > f_best:
                     f_best = score
+                    is_new_best = True
 
                     if self.observers:
-                        best_alloc = dict(Counter(candidate))
-                        best_cost = cost_model.allocation_cost(best_alloc)
-
                         from place_layers.search_strategy.progress import (
                             BestUpdatedEvent,
                         )
 
                         event = BestUpdatedEvent(
                             score=score,
-                            cost=best_cost,
-                            allocation=best_alloc,
+                            cost=candidate_cost,
+                            allocation=alloc,
                             assignments=candidate,
                         )
                         for observer in self.observers:
@@ -332,6 +349,26 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 if self.observers:
                     for observer in self.observers:
                         observer.on_eval_completed(self.eval_count)
+
+                    from place_layers.search_strategy.progress import (
+                        SurrogateCandidateEvaluatedEvent,
+                    )
+
+                    eval_event = SurrogateCandidateEvaluatedEvent(
+                        round=round_num + 1,
+                        total_rounds=self.config.num_rounds,
+                        eval_index=eval_i + 1,
+                        evals_planned=n_select,
+                        assignments=candidate,
+                        score=score,
+                        surrogate_mu=float(mu[idx]),
+                        ei_value=float(ei[idx]),
+                        cost=candidate_cost,
+                        is_new_best=is_new_best,
+                        f_best=f_best,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_candidate_evaluated(eval_event)
 
             # Compute prediction correlation for this round's candidates
             actual_scores = np.array(all_scores[-n_select:])

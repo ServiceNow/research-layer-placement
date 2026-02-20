@@ -1,8 +1,8 @@
 """Pure move operators for simulated annealing.
 
 Free functions that implement allocation-preserving moves on assignment vectors.
-Used by ``AnnealingSearch`` (runtime optimisation), ``SurrogateSearch``
-(surrogate-guided refinement), and ``CalibrateSACommand`` (temperature calibration).
+Used by ``AnnealingSearch`` (runtime optimisation) and ``SurrogateSearch``
+(surrogate-guided refinement).
 """
 
 from __future__ import annotations

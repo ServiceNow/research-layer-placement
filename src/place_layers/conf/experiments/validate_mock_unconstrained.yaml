@@ -1,0 +1,30 @@
+# @package _global_
+# Pipeline step 2: validate landscape for mock MRF variants (matches explore_mock_unconstrained).
+#
+# Usage:
+#   python -m place_layers +experiments=validate_mock_unconstrained \
+#       landscape.explore_output_dir=/path/to/explore/output
+defaults:
+  - /command: validate_landscape
+  - /cost_model: linear_apriel_15b
+  - /landscape: apriel_15b
+  - /evaluators: mock_mrf_variants
+  - _self_
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+# Zero noise for validation (deterministic scores)
+evaluators:
+  configs:
+    range1:
+      noise_sigma: 0.0
+    triplet:
+      noise_sigma: 0.0
+    range2_triplet:
+      noise_sigma: 0.0
+    range3:
+      noise_sigma: 0.0

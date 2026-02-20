@@ -204,6 +204,39 @@ class TextLikelihoodRecord(_LikelihoodRecordBase):
 LikelihoodRecord = ChatLikelihoodRecord | TextLikelihoodRecord
 
 
+class TraceLikelihoodProblemRecord(BaseModel):
+    """Trace likelihood evaluation record for a single problem.
+
+    Used by the TraceLikelihoodEvaluator to stream per-problem results.
+    For each problem, we have N traces. We compute the student log-prob
+    for each, then average them to get the mean log-likelihood for this problem.
+
+    This is simpler than ISProblemRecord - just stores log-probs and their mean.
+    """
+
+    model_config = {"frozen": True}
+
+    record_type: Literal["trace_likelihood_problem"] = "trace_likelihood_problem"
+
+    # === Problem Identification ===
+    problem_id: str = Field(description="Unique identifier (e.g., 'gsm8k:42')")
+    task_name: str = Field(description="lm-eval task name")
+
+    # === Per-Sample Data (parallel arrays, one element per trace/sample) ===
+    sample_indices: tuple[int, ...] = Field(
+        description="Original sample_idx values from traces"
+    )
+    log_probs: tuple[float, ...] = Field(
+        description="Student log-prob for each trace"
+    )
+
+    # === Problem-Level Summary ===
+    mean_log_prob: float = Field(
+        description="Mean of all log-probs for this problem"
+    )
+    num_samples: int = Field(description="Number of traces for this problem")
+
+
 class ISProblemRecord(BaseModel):
     """Importance-weighted evaluation record for a single problem.
 
@@ -265,7 +298,7 @@ class ISProblemRecord(BaseModel):
 
 
 TraceRecord = Annotated[
-    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord,
+    Trace | Generation | SkippedProblem | LikelihoodRecord | ISProblemRecord | TraceLikelihoodProblemRecord,
     Field(discriminator="record_type"),
 ]
 
@@ -391,8 +424,16 @@ class TraceDataset(BaseModel):
         malformed = 0
 
         truncated_count = 0
-        if validation_path.exists():
-            with validation_path.open() as f:
+        if not validation_path.exists():
+            raise FileNotFoundError(
+                f"Validation file not found: {validation_path}\n"
+                f"Expected output directory structure:\n"
+                f"  {output_dir}/\n"
+                f"    metadata.json\n"
+                f"    validation.jsonl  <- missing"
+            )
+
+        with validation_path.open() as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -412,6 +453,29 @@ class TraceDataset(BaseModel):
             logger.warning(f"{malformed} malformed lines ignored in validation.jsonl")
         if truncated_count > 0:
             logger.info(f"{truncated_count} truncated traces skipped (incomplete reasoning)")
+
+        # Infer samples_per_problem if not available from metadata
+        if samples_per_problem == 0 and all_traces:
+            # Count traces per problem_id
+            from collections import Counter
+
+            problem_trace_counts = Counter(t.problem_id for t in all_traces)
+            unique_counts = set(problem_trace_counts.values())
+
+            if len(unique_counts) > 1:
+                # Different problems have different trace counts
+                counts_summary = dict(Counter(problem_trace_counts.values()).most_common())
+                logger.warning(
+                    f"Problems have varying trace counts: {counts_summary}. "
+                    f"Using most common count as samples_per_problem."
+                )
+
+            # Use the most common count (mode)
+            samples_per_problem = problem_trace_counts.most_common(1)[0][1]
+            logger.info(
+                f"Inferred samples_per_problem={samples_per_problem} from trace data "
+                f"(metadata.json had null value)"
+            )
 
         return cls(
             traces=tuple(all_traces),

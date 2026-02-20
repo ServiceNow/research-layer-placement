@@ -1,0 +1,13 @@
+# @package evaluators
+# All MRF mock variants for consolidated exploration.
+# Each evaluator becomes its own objective (IndependentObjective).
+
+defaults:
+  - /evaluator@configs.range1: mock_mrf_range1
+  - /evaluator@configs.triplet: mock_mrf_triplet
+  - /evaluator@configs.range2_triplet: mock_mrf_range2_triplet
+  - /evaluator@configs.range3: mock_mrf_range3
+  - _self_
+
+objective:
+  objective_type: independent

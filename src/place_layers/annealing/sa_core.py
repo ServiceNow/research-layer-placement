@@ -1,7 +1,7 @@
 """Core simulated annealing building blocks.
 
-Reusable primitives shared by AnnealingSearch (real evaluator SA),
-SurrogateSearch (surrogate-guided SA), and CalibrateSACommand.
+Reusable primitives shared by AnnealingSearch (real evaluator SA)
+and SurrogateSearch (surrogate-guided SA).
 
 The ``SAConfig`` Pydantic model is the single source of truth for SA
 hyperparameters.  ``run_multi_start_sa`` is the single async SA loop
@@ -169,16 +169,20 @@ def pick_restart_allocation(
     allocation_cost: Callable[[dict[str, int]], float],
     cost_budget: float | None,
     rng: random.Random,
+    cost_floor: float | None = None,
 ) -> dict[str, int]:
     """Pick a random allocation for SA restart.
 
-    With a budget: target a random cost in [0.7 * budget, budget].
+    With a budget: target a random cost in [max(0.7 * budget, floor), budget].
     Without a budget (min_cost mode): uniform random from all allocations.
     """
     if cost_budget is None or len(feasible_allocations) <= 1:
         return rng.choice(feasible_allocations)
 
-    target_cost = rng.uniform(0.7, 1.0) * cost_budget
+    low = 0.7 * cost_budget
+    if cost_floor is not None:
+        low = max(low, cost_floor)
+    target_cost = rng.uniform(low, cost_budget)
 
     best_alloc = feasible_allocations[0]
     best_diff = float("inf")
@@ -200,6 +204,7 @@ async def run_multi_start_sa(
     config: SAConfig,
     rng: random.Random,
     observers: Sequence[SAObserver] = (),
+    cost_floor: float | None = None,
 ) -> MultiStartSAResult:
     """Run multi-start SA with an async scoring function as objective.
 
@@ -217,7 +222,8 @@ async def run_multi_start_sa(
 
     for restart in range(config.num_restarts):
         alloc = pick_restart_allocation(
-            feasible_allocations, allocation_cost, cost_budget, rng
+            feasible_allocations, allocation_cost, cost_budget, rng,
+            cost_floor=cost_floor,
         )
         current = random_assignment(rng, alloc, num_layers)
         current_score = await score_fn(tuple(current))
@@ -261,9 +267,13 @@ async def run_multi_start_sa(
                 if rng.random() < config.mutation_prob:
                     # Type mutation -- changes allocation, hard budget check
                     candidate = type_mutation(rng, current, mixer_names)
+                    proposed_alloc = dict(Counter(candidate))
+                    proposed_cost = allocation_cost(proposed_alloc)
                     if cost_budget is not None:
-                        proposed_alloc = dict(Counter(candidate))
-                        if allocation_cost(proposed_alloc) > cost_budget + 1e-9:
+                        if proposed_cost > cost_budget + 1e-9:
+                            continue
+                    if cost_floor is not None:
+                        if proposed_cost < cost_floor - 1e-9:
                             continue
                     if candidate != current:
                         proposed = candidate

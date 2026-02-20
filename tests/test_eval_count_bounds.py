@@ -10,6 +10,7 @@ from place_layers.cost_model import LinearCostModelConfig
 from place_layers.evaluator import MockSupernetEvaluatorConfig
 from place_layers.problem import MaxPerformanceProblemConfig, MinCostProblemConfig
 from place_layers.search_strategy import HierarchicalConfig
+from tests.helpers import wrap_evaluator
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -53,8 +54,9 @@ def _create_estimator_bounds(
     problem_config = MaxPerformanceProblemConfig(
         cost_model=cost_model_config,
         cost_budget=cost_budget,
+        cost_floor=None,
     )
-    problem = problem_config.create_problem(evaluator)
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search config and get estimator
     search_config = HierarchicalConfig(
@@ -246,8 +248,9 @@ async def test_min_cost_creates_progress_estimator() -> None:
     problem_config = MinCostProblemConfig(
         cost_model=cost_model_config,
         performance_target=0.5,
+        cost_floor=None,
     )
-    problem = problem_config.create_problem(evaluator)
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(
@@ -315,8 +318,9 @@ async def test_min_cost_eval_count_within_bounds(
     problem_config = MinCostProblemConfig(
         cost_model=cost_model_config,
         performance_target=performance_target,
+        cost_floor=None,
     )
-    problem = problem_config.create_problem(evaluator)
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(
@@ -378,8 +382,9 @@ async def test_min_cost_early_termination_bounds() -> None:
     problem_config = MinCostProblemConfig(
         cost_model=cost_model_config,
         performance_target=performance_target,
+        cost_floor=None,
     )
-    problem = problem_config.create_problem(evaluator)
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy with many allocations to see early termination
     search_config = HierarchicalConfig(
@@ -447,8 +452,9 @@ async def test_final_assignment_valid_and_complete() -> None:
     problem_config = MaxPerformanceProblemConfig(
         cost_model=cost_model_config,
         cost_budget=cost_budget,
+        cost_floor=None,
     )
-    problem = problem_config.create_problem(evaluator)
+    problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     # Create search strategy
     search_config = HierarchicalConfig(

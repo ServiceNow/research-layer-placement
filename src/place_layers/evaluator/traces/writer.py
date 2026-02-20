@@ -32,6 +32,7 @@ from place_layers.evaluator.traces.types import (
     TextLikelihoodRecord,
     TraceRecord,
     TraceRecordAdapter,
+    TraceLikelihoodProblemRecord,
 )
 
 # Tuple for isinstance checks (union types don't work with isinstance)
@@ -171,10 +172,10 @@ class TraceWriter:
 
     def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
-        # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
+        # Traces, Generations, LikelihoodRecords, ISProblemRecords, and TraceLikelihoodProblemRecords go to validation.jsonl
         valid = [
             r for r in records
-            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord))
+            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord, TraceLikelihoodProblemRecord))
         ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
@@ -268,6 +269,7 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                             | ChatLikelihoodRecord(task_name=tn, problem_id=pid)
                             | TextLikelihoodRecord(task_name=tn, problem_id=pid)
                             | ISProblemRecord(task_name=tn, problem_id=pid)
+                            | TraceLikelihoodProblemRecord(task_name=tn, problem_id=pid)
                         ):
                             if tn not in completed:
                                 completed[tn] = set()

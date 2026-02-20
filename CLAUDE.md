@@ -357,7 +357,6 @@ torch_dtype: bfloat16
 # @package evaluator
 
 evaluator_type: generative
-backend: ${backend}
 tasks: ${task.tasks}
 # Model structure (num_layers, mixer_names) discovered at runtime from backend
 ```
