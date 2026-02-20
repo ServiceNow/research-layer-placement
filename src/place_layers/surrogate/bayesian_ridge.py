@@ -60,6 +60,7 @@ class BayesianRidgeSurrogate:
         # Fitted state
         self._mu_n: np.ndarray | None = None  # Posterior mean (d,)
         self._L: np.ndarray | None = None  # Cholesky factor: LL^T = X^TX + αI
+        self._X_mean: np.ndarray | None = None  # Feature means for centering
         self._diag_Vn: np.ndarray | None = None  # diag(V_n) for decomposition
         self._a_n: float = 0.0
         self._b_n: float = 0.0
@@ -78,6 +79,7 @@ class BayesianRidgeSurrogate:
         # Center y to handle intercept (standard approach for Ridge)
         y_mean = float(np.mean(y))
         X_mean = np.mean(X, axis=0)
+        self._X_mean = X_mean
         X_centered = X - X_mean
         y_centered = y - y_mean
 
@@ -135,9 +137,11 @@ class BayesianRidgeSurrogate:
 
         # Compute variance via Cholesky solve
         c = self._b_n / self._a_n
-        # Solve L z = X^T for each sample (X rows)
-        # L_inv_X = L^{-1} X^T, shape (d, n)
-        L_inv_X = np.linalg.solve(self._L, X.T)
+        # Center X before quadratic form (L was built from centered data)
+        X_centered = X - self._X_mean
+        # Solve L z = X_c^T for each sample (X_centered rows)
+        # L_inv_X = L^{-1} X_c^T, shape (d, n)
+        L_inv_X = np.linalg.solve(self._L, X_centered.T)
         # Variance for each sample: c * (1 + ||L^{-1} x_i||²)
         quad_forms = np.sum(L_inv_X ** 2, axis=0)
         sigma = np.sqrt(c * (1.0 + quad_forms))
