@@ -17,15 +17,13 @@ from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feat
 def _fit_bayesian(
     num_layers: int = 6,
     mixer_names: list[str] | None = None,
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True),
     n_samples: int = 200,
     seed: int = 42,
 ) -> BayesianRidgeSurrogate:
     """Fit a BayesianRidgeSurrogate on synthetic data."""
     if mixer_names is None:
         mixer_names = ["m0", "m1"]
-    if feature_config is None:
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
 
     rng = np.random.RandomState(seed)
     K = len(mixer_names)
@@ -192,7 +190,7 @@ class TestSolveTopN:
         """Frontier should never exceed max_frontier_size."""
         N = 8
         mixer_names = ["m0", "m1", "m2"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_bayesian(N, mixer_names, feature_config, n_samples=300)
         mean_model, var_model = surrogate.extract_mean_var_mrf_models(N)
         solver = ParetoLCBSolver(mean_model, var_model, surrogate.noise_scale_sq)

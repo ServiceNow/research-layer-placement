@@ -1,8 +1,8 @@
 """Validate landscape command: per-band real evaluation of surrogate predictions.
 
 For each objective and cost band:
-1. Compute surrogate DP optimal (single Ridge MRF, like placement_landscape)
-2. Run ViterbiSurrogateSearch restricted to that band (bootstrap ensemble + EI + real eval)
+1. Compute surrogate DP optimal (MRF extraction, like placement_landscape)
+2. Run Viterbi surrogate search restricted to that band (Ridge bootstrap+EI or Bayesian LCB + real eval)
 3. Save both surrogate DP and validated search results to JSON
 
 Per-band results are saved incrementally under ``bands_{obj_name}/band_NNN/`` so
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
@@ -47,11 +47,16 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
-from place_layers.surrogate.config import RidgeSurrogateConfig
 
 logger = logging.getLogger(__name__)
+
+ViterbiSearchConfig = Annotated[
+    ViterbiSurrogateSearchConfig | ViterbiBayesianSurrogateSearchConfig,
+    Field(discriminator="strategy_type"),
+]
 
 
 # ============================================================================
@@ -148,6 +153,7 @@ class ValidateLandscapeCommand(BaseCommand):
         _dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path),
             landscape.cost_model,
+            landscape.surrogate,
             landscape.seed,
         )
 
@@ -243,19 +249,9 @@ class ValidateLandscapeCommand(BaseCommand):
                 objective_name=obj_name,
             )
 
-            # Construct per-band search strategy
-            search_config = ViterbiSurrogateSearchConfig(
-                strategy_type="viterbi_surrogate",
-                exploration_dataset_path=str(dataset_path),
-                num_rounds=self.config.search_num_rounds,
-                evals_per_round=self.config.search_evals_per_round,
-                candidates_per_model=self.config.search_candidates_per_model,
-                cv_folds=self.config.search_cv_folds,
-                surrogate=RidgeSurrogateConfig(
-                    n_bootstraps=self.config.search_n_bootstraps,
-                    ei_xi=self.config.search_ei_xi,
-                ),
-                seed=self.config.search_seed,
+            # Construct per-band search strategy (override dataset path for this objective)
+            search_config = self.config.search_strategy.model_copy(
+                update={"exploration_dataset_path": str(dataset_path)}
             )
             strategy = search_config.create_search_strategy()
             result = await strategy.search(problem)
@@ -362,31 +358,7 @@ class ValidateLandscapeCommandConfig(BaseCommandConfig):
     )
     evaluators: EvaluatorsConfig = Field(description="Evaluator configuration.")
 
-    # Per-band search (ViterbiSurrogateSearch params, inlined)
-    search_num_rounds: int = Field(
-        description="Surrogate refinement rounds per band.",
-        gt=0,
-    )
-    search_evals_per_round: int = Field(
-        description="Real evaluations per round per band.",
-        gt=0,
-    )
-    search_candidates_per_model: int = Field(
-        description="Viterbi top-N candidates per bootstrap model.",
-        gt=0,
-    )
-    search_cv_folds: int = Field(
-        description="Cross-validation folds for surrogate quality.",
-        gt=1,
-    )
-    search_n_bootstraps: int = Field(
-        description="Number of bootstrap models for Ridge surrogate.",
-        gt=0,
-    )
-    search_ei_xi: float = Field(
-        description="Exploration parameter for Expected Improvement.",
-        ge=0,
-    )
-    search_seed: int = Field(
-        description="Random seed for per-band search.",
+    search_strategy: ViterbiSearchConfig = Field(
+        description="Per-band Viterbi search strategy configuration. "
+        "exploration_dataset_path is overridden per-objective at runtime.",
     )

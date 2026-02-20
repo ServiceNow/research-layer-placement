@@ -17,8 +17,9 @@ from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.landscape.models import BandResult
 from place_layers.mrf.solver import ExactMRFSolver
+from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.model_selection import select_expansion_ridge_cv
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
@@ -27,14 +28,19 @@ logger = logging.getLogger(__name__)
 def load_and_fit_surrogate(
     exploration_dataset_path: str,
     cost_model_config: CostModelConfig,
+    surrogate_config: SurrogateConfig,
     seed: int,
-) -> tuple[ExplorationDataset, RidgeSurrogate, BaseCostModel]:
-    """Load dataset, run model selection, fit surrogate.
+) -> tuple[ExplorationDataset, RidgeSurrogate | BayesianRidgeSurrogate, BaseCostModel]:
+    """Load dataset, create surrogate from config, fit to data.
+
+    Uses the dataset's stored ``feature_config`` directly (the exploration
+    phase already selected the best features for this data).
 
     Args:
         exploration_dataset_path: Path to exploration_results.json.
         cost_model_config: Cost model configuration.
-        seed: Random seed for model selection and surrogate fitting.
+        surrogate_config: Surrogate model configuration (Ridge or Bayesian Ridge).
+        seed: Random seed for surrogate fitting.
 
     Returns:
         (dataset, surrogate, cost_model) tuple.
@@ -49,36 +55,18 @@ def load_and_fit_surrogate(
 
     cost_model = cost_model_config.create_cost_model()
 
-    # Model selection (scalar scores for surrogate fitting)
-    scores_array = np.array(dataset.scores)
-    t0 = time.perf_counter()
-    expansion_result = select_expansion_ridge_cv(
-        assignments=dataset.assignments,
-        scores=scores_array,
-        mixer_names=dataset.mixer_names,
-        seed=seed,
-    )
-    t_model_sel = time.perf_counter() - t0
-    feature_config = (
-        expansion_result.selected_config
-        if expansion_result.selected_config.max_order > 1
-        else None
-    )
+    feature_config = dataset.feature_config
     logger.info(
-        "Model selection: order=%d, range=%d, rho=%.4f (%.3fs)",
-        expansion_result.selected_order,
-        expansion_result.selected_range,
-        expansion_result.range_results[-1].score
-        if expansion_result.range_results
-        else 0.0,
-        t_model_sel,
+        "Feature config: order=%d, range=%d, counts=%s",
+        feature_config.max_order,
+        feature_config.pairwise_max_range,
+        feature_config.allocation_counts,
     )
 
     # Fit surrogate
-    surrogate = RidgeSurrogate(
-        mixer_names=dataset.mixer_names,
-        seed=seed,
-        feature_config=feature_config,
+    scores_array = np.array(dataset.scores)
+    surrogate = surrogate_config.create_surrogate(
+        mixer_names=dataset.mixer_names, seed=seed, feature_config=feature_config,
     )
     t0 = time.perf_counter()
     surrogate.fit(dataset.assignments, scores_array)
@@ -108,7 +96,7 @@ def compute_band_edges(
 
 
 def compute_dp_per_band(
-    surrogate: RidgeSurrogate,
+    surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
     all_allocations: list[Allocation],
     alloc_costs: np.ndarray,
     num_layers: int,
@@ -122,7 +110,7 @@ def compute_dp_per_band(
     cost) so that display columns map 1-to-1 to DP bands.
 
     Args:
-        surrogate: Fitted RidgeSurrogate.
+        surrogate: Fitted surrogate (Ridge or Bayesian Ridge).
         all_allocations: All possible allocations.
         alloc_costs: Costs for each allocation.
         num_layers: Number of layers.

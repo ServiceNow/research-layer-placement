@@ -37,8 +37,8 @@ class ForestSurrogate:
         max_depth: int | None,
         seed: int,
         mixer_names: list[str],
+        feature_config: FeatureExpansionConfig,
         min_samples_leaf: int = 1,
-        feature_config: FeatureExpansionConfig | None = None,
     ) -> None:
         self._model = RandomForestRegressor(
             n_estimators=n_estimators,

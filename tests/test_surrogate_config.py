@@ -9,6 +9,7 @@ from place_layers.surrogate.config import (
     SurrogateConfig,
 )
 from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 
@@ -20,7 +21,8 @@ class TestRidgeSurrogateConfig:
 
     def test_create_surrogate(self) -> None:
         config = RidgeSurrogateConfig(n_bootstraps=30, ei_xi=0.02)
-        surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42)
+        feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
+        surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
         assert isinstance(surrogate, RidgeSurrogate)
         assert surrogate._n_bootstraps == 30
 
@@ -43,7 +45,8 @@ class TestBayesianRidgeSurrogateConfig:
             prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4, lcb_kappa=1.5,
             feature_scaling="none",
         )
-        surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42)
+        feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
+        surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
         assert isinstance(surrogate, BayesianRidgeSurrogate)
         assert surrogate._prior_alpha == 2.0
 

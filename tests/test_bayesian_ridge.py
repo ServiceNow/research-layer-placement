@@ -25,7 +25,7 @@ def _random_placements(
 def _fit_bayesian(
     num_layers: int = 8,
     mixer_names: list[str] | None = None,
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True),
     n_samples: int = 200,
     seed: int = 42,
     feature_scaling: FeatureScaling = FeatureScaling.COUNTS_ONLY,
@@ -33,8 +33,6 @@ def _fit_bayesian(
     """Fit a BayesianRidgeSurrogate on synthetic data. Returns (surrogate, assignments, y)."""
     if mixer_names is None:
         mixer_names = ["m0", "m1"]
-    if feature_config is None:
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
 
     rng = np.random.RandomState(seed)
     assignments = _random_placements(rng, mixer_names, num_layers, n_samples)
@@ -99,7 +97,7 @@ class TestPosteriorVariance:
 
         surrogate = BayesianRidgeSurrogate(
             mixer_names=mixer_names, seed=42,
-            feature_config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1),
+            feature_config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True),
         )
         surrogate.fit(assignments, y)
 
@@ -211,7 +209,7 @@ class TestCrossValidation:
 
         surrogate = BayesianRidgeSurrogate(
             mixer_names=mixer_names, seed=42,
-            feature_config=FeatureExpansionConfig(),
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         )
         rho = surrogate.cross_validate(assignments, y, cv_folds=5)
         assert abs(rho) < 0.4
@@ -297,7 +295,7 @@ class TestFeatureScaling:
 
         surrogate = BayesianRidgeSurrogate(
             mixer_names=mixer_names, seed=42,
-            feature_config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1),
+            feature_config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True),
             feature_scaling=FeatureScaling.COUNTS_ONLY,
         )
         surrogate.fit(assignments, y)
@@ -340,7 +338,7 @@ class TestLogMarginalLikelihood:
         # Order 1 (simpler)
         s1 = BayesianRidgeSurrogate(
             mixer_names=mixer_names, seed=42,
-            feature_config=FeatureExpansionConfig(max_order=1, allocation_counts=False),
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=False),
             feature_scaling=FeatureScaling.COUNTS_ONLY,
         )
         s1.fit(assignments, y)
@@ -363,6 +361,7 @@ class TestLogMarginalLikelihood:
         """Calling log_marginal_likelihood() before fit() should raise."""
         surrogate = BayesianRidgeSurrogate(
             mixer_names=["m0", "m1"], seed=42,
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         )
         with pytest.raises(AssertionError, match="Must call fit"):
             surrogate.log_marginal_likelihood()

@@ -17,11 +17,10 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from place_layers.surrogate.encoding import FeatureScaling
+from place_layers.surrogate.encoding import FeatureExpansionConfig, FeatureScaling
 
 if TYPE_CHECKING:
     from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
-    from place_layers.surrogate.encoding import FeatureExpansionConfig
     from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 
@@ -34,7 +33,7 @@ class BaseSurrogateConfig(BaseModel):
         self,
         mixer_names: list[str],
         seed: int,
-        feature_config: "FeatureExpansionConfig | None" = None,
+        feature_config: FeatureExpansionConfig,
     ) -> "RidgeSurrogate | BayesianRidgeSurrogate":
         """Smart constructor — subclasses override."""
         raise NotImplementedError
@@ -58,7 +57,7 @@ class RidgeSurrogateConfig(BaseSurrogateConfig):
         self,
         mixer_names: list[str],
         seed: int,
-        feature_config: "FeatureExpansionConfig | None" = None,
+        feature_config: FeatureExpansionConfig,
     ) -> "RidgeSurrogate":
         from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
@@ -99,7 +98,7 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         self,
         mixer_names: list[str],
         seed: int,
-        feature_config: "FeatureExpansionConfig | None" = None,
+        feature_config: FeatureExpansionConfig,
     ) -> "BayesianRidgeSurrogate":
         from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 

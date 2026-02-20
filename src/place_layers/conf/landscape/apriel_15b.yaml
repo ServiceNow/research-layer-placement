@@ -7,3 +7,7 @@ cost_model: ${cost_model}
 explore_output_dir: ???
 seed: 42
 num_cost_bins: 80
+surrogate:
+  surrogate_type: ridge
+  n_bootstraps: 50
+  ei_xi: 0.01

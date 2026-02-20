@@ -41,8 +41,8 @@ class RidgeSurrogate:
         self,
         mixer_names: list[str],
         seed: int,
+        feature_config: FeatureExpansionConfig,
         n_bootstraps: int = 50,
-        feature_config: FeatureExpansionConfig | None = None,
     ) -> None:
         self._seed = seed
         self._n_bootstraps = n_bootstraps
@@ -169,13 +169,12 @@ class RidgeSurrogate:
 
         assert self._coef is not None, "Must call fit() first"
         sorted_names = tuple(sorted(self._type_to_int.keys()))
-        feature_config = self._feature_config or FeatureExpansionConfig()
         return SurrogateMRFModel(
             coef=self._coef,
             intercept=self._intercept,
             num_layers=num_layers,
             mixer_names=sorted_names,
-            feature_config=feature_config,
+            feature_config=self._feature_config,
         )
 
     def extract_bootstrap_mrf_models(
@@ -185,14 +184,13 @@ class RidgeSurrogate:
         from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
         sorted_names = tuple(sorted(self._type_to_int.keys()))
-        feature_config = self._feature_config or FeatureExpansionConfig()
         return [
             SurrogateMRFModel(
                 coef=m.coef_,
                 intercept=float(m.intercept_),
                 num_layers=num_layers,
                 mixer_names=sorted_names,
-                feature_config=feature_config,
+                feature_config=self._feature_config,
             )
             for m in self._bootstrap_models
         ]

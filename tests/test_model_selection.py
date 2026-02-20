@@ -164,20 +164,20 @@ class TestSelectExpansionRidgeCv:
 
     def test_serialization_roundtrip(self) -> None:
         """ExpansionSelectionResult should serialize and deserialize."""
-        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=2)
+        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=2, allocation_counts=True)
         result = ExpansionSelectionResult(
             selected_config=cfg,
             selected_range=2,
             selected_order=2,
             range_results=[
                 StepResult(
-                    config=FeatureExpansionConfig(max_order=1),
+                    config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
                     num_features=10,
                     score=0.5,
                     rho=0.5,
                 ),
                 StepResult(
-                    config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1),
+                    config=FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True),
                     num_features=20,
                     score=0.7,
                     rho=0.7,
@@ -367,6 +367,7 @@ class TestRidgeCvRho:
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             cv_folds=5,
             seed=42,
         )
@@ -385,7 +386,7 @@ class TestRidgeCvRho:
             for i in range(len(a) - 1):
                 scores[idx] += 0.3 if a[i] == a[i + 1] else -0.3
 
-        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         rho = ridge_cv_rho(
             assignments=assignments,
             scores=scores,
@@ -407,6 +408,7 @@ class TestRidgeCvRho:
             assignments=assignments,
             scores=scores,
             mixer_names=mixer_names,
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             cv_folds=5,
             seed=42,
         )

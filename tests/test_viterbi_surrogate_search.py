@@ -27,6 +27,8 @@ from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
     ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
+from place_layers.surrogate.config import RidgeSurrogateConfig
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.model_selection import ridge_cv_rho
 from tests.helpers import wrap_evaluator
 
@@ -154,6 +156,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=np.array(scores),
         mixer_names=cost_model.phase_order,
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         cv_folds=5,
         seed=42,
     )
@@ -167,9 +170,11 @@ async def _build_exploration_dataset(
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,
+        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
     )
 
 

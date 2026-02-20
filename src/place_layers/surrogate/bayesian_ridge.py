@@ -46,7 +46,7 @@ class BayesianRidgeSurrogate:
         self,
         mixer_names: list[str],
         seed: int,
-        feature_config: FeatureExpansionConfig | None = None,
+        feature_config: FeatureExpansionConfig,
         prior_alpha: float = 1.0,
         prior_a0: float = 1e-6,
         prior_b0: float = 1e-6,
@@ -170,7 +170,7 @@ class BayesianRidgeSurrogate:
                 return np.ones(d, dtype=np.float64)
             case FeatureScaling.COUNTS_ONLY:
                 scale = np.ones(d, dtype=np.float64)
-                fc = self._feature_config or FeatureExpansionConfig()
+                fc = self._feature_config
                 if fc.allocation_counts:
                     K = len(self._type_to_int)
                     scale[-K:] = float(num_layers)
@@ -271,13 +271,12 @@ class BayesianRidgeSurrogate:
 
         assert self._mu_n_original is not None, "Must call fit() first"
         sorted_names = tuple(sorted(self._type_to_int.keys()))
-        feature_config = self._feature_config or FeatureExpansionConfig()
         return SurrogateMRFModel(
             coef=self._mu_n_original,
             intercept=self._intercept,
             num_layers=num_layers,
             mixer_names=sorted_names,
-            feature_config=feature_config,
+            feature_config=self._feature_config,
         )
 
     def extract_mean_var_mrf_models(
@@ -296,12 +295,11 @@ class BayesianRidgeSurrogate:
         assert self._diag_Vn is not None
 
         sorted_names = tuple(sorted(self._type_to_int.keys()))
-        feature_config = self._feature_config or FeatureExpansionConfig()
 
         # Create count-free feature config
         feature_config_no_counts = FeatureExpansionConfig(
-            max_order=feature_config.max_order,
-            pairwise_max_range=feature_config.pairwise_max_range,
+            max_order=self._feature_config.max_order,
+            pairwise_max_range=self._feature_config.pairwise_max_range,
             allocation_counts=False,
         )
 

@@ -70,7 +70,7 @@ class TestRoundTripCorrectness:
     def test_unary_only(self) -> None:
         """Round-trip with max_order=1 (unary + counts only)."""
         N, mixer_names = 6, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=1)
+        feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
 
         mrf = surrogate.extract_mrf_model(N)
@@ -89,7 +89,7 @@ class TestRoundTripCorrectness:
     def test_pairwise(self) -> None:
         """Round-trip with max_order=2, pairwise_max_range=1."""
         N, mixer_names = 6, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
 
         mrf = surrogate.extract_mrf_model(N)
@@ -106,7 +106,7 @@ class TestRoundTripCorrectness:
     def test_pairwise_range2(self) -> None:
         """Round-trip with max_order=2, pairwise_max_range=2."""
         N, mixer_names = 6, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=2)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=2, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
 
         mrf = surrogate.extract_mrf_model(N)
@@ -128,7 +128,7 @@ class TestRoundTripCorrectness:
         """Round-trip with max_order=3."""
         N, mixer_names = 5, ["m0", "m1"]
         feature_config = FeatureExpansionConfig(
-            max_order=3, pairwise_max_range=1
+            max_order=3, pairwise_max_range=1, allocation_counts=True
         )
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
 
@@ -154,7 +154,7 @@ class TestSolveTopNMatchesExhaustive:
     def test_top1_matches_exhaustive(self) -> None:
         """Top-1 from solve_top_n matches best from exhaustive (all placements)."""
         N, mixer_names = 6, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
         mrf = surrogate.extract_mrf_model(N)
 
@@ -183,7 +183,7 @@ class TestSolveTopNMatchesExhaustive:
     def test_pairwise_constrained_top1(self) -> None:
         """Top-1 from solve_top_n matches exhaustive best within feasible allocations."""
         N, mixer_names = 5, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config)
         mrf = surrogate.extract_mrf_model(N)
 
@@ -243,7 +243,7 @@ class TestSortedNameAssertion:
 
     def test_unsorted_raises(self) -> None:
         coef = np.zeros(10)
-        feature_config = FeatureExpansionConfig(max_order=1)
+        feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         with pytest.raises(AssertionError, match="must be sorted"):
             SurrogateMRFModel(
                 coef=coef,
@@ -258,7 +258,7 @@ class TestMaxOrderAssertion:
     """Verify max_order > 3 raises."""
 
     def test_order4_raises(self) -> None:
-        feature_config = FeatureExpansionConfig(max_order=4)
+        feature_config = FeatureExpansionConfig(max_order=4, pairwise_max_range=1, allocation_counts=True)
         with pytest.raises(AssertionError, match="order > 3"):
             SurrogateMRFModel(
                 coef=np.zeros(100),
@@ -275,7 +275,7 @@ class TestBootstrapDiversity:
     def test_bootstrap_models_differ(self) -> None:
         """Different bootstrap models should produce at least some different placements."""
         N, mixer_names = 8, ["m0", "m1"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config, n_samples=200)
 
         mrf_models = surrogate.extract_bootstrap_mrf_models(N)
@@ -303,7 +303,7 @@ class TestIntraAllocationDiversity:
     def test_multiple_arrangements_per_allocation(self) -> None:
         """With K=3, m=1, multiple history states should yield different arrangements."""
         N, mixer_names = 6, ["m0", "m1", "m2"]
-        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        feature_config = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = _fit_surrogate(N, mixer_names, feature_config, n_samples=300)
         mrf = surrogate.extract_mrf_model(N)
 

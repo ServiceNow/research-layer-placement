@@ -36,6 +36,8 @@ from place_layers.landscape import (
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator.evaluators import EvaluatorsConfig
+from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,7 @@ class PlacementLandscapeCommand(BaseCommand):
         dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path),
             landscape.cost_model,
+            landscape.surrogate,
             landscape.seed,
         )
         num_layers = dataset.num_layers
@@ -238,7 +241,7 @@ class PlacementLandscapeCommand(BaseCommand):
 
     def _generate_density_samples(
         self,
-        surrogate,
+        surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
         all_allocations: list[Allocation],
         alloc_costs: np.ndarray,
         num_layers: int,

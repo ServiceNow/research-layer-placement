@@ -9,7 +9,14 @@ defaults:
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
   - /evaluators: mock_mrf_variants
+  - /search_strategy: viterbi_surrogate
   - _self_
+
+search_strategy:
+  exploration_dataset_path: __DERIVED__
+  num_rounds: 1
+  evals_per_round: 20
+  candidates_per_model: 200
 
 hydra:
   job_logging:

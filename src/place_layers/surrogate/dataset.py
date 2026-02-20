@@ -36,8 +36,8 @@ class ExplorationDataset(BaseModel):
     num_samples: int
     termination_reason: Literal["target_reached", "plateau", "max_samples"]
 
-    # Feature expansion (None = Level 0 / unary only)
-    feature_config: FeatureExpansionConfig | None = None
+    # Feature expansion config — required (no backward compat)
+    feature_config: FeatureExpansionConfig
 
     # Surrogate provenance (None for backward compat with pre-existing JSON)
     surrogate_config: SurrogateConfig | None = None

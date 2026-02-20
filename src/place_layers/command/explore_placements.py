@@ -449,7 +449,7 @@ class ExplorePlacementsCommand(BaseCommand):
         # each batch. The feature-to-sample guard in _select_expansion()
         # relaxes as more data arrives, potentially unlocking higher-order
         # features. Re-running is cheap (a few surrogate fits).
-        feature_config: FeatureExpansionConfig | None = None
+        feature_config = FeatureExpansionConfig.unary()
         last_expansion_result: ExpansionSelectionResult | None = None
         if (
             self.config.expansion_max_order > 1
@@ -466,10 +466,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 num_layers=num_layers,
                 surrogate_config=self.config.surrogate,
             )
-            if expansion_result.selected_config.max_order > 1:
-                feature_config = expansion_result.selected_config
-            else:
-                feature_config = None
+            feature_config = expansion_result.selected_config
 
         # --- Phase 2b: First quality check (Ridge CV) ---
         if len(all_assignments) >= self.config.cv_folds:
@@ -553,11 +550,7 @@ class ExplorePlacementsCommand(BaseCommand):
                     all_assignments, np.array(all_scores), phase_order,
                 )
                 last_expansion_result = expansion_result
-                new_config = (
-                    expansion_result.selected_config
-                    if expansion_result.selected_config.max_order > 1
-                    else None
-                )
+                new_config = expansion_result.selected_config
                 if new_config != feature_config:
                     old_feature_config = feature_config
                     feature_config = new_config
@@ -586,23 +579,15 @@ class ExplorePlacementsCommand(BaseCommand):
             # progress and the plateau detector correctly sees it as such.
             rho_history.append(rho)
             samples_at_check.append(len(all_assignments))
-            if feature_config is not None:
-                logger.info(
-                    "Ridge CV rho=%.4g (%+.4g) at %d samples "
-                    "[order=%d, range=%d]",
-                    rho,
-                    rho_delta,
-                    len(all_assignments),
-                    feature_config.max_order,
-                    feature_config.pairwise_max_range,
-                )
-            else:
-                logger.info(
-                    "Ridge CV rho=%.4g (%+.4g) at %d samples [unary]",
-                    rho,
-                    rho_delta,
-                    len(all_assignments),
-                )
+            logger.info(
+                "Ridge CV rho=%.4g (%+.4g) at %d samples "
+                "[order=%d, range=%d]",
+                rho,
+                rho_delta,
+                len(all_assignments),
+                feature_config.max_order,
+                feature_config.pairwise_max_range,
+            )
 
         # Build result dataset
         assert rho_history, (

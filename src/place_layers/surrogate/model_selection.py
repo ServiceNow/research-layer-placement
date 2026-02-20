@@ -101,7 +101,7 @@ def ridge_cv_rho(
     assignments: list[tuple[str, ...]],
     scores: np.ndarray,
     mixer_names: list[str],
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
     cv_folds: int = 5,
     seed: int = 42,
 ) -> float:
@@ -172,7 +172,7 @@ def select_expansion_ridge_cv(
     n_samples = len(assignments)
 
     # --- Unary baseline ---
-    unary_config = FeatureExpansionConfig(max_order=1)
+    unary_config = FeatureExpansionConfig.unary()
     unary_features = compute_feature_dim(num_layers, num_types, unary_config)
     X_unary = encode_batch(assignments, type_to_int, unary_config)
     unary_rho = _ridge_cv_spearman(X_unary, scores, cv_folds, seed)
@@ -212,7 +212,7 @@ def select_expansion_ridge_cv(
     # --- Phase 1: Range selection at order 2 ---
     phase1_stop_reason: str | None = None
     for r in range(1, max_pairwise_range + 1):
-        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r)
+        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r, allocation_counts=True)
         num_features = compute_feature_dim(num_layers, num_types, config)
 
         # Feature-to-sample guard
@@ -264,7 +264,7 @@ def select_expansion_ridge_cv(
         selected_config = unary_config
     else:
         selected_config = FeatureExpansionConfig(
-            max_order=2, pairwise_max_range=best_range,
+            max_order=2, pairwise_max_range=best_range, allocation_counts=True,
         )
 
     # --- Phase 2: Order selection at selected range ---
@@ -274,7 +274,7 @@ def select_expansion_ridge_cv(
     if best_range >= 1 and max_order >= 3 and prev_rho < target_rho:
         for n in range(3, max_order + 1):
             config = FeatureExpansionConfig(
-                max_order=n, pairwise_max_range=best_range,
+                max_order=n, pairwise_max_range=best_range, allocation_counts=True,
             )
             num_features = compute_feature_dim(num_layers, num_types, config)
 
@@ -418,7 +418,7 @@ def select_expansion_bayes_evidence(
         )
 
     # Order 1 (unary)
-    unary_config = FeatureExpansionConfig(max_order=1)
+    unary_config = FeatureExpansionConfig.unary()
     unary_step = _eval(unary_config)
     if unary_step is not None:
         all_candidates.append(unary_step)
@@ -428,7 +428,7 @@ def select_expansion_bayes_evidence(
 
     # Order 2: sweep pairwise range
     for r in range(1, max_pairwise_range + 1):
-        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r)
+        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r, allocation_counts=True)
         step = _eval(config)
         if step is None:
             break
@@ -438,7 +438,7 @@ def select_expansion_bayes_evidence(
     # Orders 3..max_order: sweep pairwise range for each
     for n in range(3, max_order + 1):
         for r in range(1, max_pairwise_range + 1):
-            config = FeatureExpansionConfig(max_order=n, pairwise_max_range=r)
+            config = FeatureExpansionConfig(max_order=n, pairwise_max_range=r, allocation_counts=True)
             step = _eval(config)
             if step is None:
                 break

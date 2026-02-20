@@ -17,6 +17,7 @@ from place_layers.command.explore_placements import (
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
@@ -196,6 +197,7 @@ class TestHelpers:
             mixer_names=["m0", "m1"],
             num_samples=1,
             termination_reason="max_samples",
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01,
             ),
@@ -273,6 +275,7 @@ class TestExploreIntegration:
             assignments=all_assignments,
             scores=np.array(all_scores),
             mixer_names=cost_model.phase_order,
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             cv_folds=5,
             seed=42,
         )
@@ -290,6 +293,7 @@ class TestExploreIntegration:
             assignments=all_assignments,
             scores=np.array(all_scores),
             mixer_names=cost_model.phase_order,
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             cv_folds=5,
             seed=42,
         )
@@ -311,6 +315,7 @@ class TestExploreIntegration:
             mixer_names=["m0", "m1"],
             num_samples=2,
             termination_reason="max_samples",
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01,
             ),
@@ -331,28 +336,6 @@ class TestExploreIntegration:
         assert loaded.surrogate_config is not None
         assert loaded.surrogate_config.surrogate_type == "ridge"
 
-    async def test_exploration_dataset_backward_compat(self) -> None:
-        """Legacy JSON without surrogate_config/expansion_result should load fine."""
-        legacy = {
-            "assignments": [["m0", "m1"]],
-            "scores": [0.5],
-            "allocations": [{"m0": 1, "m1": 1}],
-            "objective_name": "weighted_average",
-            "num_layers": 2,
-            "mixer_names": ["m0", "m1"],
-            "num_samples": 1,
-            "termination_reason": "max_samples",
-            "rho_history": [0.3],
-            "samples_at_check": [1],
-            "final_rho": 0.3,
-        }
-        import json
-
-        loaded = ExplorationDataset.model_validate_json(json.dumps(legacy))
-        assert loaded.surrogate_config is None
-        assert loaded.expansion_result is None
-        assert loaded.num_samples == 1
-
     async def test_exploration_dataset_bayesian_surrogate(self) -> None:
         """ExplorationDataset with BayesianRidgeSurrogateConfig round-trips."""
         cfg = BayesianRidgeSurrogateConfig(
@@ -371,6 +354,7 @@ class TestExploreIntegration:
             mixer_names=["m0", "m1"],
             num_samples=1,
             termination_reason="max_samples",
+            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=cfg,
             rho_history=[0.3],
             samples_at_check=[1],

@@ -48,9 +48,12 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
+from place_layers.surrogate.config import RidgeSurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.model_selection import ridge_cv_rho
 from tests.helpers import wrap_evaluator
 
@@ -146,6 +149,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=np.array(scores),
         mixer_names=cost_model.phase_order,
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         cv_folds=5,
         seed=42,
     )
@@ -159,6 +163,7 @@ async def _build_exploration_dataset(
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,
@@ -186,7 +191,8 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         loaded_dataset, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
         )
 
         assert loaded_dataset.num_samples == 100
@@ -218,7 +224,8 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -380,7 +387,8 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -512,7 +520,8 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -606,6 +615,112 @@ class TestValidateLandscapePipeline:
         assert resumed_band.surrogate_dp.cost == band.cost
         assert resumed_band.surrogate_dp.score == band.score
 
+    async def test_per_band_validation_bayesian(self, tmp_path: Path) -> None:
+        """Run per-band ViterbiBayesianSurrogateSearch and verify results."""
+        from place_layers.surrogate.config import BayesianRidgeSurrogateConfig
+
+        evaluator = _make_evaluator(noise_sigma=0.0)
+        dataset = await _build_exploration_dataset(evaluator, num_samples=100)
+        dataset_path = _save_dataset(dataset, tmp_path)
+
+        # 1. Fit Bayesian surrogate, compute bands
+        bayesian_config = BayesianRidgeSurrogateConfig(
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+            lcb_kappa=2.0,
+            feature_scaling="none",
+        )
+        _, surrogate, cost_model = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            bayesian_config, seed=42,
+        )
+
+        all_allocs = enumerate_feasible_allocations(
+            cost_model, _NUM_LAYERS, cost_budget=None
+        )
+        alloc_costs = np.array(
+            [cost_model.allocation_cost(a) for a in all_allocs]
+        )
+        baseline_cost = cost_model.max_cost(_NUM_LAYERS)
+
+        num_cost_bins = 5
+        band_results = compute_dp_per_band(
+            surrogate, all_allocs, alloc_costs,
+            _NUM_LAYERS, baseline_cost, cost_model,
+            num_cost_bins,
+        )
+        band_edges = compute_band_edges(alloc_costs, baseline_cost, num_cost_bins)
+
+        assert len(band_results) > 0
+
+        # 2. Run per-band Bayesian search (just first 2 bands for speed)
+        bands_to_validate = band_results[:2]
+        validated_bands: list[BandValidationResult] = []
+
+        async with evaluator:
+            for band in bands_to_validate:
+                problem_config = MaxPerformanceProblemConfig(
+                    problem_type="cost_max_performance",
+                    cost_model=_COST_MODEL_CONFIG,
+                    cost_budget=band.cost_high,
+                    cost_floor=band.cost_low,
+                )
+                problem = CostConstrainedProblem(
+                    evaluators=wrap_evaluator(evaluator), config=problem_config,
+                    objective_name="weighted_average",
+                )
+
+                search_config = ViterbiBayesianSurrogateSearchConfig(
+                    strategy_type="viterbi_bayesian_surrogate",
+                    exploration_dataset_path=str(dataset_path),
+                    num_rounds=1,
+                    evals_per_round=10,
+                    candidates_per_model=50,
+                    cv_folds=3,
+                    surrogate=dict(
+                        surrogate_type="bayesian_ridge",
+                        prior_alpha=1.0,
+                        prior_a0=1e-6,
+                        prior_b0=1e-6,
+                        lcb_kappa=2.0,
+                        feature_scaling="none",
+                    ),
+                    lcb_betas=[0.0, 1.0, 2.0],
+                    lcb_quotas=[0.5, 0.3, 0.2],
+                    ranking_beta=0.0,
+                    max_frontier_size=200,
+                    seed=42,
+                )
+                strategy = search_config.create_search_strategy()
+                result = await strategy.search(problem)
+
+                validated_bands.append(
+                    BandValidationResult(
+                        band_index=band.band_index,
+                        cost_low=band.cost_low,
+                        cost_high=band.cost_high,
+                        surrogate_dp=PlacementResult(
+                            cost=band.cost,
+                            score=band.score,
+                            assignments=band.assignments,
+                        ),
+                        validated=PlacementResult(
+                            cost=result.final_cost,
+                            score=result.best_score,
+                            assignments=result.best_parameters.assignments,
+                        ),
+                        total_evaluations=result.total_evaluations,
+                    )
+                )
+
+        # 3. Verify results
+        assert len(validated_bands) == 2
+        for vb in validated_bands:
+            assert vb.total_evaluations > 0
+            assert len(vb.validated.assignments) == _NUM_LAYERS
+            assert len(vb.surrogate_dp.assignments) == _NUM_LAYERS
+
 
 # =============================================================================
 # Tests: LandscapeConfig
@@ -627,6 +742,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
         )
         assert cfg.seed == 42
         assert cfg.num_cost_bins == 80
@@ -639,6 +755,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
         )
         with pytest.raises(Exception):
             cfg.seed = 99  # type: ignore[misc]
