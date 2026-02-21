@@ -22,5 +22,7 @@ num_score_bins: 120
 show_observed: true
 score_label: "Score"
 
+display_names: null
+
 validation_output_dir: null
 

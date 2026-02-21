@@ -37,6 +37,10 @@ from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+from place_layers.surrogate.config import (
+    BayesianRidgeSurrogateConfig,
+    RidgeSurrogateConfig,
+)
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
@@ -220,9 +224,6 @@ class PlacementLandscapeCommand(BaseCommand):
             )
             observed_scores = np.array(dataset.scores)
 
-        # Score label with objective name suffix
-        score_label = f"{self.config.score_label} ({obj_name})"
-
         # Plot
         self._plot(
             costs,
@@ -235,8 +236,8 @@ class PlacementLandscapeCommand(BaseCommand):
             observed_scores,
             output_dir,
             obj_name,
-            score_label,
             validation,
+            surrogate,
         )
 
     def _generate_density_samples(
@@ -296,18 +297,22 @@ class PlacementLandscapeCommand(BaseCommand):
         observed_scores: np.ndarray | None,
         output_dir: Path,
         obj_name: str,
-        score_label: str,
-        validation: ValidationResults | None = None,
+        validation: ValidationResults | None,
+        surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
     ) -> None:
         """Render two-panel figure: density + layermap."""
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.colors import LogNorm
-        from matplotlib.patches import Patch
 
         cfg = self.config
         phase_order = cost_model.phase_order
+
+        # Resolve Y-axis label
+        if cfg.display_names and obj_name in cfg.display_names:
+            score_label = cfg.display_names[obj_name]
+        else:
+            score_label = f"{cfg.score_label} ({obj_name})"
 
         # Convert costs to speedup (presentation only)
         speedups = baseline_cost / costs
@@ -332,125 +337,35 @@ class PlacementLandscapeCommand(BaseCommand):
         cax = fig.add_subplot(gs[0, 1])
         ax_layermap = fig.add_subplot(gs[1, 0], sharex=ax_density)
 
-        # ---- Top panel: density + DP line ----
-        h = ax_density.hist2d(
-            speedups, scores,
-            bins=[cfg.landscape.num_cost_bins, cfg.num_score_bins],
-            cmap="Greys",
-            norm=LogNorm(),
-            density=True,
-            range=[[min_speedup, max_speedup], [0.0, 1.0]],
-        )
-        fig.colorbar(h[3], cax=cax, label="Density")
-        ax_density.set_ylim(0.0, 1.0)
-
-        # DP-optimal line (dashed when validation present, solid otherwise)
-        if band_results:
-            band_speedups = [baseline_cost / r.cost for r in band_results]
-            band_scores = [r.score for r in band_results]
-            dp_style = "--" if validation is not None else "-"
-            dp_label = "Surrogate DP" if validation is not None else "DP optimum"
-            ax_density.plot(
-                band_speedups, band_scores,
-                color="tab:blue", lw=2, ls=dp_style,
-                label=dp_label, zorder=5,
-            )
-
-        # Validated line (when validation data present)
-        if validation is not None and validation.bands:
-            val_speedups = [
-                baseline_cost / b.validated.cost for b in validation.bands
-            ]
-            val_scores = [b.validated.score for b in validation.bands]
-            ax_density.plot(
-                val_speedups, val_scores,
-                color="tab:red", lw=2, ls="-",
-                label="Validated", zorder=6,
-            )
-
-        # Observed data overlay
-        if observed_costs is not None and observed_scores is not None:
-            observed_speedups = baseline_cost / observed_costs
-            ax_density.scatter(
-                observed_speedups, observed_scores,
-                s=3, alpha=0.3, color="tab:red" if validation is None else "tab:gray",
-                zorder=3,
-                label="Observed",
-            )
-
-        # Random chance line
-        ax_density.axhline(
-            y=0.25, color="tab:blue", ls="--", lw=1.5, zorder=2,
-        )
-        ax_density.text(
-            min_speedup + 0.02 * (max_speedup - min_speedup), 0.25 + 0.005,
-            "Random chance", fontsize=8, color="tab:blue", va="bottom",
+        # Top panel: density + DP line + uncertainty + validation + observed
+        self._plot_density_panel(
+            ax=ax_density,
+            fig=fig,
+            cax=cax,
+            speedups=speedups,
+            scores=scores,
+            band_results=band_results,
+            baseline_cost=baseline_cost,
+            min_speedup=min_speedup,
+            max_speedup=max_speedup,
+            observed_costs=observed_costs,
+            observed_scores=observed_scores,
+            score_label=score_label,
+            validation=validation,
+            surrogate=surrogate,
         )
 
-        ax_density.set_ylabel(score_label)
-        ax_density.legend(loc="upper left", fontsize=8)
-        ax_density.tick_params(labelbottom=False)
-
-        # ---- Bottom panel: layermap ----
-        # Use validated assignments if available, otherwise surrogate DP
-        if validation is not None and validation.bands:
-            layermap_source = [
-                BandResult(
-                    band_index=b.band_index,
-                    cost_low=b.cost_low,
-                    cost_high=b.cost_high,
-                    cost=b.validated.cost,
-                    score=b.validated.score,
-                    assignments=b.validated.assignments,
-                )
-                for b in validation.bands
-            ]
-        else:
-            layermap_source = band_results
-
-        num_bins = cfg.landscape.num_cost_bins
-        speedup_bin_edges = np.linspace(min_speedup, max_speedup, num_bins + 1)
-        layer_edges = np.arange(num_layers + 1)
-
-        # Build mixer name -> index mapping from phase_order
-        mixer_to_idx = {name: i for i, name in enumerate(phase_order)}
-        num_mixers = len(phase_order)
-
-        # Build layermap array: (num_layers, num_bins), fill with -1 (empty)
-        layermap_data = np.full((num_layers, num_bins), -1, dtype=int)
-        for br in layermap_source:
-            br_speedup = baseline_cost / br.cost
-            b = int(np.digitize(br_speedup, speedup_bin_edges)) - 1
-            b = min(b, num_bins - 1)
-            for layer_idx, mixer_name in enumerate(br.assignments):
-                layermap_data[layer_idx, b] = mixer_to_idx[mixer_name]
-
-        # Colormap: white for empty (-1), then one color per mixer in phase_order
-        from matplotlib.colors import BoundaryNorm, ListedColormap
-        cmap_colors = ["white"] + [mixer_colors[name] for name in phase_order]
-        mixer_cmap = ListedColormap(cmap_colors)
-        boundaries = np.arange(-1.5, num_mixers + 0.5, 1)
-        norm = BoundaryNorm(boundaries, len(cmap_colors))
-
-        ax_layermap.pcolormesh(
-            speedup_bin_edges, layer_edges, layermap_data,
-            cmap=mixer_cmap, norm=norm,
-        )
-        ax_layermap.set_ylabel("Layer index")
-        ax_layermap.set_xlabel("Speedup (\u00d7)")
-        ax_layermap.invert_yaxis()
-
-        # Legend for mixer types
-        legend_patches = [
-            Patch(facecolor=mixer_colors[name], label=name)
-            for name in phase_order
-        ]
-        ax_layermap.legend(
-            handles=legend_patches,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.4),
-            ncol=min(len(phase_order), 4),
-            fontsize=8,
+        # Bottom panel: layermap
+        self._plot_layermap_panel(
+            ax=ax_layermap,
+            band_results=band_results,
+            baseline_cost=baseline_cost,
+            min_speedup=min_speedup,
+            max_speedup=max_speedup,
+            num_layers=num_layers,
+            phase_order=phase_order,
+            mixer_colors=mixer_colors,
+            validation=validation,
         )
 
         # Save
@@ -460,6 +375,218 @@ class PlacementLandscapeCommand(BaseCommand):
         fig.savefig(png_path, bbox_inches="tight")
         plt.close(fig)
         logger.info("Saved %s and %s", pdf_path, png_path)
+
+    def _plot_density_panel(
+        self,
+        *,
+        ax,
+        fig,
+        cax,
+        speedups: np.ndarray,
+        scores: np.ndarray,
+        band_results: list[BandResult],
+        baseline_cost: float,
+        min_speedup: float,
+        max_speedup: float,
+        observed_costs: np.ndarray | None,
+        observed_scores: np.ndarray | None,
+        score_label: str,
+        validation: ValidationResults | None,
+        surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
+    ) -> None:
+        """Render density histogram, DP line, uncertainty band, validation, observed."""
+        from matplotlib.colors import LogNorm
+
+        cfg = self.config
+
+        h = ax.hist2d(
+            speedups, scores,
+            bins=[cfg.landscape.num_cost_bins, cfg.num_score_bins],
+            cmap="Greys",
+            norm=LogNorm(),
+            density=True,
+            range=[[min_speedup, max_speedup], [0.0, 1.0]],
+        )
+        fig.colorbar(h[3], cax=cax, label="Density")
+        ax.set_ylim(0.0, 1.0)
+
+        # DP-optimal line (dashed when validation present, solid otherwise)
+        if band_results:
+            band_speedups = [baseline_cost / r.cost for r in band_results]
+            band_scores = [r.score for r in band_results]
+            dp_style = "--" if validation is not None else "-"
+            dp_label = "Surrogate DP" if validation is not None else "DP optimum"
+            ax.plot(
+                band_speedups, band_scores,
+                color="tab:blue", lw=2, ls=dp_style,
+                label=dp_label, zorder=5,
+            )
+
+            # Uncertainty band
+            self._plot_uncertainty_band(
+                ax=ax,
+                band_results=band_results,
+                baseline_cost=baseline_cost,
+                surrogate=surrogate,
+            )
+
+        # Validated line (when validation data present)
+        if validation is not None and validation.bands:
+            val_speedups = [
+                baseline_cost / b.validated.cost for b in validation.bands
+            ]
+            val_scores = [b.validated.score for b in validation.bands]
+            ax.plot(
+                val_speedups, val_scores,
+                color="tab:red", lw=2, ls="-",
+                label="Validated", zorder=6,
+            )
+
+        # Observed data overlay
+        if observed_costs is not None and observed_scores is not None:
+            observed_speedups = baseline_cost / observed_costs
+            ax.scatter(
+                observed_speedups, observed_scores,
+                s=3, alpha=0.3, color="tab:red" if validation is None else "tab:gray",
+                zorder=3,
+                label="Observed",
+            )
+
+        ax.set_ylabel(score_label)
+        ax.legend(loc="upper left", fontsize=8)
+        ax.tick_params(labelbottom=False)
+
+    def _plot_uncertainty_band(
+        self,
+        *,
+        ax,
+        band_results: list[BandResult],
+        baseline_cost: float,
+        surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
+    ) -> None:
+        """Plot surrogate uncertainty as fill_between around DP line."""
+        assignments = [br.assignments for br in band_results]
+        _, sigma = surrogate.predict(assignments)
+        # Center on DP scores (not predict mean) so band matches the plotted line
+        band_scores = np.array([r.score for r in band_results])
+        band_speedups = np.array([baseline_cost / r.cost for r in band_results])
+
+        match self.config.landscape.surrogate:
+            case BayesianRidgeSurrogateConfig():
+                label = "Posterior \u00b12\u03c3"
+            case RidgeSurrogateConfig():
+                label = "Bootstrap \u00b12\u03c3"
+            case _:
+                label = "\u00b12\u03c3"
+
+        ax.fill_between(
+            band_speedups,
+            band_scores - 2 * sigma,
+            band_scores + 2 * sigma,
+            alpha=0.15, color="tab:blue", label=label, zorder=4,
+        )
+
+    def _plot_layermap_panel(
+        self,
+        *,
+        ax,
+        band_results: list[BandResult],
+        baseline_cost: float,
+        min_speedup: float,
+        max_speedup: float,
+        num_layers: int,
+        phase_order: list[str],
+        mixer_colors: dict[str, str],
+        validation: ValidationResults | None,
+    ) -> None:
+        """Render layermap pcolormesh with mixer legend."""
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        from matplotlib.patches import Patch
+
+        cfg = self.config
+        num_bins = cfg.landscape.num_cost_bins
+        speedup_bin_edges = np.linspace(min_speedup, max_speedup, num_bins + 1)
+        layer_edges = np.arange(num_layers + 1)
+
+        mixer_to_idx = {name: i for i, name in enumerate(phase_order)}
+        num_mixers = len(phase_order)
+
+        # Merge validation + DP fallback for layermap source
+        if validation is not None and validation.bands:
+            validated_by_index = {b.band_index: b for b in validation.bands}
+            merged: list[BandResult] = []
+            for br in band_results:
+                if br.band_index in validated_by_index:
+                    vb = validated_by_index[br.band_index]
+                    merged.append(BandResult(
+                        band_index=vb.band_index,
+                        cost_low=vb.cost_low,
+                        cost_high=vb.cost_high,
+                        cost=vb.validated.cost,
+                        score=vb.validated.score,
+                        assignments=vb.validated.assignments,
+                    ))
+                else:
+                    merged.append(br)  # DP fallback
+            layermap_source = merged
+        else:
+            layermap_source = band_results
+
+        layermap_data = self._build_layermap_data(
+            layermap_source, baseline_cost, speedup_bin_edges,
+            num_layers, num_bins, mixer_to_idx,
+        )
+
+        # Colormap: white for empty (-1), then one color per mixer in phase_order
+        cmap_colors = ["white"] + [mixer_colors[name] for name in phase_order]
+        mixer_cmap = ListedColormap(cmap_colors)
+        boundaries = np.arange(-1.5, num_mixers + 0.5, 1)
+        norm = BoundaryNorm(boundaries, len(cmap_colors))
+
+        ax.pcolormesh(
+            speedup_bin_edges, layer_edges, layermap_data,
+            cmap=mixer_cmap, norm=norm,
+        )
+        ax.set_ylabel("Layer index")
+        ax.set_xlabel("Speedup (\u00d7)")
+        ax.invert_yaxis()
+
+        # Legend for mixer types
+        legend_patches = [
+            Patch(facecolor=mixer_colors[name], label=name)
+            for name in phase_order
+        ]
+        ax.legend(
+            handles=legend_patches,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.4),
+            ncol=min(len(phase_order), 4),
+            fontsize=8,
+        )
+
+    @staticmethod
+    def _build_layermap_data(
+        layermap_source: list[BandResult],
+        baseline_cost: float,
+        speedup_bin_edges: np.ndarray,
+        num_layers: int,
+        num_bins: int,
+        mixer_to_idx: dict[str, int],
+    ) -> np.ndarray:
+        """Build (num_layers, num_bins) array using range-based bin filling.
+
+        Each BandResult's [cost_low, cost_high] range is converted to a speedup
+        range and ALL overlapping bins are filled, eliminating white gaps.
+        """
+        layermap_data = np.full((num_layers, num_bins), -1, dtype=int)
+        for br in layermap_source:
+            sp_lo = baseline_cost / br.cost_high
+            sp_hi = baseline_cost / br.cost_low
+            for b in range(num_bins):
+                if speedup_bin_edges[b] < sp_hi and speedup_bin_edges[b + 1] > sp_lo:
+                    for layer_idx, mixer_name in enumerate(br.assignments):
+                        layermap_data[layer_idx, b] = mixer_to_idx[mixer_name]
+        return layermap_data
 
 
 # ============================================================================
@@ -498,6 +625,13 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
     )
     score_label: str = Field(
         description="Y-axis label for the density plot.",
+    )
+
+    # Display
+    display_names: dict[str, str] | None = Field(
+        default=None,
+        description="Mapping from objective name to human-readable Y-axis label. "
+        "When null, falls back to '{score_label} ({obj_name})'.",
     )
 
     # Validation overlay (optional — YAML supplies null)
