@@ -36,6 +36,7 @@ from place_layers.search_strategy.cost_constrained.surrogate import (
     SurrogateSearch,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    RiskBucketConfig,
     ViterbiBayesianSurrogateSearch,
     ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearch,

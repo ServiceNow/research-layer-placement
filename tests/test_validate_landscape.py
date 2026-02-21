@@ -48,6 +48,7 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    RiskBucketConfig,
     ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
@@ -686,10 +687,10 @@ class TestValidateLandscapePipeline:
                         lcb_kappa=2.0,
                         feature_scaling="none",
                     ),
-                    lcb_betas=[0.0, 1.0, 2.0],
-                    lcb_quotas=[0.5, 0.3, 0.2],
-                    ranking_beta=0.0,
-                    max_frontier_size=200,
+                    risk_buckets=[
+                        RiskBucketConfig(name="safe", sign=-1, betas=[0.0, 1.0], quota=0.6, mean_floor_quantile=0.0),
+                        RiskBucketConfig(name="upside", sign=1, betas=[1.0], quota=0.3, mean_floor_quantile=0.5),
+                    ],
                     seed=42,
                 )
                 strategy = search_config.create_search_strategy()
