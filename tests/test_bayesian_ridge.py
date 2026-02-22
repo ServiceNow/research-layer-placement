@@ -148,32 +148,6 @@ class TestMRFModels:
             )
 
 
-class TestFullLCB:
-    """Verify full LCB computation."""
-
-    def test_full_lcb_uses_all_features(self) -> None:
-        """Full LCB should differ from count-free score when counts are enabled."""
-        feature_config = FeatureExpansionConfig(
-            max_order=2, pairwise_max_range=1, allocation_counts=True
-        )
-        surrogate, assignments, _ = _fit_bayesian(feature_config=feature_config)
-
-        # Full LCB uses all features (including counts)
-        lcb_full = surrogate.full_lcb(assignments[:10], beta=1.0)
-        assert lcb_full.shape == (10,)
-
-        # Compare with pure mean — LCB should be lower
-        mu = surrogate.predict_mean(assignments[:10])
-        assert np.all(lcb_full <= mu + 1e-10), "LCB should be <= mean"
-
-    def test_lcb_beta_zero_is_mean(self) -> None:
-        """With β=0, LCB should equal the mean prediction."""
-        surrogate, assignments, _ = _fit_bayesian()
-        lcb = surrogate.full_lcb(assignments[:10], beta=0.0)
-        mu = surrogate.predict_mean(assignments[:10])
-        np.testing.assert_allclose(lcb, mu, atol=1e-10)
-
-
 class TestPosteriorHyperparameters:
     """Verify posterior hyperparameter properties."""
 
@@ -190,29 +164,6 @@ class TestPosteriorHyperparameters:
         """All diagonal elements of V_n should be positive."""
         surrogate, _, _ = _fit_bayesian()
         assert np.all(surrogate.diag_Vn > 0)
-
-
-class TestCrossValidation:
-    """Verify cross-validation."""
-
-    def test_cv_reasonable_on_easy_landscape(self) -> None:
-        surrogate, assignments, y = _fit_bayesian(n_samples=200)
-        rho = surrogate.cross_validate(assignments, y, cv_folds=5)
-        assert 0 <= rho <= 1.0
-
-    def test_cv_noise(self) -> None:
-        """CV on pure noise should return rho near 0."""
-        rng = np.random.RandomState(42)
-        mixer_names = ["m0", "m1"]
-        assignments = _random_placements(rng, mixer_names, 8, 100)
-        y = rng.randn(100)
-
-        surrogate = BayesianRidgeSurrogate(
-            mixer_names=mixer_names, seed=42,
-            feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        )
-        rho = surrogate.cross_validate(assignments, y, cv_folds=5)
-        assert abs(rho) < 0.4
 
 
 class TestFeatureScaling:

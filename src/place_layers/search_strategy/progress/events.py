@@ -77,6 +77,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from place_layers.search_strategy.progress.estimator import AllocationProgressInfo
+from place_layers.surrogate.base_surrogate import SurrogateDiagnostics
 
 
 # =============================================================================
@@ -475,7 +476,9 @@ class SurrogateRoundCompletedEvent(BaseModel):
     event_type: Literal["surrogate_round_completed"] = "surrogate_round_completed"
     round: int  # 1-indexed
     total_rounds: int
-    rho: float  # CV rho after refit
+    surrogate_metric_label: str  # e.g. "ρ_cv" or "ELPD"
+    surrogate_metric_value: float  # summary scalar
+    diagnostics: SurrogateDiagnostics  # full structured payload for logging
     prediction_correlation: float  # Spearman(surrogate predictions, real scores) for this round
     dataset_size: int  # total samples after round
     best_score: float  # current best real score

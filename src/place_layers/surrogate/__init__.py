@@ -1,6 +1,7 @@
 """Surrogate model package for placement optimization."""
 
-from place_layers.surrogate.acquisition import expected_improvement, lower_confidence_bound
+from place_layers.surrogate.acquisition import expected_improvement
+from place_layers.surrogate.base_surrogate import BaseSurrogate, FrequentistCVDiagnostics, SurrogateDiagnostics
 from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 from place_layers.surrogate.config import (
     BaseSurrogateConfig,

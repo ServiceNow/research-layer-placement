@@ -27,3 +27,6 @@ surrogate:
   surrogate_type: ridge
   n_bootstraps: 50
   ei_xi: 0.01
+
+# Risk buckets: null for ridge, required list for bayesian_ridge
+risk_buckets: null

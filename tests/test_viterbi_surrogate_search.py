@@ -23,8 +23,11 @@ from place_layers.problem.layer_placement import (
 from place_layers.search_strategy.cost_constrained.types import (
     CostConstrainedSearchResult,
 )
-from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+from place_layers.search_strategy.cost_constrained.risk_bucket_selection import (
     RiskBucketConfig,
+    select_by_risk_buckets,
+)
+from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
     ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
@@ -289,7 +292,6 @@ class TestViterbiSurrogateSearchIntegration:
                 prior_alpha=1.0,
                 prior_a0=1e-6,
                 prior_b0=1e-6,
-                lcb_kappa=2.0,
                 feature_scaling="none",
             ),
             risk_buckets=[
@@ -331,7 +333,6 @@ class TestRiskBucketValidation:
                 prior_alpha=1.0,
                 prior_a0=1e-6,
                 prior_b0=1e-6,
-                lcb_kappa=2.0,
                 feature_scaling="none",
             ),
         )
@@ -411,76 +412,8 @@ class TestRiskBucketSelection:
         buckets: list[RiskBucketConfig],
         n_select: int,
     ) -> list[int]:
-        """Reproduce the risk-bucket selection algorithm from the search loop."""
-        selected: list[int] = []
-        selected_set: set[int] = set()
-
-        # Largest-remainder apportionment
-        quotas = [b.quota for b in buckets]
-        raw = [q * n_select for q in quotas]
-        base = [int(np.floor(r)) for r in raw]
-        target_total = min(n_select, int(np.floor(sum(raw) + 1e-9)))
-        left = max(0, target_total - sum(base))
-        remainders = [(raw[i] - base[i], i) for i in range(len(base))]
-        remainders.sort(reverse=True)
-        for _, i in remainders[:left]:
-            base[i] += 1
-
-        for bucket_idx, bucket in enumerate(buckets):
-            k_bucket = base[bucket_idx]
-            if k_bucket == 0:
-                continue
-
-            kb = k_bucket // len(bucket.betas)
-            kr = k_bucket % len(bucket.betas)
-            floor_val = float(np.quantile(mu, bucket.mean_floor_quantile))
-            remaining_k_bucket = k_bucket
-
-            for j, beta in enumerate(bucket.betas):
-                k = kb + (1 if j < kr else 0)
-                if k == 0:
-                    continue
-                eligible = [i for i in range(len(mu))
-                            if i not in selected_set and mu[i] >= floor_val]
-                if not eligible:
-                    continue
-                eligible_arr = np.array(eligible)
-                scores = mu[eligible_arr] + bucket.sign * beta * sigma[eligible_arr]
-                order = np.argsort(scores, kind="mergesort")[::-1][:k]
-                for idx in order:
-                    if remaining_k_bucket <= 0 or len(selected) >= n_select:
-                        break
-                    i = int(eligible_arr[idx])
-                    selected.append(i)
-                    selected_set.add(i)
-                    remaining_k_bucket -= 1
-
-            # Within-bucket backfill
-            if remaining_k_bucket > 0:
-                eligible = [i for i in range(len(mu))
-                            if i not in selected_set and mu[i] >= floor_val]
-                if eligible:
-                    eligible_arr = np.array(eligible)
-                    order = np.argsort(mu[eligible_arr], kind="mergesort")[::-1]
-                    for idx in order:
-                        if remaining_k_bucket <= 0 or len(selected) >= n_select:
-                            break
-                        i = int(eligible_arr[idx])
-                        selected.append(i)
-                        selected_set.add(i)
-                        remaining_k_bucket -= 1
-
-        # Global backfill
-        if len(selected) < n_select:
-            remaining = [i for i in range(len(mu)) if i not in selected_set]
-            remaining_arr = np.array(remaining) if remaining else np.array([], dtype=int)
-            if len(remaining_arr) > 0:
-                order = np.argsort(mu[remaining_arr], kind="mergesort")[::-1]
-                for idx in order:
-                    if len(selected) >= n_select:
-                        break
-                    selected.append(int(remaining_arr[idx]))
-
+        """Delegate to the extracted select_by_risk_buckets utility."""
+        selected, _log = select_by_risk_buckets(mu, sigma, n_select, buckets)
         return selected
 
     def test_safe_bucket_prefers_low_sigma(self):

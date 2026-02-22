@@ -12,6 +12,7 @@ mapping.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -22,6 +23,10 @@ from sklearn.model_selection import KFold
 if TYPE_CHECKING:
     from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
+from place_layers.surrogate.base_surrogate import (
+    BaseSurrogate,
+    FrequentistCVDiagnostics,
+)
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
     build_type_mapping,
@@ -30,7 +35,7 @@ from place_layers.surrogate.encoding import (
 )
 
 
-class RidgeSurrogate:
+class RidgeSurrogate(BaseSurrogate):
     """Ridge regression surrogate with bootstrap uncertainty.
 
     Not a Pydantic model — a plain wrapper whose parameters are passed
@@ -55,7 +60,7 @@ class RidgeSurrogate:
         self._main_model: RidgeCV | None = None
         self._bootstrap_models: list[Ridge] = []
 
-    def fit(self, assignments: list[tuple[str, ...]], y: np.ndarray) -> None:
+    def fit(self, assignments: Sequence[Sequence[str]], y: np.ndarray) -> None:
         """Fit main RidgeCV on full data + bootstrap Ridge models.
 
         Args:
@@ -81,7 +86,7 @@ class RidgeSurrogate:
             model.fit(X[idx], y[idx])
             self._bootstrap_models.append(model)
 
-    def predict_mean(self, assignments: list[tuple[str, ...]]) -> np.ndarray:
+    def predict_mean(self, assignments: Sequence[Sequence[str]]) -> np.ndarray:
         """Fast mean-only prediction using main Ridge model.
 
         Args:
@@ -94,7 +99,7 @@ class RidgeSurrogate:
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
         return self._main_model.predict(X)
 
-    def predict_mean_one(self, assignment: tuple[str, ...] | list[str]) -> float:
+    def predict_mean_one(self, assignment: Sequence[str]) -> float:
         """Single-assignment mean prediction for SA hot loop.
 
         Uses a direct dot product — faster than going through sklearn predict.
@@ -106,7 +111,7 @@ class RidgeSurrogate:
         return float(self._coef @ x + self._intercept)
 
     def predict(
-        self, assignments: list[tuple[str, ...]]
+        self, assignments: Sequence[Sequence[str]]
     ) -> tuple[np.ndarray, np.ndarray]:
         """Predict with uncertainty from bootstrap ensemble.
 
@@ -162,6 +167,23 @@ class RidgeSurrogate:
             rhos.append(rho)
 
         return float(np.mean(np.array(rhos))) if rhos else 0.0
+
+    def diagnostics(
+        self,
+        assignments: Sequence[Sequence[str]],
+        y: np.ndarray,
+        *,
+        folds: int | None,
+        rng_seed: int = 0,
+    ) -> FrequentistCVDiagnostics:
+        """Frequentist CV diagnostics: Spearman rank correlation."""
+        if folds is not None and len(y) >= folds * 2:
+            rho = self.cross_validate(
+                [tuple(a) for a in assignments], y, cv_folds=folds,
+            )
+        else:
+            rho = 0.0
+        return FrequentistCVDiagnostics(spearman_cv=rho)
 
     def extract_mrf_model(self, num_layers: int) -> "SurrogateMRFModel":
         """Extract MRF model from main (RidgeCV) model coefficients."""

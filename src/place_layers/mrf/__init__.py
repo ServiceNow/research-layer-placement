@@ -8,6 +8,5 @@ This module provides tools for analyzing chain-structured MRFs, including:
 """
 
 from place_layers.mrf.model import ChainMRFModel, MRFModelProtocol
-from place_layers.mrf.pareto_lcb_solver import ParetoLCBSolver
 from place_layers.mrf.solver import ExactMRFSolver, ExactSolution
 from place_layers.mrf.surrogate_model import SurrogateMRFModel

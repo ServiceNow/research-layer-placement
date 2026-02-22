@@ -14,11 +14,10 @@ landscape:
     prior_alpha: 1.0
     prior_a0: 1.0e-6
     prior_b0: 1.0e-6
-    lcb_kappa: 2.0
     feature_scaling: counts_only
 
 search_strategy:
-  exploration_dataset_path: __DERIVED__
+  exploration_dataset_path: null
   num_rounds: 1
   evals_per_round: 20
   candidates_per_model: 200

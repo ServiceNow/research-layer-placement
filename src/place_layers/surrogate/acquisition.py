@@ -6,27 +6,6 @@ import numpy as np
 from scipy.stats import norm
 
 
-def lower_confidence_bound(
-    mu: np.ndarray,
-    sigma: np.ndarray,
-    kappa: float = 2.0,
-) -> np.ndarray:
-    """Lower Confidence Bound for maximization: score = mu - kappa * sigma.
-
-    Higher kappa → more conservative (stronger uncertainty penalty).
-    kappa=0 → pure mean (no uncertainty penalty).
-
-    Args:
-        mu: Predicted means, shape (n,).
-        sigma: Predicted standard deviations, shape (n,).
-        kappa: Uncertainty penalty strength.
-
-    Returns:
-        LCB values, shape (n,).
-    """
-    return mu - kappa * sigma
-
-
 def expected_improvement(
     mu: np.ndarray,
     sigma: np.ndarray,

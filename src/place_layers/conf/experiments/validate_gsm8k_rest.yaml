@@ -19,7 +19,7 @@ defaults:
   - _self_
 
 search_strategy:
-  exploration_dataset_path: __DERIVED__
+  exploration_dataset_path: null
 
 backend:
   servers:

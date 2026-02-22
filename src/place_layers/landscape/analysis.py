@@ -17,10 +17,9 @@ from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.landscape.models import BandResult
 from place_layers.mrf.solver import ExactMRFSolver
-from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+from place_layers.surrogate.base_surrogate import BaseSurrogate
 from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
-from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ def load_and_fit_surrogate(
     cost_model_config: CostModelConfig,
     surrogate_config: SurrogateConfig,
     seed: int,
-) -> tuple[ExplorationDataset, RidgeSurrogate | BayesianRidgeSurrogate, BaseCostModel]:
+) -> tuple[ExplorationDataset, BaseSurrogate, BaseCostModel]:
     """Load dataset, create surrogate from config, fit to data.
 
     Uses the dataset's stored ``feature_config`` directly (the exploration
@@ -96,7 +95,7 @@ def compute_band_edges(
 
 
 def compute_dp_per_band(
-    surrogate: RidgeSurrogate | BayesianRidgeSurrogate,
+    surrogate: BaseSurrogate,
     all_allocations: list[Allocation],
     alloc_costs: np.ndarray,
     num_layers: int,

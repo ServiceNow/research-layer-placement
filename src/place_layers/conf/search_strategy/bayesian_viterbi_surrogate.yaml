@@ -12,13 +12,12 @@ cv_folds: 5
 num_rounds: 4
 evals_per_round: 500
 seed: 42
-candidates_per_model: 200
+candidates_per_model: 1000
 surrogate:
   surrogate_type: bayesian_ridge
   prior_alpha: 1.0
   prior_a0: 1.0e-6
   prior_b0: 1.0e-6
-  lcb_kappa: 2.0
   feature_scaling: counts_only
 risk_buckets:
   - name: safe

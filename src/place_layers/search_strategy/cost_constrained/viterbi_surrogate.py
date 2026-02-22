@@ -17,13 +17,14 @@ Two concrete strategies:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator  # noqa: F401 (model_validator used in config)
 from scipy.stats import spearmanr
 
 from place_layers.core.types import LayerPlacement
@@ -34,6 +35,10 @@ from place_layers.problem.layer_placement import CostConstrainedProblem
 from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
 from place_layers.search_strategy.cost_constrained.base_config import (
     BaseCostConstrainedConfig,
+)
+from place_layers.search_strategy.cost_constrained.risk_bucket_selection import (
+    RiskBucketConfig,
+    select_by_risk_buckets,
 )
 from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
@@ -223,6 +228,12 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
         """Bootstrap Viterbi loop."""
         mixer_names = cost_model.phase_order
 
+        if self.config.exploration_dataset_path is None:
+            raise ValueError(
+                "exploration_dataset_path is null — it must be set before search. "
+                "The validate_landscape command derives it per-objective at runtime."
+            )
+
         # Load exploration dataset
         exploration = ExplorationDataset.load(
             Path(self.config.exploration_dataset_path)
@@ -402,19 +413,21 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
             t_refit = time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            rho = surrogate.cross_validate(
+            diag = surrogate.diagnostics(
                 all_assignments, np.array(all_scores),
-                cv_folds=self.config.cv_folds,
+                folds=self.config.cv_folds, rng_seed=self.config.seed,
             )
+            label, value = diag.summary()
             t_cv = time.perf_counter() - t0
             logger.info(
                 "Round %d complete: refit %.3fs, CV %.3fs, "
-                "best=%.6f, rho=%.4f, pred_corr=%.4f",
+                "best=%.6f, %s=%.4f, pred_corr=%.4f",
                 round_num + 1,
                 t_refit,
                 t_cv,
                 f_best,
-                rho,
+                label,
+                value,
                 prediction_correlation,
             )
 
@@ -427,7 +440,9 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
                 round_completed_event = SurrogateRoundCompletedEvent(
                     round=round_num + 1,
                     total_rounds=self.config.num_rounds,
-                    rho=rho,
+                    surrogate_metric_label=label,
+                    surrogate_metric_value=value,
+                    diagnostics=diag,
                     prediction_correlation=prediction_correlation,
                     dataset_size=len(all_assignments),
                     best_score=f_best,
@@ -458,6 +473,12 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Bayesian Viterbi loop with risk-bucket selection."""
         mixer_names = cost_model.phase_order
+
+        if self.config.exploration_dataset_path is None:
+            raise ValueError(
+                "exploration_dataset_path is null — it must be set before search. "
+                "The validate_landscape command derives it per-objective at runtime."
+            )
 
         # Pool sizing guard
         if self.config.candidates_per_model < self.config.evals_per_round:
@@ -513,20 +534,31 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
                 self.config.candidates_per_model,
             )
 
-            # Step 1: Pool generation — single DP call on posterior mean MRF
+            # Step 1: Pool generation — per-allocation DP (allocation-diverse)
             t0 = time.perf_counter()
             mrf = surrogate.extract_mrf_model(num_layers)
             t_extract = time.perf_counter() - t0
 
             t0 = time.perf_counter()
             solver = ExactMRFSolver(mrf)
-            solutions = solver.solve_top_n(
-                feasible_allocations, n=self.config.candidates_per_model
-            )
+            k_per_alloc = int(math.ceil(
+                self.config.candidates_per_model / len(feasible_allocations)
+            ))
             candidate_set: set[tuple[str, ...]] = set()
-            for sol in solutions:
-                candidate_set.add(sol.placement.assignments)
+            for alloc in feasible_allocations:
+                sols = solver.solve_top_n([alloc], n=k_per_alloc)
+                candidate_set.update(sol.placement.assignments for sol in sols)
+
             pool = list(candidate_set)
+
+            # Trim if overshot
+            if len(pool) > self.config.candidates_per_model:
+                mu_all = surrogate.predict_mean(pool)
+                keep = np.argsort(mu_all, kind="mergesort")[::-1][
+                    : self.config.candidates_per_model
+                ]
+                pool = [pool[i] for i in keep]
+
             t_viterbi = time.perf_counter() - t0
 
             logger.info(
@@ -549,101 +581,9 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
 
             # Step 3: Select via risk_buckets
             n_select = min(self.config.evals_per_round, len(pool))
-            selected: list[int] = []
-            selected_set: set[int] = set()
-
-            # Largest-remainder apportionment across buckets
-            quotas = [b.quota for b in self.config.risk_buckets]
-            raw = [q * n_select for q in quotas]
-            base = [int(np.floor(r)) for r in raw]
-            target_total = min(n_select, int(np.floor(sum(raw) + 1e-9)))
-            left = max(0, target_total - sum(base))
-            remainders = [(raw[i] - base[i], i) for i in range(len(base))]
-            remainders.sort(reverse=True)
-            for _, i in remainders[:left]:
-                base[i] += 1
-
-            bucket_selection_log: list[str] = []
-
-            for bucket_idx, bucket in enumerate(self.config.risk_buckets):
-                k_bucket = base[bucket_idx]
-                if k_bucket == 0:
-                    continue
-
-                # Split k_bucket across betas with exact accounting
-                kb = k_bucket // len(bucket.betas)
-                kr = k_bucket % len(bucket.betas)
-
-                # mean_floor_quantile: eligible candidates have mu >= quantile(mu, q)
-                floor_val = float(np.quantile(mu, bucket.mean_floor_quantile))
-
-                remaining_k_bucket = k_bucket
-
-                for j, beta in enumerate(bucket.betas):
-                    k = kb + (1 if j < kr else 0)
-                    if k == 0:
-                        continue
-                    eligible = [i for i in range(len(pool))
-                                if i not in selected_set and mu[i] >= floor_val]
-                    if not eligible:
-                        continue
-                    eligible_arr = np.array(eligible)
-                    scores = mu[eligible_arr] + bucket.sign * beta * sigma[eligible_arr]
-                    order = np.argsort(scores, kind="mergesort")[::-1][:k]
-                    added = 0
-                    for idx in order:
-                        if remaining_k_bucket <= 0 or len(selected) >= n_select:
-                            break
-                        i = int(eligible_arr[idx])
-                        selected.append(i)
-                        selected_set.add(i)
-                        remaining_k_bucket -= 1
-                        added += 1
-                    bucket_selection_log.append(
-                        f"  {bucket.name}(sign={bucket.sign}, β={beta}): "
-                        f"selected {added}, "
-                        f"mean(μ)={float(np.mean(mu[eligible_arr])):.4f}, "
-                        f"mean(σ)={float(np.mean(sigma[eligible_arr])):.4f}"
-                    )
-
-                # Within-bucket backfill: if some beta sub-buckets had no eligible
-                # candidates, fill remaining_k_bucket using beta=0 (pure mu)
-                if remaining_k_bucket > 0:
-                    eligible = [i for i in range(len(pool))
-                                if i not in selected_set and mu[i] >= floor_val]
-                    if eligible:
-                        eligible_arr = np.array(eligible)
-                        order = np.argsort(mu[eligible_arr], kind="mergesort")[::-1]
-                        backfilled = 0
-                        for idx in order:
-                            if remaining_k_bucket <= 0 or len(selected) >= n_select:
-                                break
-                            i = int(eligible_arr[idx])
-                            selected.append(i)
-                            selected_set.add(i)
-                            remaining_k_bucket -= 1
-                            backfilled += 1
-                        if backfilled > 0:
-                            bucket_selection_log.append(
-                                f"  {bucket.name}(backfill β=0): {backfilled}"
-                            )
-
-            # Global backfill by mu desc
-            if len(selected) < n_select:
-                remaining = [i for i in range(len(pool)) if i not in selected_set]
-                remaining_arr = np.array(remaining) if remaining else np.array([], dtype=int)
-                if len(remaining_arr) > 0:
-                    order = np.argsort(mu[remaining_arr], kind="mergesort")[::-1]
-                    global_backfilled = 0
-                    for idx in order:
-                        if len(selected) >= n_select:
-                            break
-                        selected.append(int(remaining_arr[idx]))
-                        global_backfilled += 1
-                    if global_backfilled > 0:
-                        bucket_selection_log.append(
-                            f"  global backfill (μ desc): {global_backfilled}"
-                        )
+            selected, bucket_selection_log = select_by_risk_buckets(
+                mu, sigma, n_select, self.config.risk_buckets,
+            )
 
             # Step 4: Log pool/selection stats
             logger.info(
@@ -749,19 +689,21 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
             t_refit = time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            rho = surrogate.cross_validate(
+            diag = surrogate.diagnostics(
                 all_assignments, np.array(all_scores),
-                cv_folds=self.config.cv_folds,
+                folds=self.config.cv_folds, rng_seed=self.config.seed,
             )
+            label, value = diag.summary()
             t_cv = time.perf_counter() - t0
             logger.info(
                 "Round %d complete: refit %.3fs, CV %.3fs, "
-                "best=%.6f, rho=%.4f, pred_corr=%.4f",
+                "best=%.6f, %s=%.4f, pred_corr=%.4f",
                 round_num + 1,
                 t_refit,
                 t_cv,
                 f_best,
-                rho,
+                label,
+                value,
                 prediction_correlation,
             )
 
@@ -774,7 +716,9 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
                 round_completed_event = SurrogateRoundCompletedEvent(
                     round=round_num + 1,
                     total_rounds=self.config.num_rounds,
-                    rho=rho,
+                    surrogate_metric_label=label,
+                    surrogate_metric_value=value,
+                    diagnostics=diag,
                     prediction_correlation=prediction_correlation,
                     dataset_size=len(all_assignments),
                     best_score=f_best,
@@ -793,8 +737,9 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
 class _BaseViterbiSurrogateConfig(BaseCostConstrainedConfig):
     """Shared fields for both Viterbi surrogate variants."""
 
-    exploration_dataset_path: str = Field(
-        description="Path to JSON dataset from explore_placements command.",
+    exploration_dataset_path: str | None = Field(
+        description="Path to JSON dataset from explore_placements command. "
+        "Set to null in experiment YAMLs when derived at runtime.",
     )
 
     cv_folds: int = Field(
@@ -837,33 +782,6 @@ class ViterbiSurrogateSearchConfig(_BaseViterbiSurrogateConfig):
 
     surrogate: RidgeSurrogateConfig = Field(
         description="Ridge surrogate model configuration.",
-    )
-
-
-class RiskBucketConfig(BaseModel, frozen=True):
-    """Configuration for a single risk bucket used in candidate selection.
-
-    Each bucket scores candidates as ``mu + sign * beta * sigma`` and selects
-    top-scoring ones.  The ``mean_floor_quantile`` optionally filters out
-    candidates whose predicted mean is below the given quantile of the pool.
-    """
-
-    name: str = Field(description="Human-readable bucket name (e.g. 'safe', 'upside').")
-    sign: Literal[-1, 1] = Field(
-        description="Score sign: -1 for conservative (penalise uncertainty), +1 for optimistic.",
-    )
-    betas: list[float] = Field(
-        description="Non-negative beta multipliers for sigma. Non-empty.",
-    )
-    quota: float = Field(
-        description="Fraction of the per-round evaluation budget allocated to this bucket.",
-        ge=0.0,
-    )
-    mean_floor_quantile: float = Field(
-        description="Quantile of the pool mean predictions used as eligibility floor. "
-                    "0.0 means no floor (all candidates eligible).",
-        ge=0.0,
-        le=1.0,
     )
 
 

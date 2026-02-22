@@ -342,7 +342,6 @@ class TestExploreIntegration:
             prior_alpha=1.0,
             prior_a0=1e-6,
             prior_b0=1e-6,
-            lcb_kappa=2.0,
             feature_scaling="counts_only",
         )
         dataset = ExplorationDataset(

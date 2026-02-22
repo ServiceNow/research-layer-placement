@@ -3,8 +3,8 @@
 Uses a surrogate model trained on a pre-built exploration dataset to guide
 evaluation toward promising placements via acquisition function scoring.
 
-Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + LCB) via
-the ``SurrogateConfig`` discriminated union.
+Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + risk buckets)
+via the ``SurrogateConfig`` discriminated union.
 
 The surrogate is a DRAFTER: it proposes candidates cheaply,
 but the real evaluator (via problem.evaluate) validates them.
@@ -19,10 +19,10 @@ import logging
 import random
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, assert_never
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 from scipy.stats import spearmanr
 
 from place_layers.annealing.sa_core import SAConfig, run_multi_start_sa
@@ -38,7 +38,11 @@ from place_layers.search_strategy.cost_constrained.types import (
     BeamEntry,
     CostConstrainedSearchResult,
 )
-from place_layers.surrogate.acquisition import expected_improvement, lower_confidence_bound
+from place_layers.search_strategy.cost_constrained.risk_bucket_selection import (
+    RiskBucketConfig,
+    select_by_risk_buckets,
+)
+from place_layers.surrogate.acquisition import expected_improvement
 from place_layers.surrogate.config import (
     BayesianRidgeSurrogateConfig,
     RidgeSurrogateConfig,
@@ -69,7 +73,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
     acquisition-guided selection of SA-generated candidates.
 
     Uses ``match``/``case`` on the surrogate config type to select the
-    appropriate acquisition function (EI for Ridge, LCB for Bayesian Ridge).
+    appropriate acquisition function (EI for Ridge, risk-bucket selection for Bayesian Ridge).
     """
 
     config: "SurrogateSearchConfig"
@@ -214,6 +218,12 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Load exploration data and run refinement, return (all_assignments, all_scores)."""
+        if self.config.exploration_dataset_path is None:
+            raise ValueError(
+                "exploration_dataset_path is null — it must be set before search. "
+                "The validate_landscape command derives it per-objective at runtime."
+            )
+
         rng = random.Random(self.config.sa.seed)
         mixer_names = cost_model.phase_order
 
@@ -283,15 +293,21 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             # Step 2: Score with acquisition function — match/case on surrogate type
             mu, sigma = surrogate.predict(top_candidates)
+            n_select = min(self.config.evals_per_round, len(top_candidates))
             match self.config.surrogate:
                 case RidgeSurrogateConfig(ei_xi=xi):
                     acq_scores = expected_improvement(mu, sigma, f_best, xi=xi)
-                case BayesianRidgeSurrogateConfig(lcb_kappa=kappa):
-                    acq_scores = lower_confidence_bound(mu, sigma, kappa=kappa)
-
-            # Step 3: Select top evals_per_round by acquisition score
-            n_select = min(self.config.evals_per_round, len(top_candidates))
-            top_indices = np.argsort(acq_scores)[-n_select:][::-1]
+                    top_indices = np.argsort(acq_scores)[-n_select:][::-1]
+                case BayesianRidgeSurrogateConfig():
+                    selected_indices, bucket_log = select_by_risk_buckets(
+                        mu, sigma, n_select, self.config.risk_buckets,
+                    )
+                    top_indices = np.array(selected_indices)
+                    acq_scores = mu  # for event reporting
+                    for line in bucket_log:
+                        logger.info(line)
+                case other:
+                    assert_never(other)
 
             # Emit round started event
             if self.observers:
@@ -378,15 +394,17 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             # Step 5: Refit surrogate
             surrogate.fit(all_assignments, np.array(all_scores))
 
-            rho = surrogate.cross_validate(
+            diag = surrogate.diagnostics(
                 all_assignments, np.array(all_scores),
-                cv_folds=self.config.cv_folds,
+                folds=self.config.cv_folds, rng_seed=self.config.sa.seed or 0,
             )
+            label, value = diag.summary()
             logger.debug(
-                "Round %d complete: best=%.6f, rho=%.4f, pred_corr=%.4f",
+                "Round %d complete: best=%.6f, %s=%.4f, pred_corr=%.4f",
                 round_num + 1,
                 f_best,
-                rho,
+                label,
+                value,
                 prediction_correlation,
             )
 
@@ -399,7 +417,9 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 round_completed_event = SurrogateRoundCompletedEvent(
                     round=round_num + 1,
                     total_rounds=self.config.num_rounds,
-                    rho=rho,
+                    surrogate_metric_label=label,
+                    surrogate_metric_value=value,
+                    diagnostics=diag,
                     prediction_correlation=prediction_correlation,
                     dataset_size=len(all_assignments),
                     best_score=f_best,
@@ -421,7 +441,7 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     The surrogate model is a drafter that proposes candidates cheaply.
     The real evaluator (via problem.evaluate) validates the top candidates.
 
-    Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + LCB)
+    Supports both Ridge (bootstrap + EI) and Bayesian Ridge (NIG + risk buckets)
     via the nested ``surrogate`` config (discriminated union).
 
     Requires a pre-built exploration dataset from the explore_placements command.
@@ -432,8 +452,9 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     strategy_type: Literal["surrogate"] = "surrogate"
 
     # Exploration dataset (required)
-    exploration_dataset_path: str = Field(
-        description="Path to JSON dataset from explore_placements command.",
+    exploration_dataset_path: str | None = Field(
+        description="Path to JSON dataset from explore_placements command. "
+        "Set to null in experiment YAMLs when derived at runtime.",
     )
 
     cv_folds: int = Field(
@@ -458,3 +479,35 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     surrogate: SurrogateConfig = Field(
         description="Surrogate model configuration (ridge or bayesian_ridge).",
     )
+
+    risk_buckets: list[RiskBucketConfig] | None = Field(
+        description="Risk buckets for Bayesian candidate selection. "
+        "Required when surrogate is bayesian_ridge, null for ridge.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_risk_buckets(self) -> "SurrogateSearchConfig":
+        if isinstance(self.surrogate, BayesianRidgeSurrogateConfig):
+            if not self.risk_buckets:
+                raise ValueError(
+                    "risk_buckets must be provided when surrogate is bayesian_ridge"
+                )
+            for bucket in self.risk_buckets:
+                if not bucket.betas:
+                    raise ValueError(
+                        f"Bucket '{bucket.name}': betas must be non-empty"
+                    )
+                if any(b < 0 for b in bucket.betas):
+                    raise ValueError(
+                        f"Bucket '{bucket.name}': all betas must be >= 0"
+                    )
+            total_quota = sum(b.quota for b in self.risk_buckets)
+            if total_quota > 1.0 + 1e-9:
+                raise ValueError(
+                    f"risk_buckets quota sum ({total_quota:.4f}) must be <= 1.0"
+                )
+        elif self.risk_buckets is not None:
+            raise ValueError(
+                "risk_buckets must be null when surrogate is ridge"
+            )
+        return self

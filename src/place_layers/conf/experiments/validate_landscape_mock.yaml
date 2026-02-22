@@ -15,7 +15,7 @@ defaults:
 
 # Override search params for validation (lighter than optimize)
 search_strategy:
-  exploration_dataset_path: __DERIVED__
+  exploration_dataset_path: null
   num_rounds: 1
   evals_per_round: 20
   candidates_per_model: 200

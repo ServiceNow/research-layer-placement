@@ -42,7 +42,7 @@ class TestBayesianRidgeSurrogateConfig:
 
     def test_create_surrogate(self) -> None:
         config = BayesianRidgeSurrogateConfig(
-            prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4, lcb_kappa=1.5,
+            prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4,
             feature_scaling="none",
         )
         feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
@@ -57,7 +57,7 @@ class TestBayesianRidgeSurrogateConfig:
     def test_validation_constraints(self) -> None:
         with pytest.raises(ValidationError):
             BayesianRidgeSurrogateConfig(
-                prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6, lcb_kappa=2.0,
+                prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6,
                 feature_scaling="none",
             )  # prior_alpha gt=0
 
@@ -81,7 +81,6 @@ class TestSurrogateConfigUnion:
                 "prior_alpha": 1.0,
                 "prior_a0": 1e-6,
                 "prior_b0": 1e-6,
-                "lcb_kappa": 2.0,
                 "feature_scaling": "none",
             }
         )

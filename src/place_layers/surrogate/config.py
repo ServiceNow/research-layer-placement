@@ -20,8 +20,7 @@ from pydantic import BaseModel, Field
 from place_layers.surrogate.encoding import FeatureExpansionConfig, FeatureScaling
 
 if TYPE_CHECKING:
-    from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
-    from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
+    from place_layers.surrogate.base_surrogate import BaseSurrogate
 
 
 class BaseSurrogateConfig(BaseModel):
@@ -34,7 +33,7 @@ class BaseSurrogateConfig(BaseModel):
         mixer_names: list[str],
         seed: int,
         feature_config: FeatureExpansionConfig,
-    ) -> "RidgeSurrogate | BayesianRidgeSurrogate":
+    ) -> "BaseSurrogate":
         """Smart constructor — subclasses override."""
         raise NotImplementedError
 
@@ -58,7 +57,7 @@ class RidgeSurrogateConfig(BaseSurrogateConfig):
         mixer_names: list[str],
         seed: int,
         feature_config: FeatureExpansionConfig,
-    ) -> "RidgeSurrogate":
+    ) -> "BaseSurrogate":
         from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
         return RidgeSurrogate(
@@ -86,10 +85,6 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         description="InvGamma scale for noise variance prior.",
         gt=0,
     )
-    lcb_kappa: float = Field(
-        description="LCB uncertainty penalty strength.",
-        ge=0.0,
-    )
     feature_scaling: FeatureScaling = Field(
         description="Feature scaling mode: none, counts_only, or all.",
     )
@@ -99,7 +94,7 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         mixer_names: list[str],
         seed: int,
         feature_config: FeatureExpansionConfig,
-    ) -> "BayesianRidgeSurrogate":
+    ) -> "BaseSurrogate":
         from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 
         return BayesianRidgeSurrogate(

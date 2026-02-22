@@ -18,7 +18,7 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, assert_never
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
@@ -213,9 +213,15 @@ def _log_expansion_result(
     previous_config: FeatureExpansionConfig | None = None,
 ) -> None:
     """Log a structured, indented expansion selection result block."""
-    is_bayesian = isinstance(surrogate_config, BayesianRidgeSurrogateConfig)
-    method = "Bayesian evidence" if is_bayesian else "RidgeCV Spearman"
-    score_label = "evidence" if is_bayesian else "rho"
+    match surrogate_config:
+        case BayesianRidgeSurrogateConfig():
+            method = "Bayesian evidence"
+            score_label = "evidence"
+        case RidgeSurrogateConfig():
+            method = "RidgeCV Spearman"
+            score_label = "rho"
+        case other:
+            assert_never(other)
 
     if previous_config is not None:
         header = f"Expansion re-selection via {method} ({n_samples} samples):"
@@ -663,6 +669,8 @@ class ExplorePlacementsCommand(BaseCommand):
                     max_order=self.config.expansion_max_order,
                     seed=self.config.seed,
                 )
+            case other:
+                assert_never(other)
 
 
 # ============================================================================

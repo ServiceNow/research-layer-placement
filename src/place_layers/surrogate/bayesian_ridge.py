@@ -5,7 +5,6 @@ variance.  The conjugate NIG model gives:
 
 - Exact posterior mean: μ_n = V_n (X^T y)  where V_n = (X^T X + αI)^{-1}
 - Predictive variance decomposable into per-feature diagonal terms
-- Full-posterior LCB for post-hoc candidate ranking
 
 This avoids the "frontier above cloud" problem where bootstrap uncertainty
 doesn't grow in extrapolation regions.
@@ -13,16 +12,16 @@ doesn't grow in extrapolation regions.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
-from scipy.stats import spearmanr
-from sklearn.linear_model import RidgeCV
 from sklearn.model_selection import KFold
 
 if TYPE_CHECKING:
     from place_layers.mrf.surrogate_model import SurrogateMRFModel
 
+from place_layers.surrogate.base_surrogate import BaseSurrogate, SurrogateDiagnostics
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
     FeatureScaling,
@@ -32,7 +31,21 @@ from place_layers.surrogate.encoding import (
 )
 
 
-class BayesianRidgeSurrogate:
+class BayesianPosteriorPredictiveDiagnostics(SurrogateDiagnostics):
+    """Posterior predictive diagnostics for Bayesian Ridge surrogate."""
+
+    log_marginal_likelihood_train: float
+    elpd_kfold: float | None
+    coverage_90: float | None
+    z_var: float | None  # Var of z-scores; ideal = ν/(ν-2) for Student-t, ≈1 for large n
+
+    def summary(self) -> tuple[str, float]:
+        if self.elpd_kfold is not None:
+            return ("ELPD", self.elpd_kfold)
+        return ("LML", self.log_marginal_likelihood_train)
+
+
+class BayesianRidgeSurrogate(BaseSurrogate):
     """Bayesian Ridge surrogate with Normal-Inverse-Gamma conjugate posterior.
 
     Prior: w | σ² ~ N(0, σ²·α⁻¹I), σ² ~ InvGamma(a₀, b₀).
@@ -73,7 +86,7 @@ class BayesianRidgeSurrogate:
         self._n_samples: int = 0
         self._n_features: int = 0
 
-    def fit(self, assignments: list[tuple[str, ...]], y: np.ndarray) -> None:
+    def fit(self, assignments: Sequence[Sequence[str]], y: np.ndarray) -> None:
         """Exact NIG conjugate update.
 
         Computes μ_n, V_n (via Cholesky of X^TX + αI), a_n, b_n.
@@ -181,7 +194,7 @@ class BayesianRidgeSurrogate:
                 return scale
 
     def predict(
-        self, assignments: list[tuple[str, ...]]
+        self, assignments: Sequence[Sequence[str]]
     ) -> tuple[np.ndarray, np.ndarray]:
         """Full Student-t predictive: mean and scale.
 
@@ -211,7 +224,7 @@ class BayesianRidgeSurrogate:
 
         return mu, sigma
 
-    def predict_mean(self, assignments: list[tuple[str, ...]]) -> np.ndarray:
+    def predict_mean(self, assignments: Sequence[Sequence[str]]) -> np.ndarray:
         """Fast mean-only prediction.
 
         Returns:
@@ -221,7 +234,7 @@ class BayesianRidgeSurrogate:
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
         return X @ self._mu_n_original + self._intercept
 
-    def predict_mean_one(self, assignment: tuple[str, ...] | list[str]) -> float:
+    def predict_mean_one(self, assignment: Sequence[str]) -> float:
         """Single-assignment mean prediction for SA hot loop.
 
         Uses a direct dot product — faster than going through batch encoding.
@@ -230,40 +243,78 @@ class BayesianRidgeSurrogate:
         x = encode_config(assignment, self._type_to_int, self._feature_config)
         return float(self._mu_n_original @ x + self._intercept)
 
-    def cross_validate(
+    def diagnostics(
         self,
-        assignments: list[tuple[str, ...]],
+        assignments: Sequence[Sequence[str]],
         y: np.ndarray,
-        cv_folds: int,
-    ) -> float:
-        """Compute mean Spearman rank correlation via k-fold CV.
+        *,
+        folds: int | None,
+        rng_seed: int = 0,
+    ) -> BayesianPosteriorPredictiveDiagnostics:
+        """Posterior predictive diagnostics.
 
-        Uses RidgeCV (same as RidgeSurrogate) for fold-level fitting.
-
-        Returns:
-            Mean Spearman rho across folds.
+        - log_marginal_likelihood_train: from fitted model (always available).
+        - K-fold posterior predictive (only when folds is not None and
+          len(data) >= folds * 2): ELPD, coverage_90, z_var.
         """
-        X = encode_batch(assignments, self._type_to_int, self._feature_config)
-        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=self._seed)
-        rhos: list[float] = []
+        lml = self.log_marginal_likelihood()
 
-        for train_idx, val_idx in kf.split(X):
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
+        if folds is None or len(y) < folds * 2:
+            return BayesianPosteriorPredictiveDiagnostics(
+                log_marginal_likelihood_train=lml,
+                elpd_kfold=None,
+                coverage_90=None,
+                z_var=None,
+            )
 
-            ridge = RidgeCV(alphas=np.logspace(-3, 3, 7))
-            ridge.fit(X_train, y_train)
-            preds = ridge.predict(X_val)
+        # K-fold posterior predictive checks
+        from scipy.stats import t as student_t
 
-            if len(y_val) < 2:
-                continue
+        assignments_list = [tuple(a) for a in assignments]
+        kf = KFold(n_splits=folds, shuffle=True, random_state=rng_seed)
+        all_lpd: list[float] = []
+        all_covered: list[bool] = []
+        all_z: list[float] = []
 
-            rho, _ = spearmanr(y_val, preds)
-            if np.isnan(rho):
-                rho = 0.0
-            rhos.append(rho)
+        for train_idx, val_idx in kf.split(np.arange(len(y))):
+            train_assignments = [assignments_list[i] for i in train_idx]
+            val_assignments = [assignments_list[i] for i in val_idx]
+            y_train = y[train_idx]
+            y_val = y[val_idx]
 
-        return float(np.mean(np.array(rhos))) if rhos else 0.0
+            fold_model = BayesianRidgeSurrogate(
+                mixer_names=sorted(self._type_to_int.keys()),
+                seed=rng_seed,
+                feature_config=self._feature_config,
+                prior_alpha=self._prior_alpha,
+                prior_a0=self._prior_a0,
+                prior_b0=self._prior_b0,
+                feature_scaling=self._feature_scaling,
+            )
+            fold_model.fit(train_assignments, y_train)
+
+            mu_val, sigma_val = fold_model.predict(val_assignments)
+            df = fold_model.degrees_of_freedom
+            t_crit = float(student_t.ppf(0.95, df=df))
+
+            for j in range(len(y_val)):
+                s = sigma_val[j]
+                r = y_val[j] - mu_val[j]
+                if s > 1e-12:
+                    all_lpd.append(float(student_t.logpdf(y_val[j], df=df, loc=mu_val[j], scale=s)))
+                    all_covered.append(abs(r) <= t_crit * s)
+                    all_z.append(r / s)
+
+        elpd = float(np.mean(all_lpd)) if all_lpd else None
+        coverage_90 = float(np.mean(all_covered)) if all_covered else None
+        z_var = float(np.var(all_z)) if all_z else None
+
+        return BayesianPosteriorPredictiveDiagnostics(
+            log_marginal_likelihood_train=lml,
+            elpd_kfold=elpd,
+            coverage_90=coverage_90,
+            z_var=z_var,
+        )
 
     def extract_mrf_model(self, num_layers: int) -> "SurrogateMRFModel":
         """Extract MRF model from MAP weights μ_n (same as RidgeSurrogate)."""
@@ -282,7 +333,7 @@ class BayesianRidgeSurrogate:
     def extract_mean_var_mrf_models(
         self, num_layers: int
     ) -> tuple["SurrogateMRFModel", "SurrogateMRFModel"]:
-        """Extract (mean_model, var_model) for ParetoLCBSolver.
+        """Extract (mean_model, var_model) as separate MRF models.
 
         Both models exclude count features:
         - mean_coef = μ_n[:dim_no_counts]
@@ -333,22 +384,6 @@ class BayesianRidgeSurrogate:
         )
 
         return mean_model, var_model
-
-    def full_lcb(
-        self, assignments: list[tuple[str, ...]], beta: float
-    ) -> np.ndarray:
-        """Full-posterior LCB using ALL features (including counts).
-
-        score = m(x) - β·sqrt(c·(1 + x^T V_n x))
-
-        Used for post-hoc candidate ranking after DP.
-
-        Returns:
-            LCB scores, shape (n_candidates,).
-        """
-        assert self._mu_n is not None, "Must call fit() first"
-        mu, sigma = self.predict(assignments)
-        return mu - beta * sigma
 
     @property
     def degrees_of_freedom(self) -> float:

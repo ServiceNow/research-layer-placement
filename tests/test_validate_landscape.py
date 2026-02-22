@@ -47,8 +47,8 @@ from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
+from place_layers.search_strategy.cost_constrained.risk_bucket_selection import RiskBucketConfig
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
-    RiskBucketConfig,
     ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
@@ -629,7 +629,7 @@ class TestValidateLandscapePipeline:
             prior_alpha=1.0,
             prior_a0=1e-6,
             prior_b0=1e-6,
-            lcb_kappa=2.0,
+
             feature_scaling="none",
         )
         _, surrogate, cost_model = load_and_fit_surrogate(
@@ -684,7 +684,7 @@ class TestValidateLandscapePipeline:
                         prior_alpha=1.0,
                         prior_a0=1e-6,
                         prior_b0=1e-6,
-                        lcb_kappa=2.0,
+            
                         feature_scaling="none",
                     ),
                     risk_buckets=[
