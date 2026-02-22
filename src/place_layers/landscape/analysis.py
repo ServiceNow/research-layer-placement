@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +16,7 @@ import numpy as np
 from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.landscape.models import BandResult
-from place_layers.mrf.solver import ExactMRFSolver
+from place_layers.mrf.solver import ExactMRFSolver, ExactSolution
 from place_layers.surrogate.base_surrogate import BaseSurrogate
 from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
@@ -103,7 +103,11 @@ def compute_dp_per_band(
     cost_model: BaseCostModel,
     num_cost_bins: int,
 ) -> list[BandResult]:
-    """Solve DP per cost band using a single solve_top_n call per band.
+    """Solve DP for all cost bands, using single pass when feasible.
+
+    Tries a single DP build over all allocations (fast when K <= 3).
+    If the combined state space is too large (K >= 4 with large N),
+    falls back to one DP build per cost band.
 
     Bins are spaced linearly in speedup-space (speedup = baseline_cost /
     cost) so that display columns map 1-to-1 to DP bands.
@@ -126,11 +130,6 @@ def compute_dp_per_band(
     bin_indices = np.digitize(alloc_costs, cost_bin_edges) - 1
     bin_indices = np.clip(bin_indices, 0, num_cost_bins - 1)
 
-    # Group allocations by bin
-    bin_to_allocs: dict[int, list[Allocation]] = defaultdict(list)
-    for i, alloc in enumerate(all_allocations):
-        bin_to_allocs[int(bin_indices[i])].append(alloc)
-
     # Extract MRF model and solver
     t0 = time.perf_counter()
     mrf_model = surrogate.extract_mrf_model(num_layers)
@@ -138,38 +137,47 @@ def compute_dp_per_band(
     intercept = mrf_model.intercept
     logger.info("MRF extraction: %.3fs", time.perf_counter() - t0)
 
-    # Solve one unified DP per band
-    occupied_bins = sorted(bin_to_allocs.keys())
-    best_per_bin: dict[int, BandResult] = {}
+    mixer_names = mrf_model.mixer_names
+
+    # Map counts_tuple -> band index
+    counts_to_bin: dict[tuple[int, ...], int] = {}
+    for i, alloc in enumerate(all_allocations):
+        counts = tuple(alloc.get(name, 0) for name in mixer_names)
+        counts_to_bin[counts] = int(bin_indices[i])
+
+    # Single call handles both fast-path (single DP build) and fallback
+    # (recursive bisection) internally.
     t_dp_start = time.perf_counter()
+    per_alloc = solver.solve_top_n_per_allocation(all_allocations, n_per_allocation=1)
 
-    for step, b in enumerate(occupied_bins):
-        band_allocs = bin_to_allocs[b]
-        t0 = time.perf_counter()
-        top = solver.solve_top_n(band_allocs, n=1)
-        t_band = time.perf_counter() - t0
-        logger.info(
-            "DP band %d / %d (bin %d, %d allocations, %.3fs)",
-            step + 1,
-            len(occupied_bins),
-            b,
-            len(band_allocs),
-            t_band,
-        )
-        if not top:
+    best_per_bin: dict[int, tuple[float, ExactSolution]] = {}
+    for counts_tuple, sols in per_alloc.items():
+        b = counts_to_bin.get(counts_tuple)
+        if b is None:
             continue
+        sol = sols[0]
+        prev = best_per_bin.get(b)
+        if prev is None or sol.true_score > prev[0]:
+            best_per_bin[b] = (sol.true_score, sol)
 
-        solution = top[0]
+    logger.info(
+        "DP complete: %d bands solved in %.3fs (%d allocations)",
+        len(best_per_bin),
+        time.perf_counter() - t_dp_start,
+        len(all_allocations),
+    )
+
+    # Build BandResult objects
+    results: dict[int, BandResult] = {}
+    for b, (_, solution) in best_per_bin.items():
         score = solution.true_score + intercept
-        # Recover cost from winning solution's assignments
         alloc = dict(Counter(solution.placement.assignments))
         cost = cost_model.allocation_cost(alloc)
 
-        # Compute band edges for this bin
         cost_low = float(cost_bin_edges[b])
         cost_high = float(cost_bin_edges[b + 1]) if b + 1 < len(cost_bin_edges) else float(cost_bin_edges[-1])
 
-        best_per_bin[b] = BandResult(
+        results[b] = BandResult(
             band_index=b,
             cost_low=cost_low,
             cost_high=cost_high,
@@ -178,12 +186,5 @@ def compute_dp_per_band(
             assignments=solution.placement.assignments,
         )
 
-    logger.info(
-        "DP complete: %d/%d bands solved in %.3fs",
-        len(best_per_bin),
-        len(occupied_bins),
-        time.perf_counter() - t_dp_start,
-    )
-
     # Sort by cost
-    return [best_per_bin[b] for b in sorted(best_per_bin.keys())]
+    return [results[b] for b in sorted(results.keys())]

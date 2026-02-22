@@ -544,21 +544,14 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
             k_per_alloc = int(math.ceil(
                 self.config.candidates_per_model / len(feasible_allocations)
             ))
+            per_alloc = solver.solve_top_n_per_allocation(
+                feasible_allocations, n_per_allocation=k_per_alloc
+            )
             candidate_set: set[tuple[str, ...]] = set()
-            for alloc in feasible_allocations:
-                sols = solver.solve_top_n([alloc], n=k_per_alloc)
+            for sols in per_alloc.values():
                 candidate_set.update(sol.placement.assignments for sol in sols)
 
             pool = list(candidate_set)
-
-            # Trim if overshot
-            if len(pool) > self.config.candidates_per_model:
-                mu_all = surrogate.predict_mean(pool)
-                keep = np.argsort(mu_all, kind="mergesort")[::-1][
-                    : self.config.candidates_per_model
-                ]
-                pool = [pool[i] for i in keep]
-
             t_viterbi = time.perf_counter() - t0
 
             logger.info(
