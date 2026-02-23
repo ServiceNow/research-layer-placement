@@ -71,7 +71,7 @@ Dynamically call the right config verifier based on actual layer composition:
 
 - [Full Crash Analysis](analysis.md) - Complete root cause for the is_hybrid classification gap
 - [Per-Mixer CUDA Graph Guide](per-mixer-cuda-graphs.md) - vLLM startup phases, capture lifecycle, and per-mixer graph caching architecture
-- [Implementation Plan](../../.claude/plans/hazy-sprouting-castle.md) - Original implementation plan for per-mixer CUDA graph caching
+- [Weight Offloading Guide](weight-offloading.md) - Inactive mixer weight offloading to CPU, pitfalls (shared buffers, torch.compile guards), and 2.58× throughput gain
 
 ## Key Code Locations
 
