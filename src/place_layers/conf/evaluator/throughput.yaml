@@ -5,12 +5,10 @@
 # with configurable input and output sequence lengths.
 #
 # Usage:
-#   python -m place_layers +command=evaluate +evaluator=throughput \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.throughput=throughput \
 #       +backend=rest +model=apriel2_0_5b_dev +placement=all_attention
 
 evaluator_type: throughput
-
-backend: ${backend}
 
 # Sequence length configuration (in tokens)
 input_seq_len: 512
