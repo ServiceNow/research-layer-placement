@@ -45,13 +45,19 @@ class OptimizeCommand(BaseCommand):
                 for key in evals.objective_names:
                     problem = self.config.problem.create_problem(evals, objective_name=key)
 
+                    # Set evaluation_log_path for JSONL recording
+                    eval_log = output_dir / f"evaluations_{key}.jsonl"
+                    search_cfg = self.config.search_strategy.model_copy(
+                        update={"evaluation_log_path": str(eval_log)}
+                    )
+
                     # Create progress estimator
-                    progress_estimator = self.config.search_strategy.create_progress_estimator(
+                    progress_estimator = search_cfg.create_progress_estimator(
                         problem
                     )
 
                     with self.config.observers.create_observers() as observers:
-                        search_strategy = self.config.search_strategy.create_search_strategy(
+                        search_strategy = search_cfg.create_search_strategy(
                             observers=observers,
                             progress_estimator=progress_estimator,
                         )

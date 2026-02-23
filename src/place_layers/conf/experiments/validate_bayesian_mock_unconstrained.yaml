@@ -1,0 +1,40 @@
+# @package _global_
+# Pipeline step 2 (Bayesian): validate landscape with Bayesian Viterbi.
+defaults:
+  - /command: validate_landscape
+  - /cost_model: linear_apriel_15b
+  - /landscape: apriel_15b
+  - /evaluators: mock_mrf_variants
+  - /search_strategy: bayesian_viterbi_surrogate
+  - _self_
+
+landscape:
+  surrogate:
+    surrogate_type: bayesian_ridge
+    prior_alpha: 1.0
+    prior_a0: 1.0e-6
+    prior_b0: 1.0e-6
+    feature_scaling: counts_only
+
+search_strategy:
+  exploration_dataset_path: null
+  num_rounds: 1
+  evals_per_round: 20
+  candidates_per_model: 200
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO
+
+evaluators:
+  configs:
+    range1:
+      noise_sigma: 0.0
+    triplet:
+      noise_sigma: 0.0
+    range2_triplet:
+      noise_sigma: 0.0
+    range3:
+      noise_sigma: 0.0

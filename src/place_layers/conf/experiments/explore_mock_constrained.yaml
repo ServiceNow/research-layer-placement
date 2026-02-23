@@ -20,3 +20,10 @@ hydra:
         level: INFO
 
 max_samples: 10000
+
+surrogate:
+  surrogate_type: bayesian_ridge
+  prior_alpha: 1.0
+  prior_a0: 1.0e-6
+  prior_b0: 1.0e-6
+  feature_scaling: counts_only

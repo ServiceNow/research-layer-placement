@@ -62,6 +62,7 @@ def _create_estimator_bounds(
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
+        evaluation_log_path=None,
     )
     estimator = search_config.create_progress_estimator(problem)
 
@@ -256,6 +257,7 @@ async def test_min_cost_creates_progress_estimator() -> None:
     search_config = HierarchicalConfig(
         max_allocations=5,
         beam_width=2,
+        evaluation_log_path=None,
     )
 
     # Create progress estimator
@@ -326,6 +328,7 @@ async def test_min_cost_eval_count_within_bounds(
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
+        evaluation_log_path=None,
     )
 
     # Get initial bounds from estimator
@@ -390,6 +393,7 @@ async def test_min_cost_early_termination_bounds() -> None:
     search_config = HierarchicalConfig(
         max_allocations=10,
         beam_width=2,
+        evaluation_log_path=None,
     )
 
     # Get initial bounds
@@ -460,6 +464,7 @@ async def test_final_assignment_valid_and_complete() -> None:
     search_config = HierarchicalConfig(
         max_allocations=max_allocations,
         beam_width=beam_width,
+        evaluation_log_path=None,
     )
 
     # Run optimization

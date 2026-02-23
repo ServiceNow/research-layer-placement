@@ -1048,5 +1048,5 @@ class RichDisplay(PlacementFormatterMixin):
         self._console.print(
             f"  [cyan]ROUND {event.round}/{event.total_rounds} complete[/cyan]: "
             f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
-            f"rho={event.rho:.4f}, dataset={event.dataset_size}"
+            f"{event.surrogate_metric_label}={event.surrogate_metric_value:.4f}, dataset={event.dataset_size}"
         )

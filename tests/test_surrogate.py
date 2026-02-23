@@ -16,6 +16,8 @@ from place_layers.surrogate.encoding import (
 from place_layers.surrogate.forest_surrogate import ForestSurrogate
 from place_layers.surrogate.ridge_surrogate import RidgeSurrogate
 
+_UNARY_FEATURES = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
+
 
 # =============================================================================
 # Encoding tests
@@ -48,7 +50,7 @@ class TestEncoding:
         """Encoded vector should have shape (num_layers * num_types + num_types,)."""
         type_to_int, _ = type_mapping
         assignment = ("attention", "gdn", "gdn", "sliding_window", "attention")
-        features = encode_config(assignment, type_to_int)
+        features = encode_config(assignment, type_to_int, _UNARY_FEATURES)
         # 5 layers * 3 types + 3 types = 18 features
         assert features.shape == (18,)
         assert features.dtype == np.float32
@@ -60,7 +62,7 @@ class TestEncoding:
         """Count features should sum to num_layers."""
         type_to_int, _ = type_mapping
         assignment = ("attention", "gdn", "gdn", "sliding_window", "attention")
-        features = encode_config(assignment, type_to_int)
+        features = encode_config(assignment, type_to_int, _UNARY_FEATURES)
         num_layers = 5
         num_types = 3
         counts = features[num_layers * num_types : num_layers * num_types + num_types]
@@ -77,7 +79,7 @@ class TestEncoding:
         """Encode then decode should recover original placement."""
         type_to_int, int_to_type = type_mapping
         original = ("attention", "gdn", "gdn", "sliding_window", "attention")
-        features = encode_config(original, type_to_int)
+        features = encode_config(original, type_to_int, _UNARY_FEATURES)
         decoded = decode_config(features, int_to_type, num_layers=5)
         assert decoded == original
 
@@ -91,7 +93,7 @@ class TestEncoding:
             ("attention", "gdn", "sliding_window"),
             ("gdn", "gdn", "gdn"),
         ]
-        X = encode_batch(configs, type_to_int)
+        X = encode_batch(configs, type_to_int, _UNARY_FEATURES)
         assert X.shape == (2, 12)  # 3 layers * 3 types + 3 types
 
     def test_encode_batch_empty(
@@ -100,7 +102,7 @@ class TestEncoding:
     ) -> None:
         """Empty batch should return empty matrix."""
         type_to_int, _ = type_mapping
-        X = encode_batch([], type_to_int)
+        X = encode_batch([], type_to_int, _UNARY_FEATURES)
         assert X.shape[0] == 0
 
     def test_feature_names_length(
@@ -109,7 +111,7 @@ class TestEncoding:
     ) -> None:
         """Feature names should have correct count."""
         _, int_to_type = type_mapping
-        names = feature_names(num_layers=5, int_to_type=int_to_type)
+        names = feature_names(num_layers=5, int_to_type=int_to_type, feature_config=_UNARY_FEATURES)
         assert len(names) == 18  # 5 layers * 3 types + 3 types
         assert names[0] == "layer_0_attention"
         assert names[1] == "layer_0_gdn"
@@ -136,20 +138,6 @@ class TestClusterExpansion:
     ) -> tuple[dict[str, int], dict[int, str]]:
         return build_type_mapping(mixer_names)
 
-    def test_default_config_backward_compatible(
-        self,
-        type_mapping: tuple[dict[str, int], dict[int, str]],
-    ) -> None:
-        """None config should produce same features as default config."""
-        type_to_int, _ = type_mapping
-        assignment = ("a", "b", "a", "b")
-        f_none = encode_config(assignment, type_to_int, feature_config=None)
-        f_default = encode_config(
-            assignment, type_to_int,
-            feature_config=FeatureExpansionConfig(),
-        )
-        np.testing.assert_array_equal(f_none, f_default)
-
     def test_pairwise_feature_dimensions(
         self,
         type_mapping: tuple[dict[str, int], dict[int, str]],
@@ -160,19 +148,19 @@ class TestClusterExpansion:
         assignment = ("a", "b", "a", "b", "a", "b")
 
         # Range 1: N*K + (N-1)*K^2 + K = 12 + 20 + 2 = 34
-        cfg_r1 = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        cfg_r1 = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         f = encode_config(assignment, type_to_int, cfg_r1)
         assert f.shape == (compute_feature_dim(N, K, cfg_r1),)
         assert f.shape == (34,)
 
         # Range 2: 12 + 20 + 16 + 2 = 50
-        cfg_r2 = FeatureExpansionConfig(max_order=2, pairwise_max_range=2)
+        cfg_r2 = FeatureExpansionConfig(max_order=2, pairwise_max_range=2, allocation_counts=True)
         f2 = encode_config(assignment, type_to_int, cfg_r2)
         expected = N * K + (N - 1) * K * K + (N - 2) * K * K + K
         assert f2.shape == (expected,)
 
         # Range 3: 12 + 20 + 16 + 12 + 2 = 62
-        cfg_r3 = FeatureExpansionConfig(max_order=2, pairwise_max_range=3)
+        cfg_r3 = FeatureExpansionConfig(max_order=2, pairwise_max_range=3, allocation_counts=True)
         f3 = encode_config(assignment, type_to_int, cfg_r3)
         expected3 = N * K + (N - 1) * K * K + (N - 2) * K * K + (N - 3) * K * K + K
         assert f3.shape == (expected3,)
@@ -185,7 +173,7 @@ class TestClusterExpansion:
         type_to_int, _ = type_mapping
         # a=0, b=1 (sorted)
         assignment = ("a", "b", "a")
-        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         f = encode_config(assignment, type_to_int, cfg)
 
         N, K = 3, 2
@@ -212,7 +200,7 @@ class TestClusterExpansion:
 
         # max_order=3, range=1: unary + pairs(r=1) + triplets + counts
         # 12 + 20 + (N-2)*K^3 + 2 = 12 + 20 + 32 + 2 = 66
-        cfg3 = FeatureExpansionConfig(max_order=3, pairwise_max_range=1)
+        cfg3 = FeatureExpansionConfig(max_order=3, pairwise_max_range=1, allocation_counts=True)
         f3 = encode_config(assignment, type_to_int, cfg3)
         expected3 = N * K + (N - 1) * K * K + (N - 2) * (K ** 3) + K
         assert f3.shape == (expected3,)
@@ -220,7 +208,7 @@ class TestClusterExpansion:
 
         # max_order=4, range=1: + (N-3)*K^4
         # 66 + (N-3)*K^4 = 66 + 48 = 114
-        cfg4 = FeatureExpansionConfig(max_order=4, pairwise_max_range=1)
+        cfg4 = FeatureExpansionConfig(max_order=4, pairwise_max_range=1, allocation_counts=True)
         f4 = encode_config(assignment, type_to_int, cfg4)
         expected4 = expected3 + (N - 3) * (K ** 4)
         assert f4.shape == (expected4,)
@@ -233,7 +221,7 @@ class TestClusterExpansion:
         type_to_int, _ = type_mapping
         # a=0, b=1
         assignment = ("a", "b", "a")
-        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=1, allocation_counts=True)
         f = encode_config(assignment, type_to_int, cfg)
 
         N, K = 3, 2
@@ -249,7 +237,7 @@ class TestClusterExpansion:
     def test_feature_names_with_interactions(self) -> None:
         """Check naming pattern for pairwise and higher-order features."""
         _, int_to_type = build_type_mapping(["a", "b"])
-        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=1, allocation_counts=True)
         names = feature_names(num_layers=3, int_to_type=int_to_type, feature_config=cfg)
 
         # Unary: 6 names
@@ -285,6 +273,7 @@ class TestClusterExpansion:
                 cfg = FeatureExpansionConfig(
                     max_order=max_order,
                     pairwise_max_range=pairwise_range,
+                    allocation_counts=True,
                 )
                 expected_dim = compute_feature_dim(N, K, cfg)
                 actual = encode_config(assignment, type_to_int, cfg)
@@ -297,7 +286,7 @@ class TestClusterExpansion:
         """Encode->decode still works with expanded features (decode ignores interactions)."""
         type_to_int, int_to_type = build_type_mapping(["a", "b", "c"])
         original = ("a", "b", "c", "a", "b")
-        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=2)
+        cfg = FeatureExpansionConfig(max_order=3, pairwise_max_range=2, allocation_counts=True)
         features = encode_config(original, type_to_int, cfg)
         decoded = decode_config(features, int_to_type, num_layers=5)
         assert decoded == original
@@ -385,7 +374,8 @@ class TestForestSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = ForestSurrogate(
-            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments, y)
 
@@ -407,7 +397,8 @@ class TestForestSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = ForestSurrogate(
-            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments, y)
 
@@ -425,7 +416,8 @@ class TestForestSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = ForestSurrogate(
-            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments, y)
 
@@ -445,7 +437,8 @@ class TestForestSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = ForestSurrogate(
-            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments, y)
 
@@ -463,7 +456,7 @@ class TestForestSurrogate:
         assignments = _random_placements(rng, mixer_names, num_layers, 100)
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
-        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = ForestSurrogate(
             n_estimators=50, max_depth=None, seed=42,
             mixer_names=mixer_names, feature_config=cfg,
@@ -479,7 +472,8 @@ class TestForestSurrogate:
         """feature_names should return correct names."""
         mixer_names = ["attention", "gdn"]
         surrogate = ForestSurrogate(
-            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         names = surrogate.feature_names(num_layers=3)
         assert names == [
@@ -492,7 +486,7 @@ class TestForestSurrogate:
     def test_feature_names_with_expansion(self) -> None:
         """feature_names with expansion config should include interaction names."""
         mixer_names = ["a", "b"]
-        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1)
+        cfg = FeatureExpansionConfig(max_order=2, pairwise_max_range=1, allocation_counts=True)
         surrogate = ForestSurrogate(
             n_estimators=10, max_depth=None, seed=42,
             mixer_names=mixer_names, feature_config=cfg,
@@ -515,7 +509,8 @@ class TestForestSurrogate:
         y += 0.1 * rng.randn(200)
 
         surrogate = ForestSurrogate(
-            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=50, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         rho = surrogate.cross_validate(assignments, y, cv_folds=5)
         assert rho > 0.5
@@ -524,7 +519,8 @@ class TestForestSurrogate:
         """Default min_samples_leaf should be 1."""
         mixer_names = ["a", "b"]
         surrogate = ForestSurrogate(
-            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         assert surrogate._min_samples_leaf == 1
         assert surrogate._model.min_samples_leaf == 1
@@ -537,7 +533,8 @@ class TestForestSurrogate:
 
         surrogate = ForestSurrogate(
             n_estimators=20, max_depth=None, seed=42,
-            mixer_names=mixer_names, min_samples_leaf=10,
+            mixer_names=mixer_names, feature_config=_UNARY_FEATURES,
+            min_samples_leaf=10,
         )
         assert surrogate._min_samples_leaf == 10
         assert surrogate._model.min_samples_leaf == 10
@@ -558,7 +555,8 @@ class TestForestSurrogate:
         y = rng.randn(100)
 
         surrogate = ForestSurrogate(
-            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         rho = surrogate.cross_validate(assignments, y, cv_folds=5)
         assert abs(rho) < 0.4  # Should be near 0
@@ -582,7 +580,8 @@ class TestRidgeSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = RidgeSurrogate(
-            mixer_names=mixer_names, seed=42, n_bootstraps=10,
+            mixer_names=mixer_names, seed=42, feature_config=_UNARY_FEATURES,
+            n_bootstraps=10,
         )
         surrogate.fit(assignments, y)
 
@@ -603,7 +602,8 @@ class TestRidgeSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = RidgeSurrogate(
-            mixer_names=mixer_names, seed=42, n_bootstraps=20,
+            mixer_names=mixer_names, seed=42, feature_config=_UNARY_FEATURES,
+            n_bootstraps=20,
         )
         surrogate.fit(assignments, y)
 
@@ -621,7 +621,8 @@ class TestRidgeSurrogate:
         y = np.array([sum(1.0 for m in a if m == "a") for a in assignments])
 
         surrogate = RidgeSurrogate(
-            mixer_names=mixer_names, seed=42, n_bootstraps=10,
+            mixer_names=mixer_names, seed=42, feature_config=_UNARY_FEATURES,
+            n_bootstraps=10,
         )
         surrogate.fit(assignments, y)
 
@@ -641,7 +642,8 @@ class TestRidgeSurrogate:
         y += 0.1 * rng.randn(200)
 
         surrogate = RidgeSurrogate(
-            mixer_names=mixer_names, seed=42, n_bootstraps=10,
+            mixer_names=mixer_names, seed=42, feature_config=_UNARY_FEATURES,
+            n_bootstraps=10,
         )
         rho = surrogate.cross_validate(assignments, y, cv_folds=5)
         assert rho > 0.5
@@ -656,7 +658,8 @@ class TestRidgeSurrogate:
         y = rng.randn(100)
 
         surrogate = RidgeSurrogate(
-            mixer_names=mixer_names, seed=42, n_bootstraps=10,
+            mixer_names=mixer_names, seed=42, feature_config=_UNARY_FEATURES,
+            n_bootstraps=10,
         )
         rho = surrogate.cross_validate(assignments, y, cv_folds=5)
         assert abs(rho) < 0.4

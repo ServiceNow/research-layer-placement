@@ -1,10 +1,20 @@
 # @package search_strategy
+#
+# Ridge Bootstrap Viterbi surrogate search.
+#
+# Extracts MRF potentials from each bootstrap Ridge model, runs Viterbi DP
+# on each to find exact optimal placements, selects via Expected Improvement.
 
 strategy_type: viterbi_surrogate
 exploration_dataset_path: ???
-cv_folds: 5
-ei_xi: 0.01
+evaluation_log_path: null
+supplemental_data_paths: []
 num_rounds: 4
 evals_per_round: 500
 seed: 42
 candidates_per_model: 200
+surrogate:
+  surrogate_type: ridge
+  n_bootstraps: 50
+  ei_xi: 0.01
+  cv_folds: 5
