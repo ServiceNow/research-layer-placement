@@ -17,6 +17,7 @@ from sklearn.model_selection import KFold
 
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
+    FeatureScaling,
     build_type_mapping,
     compute_feature_dim,
     encode_batch,
@@ -36,7 +37,8 @@ class StepResult(BaseModel):
 
     config: FeatureExpansionConfig
     num_features: int
-    rho: float
+    score: float
+    rho: float | None = None
     stop_reason: str | None = None  # None = intermediate step; set on terminal step
 
 
@@ -99,7 +101,7 @@ def ridge_cv_rho(
     assignments: list[tuple[str, ...]],
     scores: np.ndarray,
     mixer_names: list[str],
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
     cv_folds: int = 5,
     seed: int = 42,
 ) -> float:
@@ -123,7 +125,7 @@ def ridge_cv_rho(
     return _ridge_cv_spearman(X, scores, cv_folds, seed)
 
 
-def select_expansion_level(
+def select_expansion_ridge_cv(
     assignments: list[tuple[str, ...]],
     scores: np.ndarray,
     mixer_names: list[str],
@@ -170,13 +172,13 @@ def select_expansion_level(
     n_samples = len(assignments)
 
     # --- Unary baseline ---
-    unary_config = FeatureExpansionConfig(max_order=1)
+    unary_config = FeatureExpansionConfig.unary()
     unary_features = compute_feature_dim(num_layers, num_types, unary_config)
     X_unary = encode_batch(assignments, type_to_int, unary_config)
     unary_rho = _ridge_cv_spearman(X_unary, scores, cv_folds, seed)
 
     range_results: list[StepResult] = [
-        StepResult(config=unary_config, num_features=unary_features, rho=unary_rho),
+        StepResult(config=unary_config, num_features=unary_features, score=unary_rho, rho=unary_rho),
     ]
 
     best_range = 0
@@ -210,7 +212,7 @@ def select_expansion_level(
     # --- Phase 1: Range selection at order 2 ---
     phase1_stop_reason: str | None = None
     for r in range(1, max_pairwise_range + 1):
-        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r)
+        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r, allocation_counts=True)
         num_features = compute_feature_dim(num_layers, num_types, config)
 
         # Feature-to-sample guard
@@ -225,7 +227,7 @@ def select_expansion_level(
         rho = _ridge_cv_spearman(X, scores, cv_folds, seed)
 
         range_results.append(
-            StepResult(config=config, num_features=num_features, rho=rho),
+            StepResult(config=config, num_features=num_features, score=rho, rho=rho),
         )
 
         # Target reached — select this range
@@ -262,7 +264,7 @@ def select_expansion_level(
         selected_config = unary_config
     else:
         selected_config = FeatureExpansionConfig(
-            max_order=2, pairwise_max_range=best_range,
+            max_order=2, pairwise_max_range=best_range, allocation_counts=True,
         )
 
     # --- Phase 2: Order selection at selected range ---
@@ -272,7 +274,7 @@ def select_expansion_level(
     if best_range >= 1 and max_order >= 3 and prev_rho < target_rho:
         for n in range(3, max_order + 1):
             config = FeatureExpansionConfig(
-                max_order=n, pairwise_max_range=best_range,
+                max_order=n, pairwise_max_range=best_range, allocation_counts=True,
             )
             num_features = compute_feature_dim(num_layers, num_types, config)
 
@@ -291,7 +293,7 @@ def select_expansion_level(
             rho = _ridge_cv_spearman(X, scores, cv_folds, seed)
 
             order_results.append(
-                StepResult(config=config, num_features=num_features, rho=rho),
+                StepResult(config=config, num_features=num_features, score=rho, rho=rho),
             )
 
             # Target reached
@@ -341,4 +343,147 @@ def select_expansion_level(
         order_results=order_results,
         phase1_stop_reason=phase1_stop_reason,
         phase2_stop_reason=phase2_stop_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bayesian evidence-based expansion selection
+# ---------------------------------------------------------------------------
+
+
+def _bayesian_log_evidence(
+    assignments: list[tuple[str, ...]],
+    y: np.ndarray,
+    mixer_names: list[str],
+    feature_config: FeatureExpansionConfig,
+    prior_alpha: float,
+    prior_a0: float,
+    prior_b0: float,
+    feature_scaling: FeatureScaling = FeatureScaling.COUNTS_ONLY,
+) -> float:
+    """Compute log marginal likelihood under a BayesianRidgeSurrogate.
+
+    Deterministic — no CV splits, no RNG in fit.
+    """
+    from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+
+    surrogate = BayesianRidgeSurrogate(
+        mixer_names=mixer_names,
+        seed=0,  # unused — fit is deterministic
+        feature_config=feature_config,
+        prior_alpha=prior_alpha,
+        prior_a0=prior_a0,
+        prior_b0=prior_b0,
+        feature_scaling=feature_scaling,
+    )
+    surrogate.fit(assignments, y)
+    return surrogate.log_marginal_likelihood()
+
+
+def select_expansion_bayes_evidence(
+    assignments: list[tuple[str, ...]],
+    scores: np.ndarray,
+    mixer_names: list[str],
+    prior_alpha: float,
+    prior_a0: float,
+    prior_b0: float,
+    feature_scaling: FeatureScaling = FeatureScaling.COUNTS_ONLY,
+    max_pairwise_range: int = 10,
+    max_order: int = 3,
+) -> ExpansionSelectionResult:
+    """Expansion selection via Bayesian log marginal likelihood (evidence).
+
+    Enumerates all feasible (order, range) combos with a feature-to-sample
+    guard (d > 2*n → skip), computes evidence for each, returns the argmax.
+
+    Fully deterministic — no seed parameter needed.
+    """
+    type_to_int, _ = build_type_mapping(mixer_names)
+    num_layers = len(assignments[0]) if assignments else 0
+    num_types = len(type_to_int)
+    n_samples = len(assignments)
+
+    all_candidates: list[StepResult] = []
+
+    def _eval(config: FeatureExpansionConfig) -> StepResult | None:
+        num_features = compute_feature_dim(num_layers, num_types, config)
+        if num_features > 2 * n_samples:
+            return None
+        evidence = _bayesian_log_evidence(
+            assignments, scores, mixer_names, config,
+            prior_alpha, prior_a0, prior_b0, feature_scaling,
+        )
+        return StepResult(
+            config=config, num_features=num_features, score=evidence, rho=None,
+        )
+
+    # Order 1 (unary)
+    unary_config = FeatureExpansionConfig.unary()
+    unary_step = _eval(unary_config)
+    if unary_step is not None:
+        all_candidates.append(unary_step)
+
+    range_results: list[StepResult] = list(all_candidates)
+    order_results: list[StepResult] = []
+
+    # Order 2: sweep pairwise range
+    for r in range(1, max_pairwise_range + 1):
+        config = FeatureExpansionConfig(max_order=2, pairwise_max_range=r, allocation_counts=True)
+        step = _eval(config)
+        if step is None:
+            break
+        all_candidates.append(step)
+        range_results.append(step)
+
+    # Orders 3..max_order: sweep pairwise range for each
+    for n in range(3, max_order + 1):
+        for r in range(1, max_pairwise_range + 1):
+            config = FeatureExpansionConfig(max_order=n, pairwise_max_range=r, allocation_counts=True)
+            step = _eval(config)
+            if step is None:
+                break
+            all_candidates.append(step)
+            order_results.append(step)
+
+    # Select argmax of score across all evaluated candidates
+    if not all_candidates:
+        # Fallback: return unary with zero evidence
+        return ExpansionSelectionResult(
+            selected_config=unary_config,
+            selected_range=0,
+            selected_order=1,
+            range_results=[
+                StepResult(
+                    config=unary_config, num_features=0, score=0.0, rho=None,
+                    stop_reason="exhaustive_argmax",
+                ),
+            ],
+            order_results=[],
+            phase1_stop_reason="exhaustive_argmax",
+            phase2_stop_reason=None,
+        )
+
+    best = max(all_candidates, key=lambda s: s.score)
+    best_config = best.config
+
+    # Mark the best step with stop_reason
+    for i, step in enumerate(range_results):
+        if step.config == best_config:
+            range_results[i] = step.model_copy(
+                update={"stop_reason": "exhaustive_argmax"},
+            )
+    for i, step in enumerate(order_results):
+        if step.config == best_config:
+            order_results[i] = step.model_copy(
+                update={"stop_reason": "exhaustive_argmax"},
+            )
+
+    return ExpansionSelectionResult(
+        selected_config=best_config,
+        selected_range=best_config.pairwise_max_range if best_config.max_order >= 2 else 0,
+        selected_order=best_config.max_order,
+        range_results=range_results,
+        order_results=order_results,
+        phase1_stop_reason="exhaustive_argmax",
+        phase2_stop_reason=None,
     )

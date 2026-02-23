@@ -92,6 +92,11 @@ class RichDisplayConfig(BaseObserverConfig):
     """
 
     observer_type: Literal["rich"] = "rich"
+    surrogate_top_k: int | None = Field(
+        default=10,
+        description="Max surrogate candidates to display per round (null = no limit)",
+        ge=1,
+    )
 
     def create_observer(self) -> "RichDisplay":
         """Create RichDisplay instance."""
@@ -99,7 +104,7 @@ class RichDisplayConfig(BaseObserverConfig):
             RichDisplay,
         )
 
-        return RichDisplay()
+        return RichDisplay(surrogate_top_k=self.surrogate_top_k)
 
 
 class LayermapDisplayConfig(BaseObserverConfig):
@@ -126,6 +131,11 @@ class LayermapDisplayConfig(BaseObserverConfig):
     char_style: Literal["blocks", "letters"] = Field(
         default="blocks",
         description="Character style: 'blocks' (solid/dim) or 'letters' (F/S/G)",
+    )
+    surrogate_top_k: int | None = Field(
+        default=10,
+        description="Max surrogate candidates to display per round (null = no limit)",
+        ge=1,
     )
 
     def create_observer(self) -> "LayermapDisplay":
@@ -165,6 +175,11 @@ class PlainDisplayConfig(BaseObserverConfig):
     """
 
     observer_type: Literal["plain"] = "plain"
+    surrogate_top_k: int | None = Field(
+        default=10,
+        description="Max surrogate candidates to display per round (null = no limit)",
+        ge=1,
+    )
     show_allocation_start: bool = Field(
         default=True,
         description="Whether to print when allocations start",

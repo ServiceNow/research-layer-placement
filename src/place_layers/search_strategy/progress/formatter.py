@@ -115,6 +115,11 @@ class PlacementFormatterMixin:
                 )
         return ", ".join(parts)
 
+    @staticmethod
+    def _format_score(score: float) -> str:
+        """Format a scalar score for display."""
+        return f"{score:.4g}"
+
     def _format_allocation(self, allocation: dict[str, int]) -> str:
         """Format allocation as 'FA:2 SWA:1 GDN:7'."""
         if not self._mixer_names:

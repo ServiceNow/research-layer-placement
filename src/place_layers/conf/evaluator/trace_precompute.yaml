@@ -1,50 +1,11 @@
 # @package evaluator
-# # Trace precompute evaluator - generates traces with log-probabilities
-# # for importance-weighted evaluation.
-# #
-# # Same interpolation pattern as generative evaluator.
-# #
-# # Example usage:
-# #   python -m place_layers +command=precompute_traces +evaluator=trace_precompute \
-# #       +backend=rest +task=gsm8k +generation=greedy
-
-# evaluator_type: trace_precompute
-
-# # Backend configuration (composed from backend/ config group)
-# backend: ${backend}
-
-# # Task configuration (composed from task/ config group)
-# tasks: ${task.tasks}
-# num_fewshot: ${task.num_fewshot}
-# max_problems_per_task: ${task.max_problems_per_task}
-# split: ${task.split}
-
-# # Generation parameters (composed from generation/ config group)
-# samples_per_problem: ${generation.samples_per_problem}
-# max_new_tokens: ${generation.max_new_tokens}
-# temperature: ${generation.temperature}
-# top_p: ${generation.top_p}
-
-# # Prompt formatting
-# use_chat_template: true
-# system_instruction: null
-
-# # Truncated sample handling
-# evaluate_truncated_samples: false
-
-# # Random seed for few-shot sampling reproducibility
-# seed: 42
-
-# # Tokenizer for synthetic task generation (e.g., RULER)
-# tokenizer: null
-# max_seq_lengths: null
 # Trace precompute evaluator - generates completions for importance weighting
 #
 # Inherits all generative evaluator settings and adds trace-specific configuration.
 # Can be used as a standalone evaluator config group for composability.
 #
 # Example usage:
-#   python -m place_layers +command=precompute_traces +evaluator=trace_precompute \
+#   python -m place_layers +command=precompute_traces +evaluator@evaluators.configs.gsm8k=trace_precompute \
 #       +backend=vllm +task=gsm8k +generation=sampling
 
 defaults:

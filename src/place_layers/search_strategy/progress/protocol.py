@@ -18,6 +18,7 @@ from place_layers.search_strategy.progress.events import (
     AnnealingRestartEvent,
     AnnealingStepEvent,
     BeamCandidateEvaluatedEvent,
+    SurrogateCandidateEvaluatedEvent,
     SurrogateDatasetLoadedEvent,
     SurrogateRoundCompletedEvent,
     SurrogateRoundStartedEvent,
@@ -29,9 +30,6 @@ from place_layers.search_strategy.progress.events import (
     BoundsUpdatedEvent,
     SearchCompletedEvent,
     SearchStartedEvent,
-    SwapBeamIterationEvent,
-    SwapBeamIterationStartedEvent,
-    SwapEvaluatedEvent,
 )
 
 
@@ -105,24 +103,6 @@ class SearchObserver(Protocol):
         ...
 
     # =========================================================================
-    # Swap-beam search events
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: SwapBeamIterationStartedEvent
-    ) -> None:
-        """Called when a swap-beam iteration begins (before evaluations)."""
-        ...
-
-    def on_swap_evaluated(self, event: SwapEvaluatedEvent) -> None:
-        """Called after each swap is evaluated during swap-beam search."""
-        ...
-
-    def on_swap_beam_iteration(self, event: SwapBeamIterationEvent) -> None:
-        """Called after a swap-beam iteration completes."""
-        ...
-
-    # =========================================================================
     # Annealing search events
     # =========================================================================
 
@@ -156,4 +136,10 @@ class SearchObserver(Protocol):
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Called when a surrogate refinement round completes."""
+        ...
+
+    def on_surrogate_candidate_evaluated(
+        self, event: SurrogateCandidateEvaluatedEvent
+    ) -> None:
+        """Called after each real evaluation of a surrogate-selected candidate."""
         ...

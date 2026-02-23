@@ -345,5 +345,7 @@ defaults:
 
 strategy_type: cost_constrained_annealing
 
+evaluation_log_path: null
+
 # Outer loop: number of allocations to explore
 max_allocations: 50

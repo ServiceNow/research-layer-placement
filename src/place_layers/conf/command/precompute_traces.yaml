@@ -2,39 +2,20 @@
 # Precompute traces command - generate completions for importance weighting
 #
 # Required config groups (must be specified by user or experiment):
+#   - evaluator@evaluators.configs.<name>: trace_precompute
 #   - backend: vllm, transformers
 #   - task: gsm8k, etc.
 #   - generation: sampling (typically)
 #
 # Usage:
 #   python -m place_layers +command=precompute_traces \
+#       +evaluator@evaluators.configs.gsm8k=trace_precompute \
 #       +backend=vllm +task=gsm8k +generation=sampling
 
+defaults:
+  - /objective@evaluators.objective: weighted_average
+
 command: precompute_traces
-
-# Evaluator configuration
-evaluator:
-  evaluator_type: trace_precompute
-
-  # Backend configuration (from backend config group)
-  backend: ${backend}
-
-  # Task configuration (from task config group)
-  tasks: ${task.tasks}
-  num_fewshot: ${task.num_fewshot}
-  max_problems_per_task: ${task.max_problems_per_task}
-  split: ${task.split}
-
-  # Generation parameters (from generation config group)
-  samples_per_problem: ${generation.samples_per_problem}
-  max_new_tokens: ${generation.max_new_tokens}
-  temperature: ${generation.temperature}
-  top_p: ${generation.top_p}
-
-  # Trace-specific configuration
-  seed: 42
-  use_chat_template: ${generation.use_chat_template}
-  evaluate_truncated_samples: ${generation.evaluate_truncated_samples}
 
 # Placement (null for non-supernet models or to use model's default)
 placement: null

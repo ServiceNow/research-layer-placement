@@ -269,6 +269,7 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                             | ChatLikelihoodRecord(task_name=tn, problem_id=pid)
                             | TextLikelihoodRecord(task_name=tn, problem_id=pid)
                             | ISProblemRecord(task_name=tn, problem_id=pid)
+                            | TraceLikelihoodProblemRecord(task_name=tn, problem_id=pid)
                         ):
                             if tn not in completed:
                                 completed[tn] = set()

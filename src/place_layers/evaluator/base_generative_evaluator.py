@@ -73,9 +73,9 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         config: "BaseGenerativeEvaluatorConfig",
         *,
         output_dir: Path,
-        shared_backend: "AsyncBackend | SyncBackend | None" = None,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     @abstractmethod
     def _make_records(

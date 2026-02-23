@@ -23,7 +23,10 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
 
 from pydantic import Field
 
@@ -51,9 +54,13 @@ class ThroughputEvaluator(BackendEvaluator):
     config: "ThroughputEvaluatorConfig"
 
     def __init__(
-        self, config: "ThroughputEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "ThroughputEvaluatorConfig",
+        *,
+        output_dir: Path,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     async def _calibrate_prompt(self) -> str:
         """Build a synthetic prompt targeting input_seq_len tokens.
@@ -256,31 +263,15 @@ class ThroughputEvaluatorConfig(BackendEvaluatorConfig):
 
     evaluator_type: Literal["throughput"] = "throughput"
 
-    input_seq_len: int = Field(
-        default=512,
-        description="Target input prompt length in tokens",
-        gt=0,
-    )
-    output_seq_len: int = Field(
-        default=128,
-        description="Maximum output tokens per request",
-        gt=0,
-    )
-    num_requests: int = Field(
-        default=100,
-        description="Number of generation requests for measurement",
-        gt=0,
-    )
+    input_seq_len: int = Field(description="Target input prompt length in tokens", gt=0)
+    output_seq_len: int = Field(description="Maximum output tokens per request", gt=0)
+    num_requests: int = Field(description="Number of generation requests for measurement", gt=0)
     num_warmup_requests: int = Field(
-        default=5,
-        description="Warmup requests before measurement (not timed)",
-        ge=0,
+        description="Warmup requests before measurement (not timed)", ge=0
     )
     ignore_eos: bool = Field(
-        default=True,
-        description="Ignore EOS token to guarantee exact output_seq_len tokens per request",
+        description="Ignore EOS token to guarantee exact output_seq_len tokens per request"
     )
     prompt_fill_text: str = Field(
-        default="The quick brown fox jumps over the lazy dog. ",
-        description="Text repeated to build synthetic prompts of target token length",
+        description="Text repeated to build synthetic prompts of target token length"
     )

@@ -1,4 +1,4 @@
-"""Expected Improvement acquisition function for surrogate-assisted search."""
+"""Acquisition functions for surrogate-assisted search."""
 
 from __future__ import annotations
 

@@ -27,9 +27,27 @@ from place_layers.problem import (
     MaxPerformanceProblemConfig,
     MinCostProblemConfig,
 )
-from place_layers.search_strategy import SwapBeamConfig
+from place_layers.annealing.sa_core import SAConfig
+from place_layers.search_strategy import AnnealingConfig
+from tests.helpers import wrap_evaluator
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
+
+# Small, fast SA config for integration tests
+_SMALL_SA_CONFIG = SAConfig(
+    num_restarts=1,
+    steps_per_restart=50,
+    initial_temperature=1.0,
+    cooling_rate=0.95,
+    min_temperature=0.01,
+    mutation_prob=0.3,
+    max_ruin_fraction=0.3,
+    contiguous_ruin_prob=0.5,
+    top_k=5,
+    no_op_retries=3,
+    reheat=None,
+    seed=42,
+)
 
 
 # =============================================================================
@@ -837,7 +855,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="less than minimum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_budget_validation_too_high(self) -> None:
         """Budget above maximum cost should fail (trivially satisfied)."""
@@ -863,7 +881,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_mixer_name_mismatch(self) -> None:
         """Mixer name mismatch should fail."""
@@ -889,7 +907,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="must match"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_above_budget_fails(self) -> None:
         """cost_floor >= cost_budget should fail (empty search range)."""
@@ -915,7 +933,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="cost_floor.*must be less than"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_above_max_cost_fails(self) -> None:
         """cost_floor above maximum possible cost should fail."""
@@ -941,7 +959,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with pytest.raises(ValueError, match="exceeds maximum possible cost"):
-            problem_config.create_problem(evaluator)
+            problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     def test_cost_floor_below_min_cost_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """cost_floor below minimum possible cost should warn but not error."""
@@ -967,7 +985,7 @@ class TestCostConstrainedProblem:
         evaluator = evaluator_config.create_evaluator()
 
         with caplog.at_level(logging.WARNING):
-            problem = problem_config.create_problem(evaluator)
+            problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
         assert problem is not None
         assert "below minimum possible cost" in caplog.text
@@ -995,7 +1013,7 @@ class TestCostConstrainedProblem:
         )
         evaluator = evaluator_config.create_evaluator()
 
-        problem = problem_config.create_problem(evaluator)
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
         assert problem is not None
 
 
@@ -1031,7 +1049,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     @pytest.fixture
     def small_problem_min_cost(self) -> CostConstrainedProblem:
@@ -1057,14 +1075,14 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         evaluator = evaluator_config.create_evaluator()
-        return problem_config.create_problem(evaluator)
+        return problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
     async def test_max_performance_respects_budget(
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE mode should respect cost budget."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1079,8 +1097,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST mode should meet performance target."""
-        search_config = SwapBeamConfig(
-            beam_width=5, max_allocations=20, max_iterations_per_allocation=10
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=20, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1095,8 +1113,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_max_perf: CostConstrainedProblem
     ) -> None:
         """MAX_PERFORMANCE should respect budget (start at budget, explore cheaper)."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1111,8 +1129,8 @@ class TestCostConstrainedBeamSearch:
         self, small_problem_min_cost: CostConstrainedProblem
     ) -> None:
         """MIN_COST should start from most expensive config and downgrade."""
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1144,18 +1162,18 @@ class TestCostConstrainedBeamSearch:
             cost_budget=4.0,
             cost_floor=None,
         )
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
 
         # Run twice
         evaluator1 = evaluator_config.create_evaluator()
-        problem1 = problem_config.create_problem(evaluator1)
+        problem1 = problem_config.create_problem(wrap_evaluator(evaluator1), objective_name="weighted_average")
         search1 = search_config.create_search_strategy()
         result1 = await search1.search(problem1)
 
         evaluator2 = evaluator_config.create_evaluator()
-        problem2 = problem_config.create_problem(evaluator2)
+        problem2 = problem_config.create_problem(wrap_evaluator(evaluator2), objective_name="weighted_average")
         search2 = search_config.create_search_strategy()
         result2 = await search2.search(problem2)
 
@@ -1236,10 +1254,10 @@ class TestCostFloorSearch:
             cost_floor=4.0,
         )
         evaluator = evaluator_config.create_evaluator()
-        problem = problem_config.create_problem(evaluator)
+        problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
-        search_config = SwapBeamConfig(
-            beam_width=3, max_allocations=10, max_iterations_per_allocation=5
+        search_config = AnnealingConfig(
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
         result = await search.search(problem)

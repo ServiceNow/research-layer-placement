@@ -71,9 +71,9 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
         config: "GenerativeEvaluatorConfig",
         *,
         output_dir: "Path",
-        shared_backend: "AsyncBackend | SyncBackend | None" = None,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     def _make_records(
         self, task: "Task", doc: dict, idx: int, result: GenerationResult
@@ -114,7 +114,7 @@ class GenerativeEvaluator(BaseGenerativeEvaluator):
                 }
 
             gen = Generation(
-                prompt_tokens=(),  # TODO: quick fix to evoid geneative evaluators do not save tokens, which is not needed. WE need to have a flag that goes all the way to the remote vllm server and disable requesting tokens for alle vals other than trace generation.
+                prompt_tokens=(),
                 completion_tokens=(),
                 correct=correct,
                 correct_by_filter=correct_by_filter,

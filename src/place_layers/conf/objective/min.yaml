@@ -1,0 +1,3 @@
+# @package objective
+objective_type: min
+include_individual: false

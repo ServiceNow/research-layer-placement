@@ -66,6 +66,11 @@ class TransformersBackend(SyncBackend):
         self._current_placement: list[str] | None = None
 
     @property
+    def config(self) -> "TransformersBackendConfig":
+        """Backend configuration."""
+        return self._config
+
+    @property
     def model(self) -> "PreTrainedModel":
         """Get the loaded model (raises if not in context)."""
         if self._model is None:

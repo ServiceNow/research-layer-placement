@@ -1,302 +1,434 @@
 # Multi-Evaluator Guide
 
-This guide explains how to use multiple evaluators simultaneously for evaluation and optimization.
+Evaluators produce raw benchmark scores; objectives map those scores to what search optimizes.
 
-## Quick Start
+## Concepts: Evaluators vs Objectives
 
-### Single Evaluator (simplest)
+### Evaluators
 
-Create an inline evaluators config in your experiment:
-
-```yaml
-# experiments/my_eval.yaml
-defaults:
-  - /command: evaluate
-  - /backend: transformers
-  - /model: apriel2_0_5b_dev
-  - /task: gsm8k
-  - /generation: greedy
-
-evaluators:
-  evaluators_dict:
-    main:
-      evaluator_type: generative
-      backend: ${backend}
-      tasks: ${task.tasks}
-      generation: ${generation}
-
-placement: null
-```
-
-### Multiple Evaluators with Weights
-
-Evaluate on multiple benchmarks and combine scores:
+The `configs:` dict defines one or more named evaluators. Each runs a benchmark and produces a scalar score. Keys are meaningful names (e.g. `gsm8k`, `mmlu`, `mock`).
 
 ```yaml
-# experiments/multi_gsm8k_mmlu.yaml
-defaults:
-  - /command: evaluate
-  - /backend: transformers
-  - /model: apriel2_0_5b_dev
-  - /generation: greedy
-
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k:
       evaluator_type: generative
-      backend: ${backend}
-      tasks: ["gsm8k"]
-      generation: ${generation}
-      max_problems_per_task: 100
-
+      # ...
     mmlu:
       evaluator_type: likelihood
-      backend: ${backend}
-      tasks: ["mmlu"]
-      max_problems_per_task: 100
-
-  weights:
-    gsm8k: 0.6
-    mmlu: 0.4
-
-  aggregation: weighted_average
-
-placement: null
+      # ...
 ```
 
-## Using Existing Evaluator Configs
+### Objectives
 
-To reuse existing `conf/evaluator/*.yaml` configs, use Hydra's package override syntax:
+The `objective:` block maps N evaluator scores to M objective scores. Four types: `weighted_average`, `min`, `max`, `independent`.
+
+All commands go through `evaluate_objectives()` — the objective layer is not optional, even with a single evaluator.
+
+## Configuration
+
+The top-level structure is `EvaluatorsConfig`:
+
+```yaml
+evaluators:
+  configs:
+    <name>: {evaluator_type: ..., ...}
+  objective:
+    objective_type: ...
+```
+
+### Single evaluator (most common)
+
+Compose evaluators directly — no wrapper needed. Command configs provide a default objective (`weighted_average`) via `/objective@evaluators.objective: weighted_average` in their defaults list. You just add your evaluator:
 
 ```yaml
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: generative  # Load generative.yaml into dict
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: transformers
   - /model: apriel2_0_5b_dev
   - /task: gsm8k
   - /generation: greedy
 ```
 
-For multiple evaluators, load each one into the dict:
+The key name (`gsm8k`) is meaningful — use the task or evaluator name. The `weighted_average` objective auto-fills its weight to 1.0 for a single evaluator.
+
+### Multiple evaluators inline
+
+Define evaluators directly in a config file:
 
 ```yaml
+# @package evaluators
+configs:
+  gsm8k:
+    evaluator_type: generative
+    tasks: ["gsm8k"]
+    generation: ${generation}
+  mmlu:
+    evaluator_type: likelihood
+    tasks: ["mmlu"]
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    gsm8k: 0.6
+    mmlu: 0.4
+```
+
+### Multiple evaluators via defaults
+
+Load existing `evaluator/*.yaml` configs into the dict using Hydra's package override:
+
+```yaml
+# @package evaluators
 defaults:
-  - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.gsm8k: generative
-  - /evaluator@evaluators.evaluators_dict.mmlu: likelihood
-  - /backend: transformers
-  - /model: apriel2_0_5b_dev
-  - /generation: greedy
+  - /evaluator@configs.range1: mock_mrf_range1
+  - /evaluator@configs.triplet: mock_mrf_triplet
+  - /evaluator@configs.range2_triplet: mock_mrf_range2_triplet
+  - /evaluator@configs.range3: mock_mrf_range3
+  - _self_
 
-# Override specific evaluator configs
-evaluators:
-  evaluators_dict:
-    gsm8k:
-      tasks: ["gsm8k"]
-      max_problems_per_task: 100
-    mmlu:
-      tasks: ["mmlu"]
-      max_problems_per_task: 100
+objective:
+  objective_type: independent
+```
+
+## Objective Types
+
+### `weighted_average`
+
+`score = sum(w_i * s_i)`. Weights must sum to 1.0. Empty weights dict = uniform (1/N for each).
+
+```yaml
+objective:
+  objective_type: weighted_average
+  include_individual: false
   weights:
     gsm8k: 0.6
     mmlu: 0.4
 ```
-
-## Aggregation Strategies
-
-Specify how to combine scores from multiple evaluators:
-
-### `weighted_average` (default)
-Combines scores using weights: `score = sum(weight_i * score_i)`
-
-```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {...}
-    mmlu: {...}
-  weights:
-    gsm8k: 0.6
-    mmlu: 0.4
-  aggregation: weighted_average  # explicit, but this is the default
-```
-
-Weights must sum to 1.0. If no weights provided, uses uniform weights (1/N for each).
-
-### `first_only`
-Uses first evaluator for optimization, others for tracking/logging only:
-
-```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {...}      # Used for optimization
-    mmlu: {...}       # Logged but not used for optimization
-    arc_easy: {...}   # Logged but not used for optimization
-  aggregation: first_only
-```
-
-Useful for tracking auxiliary metrics without affecting the optimization objective.
 
 ### `min`
-Takes minimum score across all evaluators (optimize worst-case):
+
+Worst-case score across all evaluators.
 
 ```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {...}
-    mmlu: {...}
-  aggregation: min
+objective:
+  objective_type: min
+  include_individual: false
 ```
 
 ### `max`
-Takes maximum score across all evaluators (optimize best-case):
+
+Best-case score across all evaluators.
 
 ```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {...}
-    mmlu: {...}
-  aggregation: max
+objective:
+  objective_type: max
+  include_individual: false
 ```
 
-## Output Organization
+### `independent`
 
-Each evaluator gets its own subdirectory with isolated outputs:
+Each evaluator is its own objective (N evaluators -> N objectives). Used for per-benchmark exploration.
 
-```
-outputs/
-└── +experiments=my_multi_eval/
-    ├── evals/
-    │   ├── gsm8k/
-    │   │   ├── validation.jsonl       # GSM8K generations
-    │   │   └── summary.jsonl          # GSM8K metrics
-    │   ├── mmlu/
-    │   │   ├── validation.jsonl       # MMLU scores
-    │   │   └── summary.jsonl          # MMLU metrics
-    │   └── importance/
-    │       └── ...
-    ├── evaluation_results.json         # Combined results
-    └── app.log
+```yaml
+objective:
+  objective_type: independent
 ```
 
-The `evaluation_results.json` contains:
-```json
-{
-  "timestamp": "2026-02-10T...",
-  "evaluator_type": "multi[weighted_average]",
-  "score": 0.7234,              // Aggregated score
-  "auxiliary_scores": {          // Individual scores
-    "gsm8k": 0.8123,
-    "mmlu": 0.5893
-  },
-  "placement": [...],
-  "placement_indices": [...]
-}
+### `include_individual` flag
+
+The three aggregating types (`weighted_average`, `min`, `max`) support `include_individual: true`. This exposes per-evaluator scores as additional objectives alongside the aggregate.
+
+```yaml
+objective:
+  objective_type: weighted_average
+  include_individual: true
+  weights:
+    gsm8k: 0.6
+    mmlu: 0.4
 ```
 
-## CLI Usage
+This produces three objectives: `weighted_average`, `gsm8k`, and `mmlu`.
 
-### Evaluate Command
+## Evaluator Types
 
-```bash
-# Single evaluator
-python -m place_layers +experiments=my_eval
+| Type | Purpose |
+|------|---------|
+| `generative` | Accuracy via generation (reasoning, extraction) |
+| `likelihood` | Multiple-choice scoring (MMLU, ARC) |
+| `importance_weighted` | Fast eval from pre-computed traces |
+| `trace_likelihood` | Log-likelihood of pre-computed traces (with optional normalization) |
+| `trace_precompute` | Generate traces for importance sampling |
+| `mock_supernet` | Synthetic evaluator for testing |
 
-# Multi-evaluator
-python -m place_layers +experiments=multi_gsm8k_mmlu
+### Trace normalization
 
-# Override on CLI
-python -m place_layers +experiments=multi_gsm8k_mmlu \
-  evaluators.weights.gsm8k=0.7 \
-  evaluators.weights.mmlu=0.3
+`trace_likelihood` supports optional normalization to map raw log-likelihoods to [0, 1]:
+
+```yaml
+configs:
+  aime24:
+    evaluator_type: trace_likelihood
+    trace_sources: ???
+    normalization:
+      type: linear
+      low: -5505.18    # Maps to 0.0 (worst expected)
+      high: -1137.85   # Maps to 1.0 (best expected)
 ```
 
-### Optimize Command
-
-Multi-evaluator works seamlessly with optimization:
-
-```bash
-python -m place_layers +command=optimize \
-  +evaluators=multi_gsm8k_mmlu \
-  +backend=transformers \
-  +model=apriel2_0_5b_dev \
-  +generation=greedy \
-  +problem=layer_placement \
-  +search_strategy=hierarchical_beam \
-  problem.budgets=[5,5]
-```
-
-The search optimizes for the aggregated score. At the end, individual evaluator scores are logged for the best placement.
+This is useful when combining trace_likelihood evaluators with accuracy-based evaluators in a weighted_average objective, since raw log-likelihoods are on a very different scale.
 
 ## Preset Configs
 
-Several preset evaluator configs are available in `conf/evaluators/`:
+Available in `conf/evaluators/`:
 
-- **`single_generative.yaml`**: Single generative evaluator
-- **`multi_gsm8k_mmlu.yaml`**: GSM8K (60%) + MMLU (40%), weighted average
-- **`multi_uniform_weights.yaml`**: Multiple evaluators with equal weights
-- **`multi_first_only.yaml`**: First for optimization, rest for tracking
-- **`multi_with_importance.yaml`**: Generative + Likelihood + Importance-weighted
+| File | Evaluators | Objective |
+|------|-----------|-----------|
+| `single_generative.yaml` | 1 generative (gsm8k) | `weighted_average` |
+| `multi_gsm8k_mmlu.yaml` | generative + likelihood | `weighted_average` (60/40) |
+| `multi_uniform_weights.yaml` | 3 evals (gsm8k, mmlu, arc_easy) | `weighted_average` (uniform) |
+| `multi_with_importance.yaml` | 3 mixed types (generative, likelihood, importance) | `weighted_average` (50/30/20) |
+| `apriel2_mix.yaml` | 6 evals (mmlu, fda, swde, aime24, aime25, math500) | `weighted_average` (uniform) |
+| `mock_mrf_variants.yaml` | 4 mock MRF evaluators | `independent` |
 
-Use them with:
+## Output Organization
+
+Each evaluator writes traces to its own subdirectory. Results are saved as per-objective files:
+
+```
+output_dir/
+  evals/
+    gsm8k/
+      <placement>/
+        validation.jsonl
+    mmlu/
+      <placement>/
+        validation.jsonl
+  evaluation_results_gsm8k.json
+  evaluation_results_mmlu.json
+```
+
+Per-objective result JSON:
+
+```json
+{
+  "timestamp": "2026-02-19T...",
+  "placement": ["attention", "gdn", "attention", "..."],
+  "placement_indices": [0, 1, 0, "..."],
+  "objective_name": "gsm8k",
+  "score": 0.8123
+}
+```
+
+With `weighted_average` and two evaluators, you get three files: `evaluation_results_weighted_average.json`, `evaluation_results_gsm8k.json`, `evaluation_results_mmlu.json` (the last two only if `include_individual: true`).
+
+## CLI Examples
+
+Single evaluator (direct composition — no preset needed):
+
 ```bash
 python -m place_layers +command=evaluate \
-  +evaluators=multi_gsm8k_mmlu \
-  +backend=transformers \
-  +model=apriel2_0_5b_dev \
-  +generation=greedy \
-  placement=null
+    +evaluator@evaluators.configs.gsm8k=generative \
+    +backend=transformers +model=apriel2_0_5b_dev \
+    +task=gsm8k +generation=greedy \
+    placement=null
 ```
 
-## Common Patterns
+Override objective type on CLI:
 
-### Multi-dataset Evaluation
-Evaluate performance across multiple benchmarks:
-
-```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}
-    math: {evaluator_type: generative, tasks: ["math"], ...}
-    mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}
-  weights: {gsm8k: 0.4, math: 0.3, mmlu: 0.3}
+```bash
+python -m place_layers +command=evaluate \
+    +evaluator@evaluators.configs.gsm8k=generative \
+    +backend=transformers +model=apriel2_0_5b_dev \
+    +task=gsm8k +generation=greedy \
+    +objective@evaluators.objective=independent
 ```
 
-### Multi-method Evaluation
-Compare different evaluation methods on same data:
+Multi-evaluator preset:
 
-```yaml
-evaluators:
-  evaluators_dict:
-    direct: {evaluator_type: generative, tasks: ["gsm8k"], ...}
-    importance: {evaluator_type: importance_weighted, trace_dir: "/traces/gsm8k", ...}
-  aggregation: first_only  # Optimize for direct, log importance as validation
+```bash
+python -m place_layers +command=evaluate \
+    +evaluators=multi_gsm8k_mmlu \
+    +backend=transformers +model=apriel2_0_5b_dev \
+    +generation=greedy \
+    placement=null
 ```
 
-### Mixed Task Types
-Combine reasoning, extraction, and multiple-choice:
+Override weights on CLI:
 
-```yaml
-evaluators:
-  evaluators_dict:
-    gsm8k: {evaluator_type: generative, tasks: ["gsm8k"], ...}          # reasoning
-    fda: {evaluator_type: generative, tasks: ["fda"], ...}              # extraction
-    mmlu: {evaluator_type: likelihood, tasks: ["mmlu"], ...}            # multiple-choice
-  weights: {gsm8k: 0.5, fda: 0.3, mmlu: 0.2}
+```bash
+python -m place_layers +command=evaluate \
+    +evaluators=multi_gsm8k_mmlu \
+    +backend=transformers +model=apriel2_0_5b_dev \
+    +generation=greedy \
+    evaluators.objective.weights.gsm8k=0.7 \
+    evaluators.objective.weights.mmlu=0.3 \
+    placement=null
 ```
 
-## Migration from Old Configs
+## Landscape Pipeline
 
-Old experiment configs used:
-```yaml
-defaults:
-  - /evaluator: generative
+The three landscape commands — `explore_placements`, `validate_landscape`, `placement_landscape` — form a pipeline that iterates over `evaluators.objective_names`. Each objective gets its own independent dataset, surrogate model, validation run, and plot. File naming uses `objective_result_path()`: `{prefix}_{objective_name}.json`.
+
+### Step 1: explore_placements
+
+Loops over `objective_names`, runs `_explore_objective()` for each. Each objective gets its own `ExplorationDataset` with scalar scores.
+
+Saves per objective:
+- `exploration_results_{obj_name}.json` — final dataset (assignments, scores, allocations)
+- `exploration_progress_{obj_name}.jsonl` — incremental write for resumption
+
+With `independent` objective and 4 evaluators: 4 completely separate exploration loops, each with its own adaptive sampling, surrogate quality tracking, and stopping criteria.
+
+### Step 2: validate_landscape
+
+Loops over `objective_names`, loads each `exploration_results_{obj_name}.json` from the explore output directory. Fits a per-objective Ridge surrogate, runs per-band Viterbi search with real evaluations.
+
+Saves per objective:
+- `validation_results_{obj_name}.json` — all band results with surrogate vs. validated scores
+- `bands_{obj_name}/band_NNN/result.json` — per-band search result (for incremental resumption)
+- `bands_{obj_name}/band_NNN/surrogate_dp.json` — surrogate DP solution for comparison
+
+Resumable: completed bands are detected and skipped on restart.
+
+### Step 3: placement_landscape
+
+Loops over `objective_names`, loads exploration data per objective, optionally loads validation data. Generates per-objective density plots with optional validation overlay.
+
+Saves per objective:
+- `landscape_data_{obj_name}.json` — band edges, DP-optimal placements, metadata
+- `placement_landscape_{obj_name}.pdf` / `.png` — two-panel figure (density + layermap)
+
+### Data flow
+
+The `{prefix}_{obj_name}.json` naming convention stitches the three steps together. Each step reads the previous step's output by constructing the same path via `objective_result_path()`:
+
+```
+explore_placements                validate_landscape              placement_landscape
+─────────────────                ────────────────────            ─────────────────────
+exploration_results_{obj}.json ──> load + fit surrogate ──────> load + fit surrogate
+exploration_progress_{obj}.jsonl   validation_results_{obj}.json  landscape_data_{obj}.json
+                                   bands_{obj}/band_NNN/       ──> load validation overlay
+                                                                  placement_landscape_{obj}.pdf
 ```
 
-Update to:
-```yaml
-defaults:
-  - /evaluator@evaluators.evaluators_dict.main: generative
+The link between steps is `landscape.explore_output_dir` (points step 2/3 at step 1's output) and `placement_landscape.validation_output_dir` (points step 3 at step 2's output).
+
+### How objective type affects the pipeline
+
+**`weighted_average` (single aggregate)**:
+- `objective_names = ("weighted_average",)` — one dataset, one surrogate, one plot
+- Each sample evaluates ALL evaluators, combines via weights
+- Output files: `exploration_results_weighted_average.json`, `validation_results_weighted_average.json`, etc.
+
+**`independent` (per-benchmark)**:
+- `objective_names = evaluator names` — N datasets, N surrogates, N plots
+- Each sample evaluates only the needed evaluator
+- Output files: `exploration_results_range1.json`, `exploration_results_triplet.json`, etc.
+
+**`include_individual: true`**:
+- `objective_names = (aggregate_name,) + evaluator_names` — (1+N) of everything
+- The aggregate objective evaluates all evaluators; each individual objective evaluates only one
+
+### Output directory structure
+
+Full tree for `independent` with 4 mock MRF objectives across all 3 steps:
+
+```
+# Step 1: explore_placements output
+explore_output/
+  exploration_results_range1.json
+  exploration_results_triplet.json
+  exploration_results_range2_triplet.json
+  exploration_results_range3.json
+  exploration_progress_range1.jsonl
+  exploration_progress_triplet.jsonl
+  exploration_progress_range2_triplet.jsonl
+  exploration_progress_range3.jsonl
+
+# Step 2: validate_landscape output
+validate_output/
+  validation_results_range1.json
+  validation_results_triplet.json
+  validation_results_range2_triplet.json
+  validation_results_range3.json
+  bands_range1/
+    band_000/result.json, surrogate_dp.json
+    band_001/...
+    ...
+  bands_triplet/
+    band_000/...
+    ...
+  bands_range2_triplet/...
+  bands_range3/...
+
+# Step 3: placement_landscape output
+landscape_output/
+  landscape_data_range1.json
+  landscape_data_triplet.json
+  landscape_data_range2_triplet.json
+  landscape_data_range3.json
+  placement_landscape_range1.pdf
+  placement_landscape_range1.png
+  placement_landscape_triplet.pdf
+  placement_landscape_triplet.png
+  placement_landscape_range2_triplet.pdf
+  placement_landscape_range2_triplet.png
+  placement_landscape_range3.pdf
+  placement_landscape_range3.png
 ```
 
-This loads the existing `evaluator/generative.yaml` config into the evaluators dict.
+### CLI examples
+
+**Multi-objective pipeline (4 independent mock evaluators):**
+
+All three steps must use the same `evaluators` config so `objective_names` matches across the pipeline. The `_unconstrained` experiment set does this — each uses `/evaluators: mock_mrf_variants`:
+
+```bash
+# Step 1: explore (produces 4 datasets)
+python -m place_layers +experiments=explore_mock_unconstrained
+
+# Step 2: validate (reads 4 datasets, produces 4 validation results)
+python -m place_layers +experiments=validate_mock_unconstrained \
+    landscape.explore_output_dir=/path/to/explore/output
+
+# Step 3: plot (reads 4 datasets + 4 validation results, produces 4 figures)
+python -m place_layers +experiments=landscape_mock_unconstrained \
+    landscape.explore_output_dir=/path/to/explore/output \
+    validation_output_dir=/path/to/validate/output
+```
+
+The constrained variant (`explore_mock_constrained`) also uses `mock_mrf_variants` and can replace step 1 — just pair it with validate/landscape experiments that also use `mock_mrf_variants`.
+
+**Single-objective pipeline (generative evaluator via REST):**
+
+With direct composition + `weighted_average` (the default), all three steps iterate a single objective:
+
+```bash
+# Step 1: explore (produces 1 dataset: exploration_results_weighted_average.json)
+python -m place_layers +experiments=explore_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204
+
+# Step 2: validate
+python -m place_layers +experiments=validate_gsm8k_rest \
+    +model=apriel2_1p6_v2_annealed_0204 \
+    landscape.explore_output_dir=/path/to/explore/output
+
+# Step 3: plot
+python -m place_layers +experiments=placement_landscape \
+    +evaluator@evaluators.configs.gsm8k=generative \
+    +backend=rest +task=gsm8k +generation=greedy \
+    landscape.explore_output_dir=/path/to/explore/output \
+    validation_output_dir=/path/to/validate/output
+```
+
+**Plot without validation (skip step 2):**
+
+```bash
+python -m place_layers +experiments=landscape_mock_unconstrained \
+    landscape.explore_output_dir=/path/to/explore/output
+```
+
+When `validation_output_dir` is omitted (defaults to `null`), the density plot shows only the surrogate DP-optimal line without a validated overlay.

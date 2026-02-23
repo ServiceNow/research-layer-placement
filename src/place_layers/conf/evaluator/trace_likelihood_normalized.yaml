@@ -9,14 +9,11 @@
 #   - high: Expected best-case log-likelihood (maps to 1.0)
 #
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=trace_likelihood_normalized \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=trace_likelihood_normalized \
 #       +backend=transformers +model=apriel2_0_5b_dev \
-#       evaluator.normalization.low=-1000 evaluator.normalization.high=-100
+#       evaluators.configs.gsm8k.normalization.low=-1000 evaluators.configs.gsm8k.normalization.high=-100
 
 evaluator_type: trace_likelihood
-
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
 
 # Trace sources - list of directories containing JSONL trace files
 trace_sources:

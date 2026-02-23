@@ -5,9 +5,12 @@ The core guarantees of the MRF solver are:
 2. Constrained solver finds the global optimum within allocation constraints
 3. True score computation matches the evaluator's score without noise
 4. solve_top_n returns globally top-N placements across feasible allocations
+5. solve_top_n_per_allocation returns top-N per allocation with single DP build
 """
 
 from collections import Counter
+from math import comb
+from unittest.mock import patch
 
 import pytest
 
@@ -980,3 +983,569 @@ class TestSolveTopN:
             for name in model.mixer_names:
                 counts.setdefault(name, 0)
             assert counts == {"m0": 3, "m1": 3, "m2": 0}
+
+
+# =============================================================================
+# Test solve_top_n_per_allocation
+# =============================================================================
+
+
+class TestSolveTopNPerAllocation:
+    """Tests for per-allocation top-N solver (single DP build)."""
+
+    def _all_allocs_small(self, model: ChainMRFModel) -> list[dict[str, int]]:
+        """All valid allocations for a 2-mixer model."""
+        N = model.num_layers
+        return [{"m0": i, "m1": N - i} for i in range(N + 1)]
+
+    def _all_allocs_medium(self, model: ChainMRFModel) -> list[dict[str, int]]:
+        """All valid allocations for a 3-mixer model."""
+        N = model.num_layers
+        return [
+            {"m0": a, "m1": b, "m2": N - a - b}
+            for a in range(N + 1)
+            for b in range(N + 1 - a)
+        ]
+
+    def test_per_allocation_equivalence_small(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Per-allocation scores match those from solve_top_n([alloc], n) loop."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+        names = model.mixer_names
+        n = 3
+
+        # Single-pass result
+        per_alloc = solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=n)
+
+        # Loop reference
+        for alloc in all_allocs:
+            counts_tuple = tuple(alloc.get(name, 0) for name in names)
+            loop_sols = solver.solve_top_n([alloc], n=n)
+            loop_scores = sorted([s.true_score for s in loop_sols], reverse=True)
+            pa_sols = per_alloc.get(counts_tuple, [])
+            pa_scores = [s.true_score for s in pa_sols]
+            assert len(pa_scores) == len(loop_scores)
+            for a, b in zip(pa_scores, loop_scores):
+                assert abs(a - b) < 1e-10
+
+    def test_per_allocation_equivalence_medium(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Per-allocation scores match loop reference for 3-mixer model."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_medium(model)
+        names = model.mixer_names
+        n = 3
+
+        per_alloc = solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=n)
+
+        for alloc in all_allocs:
+            counts_tuple = tuple(alloc.get(name, 0) for name in names)
+            loop_sols = solver.solve_top_n([alloc], n=n)
+            loop_scores = sorted([s.true_score for s in loop_sols], reverse=True)
+            pa_sols = per_alloc.get(counts_tuple, [])
+            pa_scores = [s.true_score for s in pa_sols]
+            assert len(pa_scores) == len(loop_scores)
+            for a, b in zip(pa_scores, loop_scores):
+                assert abs(a - b) < 1e-10
+
+    def test_score_correctness(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Every returned solution's true_score matches model.true_score."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+
+        per_alloc = solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=5)
+
+        for sols in per_alloc.values():
+            for sol in sols:
+                recomputed = model.true_score(sol.placement)
+                assert abs(sol.true_score - recomputed) < 1e-10
+
+    def test_allocation_correctness(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Every solution's actual mixer counts match its counts-key."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_medium(model)
+        names = model.mixer_names
+
+        per_alloc = solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=3)
+
+        for counts_tuple, sols in per_alloc.items():
+            for sol in sols:
+                actual_counts = tuple(
+                    sol.placement.assignments.count(name) for name in names
+                )
+                assert actual_counts == counts_tuple
+
+    def test_per_allocation_cap(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """No group exceeds n_per_allocation."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_medium(model)
+        n = 2
+
+        per_alloc = solver.solve_top_n_per_allocation(
+            all_allocs, n_per_allocation=n
+        )
+
+        for sols in per_alloc.values():
+            assert len(sols) <= n
+
+    def test_n_per_allocation_one(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """n_per_allocation=1 returns only the best per allocation."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+        names = model.mixer_names
+
+        per_alloc = solver.solve_top_n_per_allocation(
+            all_allocs, n_per_allocation=1
+        )
+
+        for counts_tuple, sols in per_alloc.items():
+            assert len(sols) == 1
+            # Verify it really is the best for this allocation
+            alloc = {names[k]: counts_tuple[k] for k in range(len(names))}
+            exhaustive = solver.enumerate_constrained(alloc)
+            assert abs(sols[0].true_score - exhaustive[0][1]) < 1e-10
+
+    def test_fewer_candidates_than_n(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """When allocation has fewer candidates than n, return all available."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        # All-m0 allocation: only 1 possible placement
+        alloc = [{"m0": model.num_layers, "m1": 0}]
+
+        per_alloc = solver.solve_top_n_per_allocation(alloc, n_per_allocation=100)
+        names = model.mixer_names
+        counts_tuple = tuple(alloc[0].get(name, 0) for name in names)
+        sols = per_alloc.get(counts_tuple, [])
+        # Only 1 possible placement for all-m0
+        assert len(sols) == 1
+
+    def test_sorted_descending_per_allocation(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Results within each allocation are sorted by score descending."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_medium(model)
+
+        per_alloc = solver.solve_top_n_per_allocation(
+            all_allocs, n_per_allocation=10
+        )
+
+        for sols in per_alloc.values():
+            for i in range(len(sols) - 1):
+                assert sols[i].true_score >= sols[i + 1].true_score
+
+    def test_single_dp_build(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Verify _build_constrained_tables is called exactly once."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+
+        with patch.object(
+            solver, "_build_constrained_tables", wraps=solver._build_constrained_tables
+        ) as mock_build:
+            solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=3)
+            assert mock_build.call_count == 1
+
+    def test_early_abort_fallback(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """With max_states_per_layer=0, fallback produces correct results."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+        names = model.mixer_names
+        n = 3
+
+        # Force fallback by setting threshold to 0
+        per_alloc = solver.solve_top_n_per_allocation(
+            all_allocs, n_per_allocation=n, max_states_per_layer=0
+        )
+
+        # Verify correctness against loop reference
+        for alloc in all_allocs:
+            counts_tuple = tuple(alloc.get(name, 0) for name in names)
+            loop_sols = solver.solve_top_n([alloc], n=n)
+            loop_scores = sorted([s.true_score for s in loop_sols], reverse=True)
+            pa_sols = per_alloc.get(counts_tuple, [])
+            pa_scores = [s.true_score for s in pa_sols]
+            assert len(pa_scores) == len(loop_scores)
+            for a, b in zip(pa_scores, loop_scores):
+                assert abs(a - b) < 1e-10
+
+    def test_early_abort_returns_none(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """_build_constrained_tables returns None when threshold is 0."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_small(model)
+
+        result = solver._build_constrained_tables(
+            all_allocs, max_states_per_layer=0
+        )
+        assert result is None
+
+    def test_existing_solve_top_n_unchanged(
+        self, medium_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """solve_top_n still works correctly after refactoring."""
+        model = medium_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        all_allocs = self._all_allocs_medium(model)
+
+        # Exhaustive reference
+        all_scored = []
+        for alloc in all_allocs:
+            all_scored.extend(solver.enumerate_constrained(alloc))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+
+        top_n = solver.solve_top_n(all_allocs, n=20)
+        assert len(top_n) == 20
+        assert abs(top_n[0].true_score - all_scored[0][1]) < 1e-10
+        for sol in top_n:
+            assert abs(sol.true_score - model.true_score(sol.placement)) < 1e-10
+
+    def test_skip_pairwise_per_allocation(
+        self, skip_pairwise_model: ChainMRFModel
+    ) -> None:
+        """Per-allocation works with skip-pairwise model."""
+        solver = ExactMRFSolver(skip_pairwise_model)
+        N = skip_pairwise_model.num_layers
+        names = skip_pairwise_model.mixer_names
+        all_allocs = [{"m0": i, "m1": N - i} for i in range(N + 1)]
+        n = 3
+
+        per_alloc = solver.solve_top_n_per_allocation(all_allocs, n_per_allocation=n)
+
+        for counts_tuple, sols in per_alloc.items():
+            for sol in sols:
+                recomputed = skip_pairwise_model.true_score(sol.placement)
+                assert abs(sol.true_score - recomputed) < 1e-10
+                actual_counts = tuple(
+                    sol.placement.assignments.count(name) for name in names
+                )
+                assert actual_counts == counts_tuple
+
+    def test_empty_allocations(self) -> None:
+        """Empty allocations returns empty dict."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1"),
+            seed=42,
+            num_layers=4,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+        )
+        solver = ExactMRFSolver(model)
+        result = solver.solve_top_n_per_allocation([], n_per_allocation=5)
+        assert result == {}
+
+    def test_duplicate_allocations_collapse(
+        self, small_evaluator: MockSupernetEvaluator
+    ) -> None:
+        """Duplicate allocations in input are collapsed to same counts key."""
+        model = small_evaluator.mrf_model
+        solver = ExactMRFSolver(model)
+        # Same allocation listed twice
+        allocs = [{"m0": 2, "m1": 2}, {"m0": 2, "m1": 2}]
+
+        per_alloc = solver.solve_top_n_per_allocation(allocs, n_per_allocation=5)
+        assert (2, 2) in per_alloc
+        # Should have the same results as a single allocation
+        single = solver.solve_top_n_per_allocation(
+            [{"m0": 2, "m1": 2}], n_per_allocation=5
+        )
+        assert len(per_alloc[(2, 2)]) == len(single[(2, 2)])
+
+
+# =============================================================================
+# K=4 Bisection Tests
+# =============================================================================
+
+
+@pytest.fixture
+def k4_model() -> ChainMRFModel:
+    """Create a K=4 model (N=8, K=4) for bisection tests.
+
+    Small enough for exhaustive verification (4^8 = 65K placements),
+    generates 165 unique allocations.
+    """
+    return ChainMRFModel(
+        mixer_names=("m0", "m1", "m2", "m3"),
+        seed=42,
+        num_layers=8,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+    )
+
+
+def _all_allocs_k4(model: ChainMRFModel) -> list[dict[str, int]]:
+    """All valid allocations for a 4-mixer, 8-layer model."""
+    N = model.num_layers
+    names = model.mixer_names
+    allocs = []
+    for a in range(N + 1):
+        for b in range(N + 1 - a):
+            for c in range(N + 1 - a - b):
+                d = N - a - b - c
+                allocs.append({names[0]: a, names[1]: b, names[2]: c, names[3]: d})
+    return allocs
+
+
+class TestK4Bisection:
+    """Tests for K=4 bisection fallback in solve_top_n_per_allocation."""
+
+    def test_k4_bisection_matches_loop(self, k4_model: ChainMRFModel) -> None:
+        """Force bisection (max_states_per_layer=1), verify per-allocation
+        scores match solve_top_n([alloc], n) for all allocations."""
+        solver = ExactMRFSolver(k4_model)
+        all_allocs = _all_allocs_k4(k4_model)
+        names = k4_model.mixer_names
+        n = 1
+
+        # Force bisection by setting threshold to 1
+        per_alloc = solver.solve_top_n_per_allocation(
+            all_allocs, n_per_allocation=n, max_states_per_layer=1
+        )
+
+        # Verify against per-allocation loop reference
+        for alloc in all_allocs:
+            counts_tuple = tuple(alloc.get(name, 0) for name in names)
+            loop_sols = solver.solve_top_n([alloc], n=n)
+            loop_scores = sorted([s.true_score for s in loop_sols], reverse=True)
+            pa_sols = per_alloc.get(counts_tuple, [])
+            pa_scores = [s.true_score for s in pa_sols]
+            assert len(pa_scores) == len(loop_scores), (
+                f"Mismatch for {counts_tuple}: got {len(pa_scores)}, expected {len(loop_scores)}"
+            )
+            for a_score, b_score in zip(pa_scores, loop_scores):
+                assert abs(a_score - b_score) < 1e-10, (
+                    f"Score mismatch for {counts_tuple}: {a_score} != {b_score}"
+                )
+
+    def test_k4_bisection_splits(self, k4_model: ChainMRFModel) -> None:
+        """Moderate threshold: verify _build_constrained_tables called >1 but <165 times."""
+        solver = ExactMRFSolver(k4_model)
+        all_allocs = _all_allocs_k4(k4_model)
+
+        with patch.object(
+            solver, "_build_constrained_tables", wraps=solver._build_constrained_tables
+        ) as mock_build:
+            solver.solve_top_n_per_allocation(
+                all_allocs, n_per_allocation=1, max_states_per_layer=100
+            )
+            # Should split into batches: more than 1 call (full batch fails)
+            # but fewer than 165 (one per allocation)
+            assert mock_build.call_count > 1
+            assert mock_build.call_count < len(all_allocs)
+
+    def test_k4_all_identical_allocations(self, k4_model: ChainMRFModel) -> None:
+        """10 duplicate allocations, forced bisection, correct dedup."""
+        solver = ExactMRFSolver(k4_model)
+        alloc = {"m0": 2, "m1": 2, "m2": 2, "m3": 2}
+        allocs = [alloc] * 10
+
+        per_alloc = solver.solve_top_n_per_allocation(
+            allocs, n_per_allocation=1, max_states_per_layer=1
+        )
+
+        # Should have exactly one counts key
+        assert len(per_alloc) == 1
+        counts_tuple = (2, 2, 2, 2)
+        assert counts_tuple in per_alloc
+
+        # Verify score matches direct solve
+        reference = solver.solve_top_n([alloc], n=1)
+        assert len(per_alloc[counts_tuple]) == 1
+        assert abs(per_alloc[counts_tuple][0].true_score - reference[0].true_score) < 1e-10
+
+    def test_k4_single_allocation_bisection(self, k4_model: ChainMRFModel) -> None:
+        """Single allocation hits base case correctly under forced bisection."""
+        solver = ExactMRFSolver(k4_model)
+        alloc = {"m0": 3, "m1": 2, "m2": 2, "m3": 1}
+        names = k4_model.mixer_names
+        counts_tuple = tuple(alloc.get(name, 0) for name in names)
+
+        per_alloc = solver.solve_top_n_per_allocation(
+            [alloc], n_per_allocation=1, max_states_per_layer=1
+        )
+
+        assert counts_tuple in per_alloc
+        reference = solver.solve_top_n([alloc], n=1)
+        assert abs(per_alloc[counts_tuple][0].true_score - reference[0].true_score) < 1e-10
+
+
+# =============================================================================
+# Test _estimate_peak_states
+# =============================================================================
+
+
+class TestEstimatePeakStates:
+    """Tests for the inclusion-exclusion peak state estimator."""
+
+    def test_uncapped_matches_stars_and_bars(self) -> None:
+        """With max_counts=[N]*K, estimate equals K^m × C(N+K-1, K-1)."""
+        K, m, N = 4, 3, 48
+        max_counts = [N] * K
+        estimate = ExactMRFSolver._estimate_peak_states(K, m, N, max_counts)
+        # Stars-and-bars: peak at last layer where compositions = C(N+K-1, K-1)
+        expected = (K ** m) * comb(N + K - 1, K - 1)
+        assert estimate == expected
+
+    def test_caps_reduce_count(self) -> None:
+        """Tight caps produce a strictly lower estimate than uncapped."""
+        K, m, N = 4, 3, 16
+        uncapped = [N] * K
+        capped = [6, 6, 6, 6]  # each mixer capped at 6, sum of caps = 24 > N
+        est_uncapped = ExactMRFSolver._estimate_peak_states(K, m, N, uncapped)
+        est_capped = ExactMRFSolver._estimate_peak_states(K, m, N, capped)
+        assert est_capped < est_uncapped
+
+    def test_estimate_is_upper_bound(self, k4_model: ChainMRFModel) -> None:
+        """Estimate >= actual peak states from a real DP build."""
+        solver = ExactMRFSolver(k4_model)
+        N = k4_model.num_layers
+        names = k4_model.mixer_names
+        all_allocs = _all_allocs_k4(k4_model)
+
+        # Build tables with no threshold
+        tables = solver._build_constrained_tables(all_allocs)
+        assert tables is not None
+
+        actual_peak = max(len(v) for v in tables.V)
+
+        # Compute max_counts the same way _build_constrained_tables does
+        K = k4_model.num_mixers
+        m = k4_model.memory
+        feasible_set: set[tuple[int, ...]] = set()
+        for alloc in all_allocs:
+            target = tuple(alloc.get(name, 0) for name in names)
+            if sum(target) == N:
+                feasible_set.add(target)
+        max_counts = [0] * K
+        for target in feasible_set:
+            for k in range(K):
+                if target[k] > max_counts[k]:
+                    max_counts[k] = target[k]
+
+        estimate = ExactMRFSolver._estimate_peak_states(K, m, N, max_counts)
+        assert estimate >= actual_peak
+
+    def test_estimate_is_upper_bound_high_memory(self) -> None:
+        """Estimate >= actual peak states with m=3 (K^m = 64)."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1", "m2", "m3"),
+            seed=42,
+            num_layers=16,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=3,
+        )
+        solver = ExactMRFSolver(model)
+        N, K, m = model.num_layers, model.num_mixers, model.memory
+        names = model.mixer_names
+
+        all_allocs = []
+        for a in range(N + 1):
+            for b in range(N + 1 - a):
+                for c in range(N + 1 - a - b):
+                    d = N - a - b - c
+                    all_allocs.append(
+                        {names[0]: a, names[1]: b, names[2]: c, names[3]: d}
+                    )
+
+        tables = solver._build_constrained_tables(all_allocs)
+        assert tables is not None
+
+        actual_peak = max(len(v) for v in tables.V)
+
+        feasible_set: set[tuple[int, ...]] = set()
+        for alloc in all_allocs:
+            target = tuple(alloc.get(name, 0) for name in names)
+            if sum(target) == N:
+                feasible_set.add(target)
+        max_counts = [0] * K
+        for target in feasible_set:
+            for k in range(K):
+                if target[k] > max_counts[k]:
+                    max_counts[k] = target[k]
+
+        estimate = ExactMRFSolver._estimate_peak_states(K, m, N, max_counts)
+        assert estimate >= actual_peak
+
+    def test_pre_check_prevents_dp_computation(self) -> None:
+        """Threshold just below estimate → None; just above → succeeds."""
+        model = ChainMRFModel(
+            mixer_names=("m0", "m1", "m2", "m3"),
+            seed=42,
+            num_layers=16,
+            unary_bonus=1.0,
+            unary_penalty=0.5,
+            pairwise_scale=0.3,
+            pairwise_max_range=3,
+        )
+        solver = ExactMRFSolver(model)
+        N = model.num_layers
+        names = model.mixer_names
+        K = model.num_mixers
+        m = model.memory
+
+        all_allocs = []
+        for a in range(N + 1):
+            for b in range(N + 1 - a):
+                for c in range(N + 1 - a - b):
+                    d = N - a - b - c
+                    all_allocs.append(
+                        {names[0]: a, names[1]: b, names[2]: c, names[3]: d}
+                    )
+
+        # Compute max_counts
+        feasible_set: set[tuple[int, ...]] = set()
+        for alloc in all_allocs:
+            target = tuple(alloc.get(name, 0) for name in names)
+            if sum(target) == N:
+                feasible_set.add(target)
+        max_counts = [0] * K
+        for target in feasible_set:
+            for k in range(K):
+                if target[k] > max_counts[k]:
+                    max_counts[k] = target[k]
+
+        estimate = ExactMRFSolver._estimate_peak_states(K, m, N, max_counts)
+        assert estimate > 0
+
+        # Threshold just below estimate → should return None (pre-check blocks)
+        result = solver._build_constrained_tables(
+            all_allocs, max_states_per_layer=estimate - 1
+        )
+        assert result is None
+
+        # Threshold at estimate → should succeed (pre-check passes)
+        result = solver._build_constrained_tables(
+            all_allocs, max_states_per_layer=estimate
+        )
+        assert result is not None

@@ -10,13 +10,10 @@
 # from the backend at runtime.
 #
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=generative \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.niah_single_2=generative_extraction_ruler_long \
 #       +backend=transformers +model=apriel2_0_5b_dev +task=gsm8k +generation=greedy
 
 evaluator_type: generative
-
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
 
 # Task configuration (composed from task/ config group)
 tasks: ${task.tasks}

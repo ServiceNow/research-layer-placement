@@ -8,8 +8,11 @@ search algorithms via _search_max_performance() and _search_min_cost().
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Literal, Sequence, assert_never, overload
+
+import numpy as np
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
@@ -25,7 +28,7 @@ from place_layers.search_strategy.cost_constrained.types import (
 )
 
 if TYPE_CHECKING:
-    from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
+    from place_layers.evaluator.evaluators import Evaluators
     from place_layers.problem.base_problem import BaseProblem
     from place_layers.search_strategy.cost_constrained.base_config import (
         BaseCostConstrainedConfig,
@@ -35,6 +38,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def feasible_best(
+    all_assignments: list[tuple[str, ...]],
+    all_scores: list[float],
+    cost_model: BaseCostModel,
+    cost_budget: float,
+    cost_floor: float | None = None,
+) -> tuple[int, float] | None:
+    """Find best-scoring feasible entry within cost budget.
+
+    Returns (index, score), or None if no within-budget entries exist.
+    """
+    best_idx = -1
+    best_score = float("-inf")
+    for i, (a, s) in enumerate(zip(all_assignments, all_scores)):
+        c = cost_model.allocation_cost(dict(Counter(a)))
+        if c > cost_budget + 1e-9:
+            continue
+        if cost_floor is not None and c < cost_floor - 1e-9:
+            continue
+        if s > best_score:
+            best_score = s
+            best_idx = i
+    if best_idx == -1:
+        return None
+    return best_idx, best_score
 
 
 class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
@@ -69,28 +99,6 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         self.config: BaseCostConstrainedConfig
         self._progress_estimator = progress_estimator
         self.eval_count = 0
-
-    async def _evaluate_with_details(
-        self, problem: CostConstrainedProblem, placement: LayerPlacement
-    ) -> tuple[float, dict[str, float] | None]:
-        """Evaluate placement and return both aggregated and auxiliary scores.
-
-        Args:
-            problem: The optimization problem
-            placement: The placement to evaluate
-
-        Returns:
-            Tuple of (aggregated_score, auxiliary_scores_dict)
-            auxiliary_scores_dict is None if not using multi-evaluator
-        """
-        from place_layers.evaluator.multi_evaluator_config import EvaluatorInstances
-
-        # Check if using multi-evaluator
-        if isinstance(problem.evaluator, EvaluatorInstances):
-            return await problem.evaluator.evaluate_with_details(placement)
-        else:
-            score = await problem.evaluator.evaluate(placement)
-            return score, None
 
     @overload
     async def search(
@@ -131,7 +139,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.num_layers
         num_mixers = cost_model.num_mixers
         mixer_names = cost_model.phase_order
 
@@ -144,8 +152,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             case MinCostProblemConfig(performance_target=target):
                 mode = "min_cost"
                 constraint_value = target
-            case _:
-                raise TypeError(f"Unexpected config type: {type(config)}")
+            case other:
+                assert_never(other)
 
         self._emit_search_started(
             mode=mode,
@@ -177,8 +185,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     performance_target=target,
                     cost_floor=cost_floor,
                 )
-            case _:
-                raise TypeError(f"Unexpected config type: {type(config)}")
+            case other:
+                assert_never(other)
 
     def _emit_search_started(
         self,
@@ -276,7 +284,7 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
         logger.info("\n" + "=" * 60)
         logger.info("SEARCH COMPLETE")
         logger.info("=" * 60)
-        logger.info(f"Best score: {best_entry.score:.4f}")
+        logger.info(f"Best score: {best_entry.score}")
         logger.info(f"Best cost: {final_cost:.4f}")
         logger.info(f"Best allocation: {best_entry.allocation}")
         logger.info(f"Allocations explored: {allocations_explored}")

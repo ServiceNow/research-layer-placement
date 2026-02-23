@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator@evaluators.evaluators_dict.main: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: local_vllm
   - /model: apriel2_0_5b_dev
   - /task: gsm8k

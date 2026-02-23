@@ -77,12 +77,10 @@ if TYPE_CHECKING:
         BoundsUpdatedEvent,
         SearchCompletedEvent,
         SearchStartedEvent,
-        SwapBeamIterationEvent,
+        SurrogateCandidateEvaluatedEvent,
         SurrogateDatasetLoadedEvent,
         SurrogateRoundCompletedEvent,
         SurrogateRoundStartedEvent,
-        SwapBeamIterationStartedEvent,
-        SwapEvaluatedEvent,
     )
 
 
@@ -110,6 +108,9 @@ class PlainDisplay(PlacementFormatterMixin):
         # Mixin attributes (set in on_search_started)
         self._mixer_names: tuple[str, ...] = ()
         self._num_layers: int = 0
+        # Surrogate top-k display state
+        self._surrogate_top_scores: list[float] = []
+        self._surrogate_evals_seen: int = 0
         # State tracking for enhanced output
         self._constraint_value: float = 0.0
         self._min_cost: float = 0.0
@@ -225,14 +226,16 @@ class PlainDisplay(PlacementFormatterMixin):
             if event.score is not None and event.assignments is not None:
                 by_mixer = self._group_layers_by_mixer(event.assignments)
                 placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
+                score_str = self._format_score(event.score)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
-                    f"{placement_str} -> {event.score:.4g}",
+                    f"{placement_str} -> {score_str}",
                 )
             elif event.score is not None:
+                score_str = self._format_score(event.score)
                 self._print(
                     f"ALLOCATION #{event.allocation_index} COMPLETE",
-                    f"{alloc_str} -> {event.score:.4g}",
+                    f"{alloc_str} -> {score_str}",
                 )
             else:
                 self._print(
@@ -247,9 +250,10 @@ class PlainDisplay(PlacementFormatterMixin):
     def on_best_updated(self, event: "BestUpdatedEvent") -> None:
         """Handle best updated event."""
         if self._config.show_best_updated:
+            score_str = self._format_score(event.score)
             self._print(
                 "BEST_UPDATED",
-                f"score={event.score:.4g}, cost={event.cost:.4f}",
+                f"score={score_str}, cost={event.cost:.4f}",
             )
 
     def on_bounds_updated(self, event: "BoundsUpdatedEvent") -> None:
@@ -258,9 +262,10 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_search_completed(self, event: "SearchCompletedEvent") -> None:
         """Handle search completed event."""
+        score_str = self._format_score(event.best_score)
         self._print(
             "SEARCH_COMPLETE",
-            f"best={event.best_score:.4g}, evals={event.total_evaluations}, "
+            f"best={score_str}, evals={event.total_evaluations}, "
             f"allocations={event.allocations_explored}",
         )
 
@@ -399,54 +404,6 @@ class PlainDisplay(PlacementFormatterMixin):
                 )
 
     # =========================================================================
-    # Swap-beam search event handlers
-    # =========================================================================
-
-    def on_swap_beam_iteration_started(
-        self, event: "SwapBeamIterationStartedEvent"
-    ) -> None:
-        """Handle swap-beam iteration started event."""
-        if not self._config.show_steps:
-            return
-
-        if event.iteration == 0:
-            # Initial state - show beam
-            by_mixer = self._group_layers_by_mixer(event.beam[0].assignments)
-            placement_str = self._format_placement(by_mixer, max_layers_per_mixer=8)
-            self._print_line(
-                f"Initial: {placement_str} (score={event.beam[0].score:.4g})",
-                indent=1,
-            )
-        else:
-            self._print_line(
-                f"Iteration {event.iteration}/{event.max_iterations}: "
-                f"Evaluating {event.num_candidates} swaps...",
-                indent=1,
-            )
-
-    def on_swap_evaluated(self, event: "SwapEvaluatedEvent") -> None:
-        """Handle swap evaluated event (no-op for plain display)."""
-        # Could be made configurable to show per-swap progress
-        del event
-
-    def on_swap_beam_iteration(self, event: "SwapBeamIterationEvent") -> None:
-        """Handle swap-beam iteration completed event."""
-        if not self._config.show_steps:
-            return
-
-        if event.iteration == 0:
-            return  # Already shown in iteration_started
-
-        best = event.best_candidate
-        status = "converged" if event.converged else ("improved" if event.improved else "no change")
-        best_str = f"best={best.score:.4g}" if best else "no candidates"
-        self._print_line(
-            f"Iteration {event.iteration}/{event.max_iterations}: "
-            f"{status}, {best_str}",
-            indent=1,
-        )
-
-    # =========================================================================
     # Annealing search event handlers
     # =========================================================================
 
@@ -521,16 +478,52 @@ class PlainDisplay(PlacementFormatterMixin):
 
     def on_surrogate_round_started(self, event: "SurrogateRoundStartedEvent") -> None:
         """Handle surrogate round started event."""
+        self._surrogate_top_scores = []
+        self._surrogate_evals_seen = 0
         self._print(
             f"ROUND {event.round}/{event.total_rounds}",
             f"{event.num_candidates} candidates, "
             f"evaluating top {event.evals_planned} by EI",
         )
 
+    def on_surrogate_candidate_evaluated(
+        self, event: "SurrogateCandidateEvaluatedEvent"
+    ) -> None:
+        """Handle surrogate candidate evaluated event (top-k filtered)."""
+        import bisect
+
+        self._surrogate_evals_seen += 1
+        k = self._config.surrogate_top_k
+
+        # Decide whether to show this candidate
+        if k is None or event.is_new_best:
+            show = True
+        elif len(self._surrogate_top_scores) < k:
+            show = True
+        elif event.score > self._surrogate_top_scores[0]:
+            show = True
+        else:
+            show = False
+
+        # Maintain sorted top-k list (ascending, so [0] is min)
+        bisect.insort(self._surrogate_top_scores, event.score)
+        if k is not None and len(self._surrogate_top_scores) > k:
+            self._surrogate_top_scores.pop(0)
+
+        if show:
+            marker = " *" if event.is_new_best else ""
+            self._print_line(
+                f"#{event.eval_index}/{event.evals_planned}: "
+                f"score={event.score:.4g}, "
+                f"mu={event.surrogate_mu:.4g}, "
+                f"acq={event.acq_value:.3g}{marker}",
+                indent=2,
+            )
+
     def on_surrogate_round_completed(self, event: "SurrogateRoundCompletedEvent") -> None:
         """Handle surrogate round completed event."""
         self._print(
             f"ROUND {event.round}/{event.total_rounds} complete",
             f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
-            f"rho={event.rho:.4f}, dataset={event.dataset_size}",
+            f"{event.surrogate_metric_label}={event.surrogate_metric_value:.4f}, dataset={event.dataset_size}",
         )

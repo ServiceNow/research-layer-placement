@@ -1,0 +1,16 @@
+# @package _global_
+# Experiment: Bayesian Viterbi surrogate search on mock evaluator.
+# Requires a pre-built exploration dataset (provide exploration_dataset_path on CLI).
+defaults:
+  - /command: optimize
+  - /evaluator@evaluators.configs.mock: mock_apriel_h_1_5_15b
+  - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
+  - /search_strategy: bayesian_viterbi_surrogate
+  - /result_handler: json
+  - _self_
+
+search_strategy:
+  exploration_dataset_path: ???
+  num_rounds: 2
+  evals_per_round: 200

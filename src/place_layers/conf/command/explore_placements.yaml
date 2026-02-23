@@ -6,10 +6,11 @@
 # Uses adaptive sampling: evaluates batches until surrogate quality plateaus.
 #
 # Usage:
-#   python -m place_layers +command=explore_placements +evaluator=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
+#   python -m place_layers +command=explore_placements +evaluator@evaluators.configs.mock=mock_apriel_h_1_5_15b +problem=cost_max_perf_apriel_15b
 
 defaults:
   - /result_handler: json
+  - /objective@evaluators.objective: weighted_average
   - _self_
 
 command: explore_placements
@@ -28,11 +29,13 @@ cv_folds: 5                    # Cross-validation folds for quality estimation
 
 seed: 42
 
+# Surrogate model — determines expansion selection method
+surrogate:
+  surrogate_type: ridge
+  n_bootstraps: 50
+  ei_xi: 0.01
+
 # Feature expansion selection
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
 expansion_max_range: 10         # ceiling for pairwise range search (auto-stops early)
 
-# Fixed feature expansion (optional)
-# If set, skips automatic expansion selection and uses this config directly.
-# Example: {max_order: 3, pairwise_max_range: 1, allocation_counts: true}
-fixed_expansion_config: null

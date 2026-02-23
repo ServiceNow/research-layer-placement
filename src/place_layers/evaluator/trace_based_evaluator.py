@@ -105,10 +105,10 @@ class TraceBasedEvaluator(BackendEvaluator):
         config: "TraceBasedEvaluatorConfig",
         *,
         output_dir: Path,
-        shared_backend: "AsyncBackend | SyncBackend | None" = None,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
         # Call parent init (sets up backend, trace writer, etc.)
-        super().__init__(config, output_dir=output_dir, shared_backend=shared_backend)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
         # Load and merge all traces by task_name
         self.merged_traces = self._load_and_merge_traces()

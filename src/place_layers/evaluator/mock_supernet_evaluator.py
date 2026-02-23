@@ -13,6 +13,7 @@ from pydantic import Field
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.base_evaluator import BaseEvaluator, BaseEvaluatorConfig
 from place_layers.mrf.model import ChainMRFModel
+from place_layers.mrf.solver import ExactMRFSolver
 
 
 class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
@@ -72,19 +73,6 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
             triplet_scale=self.config.triplet_scale,
         )
 
-    @classmethod
-    def with_noise(
-        cls,
-        evaluator: MockSupernetEvaluator,
-        noise_sigma: float,
-        noise_seed_shift: int = 0,
-    ) -> MockSupernetEvaluator:
-        """Return a copy of *evaluator* with a different noise configuration."""
-        config = evaluator.config.model_copy(
-            update={"noise_sigma": noise_sigma, "noise_seed_shift": noise_seed_shift}
-        )
-        return cls(config)
-
     @property
     def mrf_model(self) -> ChainMRFModel:
         """The underlying MRF model defining the score landscape."""
@@ -102,6 +90,14 @@ class MockSupernetEvaluator(BaseEvaluator[LayerPlacement]):
         This is for validation only. For ordering, use cost_model.phase_order.
         """
         return frozenset(self.config.mixer_names)
+
+    def create_solver(self) -> ExactMRFSolver:
+        """Create an exact solver over this evaluator's landscape."""
+        return ExactMRFSolver(self._mrf_model)
+
+    def true_score(self, parameters: LayerPlacement) -> float:
+        """Return the true (noise-free) score for a placement."""
+        return self._mrf_model.true_score(parameters)
 
     async def evaluate(
         self, parameters: LayerPlacement, *, noise_sigma: float | None = None

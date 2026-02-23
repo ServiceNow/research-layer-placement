@@ -15,7 +15,7 @@ defaults:
 
 # Override GSM8K to use fewer problems for quick testing
 evaluators:
-  evaluators_dict:
+  configs:
     gsm8k:
       tasks: ["gsm8k"]
       generation: ${generation}
