@@ -202,7 +202,7 @@ class TestHelpers:
             termination_reason="max_samples",
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
-                n_bootstraps=50, ei_xi=0.01,
+                n_bootstraps=50, ei_xi=0.01, cv_folds=5,
             ),
             rho_history=[0.3],
             samples_at_check=[1],
@@ -325,7 +325,7 @@ class TestExploreIntegration:
             termination_reason="max_samples",
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
-                n_bootstraps=50, ei_xi=0.01,
+                n_bootstraps=50, ei_xi=0.01, cv_folds=5,
             ),
             rho_history=[0.3],
             samples_at_check=[2],

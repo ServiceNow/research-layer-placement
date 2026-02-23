@@ -479,9 +479,10 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 # Step 5: Refit surrogate
                 surrogate.fit(all_assignments, np.array(all_scores))
 
+                folds = self.config.surrogate.cv_folds if isinstance(self.config.surrogate, RidgeSurrogateConfig) else None
                 diag = surrogate.diagnostics(
                     all_assignments, np.array(all_scores),
-                    folds=self.config.cv_folds, rng_seed=self.config.sa.seed or 0,
+                    folds=folds, rng_seed=self.config.sa.seed or 0,
                 )
                 label, value = diag.summary()
                 logger.debug(
@@ -561,11 +562,6 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
 
     supplemental_data_paths: list[str] = Field(
         description="Additional JSONL/JSON data files to load into surrogate training set.",
-    )
-
-    cv_folds: int = Field(
-        description="Cross-validation folds for surrogate quality.",
-        gt=1,
     )
 
     # Refinement loop

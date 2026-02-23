@@ -41,7 +41,6 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
     exploration_dataset_path="PLACEHOLDER",
     evaluation_log_path=None,
     supplemental_data_paths=[],
-    cv_folds=3,
     num_rounds=2,
     evals_per_round=20,
     sa=dict(
@@ -62,6 +61,7 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
         surrogate_type="ridge",
         n_bootstraps=50,
         ei_xi=0.01,
+        cv_folds=3,
     ),
     risk_buckets=None,
 )

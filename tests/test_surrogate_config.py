@@ -20,7 +20,7 @@ class TestRidgeSurrogateConfig:
     """Tests for RidgeSurrogateConfig."""
 
     def test_create_surrogate(self) -> None:
-        config = RidgeSurrogateConfig(n_bootstraps=30, ei_xi=0.02)
+        config = RidgeSurrogateConfig(n_bootstraps=30, ei_xi=0.02, cv_folds=5)
         feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
         assert isinstance(surrogate, RidgeSurrogate)
@@ -32,9 +32,9 @@ class TestRidgeSurrogateConfig:
 
     def test_validation_constraints(self) -> None:
         with pytest.raises(ValidationError):
-            RidgeSurrogateConfig(n_bootstraps=0, ei_xi=0.01)  # gt=0
+            RidgeSurrogateConfig(n_bootstraps=0, ei_xi=0.01, cv_folds=5)  # gt=0
         with pytest.raises(ValidationError):
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=-1.0)  # ge=0
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=-1.0, cv_folds=5)  # ge=0
 
 
 class TestBayesianRidgeSurrogateConfig:
@@ -69,7 +69,7 @@ class TestSurrogateConfigUnion:
 
     def test_parse_ridge(self) -> None:
         config = self._adapter.validate_python(
-            {"surrogate_type": "ridge", "n_bootstraps": 50, "ei_xi": 0.01}
+            {"surrogate_type": "ridge", "n_bootstraps": 50, "ei_xi": 0.01, "cv_folds": 5}
         )
         assert isinstance(config, RidgeSurrogateConfig)
         assert config.n_bootstraps == 50
@@ -96,5 +96,5 @@ class TestSurrogateConfigUnion:
     def test_mismatched_fields_raises(self) -> None:
         with pytest.raises(ValidationError):
             self._adapter.validate_python(
-                {"surrogate_type": "ridge", "prior_alpha": 1.0}
+                {"surrogate_type": "ridge", "prior_alpha": 1.0, "cv_folds": 5}
             )

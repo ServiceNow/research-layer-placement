@@ -505,16 +505,16 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
                 t0 = time.perf_counter()
                 diag = surrogate.diagnostics(
                     all_assignments, np.array(all_scores),
-                    folds=self.config.cv_folds, rng_seed=self.config.seed,
+                    folds=self.config.surrogate.cv_folds, rng_seed=self.config.seed,
                 )
                 label, value = diag.summary()
-                t_cv = time.perf_counter() - t0
+                t_diag = time.perf_counter() - t0
                 logger.info(
-                    "Round %d complete: refit %.3fs, CV %.3fs, "
+                    "Round %d complete: refit %.3fs, diag %.3fs, "
                     "best=%.6f, %s=%.4f, pred_corr=%.4f",
                     round_num + 1,
                     t_refit,
-                    t_cv,
+                    t_diag,
                     f_best,
                     label,
                     value,
@@ -860,16 +860,16 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
                 t0 = time.perf_counter()
                 diag = surrogate.diagnostics(
                     all_assignments, np.array(all_scores),
-                    folds=self.config.cv_folds, rng_seed=self.config.seed,
+                    folds=None, rng_seed=self.config.seed,
                 )
                 label, value = diag.summary()
-                t_cv = time.perf_counter() - t0
+                t_diag = time.perf_counter() - t0
                 logger.info(
-                    "Round %d complete: refit %.3fs, CV %.3fs, "
+                    "Round %d complete: refit %.3fs, diag %.3fs, "
                     "best=%.6f, %s=%.4f, pred_corr=%.4f",
                     round_num + 1,
                     t_refit,
-                    t_cv,
+                    t_diag,
                     f_best,
                     label,
                     value,
@@ -930,11 +930,6 @@ class _BaseViterbiSurrogateConfig(BaseCostConstrainedConfig):
 
     supplemental_data_paths: list[str] = Field(
         description="Additional JSONL/JSON data files to load into surrogate training set.",
-    )
-
-    cv_folds: int = Field(
-        description="Cross-validation folds for surrogate quality.",
-        gt=1,
     )
 
     num_rounds: int = Field(

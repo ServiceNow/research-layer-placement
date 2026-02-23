@@ -193,7 +193,7 @@ class TestLandscapeHelpers:
 
         loaded_dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         assert loaded_dataset.num_samples == 100
@@ -249,13 +249,13 @@ class TestLandscapeHelpers:
         # Fit WITHOUT supplemental
         ds_base, surr_base, _ = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         # Fit WITH supplemental dirs
         ds_pooled, surr_pooled, _ = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
             supplemental_data_dirs=[str(supplemental_dir)],
         )
 
@@ -293,7 +293,7 @@ class TestLandscapeHelpers:
 
         _, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -456,7 +456,7 @@ class TestValidateLandscapePipeline:
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -503,11 +503,11 @@ class TestValidateLandscapePipeline:
                     num_rounds=1,
                     evals_per_round=10,
                     candidates_per_model=50,
-                    cv_folds=3,
                     surrogate=dict(
                         surrogate_type="ridge",
                         n_bootstraps=50,
                         ei_xi=0.01,
+                        cv_folds=3,
                     ),
                     seed=42,
                 )
@@ -591,7 +591,7 @@ class TestValidateLandscapePipeline:
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -642,11 +642,11 @@ class TestValidateLandscapePipeline:
                 num_rounds=1,
                 evals_per_round=10,
                 candidates_per_model=50,
-                cv_folds=3,
                 surrogate=dict(
                     surrogate_type="ridge",
                     n_bootstraps=50,
                     ei_xi=0.01,
+                    cv_folds=3,
                 ),
                 seed=42,
             )
@@ -751,7 +751,6 @@ class TestValidateLandscapePipeline:
                     num_rounds=1,
                     evals_per_round=10,
                     candidates_per_model=50,
-                    cv_folds=3,
                     surrogate=dict(
                         surrogate_type="bayesian_ridge",
                         prior_alpha=1.0,
@@ -816,7 +815,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
             supplemental_data_dirs=[],
         )
         assert cfg.seed == 42
@@ -830,7 +829,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
             supplemental_data_dirs=[],
         )
         with pytest.raises(Exception):

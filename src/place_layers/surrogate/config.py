@@ -51,6 +51,10 @@ class RidgeSurrogateConfig(BaseSurrogateConfig):
         description="Exploration parameter for Expected Improvement.",
         ge=0,
     )
+    cv_folds: int = Field(
+        description="K-fold CV folds for surrogate diagnostics (Spearman rho).",
+        gt=1,
+    )
 
     def create_surrogate(
         self,

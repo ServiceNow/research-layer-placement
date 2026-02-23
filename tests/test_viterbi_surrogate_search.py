@@ -47,7 +47,6 @@ _VITERBI_CONFIG_DEFAULTS = dict(
     exploration_dataset_path="PLACEHOLDER",
     evaluation_log_path=None,
     supplemental_data_paths=[],
-    cv_folds=3,
     num_rounds=2,
     evals_per_round=20,
     seed=42,
@@ -56,6 +55,7 @@ _VITERBI_CONFIG_DEFAULTS = dict(
         surrogate_type="ridge",
         n_bootstraps=50,
         ei_xi=0.01,
+        cv_folds=3,
     ),
 )
 
@@ -180,7 +180,7 @@ async def _build_exploration_dataset(
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,
-        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
+        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
     )
 
 
@@ -286,7 +286,6 @@ class TestViterbiSurrogateSearchIntegration:
             exploration_dataset_path=str(dataset_path),
             evaluation_log_path=None,
             supplemental_data_paths=[],
-            cv_folds=3,
             num_rounds=2,
             evals_per_round=20,
             seed=42,
@@ -329,7 +328,6 @@ class TestRiskBucketValidation:
             exploration_dataset_path="dummy",
             evaluation_log_path=None,
             supplemental_data_paths=[],
-            cv_folds=3,
             num_rounds=1,
             evals_per_round=10,
             seed=42,
