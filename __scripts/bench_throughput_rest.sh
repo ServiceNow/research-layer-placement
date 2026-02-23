@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SERVER_URL="${SERVER_URL:-http://localhost:8000}"
-OUTPUT_BASE="outputs/throughput_10_requests"
+OUTPUT_BASE="outputs/throughput_10_requests_test"
 LOG_DIR="logs/throughput_10_requests"
 PLACEMENT_DIR="${OUTPUT_BASE}/_placement_configs/placement"
 mkdir -p "$LOG_DIR" "$PLACEMENT_DIR"

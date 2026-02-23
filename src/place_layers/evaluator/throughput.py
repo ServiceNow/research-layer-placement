@@ -51,9 +51,13 @@ class ThroughputEvaluator(BackendEvaluator):
     config: "ThroughputEvaluatorConfig"
 
     def __init__(
-        self, config: "ThroughputEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "ThroughputEvaluatorConfig",
+        *,
+        output_dir: Path,
+        backend: AsyncBackend | SyncBackend,
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
 
     async def _calibrate_prompt(self) -> str:
         """Build a synthetic prompt targeting input_seq_len tokens.
