@@ -217,6 +217,29 @@ class PlacementLandscapeCommand(BaseCommand):
                     len(validation.bands),
                     validation.summary.spearman_rho,
                 )
+                # Filter out bands with validated cost outside their band range
+                in_band = [
+                    b for b in validation.bands
+                    if b.cost_low <= b.validated.cost <= b.cost_high
+                ]
+                n_dropped = len(validation.bands) - len(in_band)
+                if n_dropped > 0:
+                    logger.warning(
+                        "Filtered %d / %d validation bands with out-of-range "
+                        "validated costs for %s",
+                        n_dropped,
+                        len(validation.bands),
+                        obj_name,
+                    )
+                    validation = ValidationResults(
+                        objective_name=validation.objective_name,
+                        num_layers=validation.num_layers,
+                        baseline_cost=validation.baseline_cost,
+                        num_cost_bins=validation.num_cost_bins,
+                        cost_bin_edges=validation.cost_bin_edges,
+                        bands=in_band,
+                        summary=validation.summary,
+                    )
             else:
                 logger.warning(
                     "Validation results not found for %s at %s, skipping overlay",
@@ -422,16 +445,41 @@ class PlacementLandscapeCommand(BaseCommand):
 
         cfg = self.config
 
+        # Compute dynamic y-axis range from all score sources
+        all_score_vals: list[np.ndarray] = [scores]
+        if band_results:
+            band_scores_arr = np.array([r.score for r in band_results])
+            all_score_vals.append(band_scores_arr)
+            # Include ±2σ uncertainty band extremes so fill_between isn't clipped
+            _, band_sigma = surrogate.predict(
+                [br.assignments for br in band_results]
+            )
+            all_score_vals.append(band_scores_arr - 2 * band_sigma)
+            all_score_vals.append(band_scores_arr + 2 * band_sigma)
+        if validation is not None and validation.bands:
+            all_score_vals.append(
+                np.array([b.validated.score for b in validation.bands])
+            )
+        if observed_scores is not None and len(observed_scores) > 0:
+            all_score_vals.append(observed_scores)
+
+        combined = np.concatenate(all_score_vals)
+        score_min = float(combined.min())
+        score_max = float(combined.max())
+        margin = 0.05 * (score_max - score_min) if score_max > score_min else 0.5
+        score_lo = score_min - margin
+        score_hi = score_max + margin
+
         h = ax.hist2d(
             speedups, scores,
             bins=[cfg.landscape.num_cost_bins, cfg.num_score_bins],
             cmap="Greys",
             norm=LogNorm(),
             density=True,
-            range=[[min_speedup, max_speedup], [0.0, 1.0]],
+            range=[[min_speedup, max_speedup], [score_lo, score_hi]],
         )
         fig.colorbar(h[3], cax=cax, label="Density")
-        ax.set_ylim(0.0, 1.0)
+        ax.set_ylim(score_lo, score_hi)
 
         # DP-optimal line (dashed when validation present, solid otherwise)
         if band_results:

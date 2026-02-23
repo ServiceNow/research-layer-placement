@@ -33,7 +33,10 @@ from place_layers.cost_model.base_cost_model import BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.mrf.solver import ExactMRFSolver
 from place_layers.problem.layer_placement import CostConstrainedProblem
-from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.base import (
+    BaseCostConstrainedSearch,
+    feasible_best,
+)
 from place_layers.search_strategy.cost_constrained.base_config import (
     BaseCostConstrainedConfig,
 )
@@ -105,9 +108,18 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=cost_budget,
+            cost_floor=cost_floor,
         )
 
-        best_idx = int(np.argmax(all_scores))
+        fb = feasible_best(
+            all_assignments, all_scores, cost_model, cost_budget, cost_floor,
+        )
+        assert fb is not None, (
+            f"BUG: no feasible placement in [{cost_floor}, {cost_budget}] "
+            f"after {len(all_assignments)} samples — "
+            f"this should be impossible since the surrogate loop generates in-band candidates"
+        )
+        best_idx, _ = fb
         best_assignment = all_assignments[best_idx]
         best_alloc = dict(Counter(best_assignment))
         best_entry = BeamEntry(
@@ -149,6 +161,7 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
             num_layers=num_layers,
             feasible_allocations=feasible_allocations,
             cost_budget=None,
+            cost_floor=cost_floor,
         )
 
         best_cost = float("inf")
@@ -208,6 +221,7 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
         num_layers: int,
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
+        cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Load exploration data and run Viterbi refinement loop."""
         raise NotImplementedError
@@ -230,6 +244,7 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
         num_layers: int,
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
+        cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Bootstrap Viterbi loop."""
         mixer_names = cost_model.phase_order
@@ -328,7 +343,14 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
                 time.perf_counter() - t0,
                 len(all_assignments),
             )
-            f_best = float(np.max(all_scores))
+            if cost_budget is not None:
+                fb = feasible_best(
+                    all_assignments, all_scores, cost_model, cost_budget,
+                    cost_floor,
+                )
+                f_best = fb[1] if fb is not None else float("-inf")
+            else:
+                f_best = float(np.max(all_scores))
 
             for round_num in range(self.config.num_rounds):
                 logger.debug(
@@ -555,6 +577,7 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
         num_layers: int,
         feasible_allocations: list["Allocation"],
         cost_budget: float | None,
+        cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
         """Bayesian Viterbi loop with risk-bucket selection."""
         mixer_names = cost_model.phase_order
@@ -659,7 +682,14 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
                 time.perf_counter() - t0,
                 len(all_assignments),
             )
-            f_best = float(np.max(all_scores))
+            if cost_budget is not None:
+                fb = feasible_best(
+                    all_assignments, all_scores, cost_model, cost_budget,
+                    cost_floor,
+                )
+                f_best = fb[1] if fb is not None else float("-inf")
+            else:
+                f_best = float(np.max(all_scores))
 
             for round_num in range(self.config.num_rounds):
                 logger.debug(

@@ -31,7 +31,10 @@ from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.problem.layer_placement import CostConstrainedProblem
-from place_layers.search_strategy.cost_constrained.base import BaseCostConstrainedSearch
+from place_layers.search_strategy.cost_constrained.base import (
+    BaseCostConstrainedSearch,
+    feasible_best,
+)
 from place_layers.search_strategy.cost_constrained.base_config import (
     BaseCostConstrainedConfig,
 )
@@ -114,8 +117,16 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             cost_floor=cost_floor,
         )
 
-        # Find best by score
-        best_idx = int(np.argmax(all_scores))
+        # Find best by score (filtered to feasible entries)
+        fb = feasible_best(
+            all_assignments, all_scores, cost_model, cost_budget, cost_floor,
+        )
+        assert fb is not None, (
+            f"BUG: no feasible placement in [{cost_floor}, {cost_budget}] "
+            f"after {len(all_assignments)} samples — "
+            f"this should be impossible since the surrogate loop generates in-band candidates"
+        )
+        best_idx, _ = fb
         best_assignment = all_assignments[best_idx]
         best_alloc = dict(Counter(best_assignment))
         best_score = all_scores[best_idx]
@@ -318,7 +329,14 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             )
             surrogate.fit(all_assignments, np.array(all_scores))
 
-            f_best = float(np.max(all_scores))
+            if cost_budget is not None:
+                fb = feasible_best(
+                    all_assignments, all_scores, cost_model, cost_budget,
+                    cost_floor,
+                )
+                f_best = fb[1] if fb is not None else float("-inf")
+            else:
+                f_best = float(np.max(all_scores))
 
             for round_num in range(self.config.num_rounds):
                 logger.debug(

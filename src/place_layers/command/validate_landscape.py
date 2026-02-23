@@ -288,7 +288,30 @@ class ValidateLandscapeCommand(BaseCommand):
                 }
             )
             strategy = search_config.create_search_strategy()
-            result = await strategy.search(problem)
+            try:
+                result = await strategy.search(problem)
+            except ValueError as exc:
+                logger.warning(
+                    "Band %d: search found no feasible placement (%s), "
+                    "skipping (objective=%s)",
+                    band.band_index,
+                    exc,
+                    obj_name,
+                )
+                continue
+
+            # Post-search cost guard: reject results outside band range
+            if not (band.cost_low - 1e-9 <= result.final_cost <= band.cost_high + 1e-9):
+                logger.warning(
+                    "Band %d: result cost %.4f outside band [%.4f, %.4f], "
+                    "skipping (objective=%s)",
+                    band.band_index,
+                    result.final_cost,
+                    band.cost_low,
+                    band.cost_high,
+                    obj_name,
+                )
+                continue
 
             # Save per-band result (CostConstrainedSearchResult as JSON)
             result_path.write_text(result.model_dump_json(indent=2))
