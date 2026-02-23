@@ -19,7 +19,6 @@ landscape: ${landscape}
 samples_per_allocation: 200
 
 num_score_bins: 120
-show_observed: true
 score_label: "Score"
 
 display_names: null

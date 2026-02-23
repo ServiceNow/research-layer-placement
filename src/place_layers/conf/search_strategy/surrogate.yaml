@@ -16,6 +16,9 @@ strategy_type: surrogate
 # Path to JSON dataset from explore_placements command (required)
 exploration_dataset_path: ???
 
+evaluation_log_path: null
+supplemental_data_paths: []
+
 cv_folds: 5
 
 # --- Refinement loop ---

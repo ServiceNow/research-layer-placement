@@ -292,13 +292,11 @@ class EvaluatorsConfig(BaseModel):
 
         async with AsyncExitStack() as stack:
             evals_dir = output_dir / "evals"
-            evals_dir.mkdir(parents=True, exist_ok=True)
 
             # Create all evaluators
             evaluators: dict[str, BaseEvaluator] = {}
             for name, config in self.configs.items():
                 eval_dir = evals_dir / name
-                eval_dir.mkdir(parents=True, exist_ok=True)
 
                 if isinstance(config, BackendEvaluatorConfig):
                     if backend is None:

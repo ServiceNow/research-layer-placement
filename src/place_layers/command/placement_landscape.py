@@ -114,11 +114,13 @@ class PlacementLandscapeCommand(BaseCommand):
         logger.info("=== Generating landscape for objective: %s ===", obj_name)
 
         landscape = self.config.landscape
+
         dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path),
             landscape.cost_model,
             landscape.surrogate,
             landscape.seed,
+            supplemental_data_dirs=landscape.supplemental_data_dirs,
         )
         num_layers = dataset.num_layers
 
@@ -215,14 +217,28 @@ class PlacementLandscapeCommand(BaseCommand):
                     validation_path,
                 )
 
-        # Observed data overlay
-        observed_costs: np.ndarray | None = None
-        observed_scores: np.ndarray | None = None
-        if self.config.show_observed:
-            observed_costs = np.array(
-                [cost_model.allocation_cost(a) for a in dataset.allocations]
+        # Observed data overlay (always shown) — exploration + supplemental
+        all_obs_allocs: list[dict[str, int]] = list(dataset.allocations)
+        all_obs_scores: list[float] = list(dataset.scores)
+
+        if landscape.supplemental_data_dirs:
+            from place_layers.surrogate.evaluation_log import (
+                load_pooled_data,
+                resolve_supplemental_dirs,
             )
-            observed_scores = np.array(dataset.scores)
+
+            supplemental_files = resolve_supplemental_dirs(
+                landscape.supplemental_data_dirs, obj_name,
+            )
+            if supplemental_files:
+                pool = load_pooled_data(supplemental_files, deduplicate=True)
+                all_obs_allocs.extend(pool.allocations)
+                all_obs_scores.extend(pool.scores)
+
+        observed_costs = np.array(
+            [cost_model.allocation_cost(a) for a in all_obs_allocs]
+        )
+        observed_scores = np.array(all_obs_scores)
 
         # Plot
         self._plot(
@@ -620,9 +636,6 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
         description="Histogram bins along score axis.",
         gt=0,
     )
-    show_observed: bool = Field(
-        description="Overlay real evaluation points from exploration dataset.",
-    )
     score_label: str = Field(
         description="Y-axis label for the density plot.",
     )
@@ -641,3 +654,4 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
         "(contains validation_results_{obj_name}.json files). "
         "If provided, overlays real evaluated scores and uses validated placements in layermap.",
     )
+

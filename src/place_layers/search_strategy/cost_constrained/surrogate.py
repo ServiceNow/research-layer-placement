@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import random
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, assert_never
 
@@ -49,6 +50,11 @@ from place_layers.surrogate.config import (
     SurrogateConfig,
 )
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.evaluation_log import (
+    EvaluationRecord,
+    append_record,
+    load_pooled_data,
+)
 
 if TYPE_CHECKING:
     from place_layers.cost_model.base_cost_model import Allocation
@@ -239,6 +245,27 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             exploration.final_rho,
         )
 
+        # Load supplemental evaluation data
+        if self.config.supplemental_data_paths:
+            supplemental = load_pooled_data(
+                [Path(p) for p in self.config.supplemental_data_paths],
+                deduplicate=True,
+            )
+            n_before = len(all_assignments)
+            existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+            for a, s, alloc in zip(
+                supplemental.assignments, supplemental.scores, supplemental.allocations
+            ):
+                if (a, s) not in existing:
+                    all_assignments.append(a)
+                    all_scores.append(s)
+                    existing.add((a, s))
+            logger.info(
+                "Loaded %d supplemental samples (%d new after dedup)",
+                supplemental.num_samples,
+                len(all_assignments) - n_before,
+            )
+
         # Emit dataset loaded event
         if self.observers:
             from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
@@ -250,182 +277,239 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             for observer in self.observers:
                 observer.on_surrogate_dataset_loaded(dataset_event)
 
-        # Refinement via SA against surrogate
-        logger.debug("Refinement: %d rounds", self.config.num_rounds)
-
-        # Smart constructor handles both surrogate types
-        surrogate = self.config.surrogate.create_surrogate(
-            mixer_names=mixer_names,
-            seed=self.config.sa.seed or 0,
-            feature_config=exploration.feature_config,
+        # Open evaluation log if configured
+        from place_layers.surrogate.evaluation_log import (
+            EvaluationLogMeta,
+            write_meta,
         )
-        surrogate.fit(all_assignments, np.array(all_scores))
 
-        f_best = float(np.max(all_scores))
+        eval_log_file = None
+        eval_log_path = (
+            Path(self.config.evaluation_log_path)
+            if self.config.evaluation_log_path
+            else None
+        )
+        eval_record_count = 0
 
-        for round_num in range(self.config.num_rounds):
-            logger.debug(
-                "Round %d/%d: SA (%d restarts x %d steps)",
-                round_num + 1,
-                self.config.num_rounds,
-                self.config.sa.num_restarts,
-                self.config.sa.steps_per_restart,
-            )
-
-            # Step 1: SA against surrogate -> top candidates
-            async def surrogate_score(assignment: tuple[str, ...]) -> float:
-                return surrogate.predict_mean_one(assignment)
-
-            sa_result = await run_multi_start_sa(
-                score_fn=surrogate_score,
-                allocation_cost=cost_model.allocation_cost,
-                feasible_allocations=feasible_allocations,
+        if eval_log_path is not None:
+            eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+            meta = EvaluationLogMeta(
+                version=1,
+                objective_name=exploration.objective_name,
                 num_layers=num_layers,
-                mixer_names=mixer_names,
-                cost_budget=cost_budget,
-                config=self.config.sa,
-                rng=rng,
-                cost_floor=cost_floor,
+                mixer_names=list(mixer_names),
+                source_command="surrogate_search",
+                source_detail="sa_surrogate",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                num_records=None,
             )
-            top_candidates = [c for c, _s in sa_result.candidates]
+            write_meta(eval_log_path, meta)
+            eval_log_file = eval_log_path.open("a")
 
-            logger.debug("SA produced %d distinct candidates", len(top_candidates))
+        try:
+            # Refinement via SA against surrogate
+            logger.debug("Refinement: %d rounds", self.config.num_rounds)
 
-            # Step 2: Score with acquisition function — match/case on surrogate type
-            mu, sigma = surrogate.predict(top_candidates)
-            n_select = min(self.config.evals_per_round, len(top_candidates))
-            match self.config.surrogate:
-                case RidgeSurrogateConfig(ei_xi=xi):
-                    acq_scores = expected_improvement(mu, sigma, f_best, xi=xi)
-                    top_indices = np.argsort(acq_scores)[-n_select:][::-1]
-                case BayesianRidgeSurrogateConfig():
-                    selected_indices, bucket_log = select_by_risk_buckets(
-                        mu, sigma, n_select, self.config.risk_buckets,
-                    )
-                    top_indices = np.array(selected_indices)
-                    acq_scores = mu  # for event reporting
-                    for line in bucket_log:
-                        logger.info(line)
-                case other:
-                    assert_never(other)
-
-            # Emit round started event
-            if self.observers:
-                from place_layers.search_strategy.progress import (
-                    SurrogateRoundStartedEvent,
-                )
-
-                round_started_event = SurrogateRoundStartedEvent(
-                    round=round_num + 1,
-                    total_rounds=self.config.num_rounds,
-                    num_candidates=sa_result.total_distinct_candidates,
-                    evals_planned=n_select,
-                )
-                for observer in self.observers:
-                    observer.on_surrogate_round_started(round_started_event)
-
-            # Record surrogate predictions for correlation diagnostic
-            predicted_scores = mu[top_indices].copy()
-
-            # Step 4: Evaluate with real evaluator
-            for eval_i, idx in enumerate(top_indices):
-                candidate = top_candidates[idx]
-                placement = LayerPlacement(assignments=candidate)
-                score = await problem.evaluate(placement)
-                self.eval_count += 1
-
-                all_assignments.append(candidate)
-                all_scores.append(score)
-
-                alloc = dict(Counter(candidate))
-                candidate_cost = cost_model.allocation_cost(alloc)
-
-                is_new_best = False
-                if score > f_best:
-                    f_best = score
-                    is_new_best = True
-
-                    if self.observers:
-                        from place_layers.search_strategy.progress import (
-                            BestUpdatedEvent,
-                        )
-
-                        event = BestUpdatedEvent(
-                            score=score,
-                            cost=candidate_cost,
-                            allocation=alloc,
-                            assignments=candidate,
-                        )
-                        for observer in self.observers:
-                            observer.on_best_updated(event)
-
-                if self.observers:
-                    for observer in self.observers:
-                        observer.on_eval_completed(self.eval_count)
-
-                    from place_layers.search_strategy.progress import (
-                        SurrogateCandidateEvaluatedEvent,
-                    )
-
-                    eval_event = SurrogateCandidateEvaluatedEvent(
-                        round=round_num + 1,
-                        total_rounds=self.config.num_rounds,
-                        eval_index=eval_i + 1,
-                        evals_planned=n_select,
-                        assignments=candidate,
-                        score=score,
-                        surrogate_mu=float(mu[idx]),
-                        acq_value=float(acq_scores[idx]),
-                        cost=candidate_cost,
-                        is_new_best=is_new_best,
-                        f_best=f_best,
-                    )
-                    for observer in self.observers:
-                        observer.on_surrogate_candidate_evaluated(eval_event)
-
-            # Compute prediction correlation for this round's candidates
-            actual_scores = np.array(all_scores[-n_select:])
-            if len(actual_scores) >= 2:
-                corr_result = spearmanr(predicted_scores, actual_scores)
-                prediction_correlation = float(corr_result.statistic)
-            else:
-                prediction_correlation = 0.0
-
-            # Step 5: Refit surrogate
+            # Smart constructor handles both surrogate types
+            surrogate = self.config.surrogate.create_surrogate(
+                mixer_names=mixer_names,
+                seed=self.config.sa.seed or 0,
+                feature_config=exploration.feature_config,
+            )
             surrogate.fit(all_assignments, np.array(all_scores))
 
-            diag = surrogate.diagnostics(
-                all_assignments, np.array(all_scores),
-                folds=self.config.cv_folds, rng_seed=self.config.sa.seed or 0,
-            )
-            label, value = diag.summary()
-            logger.debug(
-                "Round %d complete: best=%.6f, %s=%.4f, pred_corr=%.4f",
-                round_num + 1,
-                f_best,
-                label,
-                value,
-                prediction_correlation,
-            )
+            f_best = float(np.max(all_scores))
 
-            # Emit round completed event
-            if self.observers:
-                from place_layers.search_strategy.progress import (
-                    SurrogateRoundCompletedEvent,
+            for round_num in range(self.config.num_rounds):
+                logger.debug(
+                    "Round %d/%d: SA (%d restarts x %d steps)",
+                    round_num + 1,
+                    self.config.num_rounds,
+                    self.config.sa.num_restarts,
+                    self.config.sa.steps_per_restart,
                 )
 
-                round_completed_event = SurrogateRoundCompletedEvent(
-                    round=round_num + 1,
-                    total_rounds=self.config.num_rounds,
-                    surrogate_metric_label=label,
-                    surrogate_metric_value=value,
-                    diagnostics=diag,
-                    prediction_correlation=prediction_correlation,
-                    dataset_size=len(all_assignments),
-                    best_score=f_best,
+                # Step 1: SA against surrogate -> top candidates
+                async def surrogate_score(assignment: tuple[str, ...]) -> float:
+                    return surrogate.predict_mean_one(assignment)
+
+                sa_result = await run_multi_start_sa(
+                    score_fn=surrogate_score,
+                    allocation_cost=cost_model.allocation_cost,
+                    feasible_allocations=feasible_allocations,
+                    num_layers=num_layers,
+                    mixer_names=mixer_names,
+                    cost_budget=cost_budget,
+                    config=self.config.sa,
+                    rng=rng,
+                    cost_floor=cost_floor,
                 )
-                for observer in self.observers:
-                    observer.on_surrogate_round_completed(round_completed_event)
+                top_candidates = [c for c, _s in sa_result.candidates]
+
+                logger.debug("SA produced %d distinct candidates", len(top_candidates))
+
+                # Step 2: Score with acquisition function — match/case on surrogate type
+                mu, sigma = surrogate.predict(top_candidates)
+                n_select = min(self.config.evals_per_round, len(top_candidates))
+                match self.config.surrogate:
+                    case RidgeSurrogateConfig(ei_xi=xi):
+                        acq_scores = expected_improvement(mu, sigma, f_best, xi=xi)
+                        top_indices = np.argsort(acq_scores)[-n_select:][::-1]
+                    case BayesianRidgeSurrogateConfig():
+                        selected_indices, bucket_log = select_by_risk_buckets(
+                            mu, sigma, n_select, self.config.risk_buckets,
+                        )
+                        top_indices = np.array(selected_indices)
+                        acq_scores = mu  # for event reporting
+                        for line in bucket_log:
+                            logger.info(line)
+                    case other:
+                        assert_never(other)
+
+                # Emit round started event
+                if self.observers:
+                    from place_layers.search_strategy.progress import (
+                        SurrogateRoundStartedEvent,
+                    )
+
+                    round_started_event = SurrogateRoundStartedEvent(
+                        round=round_num + 1,
+                        total_rounds=self.config.num_rounds,
+                        num_candidates=sa_result.total_distinct_candidates,
+                        evals_planned=n_select,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_round_started(round_started_event)
+
+                # Record surrogate predictions for correlation diagnostic
+                predicted_scores = mu[top_indices].copy()
+
+                # Step 4: Evaluate with real evaluator
+                for eval_i, idx in enumerate(top_indices):
+                    candidate = top_candidates[idx]
+                    placement = LayerPlacement(assignments=candidate)
+                    score = await problem.evaluate(placement)
+                    self.eval_count += 1
+
+                    all_assignments.append(candidate)
+                    all_scores.append(score)
+
+                    alloc = dict(Counter(candidate))
+                    candidate_cost = cost_model.allocation_cost(alloc)
+
+                    # Write to evaluation log
+                    if eval_log_file is not None:
+                        record = EvaluationRecord(
+                            assignment=candidate,
+                            score=score,
+                            allocation=alloc,
+                        )
+                        append_record(eval_log_file, record)
+                        eval_record_count += 1
+
+                    is_new_best = False
+                    if score > f_best:
+                        f_best = score
+                        is_new_best = True
+
+                        if self.observers:
+                            from place_layers.search_strategy.progress import (
+                                BestUpdatedEvent,
+                            )
+
+                            event = BestUpdatedEvent(
+                                score=score,
+                                cost=candidate_cost,
+                                allocation=alloc,
+                                assignments=candidate,
+                            )
+                            for observer in self.observers:
+                                observer.on_best_updated(event)
+
+                    if self.observers:
+                        for observer in self.observers:
+                            observer.on_eval_completed(self.eval_count)
+
+                        from place_layers.search_strategy.progress import (
+                            SurrogateCandidateEvaluatedEvent,
+                        )
+
+                        eval_event = SurrogateCandidateEvaluatedEvent(
+                            round=round_num + 1,
+                            total_rounds=self.config.num_rounds,
+                            eval_index=eval_i + 1,
+                            evals_planned=n_select,
+                            assignments=candidate,
+                            score=score,
+                            surrogate_mu=float(mu[idx]),
+                            acq_value=float(acq_scores[idx]),
+                            cost=candidate_cost,
+                            is_new_best=is_new_best,
+                            f_best=f_best,
+                        )
+                        for observer in self.observers:
+                            observer.on_surrogate_candidate_evaluated(eval_event)
+
+                # Compute prediction correlation for this round's candidates
+                actual_scores = np.array(all_scores[-n_select:])
+                if len(actual_scores) >= 2:
+                    corr_result = spearmanr(predicted_scores, actual_scores)
+                    prediction_correlation = float(corr_result.statistic)
+                else:
+                    prediction_correlation = 0.0
+
+                # Step 5: Refit surrogate
+                surrogate.fit(all_assignments, np.array(all_scores))
+
+                diag = surrogate.diagnostics(
+                    all_assignments, np.array(all_scores),
+                    folds=self.config.cv_folds, rng_seed=self.config.sa.seed or 0,
+                )
+                label, value = diag.summary()
+                logger.debug(
+                    "Round %d complete: best=%.6f, %s=%.4f, pred_corr=%.4f",
+                    round_num + 1,
+                    f_best,
+                    label,
+                    value,
+                    prediction_correlation,
+                )
+
+                # Emit round completed event
+                if self.observers:
+                    from place_layers.search_strategy.progress import (
+                        SurrogateRoundCompletedEvent,
+                    )
+
+                    round_completed_event = SurrogateRoundCompletedEvent(
+                        round=round_num + 1,
+                        total_rounds=self.config.num_rounds,
+                        surrogate_metric_label=label,
+                        surrogate_metric_value=value,
+                        diagnostics=diag,
+                        prediction_correlation=prediction_correlation,
+                        dataset_size=len(all_assignments),
+                        best_score=f_best,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_round_completed(round_completed_event)
+
+        finally:
+            # Close evaluation log and update metadata with record count
+            if eval_log_file is not None:
+                eval_log_file.close()
+                if eval_log_path is not None and eval_record_count > 0:
+                    meta_final = EvaluationLogMeta(
+                        version=1,
+                        objective_name=exploration.objective_name,
+                        num_layers=num_layers,
+                        mixer_names=list(mixer_names),
+                        source_command="surrogate_search",
+                        source_detail="sa_surrogate",
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        num_records=eval_record_count,
+                    )
+                    write_meta(eval_log_path, meta_final)
 
         return all_assignments, all_scores
 
@@ -455,6 +539,10 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     exploration_dataset_path: str | None = Field(
         description="Path to JSON dataset from explore_placements command. "
         "Set to null in experiment YAMLs when derived at runtime.",
+    )
+
+    supplemental_data_paths: list[str] = Field(
+        description="Additional JSONL/JSON data files to load into surrogate training set.",
     )
 
     cv_folds: int = Field(

@@ -8,6 +8,8 @@
 
 strategy_type: viterbi_bayesian_surrogate
 exploration_dataset_path: ???
+evaluation_log_path: null
+supplemental_data_paths: []
 cv_folds: 5
 num_rounds: 4
 evals_per_round: 500

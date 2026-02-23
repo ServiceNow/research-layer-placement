@@ -14,7 +14,6 @@ generated, so exploration continues from the exact same point.
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 from pathlib import Path
@@ -38,6 +37,13 @@ from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.evaluation_log import (
+    EvaluationLogMeta,
+    EvaluationRecord,
+    append_record,
+    load_records,
+    write_meta,
+)
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
 from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig, SurrogateConfig
 from place_layers.surrogate.model_selection import (
@@ -69,41 +75,17 @@ def _load_progress(
     Returns:
         (assignments, scores, allocations) — each a list of the same length.
     """
-    assignments: list[tuple[str, ...]] = []
-    scores: list[float] = []
-    allocations: list[dict[str, int]] = []
-
     if not path.exists():
-        return assignments, scores, allocations
+        return [], [], []
 
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            record = json.loads(line)
-            assignments.append(tuple(record["assignment"]))
-            scores.append(float(record["score"]))
-            allocations.append(record["allocation"])
-
-    logger.info("Loaded %d samples from %s", len(assignments), path)
-    return assignments, scores, allocations
-
-
-def _append_to_jsonl(
-    path: Path,
-    assignment: tuple[str, ...] | list[str],
-    score: float,
-    allocation: dict[str, int],
-) -> None:
-    """Append one evaluated record to the progress JSONL file."""
-    record = {
-        "assignment": list(assignment),
-        "score": score,
-        "allocation": allocation,
-    }
-    with path.open("a") as f:
-        f.write(json.dumps(record) + "\n")
+    records = load_records(path)
+    if records:
+        logger.info("Loaded %d samples from %s", len(records), path)
+    return (
+        [r.assignment for r in records],
+        [r.score for r in records],
+        [r.allocation for r in records],
+    )
 
 
 def _get_allocation(assignment: list[str] | tuple[str, ...]) -> dict[str, int]:
@@ -428,126 +410,55 @@ class ExplorePlacementsCommand(BaseCommand):
                 "Resumed from %d completed samples", len(all_assignments),
             )
 
-        # --- Phase 1: Initial batch ---
-        remaining_initial = max(
-            0, self.config.min_samples - len(all_assignments)
+        # Write sidecar metadata for the progress JSONL so it can be loaded
+        # standalone by load_pooled_data (without a companion .json file).
+        from datetime import datetime, timezone
+
+        progress_meta = EvaluationLogMeta(
+            version=1,
+            objective_name=obj_name,
+            num_layers=num_layers,
+            mixer_names=list(phase_order),
+            source_command="explore_placements",
+            source_detail="exploration_progress",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            num_records=None,
         )
-        if remaining_initial > 0:
-            logger.info("Sampling initial batch of %d", remaining_initial)
-            batch = _sample_batch(
-                remaining_initial, feasible_allocations, num_layers, rng,
-                weights=sampling_weights,
+        write_meta(progress_path, progress_meta)
+
+        # Open progress file for incremental writes
+        progress_file = progress_path.open("a")
+        try:
+            # --- Phase 1: Initial batch ---
+            remaining_initial = max(
+                0, self.config.min_samples - len(all_assignments)
             )
-            for assignment in batch:
-                placement = LayerPlacement(assignments=tuple(assignment))
-                score = await problem.evaluate(placement)
-                assignment_tuple = tuple(assignment)
-                allocation = _get_allocation(assignment)
-                all_assignments.append(assignment_tuple)
-                all_scores.append(score)
-                all_allocations.append(allocation)
-                _append_to_jsonl(
-                    progress_path, assignment_tuple, score, allocation
+            if remaining_initial > 0:
+                logger.info("Sampling initial batch of %d", remaining_initial)
+                batch = _sample_batch(
+                    remaining_initial, feasible_allocations, num_layers, rng,
+                    weights=sampling_weights,
                 )
+                for assignment in batch:
+                    placement = LayerPlacement(assignments=tuple(assignment))
+                    score = await problem.evaluate(placement)
+                    assignment_tuple = tuple(assignment)
+                    allocation = _get_allocation(assignment)
+                    all_assignments.append(assignment_tuple)
+                    all_scores.append(score)
+                    all_allocations.append(allocation)
+                    record = EvaluationRecord(
+                        assignment=assignment_tuple, score=score, allocation=allocation,
+                    )
+                    append_record(progress_file, record)
 
-        # --- Phase 2: Initial expansion selection ---
-        # Expansion selection is re-run in the adaptive loop (Phase 3) after
-        # each batch. The feature-to-sample guard in _select_expansion()
-        # relaxes as more data arrives, potentially unlocking higher-order
-        # features. Re-running is cheap (a few surrogate fits).
-        feature_config = FeatureExpansionConfig.unary()
-        last_expansion_result: ExpansionSelectionResult | None = None
-        if (
-            self.config.expansion_max_order > 1
-            and len(all_assignments) >= self.config.cv_folds
-        ):
-            expansion_result = self._select_expansion(
-                all_assignments, np.array(all_scores), phase_order,
-            )
-            last_expansion_result = expansion_result
-            _log_expansion_result(
-                expansion_result,
-                n_samples=len(all_assignments),
-                num_types=len(phase_order),
-                num_layers=num_layers,
-                surrogate_config=self.config.surrogate,
-            )
-            feature_config = expansion_result.selected_config
-
-        # --- Phase 2b: First quality check (Ridge CV) ---
-        if len(all_assignments) >= self.config.cv_folds:
-            rho = ridge_cv_rho(
-                assignments=all_assignments,
-                scores=np.array(all_scores),
-                mixer_names=phase_order,
-                feature_config=feature_config,
-                cv_folds=self.config.cv_folds,
-                seed=self.config.seed,
-            )
-            rho_history.append(rho)
-            samples_at_check.append(len(all_assignments))
-            logger.info(
-                "Ridge CV rho=%.4g (%d samples)",
-                rho,
-                len(all_assignments),
-            )
-        else:
-            rho = 0.0
-
-        # --- Phase 3: Adaptive loop ---
-        termination_reason: Literal[
-            "target_reached", "plateau", "max_samples"
-        ] = "max_samples"
-
-        while len(all_assignments) < self.config.max_samples:
-            # Check stopping criteria
-            if rho >= self.config.target_rank_correlation:
-                termination_reason = "target_reached"
-                logger.info(
-                    "Target rho (%g) reached: %.4g",
-                    self.config.target_rank_correlation, rho,
-                )
-                break
-
-            if _check_plateau(
-                rho_history,
-                self.config.plateau_patience,
-                self.config.plateau_min_improvement,
-            ):
-                termination_reason = "plateau"
-                logger.info(
-                    "Plateau detected after %d checks", len(rho_history),
-                )
-                break
-
-            # Sample and evaluate next batch
-            batch_size = min(
-                self.config.batch_size,
-                self.config.max_samples - len(all_assignments),
-            )
-            logger.info(
-                "Sampling batch of %d (total: %d)",
-                batch_size, len(all_assignments),
-            )
-            batch = _sample_batch(
-                batch_size, feasible_allocations, num_layers, rng,
-                weights=sampling_weights,
-            )
-            for assignment in batch:
-                placement = LayerPlacement(assignments=tuple(assignment))
-                score = await problem.evaluate(placement)
-                assignment_tuple = tuple(assignment)
-                allocation = _get_allocation(assignment)
-                all_assignments.append(assignment_tuple)
-                all_scores.append(score)
-                all_allocations.append(allocation)
-                _append_to_jsonl(
-                    progress_path, assignment_tuple, score, allocation
-                )
-
-            # Re-run expansion selection with larger dataset.
-            # The feature-to-sample guard relaxes as data grows,
-            # potentially unlocking higher-order features.
+            # --- Phase 2: Initial expansion selection ---
+            # Expansion selection is re-run in the adaptive loop (Phase 3) after
+            # each batch. The feature-to-sample guard in _select_expansion()
+            # relaxes as more data arrives, potentially unlocking higher-order
+            # features. Re-running is cheap (a few surrogate fits).
+            feature_config = FeatureExpansionConfig.unary()
+            last_expansion_result: ExpansionSelectionResult | None = None
             if (
                 self.config.expansion_max_order > 1
                 and len(all_assignments) >= self.config.cv_folds
@@ -556,44 +467,144 @@ class ExplorePlacementsCommand(BaseCommand):
                     all_assignments, np.array(all_scores), phase_order,
                 )
                 last_expansion_result = expansion_result
-                new_config = expansion_result.selected_config
-                if new_config != feature_config:
-                    old_feature_config = feature_config
-                    feature_config = new_config
-                    _log_expansion_result(
-                        expansion_result,
-                        n_samples=len(all_assignments),
-                        num_types=len(phase_order),
-                        num_layers=num_layers,
-                        surrogate_config=self.config.surrogate,
-                        previous_config=old_feature_config,
-                    )
+                _log_expansion_result(
+                    expansion_result,
+                    n_samples=len(all_assignments),
+                    num_types=len(phase_order),
+                    num_layers=num_layers,
+                    surrogate_config=self.config.surrogate,
+                )
+                feature_config = expansion_result.selected_config
 
-            # Re-check quality via Ridge CV
-            rho = ridge_cv_rho(
-                assignments=all_assignments,
-                scores=np.array(all_scores),
-                mixer_names=phase_order,
-                feature_config=feature_config,
-                cv_folds=self.config.cv_folds,
-                seed=self.config.seed,
-            )
-            rho_delta = rho - rho_history[-1] if rho_history else rho
-            # NOTE: rho_history may reflect different feature configs at
-            # different checkpoints if expansion was upgraded mid-loop.
-            # A jump from e.g. 0.93 (order-2) to 0.96 (order-3) is real
-            # progress and the plateau detector correctly sees it as such.
-            rho_history.append(rho)
-            samples_at_check.append(len(all_assignments))
-            logger.info(
-                "Ridge CV rho=%.4g (%+.4g) at %d samples "
-                "[order=%d, range=%d]",
-                rho,
-                rho_delta,
-                len(all_assignments),
-                feature_config.max_order,
-                feature_config.pairwise_max_range,
-            )
+            # --- Phase 2b: First quality check (Ridge CV) ---
+            if len(all_assignments) >= self.config.cv_folds:
+                rho = ridge_cv_rho(
+                    assignments=all_assignments,
+                    scores=np.array(all_scores),
+                    mixer_names=phase_order,
+                    feature_config=feature_config,
+                    cv_folds=self.config.cv_folds,
+                    seed=self.config.seed,
+                )
+                rho_history.append(rho)
+                samples_at_check.append(len(all_assignments))
+                logger.info(
+                    "Ridge CV rho=%.4g (%d samples)",
+                    rho,
+                    len(all_assignments),
+                )
+            else:
+                rho = 0.0
+
+            # --- Phase 3: Adaptive loop ---
+            termination_reason: Literal[
+                "target_reached", "plateau", "max_samples"
+            ] = "max_samples"
+
+            while len(all_assignments) < self.config.max_samples:
+                # Check stopping criteria
+                if rho >= self.config.target_rank_correlation:
+                    termination_reason = "target_reached"
+                    logger.info(
+                        "Target rho (%g) reached: %.4g",
+                        self.config.target_rank_correlation, rho,
+                    )
+                    break
+
+                if _check_plateau(
+                    rho_history,
+                    self.config.plateau_patience,
+                    self.config.plateau_min_improvement,
+                ):
+                    termination_reason = "plateau"
+                    logger.info(
+                        "Plateau detected after %d checks", len(rho_history),
+                    )
+                    break
+
+                # Sample and evaluate next batch
+                batch_size = min(
+                    self.config.batch_size,
+                    self.config.max_samples - len(all_assignments),
+                )
+                logger.info(
+                    "Sampling batch of %d (total: %d)",
+                    batch_size, len(all_assignments),
+                )
+                batch = _sample_batch(
+                    batch_size, feasible_allocations, num_layers, rng,
+                    weights=sampling_weights,
+                )
+                for assignment in batch:
+                    placement = LayerPlacement(assignments=tuple(assignment))
+                    score = await problem.evaluate(placement)
+                    assignment_tuple = tuple(assignment)
+                    allocation = _get_allocation(assignment)
+                    all_assignments.append(assignment_tuple)
+                    all_scores.append(score)
+                    all_allocations.append(allocation)
+                    record = EvaluationRecord(
+                        assignment=assignment_tuple, score=score, allocation=allocation,
+                    )
+                    append_record(progress_file, record)
+
+                # Re-run expansion selection with larger dataset.
+                # The feature-to-sample guard relaxes as data grows,
+                # potentially unlocking higher-order features.
+                if (
+                    self.config.expansion_max_order > 1
+                    and len(all_assignments) >= self.config.cv_folds
+                ):
+                    expansion_result = self._select_expansion(
+                        all_assignments, np.array(all_scores), phase_order,
+                    )
+                    last_expansion_result = expansion_result
+                    new_config = expansion_result.selected_config
+                    if new_config != feature_config:
+                        old_feature_config = feature_config
+                        feature_config = new_config
+                        _log_expansion_result(
+                            expansion_result,
+                            n_samples=len(all_assignments),
+                            num_types=len(phase_order),
+                            num_layers=num_layers,
+                            surrogate_config=self.config.surrogate,
+                            previous_config=old_feature_config,
+                        )
+
+                # Re-check quality via Ridge CV
+                rho = ridge_cv_rho(
+                    assignments=all_assignments,
+                    scores=np.array(all_scores),
+                    mixer_names=phase_order,
+                    feature_config=feature_config,
+                    cv_folds=self.config.cv_folds,
+                    seed=self.config.seed,
+                )
+                rho_delta = rho - rho_history[-1] if rho_history else rho
+                # NOTE: rho_history may reflect different feature configs at
+                # different checkpoints if expansion was upgraded mid-loop.
+                # A jump from e.g. 0.93 (order-2) to 0.96 (order-3) is real
+                # progress and the plateau detector correctly sees it as such.
+                rho_history.append(rho)
+                samples_at_check.append(len(all_assignments))
+                logger.info(
+                    "Ridge CV rho=%.4g (%+.4g) at %d samples "
+                    "[order=%d, range=%d]",
+                    rho,
+                    rho_delta,
+                    len(all_assignments),
+                    feature_config.max_order,
+                    feature_config.pairwise_max_range,
+                )
+        finally:
+            progress_file.close()
+
+        # Update sidecar with final record count
+        write_meta(
+            progress_path,
+            progress_meta.model_copy(update={"num_records": len(all_assignments)}),
+        )
 
         # Build result dataset
         assert rho_history, (

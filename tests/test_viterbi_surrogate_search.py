@@ -45,6 +45,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 _VITERBI_CONFIG_DEFAULTS = dict(
     strategy_type="viterbi_surrogate",
     exploration_dataset_path="PLACEHOLDER",
+    evaluation_log_path=None,
+    supplemental_data_paths=[],
     cv_folds=3,
     num_rounds=2,
     evals_per_round=20,
@@ -282,6 +284,8 @@ class TestViterbiSurrogateSearchIntegration:
         config = ViterbiBayesianSurrogateSearchConfig(
             strategy_type="viterbi_bayesian_surrogate",
             exploration_dataset_path=str(dataset_path),
+            evaluation_log_path=None,
+            supplemental_data_paths=[],
             cv_folds=3,
             num_rounds=2,
             evals_per_round=20,
@@ -323,6 +327,8 @@ class TestRiskBucketValidation:
         defaults = dict(
             strategy_type="viterbi_bayesian_surrogate",
             exploration_dataset_path="dummy",
+            evaluation_log_path=None,
+            supplemental_data_paths=[],
             cv_folds=3,
             num_rounds=1,
             evals_per_round=10,

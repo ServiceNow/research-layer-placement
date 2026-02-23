@@ -7,12 +7,15 @@ import numpy as np
 import pytest
 
 from place_layers.command.explore_placements import (
-    _append_to_jsonl,
     _check_plateau,
     _compute_cost_uniform_weights,
     _get_allocation,
     _load_progress,
     _sample_batch,
+)
+from place_layers.surrogate.evaluation_log import (
+    EvaluationRecord,
+    append_record,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig
@@ -217,10 +220,15 @@ class TestHelpers:
         assert loaded.surrogate_config.surrogate_type == "ridge"
 
     def test_jsonl_roundtrip(self, tmp_path: Path) -> None:
-        """Write and read progress JSONL."""
+        """Write and read progress JSONL via evaluation_log module."""
         path = tmp_path / "progress.jsonl"
-        _append_to_jsonl(path, ("m0", "m1", "m0"), 0.75, {"m0": 2, "m1": 1})
-        _append_to_jsonl(path, ("m1", "m1", "m0"), 0.82, {"m0": 1, "m1": 2})
+        with path.open("w") as f:
+            append_record(f, EvaluationRecord(
+                assignment=("m0", "m1", "m0"), score=0.75, allocation={"m0": 2, "m1": 1},
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1", "m1", "m0"), score=0.82, allocation={"m0": 1, "m1": 2},
+            ))
 
         assignments, scores, allocations = _load_progress(path)
         assert len(assignments) == 2

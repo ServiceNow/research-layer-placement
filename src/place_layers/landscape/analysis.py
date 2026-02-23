@@ -10,6 +10,7 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 
@@ -29,6 +30,8 @@ def load_and_fit_surrogate(
     cost_model_config: CostModelConfig,
     surrogate_config: SurrogateConfig,
     seed: int,
+    *,
+    supplemental_data_dirs: Sequence[str | Path] = (),
 ) -> tuple[ExplorationDataset, BaseSurrogate, BaseCostModel]:
     """Load dataset, create surrogate from config, fit to data.
 
@@ -40,6 +43,9 @@ def load_and_fit_surrogate(
         cost_model_config: Cost model configuration.
         surrogate_config: Surrogate model configuration (Ridge or Bayesian Ridge).
         seed: Random seed for surrogate fitting.
+        supplemental_data_dirs: Directories containing additional evaluation
+            data. Each is searched per-objective using
+            ``discover_evaluation_files()``.
 
     Returns:
         (dataset, surrogate, cost_model) tuple.
@@ -62,13 +68,43 @@ def load_and_fit_surrogate(
         feature_config.allocation_counts,
     )
 
+    # Pool supplemental data into training set
+    all_assignments: list[tuple[str, ...]] = list(dataset.assignments)
+    all_scores: list[float] = list(dataset.scores)
+
+    if supplemental_data_dirs:
+        from place_layers.surrogate.evaluation_log import (
+            load_pooled_data,
+            resolve_supplemental_dirs,
+        )
+
+        supplemental_files = resolve_supplemental_dirs(
+            supplemental_data_dirs, dataset.objective_name,
+        )
+        if supplemental_files:
+            supplemental = load_pooled_data(supplemental_files, deduplicate=True)
+            existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+            n_new = 0
+            for a, s in zip(supplemental.assignments, supplemental.scores):
+                if (a, s) not in existing:
+                    all_assignments.append(a)
+                    all_scores.append(s)
+                    existing.add((a, s))
+                    n_new += 1
+            logger.info(
+                "Pooled %d supplemental samples (%d new after dedup, total=%d)",
+                supplemental.num_samples,
+                n_new,
+                len(all_assignments),
+            )
+
     # Fit surrogate
-    scores_array = np.array(dataset.scores)
+    scores_array = np.array(all_scores)
     surrogate = surrogate_config.create_surrogate(
         mixer_names=dataset.mixer_names, seed=seed, feature_config=feature_config,
     )
     t0 = time.perf_counter()
-    surrogate.fit(dataset.assignments, scores_array)
+    surrogate.fit(all_assignments, scores_array)
     logger.info("Surrogate fitted (%.3fs)", time.perf_counter() - t0)
 
     return dataset, surrogate, cost_model

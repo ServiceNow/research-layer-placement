@@ -1082,7 +1082,7 @@ class TestCostConstrainedBeamSearch:
     ) -> None:
         """MAX_PERFORMANCE mode should respect cost budget."""
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=20
+            sa=_SMALL_SA_CONFIG, max_allocations=20, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1098,7 +1098,7 @@ class TestCostConstrainedBeamSearch:
     ) -> None:
         """MIN_COST mode should meet performance target."""
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=20
+            sa=_SMALL_SA_CONFIG, max_allocations=20, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1114,7 +1114,7 @@ class TestCostConstrainedBeamSearch:
     ) -> None:
         """MAX_PERFORMANCE should respect budget (start at budget, explore cheaper)."""
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=10
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1130,7 +1130,7 @@ class TestCostConstrainedBeamSearch:
     ) -> None:
         """MIN_COST should start from most expensive config and downgrade."""
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=10
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
 
@@ -1163,7 +1163,7 @@ class TestCostConstrainedBeamSearch:
             cost_floor=None,
         )
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=10
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
 
         # Run twice
@@ -1257,7 +1257,7 @@ class TestCostFloorSearch:
         problem = problem_config.create_problem(wrap_evaluator(evaluator), objective_name="weighted_average")
 
         search_config = AnnealingConfig(
-            sa=_SMALL_SA_CONFIG, max_allocations=10
+            sa=_SMALL_SA_CONFIG, max_allocations=10, evaluation_log_path=None
         )
         search = search_config.create_search_strategy()
         result = await search.search(problem)

@@ -39,6 +39,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 _SURROGATE_CONFIG_DEFAULTS = dict(
     strategy_type="surrogate",
     exploration_dataset_path="PLACEHOLDER",
+    evaluation_log_path=None,
+    supplemental_data_paths=[],
     cv_folds=3,
     num_rounds=2,
     evals_per_round=20,

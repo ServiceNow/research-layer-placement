@@ -53,3 +53,8 @@ class LandscapeConfig(BaseModel):
     surrogate: SurrogateConfig = Field(
         description="Surrogate model configuration for DP solving and density prediction.",
     )
+    supplemental_data_dirs: list[str] = Field(
+        description="Directories containing additional evaluation data to merge "
+        "into surrogate training. Each directory is searched per-objective "
+        "using the standard naming convention (evaluations_{obj}.jsonl, etc.).",
+    )

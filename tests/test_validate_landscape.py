@@ -202,6 +202,73 @@ class TestLandscapeHelpers:
         preds = surrogate.predict_mean(dataset.assignments[:5])
         assert len(preds) == 5
 
+    async def test_load_and_fit_surrogate_with_supplemental(self, tmp_path: Path) -> None:
+        """load_and_fit_surrogate pools supplemental data from directories."""
+        from place_layers.surrogate.evaluation_log import (
+            EvaluationLogMeta,
+            EvaluationRecord,
+            append_record,
+            write_meta,
+        )
+
+        evaluator = _make_evaluator()
+        dataset = await _build_exploration_dataset(evaluator, num_samples=80)
+        dataset_path = _save_dataset(dataset, tmp_path)
+
+        # Write supplemental JSONL in a subdirectory using standard naming
+        supplemental_dir = tmp_path / "supplemental"
+        supplemental_dir.mkdir()
+        jsonl_path = supplemental_dir / "evaluations_weighted_average.jsonl"
+        extra_records = [
+            EvaluationRecord(
+                assignment=("m0",) * 6 + ("m1",) * 6,
+                score=0.42,
+                allocation={"m0": 6, "m1": 6},
+            ),
+            EvaluationRecord(
+                assignment=("m1",) * 6 + ("m0",) * 6,
+                score=0.38,
+                allocation={"m0": 6, "m1": 6},
+            ),
+        ]
+        with jsonl_path.open("w") as f:
+            for rec in extra_records:
+                append_record(f, rec)
+        meta = EvaluationLogMeta(
+            version=1,
+            objective_name="weighted_average",
+            num_layers=_NUM_LAYERS,
+            mixer_names=["m0", "m1"],
+            source_command="test",
+            source_detail="test",
+            created_at="2026-01-01T00:00:00+00:00",
+            num_records=2,
+        )
+        write_meta(jsonl_path, meta)
+
+        # Fit WITHOUT supplemental
+        ds_base, surr_base, _ = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+        )
+
+        # Fit WITH supplemental dirs
+        ds_pooled, surr_pooled, _ = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01), seed=42,
+            supplemental_data_dirs=[str(supplemental_dir)],
+        )
+
+        # Dataset object is the same (only exploration data)
+        assert ds_base.num_samples == ds_pooled.num_samples == 80
+        # But surrogate was fitted on more data — predictions may differ
+        test_assignment = ("m0",) * 6 + ("m1",) * 6
+        pred_base = surr_base.predict_mean_one(test_assignment)
+        pred_pooled = surr_pooled.predict_mean_one(test_assignment)
+        # Both should produce valid floats (not NaN)
+        assert np.isfinite(pred_base)
+        assert np.isfinite(pred_pooled)
+
     async def test_compute_band_edges(self, tmp_path: Path) -> None:
         """Band edges should be sorted ascending with correct count."""
         cost_model = _COST_MODEL_CONFIG.create_cost_model()
@@ -431,6 +498,8 @@ class TestValidateLandscapePipeline:
                 search_config = ViterbiSurrogateSearchConfig(
                     strategy_type="viterbi_surrogate",
                     exploration_dataset_path=str(dataset_path),
+                    evaluation_log_path=None,
+                    supplemental_data_paths=[],
                     num_rounds=1,
                     evals_per_round=10,
                     candidates_per_model=50,
@@ -568,6 +637,8 @@ class TestValidateLandscapePipeline:
             search_config = ViterbiSurrogateSearchConfig(
                 strategy_type="viterbi_surrogate",
                 exploration_dataset_path=str(dataset_path),
+                evaluation_log_path=None,
+                supplemental_data_paths=[],
                 num_rounds=1,
                 evals_per_round=10,
                 candidates_per_model=50,
@@ -675,6 +746,8 @@ class TestValidateLandscapePipeline:
                 search_config = ViterbiBayesianSurrogateSearchConfig(
                     strategy_type="viterbi_bayesian_surrogate",
                     exploration_dataset_path=str(dataset_path),
+                    evaluation_log_path=None,
+                    supplemental_data_paths=[],
                     num_rounds=1,
                     evals_per_round=10,
                     candidates_per_model=50,
@@ -744,6 +817,7 @@ class TestLandscapeConfig:
             seed=42,
             num_cost_bins=80,
             surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
+            supplemental_data_dirs=[],
         )
         assert cfg.seed == 42
         assert cfg.num_cost_bins == 80
@@ -757,6 +831,7 @@ class TestLandscapeConfig:
             seed=42,
             num_cost_bins=80,
             surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01),
+            supplemental_data_dirs=[],
         )
         with pytest.raises(Exception):
             cfg.seed = 99  # type: ignore[misc]

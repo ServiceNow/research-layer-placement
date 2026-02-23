@@ -20,3 +20,4 @@ defaults:
 
 command: validate_landscape
 landscape: ${landscape}
+accumulate_across_bands: true
