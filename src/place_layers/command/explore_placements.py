@@ -775,3 +775,12 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         ),
         ge=1,
     )
+    fixed_expansion_config: FeatureExpansionConfig | None = Field(
+        default=None,
+        description=(
+            "If set, use this feature expansion config directly instead of "
+            "running automatic expansion selection. Useful when you already "
+            "know the desired order and range (e.g., order=3, range=1 for "
+            "adjacent triplets)."
+        ),
+    )

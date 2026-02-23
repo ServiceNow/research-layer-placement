@@ -165,6 +165,11 @@ class BackendEvaluator(BaseEvaluator[LayerPlacement]):
             )
         return self._trace_writer.output_dir
 
+    @property
+    def output_dir(self) -> Path:
+        """Public accessor for the current trace output directory."""
+        return self._output_dir
+
     def _build_metadata(self) -> OutputMetadata:
         """Build output metadata from current state.
 

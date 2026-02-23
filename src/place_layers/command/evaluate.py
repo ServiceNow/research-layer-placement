@@ -13,7 +13,7 @@ import logging
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from hydra.core.hydra_config import HydraConfig
 from pydantic import BaseModel, Field

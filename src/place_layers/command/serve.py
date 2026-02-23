@@ -15,7 +15,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, assert_never
 
 from pydantic import Field
 
@@ -55,20 +55,19 @@ class ServeCommand(BaseCommand):
         # Create FastAPI app based on backend type
         from place_layers.server.app import create_app
 
-        if isinstance(self.config.backend, TransformersBackendConfig):
-            logger.info(f"Model: {self.config.backend.model_path}")
-        elif isinstance(self.config.backend, VLLMBackendConfig):
-            # VLLMBackend can be local or remote - only local makes sense for serve
-            if not isinstance(self.config.backend.client, LocalVLLMClientConfig):
-                raise ValueError(
-                    "serve command requires local vLLM client, not remote. "
-                    "Use +backend=local_vllm instead of +backend=vllm"
-                )
-            logger.info(f"Model: {self.config.backend.client.model_path}")
-        else:
-            raise ValueError(
-                f"Unknown backend type: {self.config.backend.backend_type}"
-            )
+        match self.config.backend:
+            case TransformersBackendConfig():
+                logger.info(f"Model: {self.config.backend.model_path}")
+            case VLLMBackendConfig():
+                # VLLMBackend can be local or remote - only local makes sense for serve
+                if not isinstance(self.config.backend.client, LocalVLLMClientConfig):
+                    raise ValueError(
+                        "serve command requires local vLLM client, not remote. "
+                        "Use +backend=local_vllm instead of +backend=vllm"
+                    )
+                logger.info(f"Model: {self.config.backend.client.model_path}")
+            case other:
+                assert_never(other)
 
         # Both TransformersBackend and VLLMBackend work with create_app
         app = create_app(self.config.backend)

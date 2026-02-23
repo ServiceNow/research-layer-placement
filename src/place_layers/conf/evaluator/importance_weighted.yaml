@@ -29,6 +29,11 @@ task_weights: null
 #   math: 2.0    # MATH weighted 2x
 #   aime: 3.0    # AIME weighted 3x
 
+# Scoring mode: what evaluate() returns
+#   accuracy: IS-weighted accuracy (higher=better, range [0,1])
+#   student_log_prob: mean student log-prob per problem (higher=better, negative)
+scoring_mode: accuracy
+
 # Importance sampling clipping parameters
 # These bounds are applied at aggregation time (in summarize_is), not during
 # record creation. This allows re-running with different clipping without

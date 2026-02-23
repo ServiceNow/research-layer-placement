@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Self, Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, Sequence, assert_never
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -202,10 +202,14 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
         )
 
     def _compute_summary(self) -> float:
-        """Compute final IS accuracy score from validation.jsonl.
+        """Compute final score from validation.jsonl.
+
+        Dispatches on ``self.config.scoring_mode``:
+        - ``"accuracy"``: IS-weighted accuracy (higher = better, [0, 1]).
+        - ``"student_log_prob"``: mean student log-prob per problem (higher = better, negative).
 
         Returns:
-            Weighted IS accuracy.
+            Final score according to the configured scoring mode.
         """
         # Compute summary from disk (single source of truth)
         # Pass clipping parameters so summarize_is recomputes with current settings
@@ -214,12 +218,18 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
             clip_min=self._weight_clip_min,
             clip_max=self._weight_clip_max,
         )
-
-        # Compute weighted accuracy using pre-computed task weights
-        final_score = summary.weighted_accuracy(self.task_weights)
-
         logger.info(f"\n{summary}")
-        logger.info(f"Weighted accuracy: {final_score:.4f}")
+
+        mode = self.config.scoring_mode
+        match mode:
+            case "accuracy":
+                final_score = summary.weighted_accuracy(self.task_weights)
+                logger.info(f"Weighted accuracy: {final_score:.4f}")
+            case "student_log_prob":
+                final_score = summary.weighted_student_log_prob(self.task_weights)
+                logger.info(f"Weighted student log-prob: {final_score:.4f}")
+            case other:
+                assert_never(other)
 
         return final_score
 
@@ -230,6 +240,13 @@ class ImportanceWeightedEvaluatorConfig(TraceBasedEvaluatorConfig):
     _impl_class: ClassVar[type[BaseEvaluator]] = ImportanceWeightedEvaluator
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
+
+    # Scoring mode
+    scoring_mode: Literal["accuracy", "student_log_prob"] = Field(
+        description="What evaluate() returns: "
+        "'accuracy' for IS-weighted accuracy, "
+        "'student_log_prob' for mean student log-prob per problem.",
+    )
 
     # Importance sampling parameters
     weight_clip_min: float = Field(

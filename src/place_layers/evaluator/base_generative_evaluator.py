@@ -119,11 +119,16 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
         """
         key = f"{task_name}:{idx}"
         if self.config.use_chat_template:
+            messages = list(
+                build_chat_messages(task, doc, task.config.num_fewshot or 0)
+            )
+            if self.config.system_instruction:
+                messages.insert(
+                    0, {"role": "system", "content": self.config.system_instruction}
+                )
             return GenerateChatRequest(
                 key=key,
-                messages=list(
-                    build_chat_messages(task, doc, task.config.num_fewshot or 0)
-                ),
+                messages=messages,
                 n=self.config.samples_per_problem,
                 max_tokens=self.config.max_new_tokens,
                 temperature=self.config.temperature,
@@ -269,6 +274,12 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         description="Whether to use chat template formatting. When False, prompts are "
         "formatted as raw text without any chat structure. "
         "Use False for evaluating base models or when chat template is undesired.",
+    )
+    system_instruction: str | None = Field(
+        default=None,
+        description="System message prepended to chat prompts. "
+        "Only used when use_chat_template=True. "
+        "Example: 'Answer directly without reasoning.'",
     )
     evaluate_truncated_samples: bool = Field(
         description="Whether to evaluate truncated samples for correctness. "

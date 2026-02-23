@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Literal, Sequence, assert_never, overload
 
 import numpy as np
 
@@ -152,8 +152,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
             case MinCostProblemConfig(performance_target=target):
                 mode = "min_cost"
                 constraint_value = target
-            case _:
-                raise TypeError(f"Unexpected config type: {type(config)}")
+            case other:
+                assert_never(other)
 
         self._emit_search_started(
             mode=mode,
@@ -185,8 +185,8 @@ class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
                     performance_target=target,
                     cost_floor=cost_floor,
                 )
-            case _:
-                raise TypeError(f"Unexpected config type: {type(config)}")
+            case other:
+                assert_never(other)
 
     def _emit_search_started(
         self,

@@ -175,6 +175,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         temperature: float,
         top_p: float,
         key: str,
+        ignore_eos: bool = False,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -201,6 +202,7 @@ class RemoteVLLMClient(BaseVLLMClient):
             "temperature": temperature,
             "top_p": top_p,
             "logprobs": 1,
+            "ignore_eos": ignore_eos,
         }
 
         async with session.post(url, json=payload) as resp:

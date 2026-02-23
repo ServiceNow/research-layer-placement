@@ -215,6 +215,92 @@ def build_text_prompt(
     return context
 
 
+def _extract_filtered_text(resps: Any, completion: str) -> str:
+    """Extract a single filtered string from an lm-eval filter result."""
+    if not resps:
+        return completion
+
+    first = resps[0]
+    if isinstance(first, list):
+        if not first:
+            return completion
+        first = first[0]
+
+    if isinstance(first, str):
+        return first
+    return str(first)
+
+
+def _apply_filter_ensemble(filter_ensemble: Any, completion: str) -> str:
+    """Apply an lm-eval FilterEnsemble to a single completion string."""
+    resps: Any = [[completion]]
+    docs = [None]
+
+    for f in filter_ensemble.filters:
+        filter_instance = f()
+        resps = filter_instance.apply(resps, docs)
+        # Some lm-eval filters return iterators/maps; normalize to list.
+        if hasattr(resps, "__iter__") and not isinstance(resps, (list, str)):
+            resps = list(resps)
+
+    return _extract_filtered_text(resps, completion)
+
+
+def apply_all_filters(task: "Task", completion: str) -> dict[str, str]:
+    """Apply all task-defined filters to a completion.
+
+    Returns:
+        Mapping from filter name -> filtered/extracted string.
+        If the task defines no filters, returns {"none": completion}.
+    """
+    filters = getattr(task, "_filters", [])
+    if not filters:
+        return {"none": completion}
+
+    return {filt.name: _apply_filter_ensemble(filt, completion) for filt in filters}
+
+
+def check_correctness_all_filters(
+    task: "Task",
+    doc: dict,
+    completion: str,
+) -> dict[str, tuple[bool | None, str]]:
+    """Check correctness for all task-defined filters.
+
+    Returns:
+        Mapping from filter name -> (correct, filtered_string).
+    """
+    filtered_responses = apply_all_filters(task, completion)
+    results: dict[str, tuple[bool | None, str]] = {}
+
+    for filter_name, filtered in filtered_responses.items():
+        metrics: dict[str, Any] | None = task.process_results(doc, [filtered])
+
+        if metrics is None:
+            results[filter_name] = (None, filtered)
+            continue
+
+        if "exact_match" in metrics:
+            value = metrics["exact_match"]
+            if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
+                results[filter_name] = (value == 1 or value == 1.0, filtered)
+                continue
+
+        # Fallback: first binary metric we find
+        correct: bool | None = None
+        for value in metrics.values():
+            if isinstance(value, bool):
+                correct = value
+                break
+            if isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0):
+                correct = value == 1 or value == 1.0
+                break
+
+        results[filter_name] = (correct, filtered)
+
+    return results
+
+
 def check_correctness(task: "Task", doc: dict, completion: str) -> bool | None:
     """Check if completion is correct using task's process_results.
 
@@ -268,6 +354,7 @@ def load_tasks(
     task_specs: list[TaskSpecInput],
     default_num_fewshot: int,
     seed: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, "Task"]:
     """Load multiple lm-eval tasks efficiently with a shared TaskManager.
 
@@ -278,6 +365,9 @@ def load_tasks(
         task_specs: List of task names or TaskSpec objects.
         default_num_fewshot: Default few-shot count.
         seed: Random seed for few-shot sampling (optional).
+        metadata: Extra metadata passed to TaskManager and merged into task
+            configs. Used by tasks with custom_dataset functions that need
+            external info (e.g., RULER needs a tokenizer via "pretrained" key).
 
     Returns:
         Dict mapping task names to configured Task objects.
@@ -311,7 +401,7 @@ def load_tasks(
         ]
 
         # Load all tasks at once with a shared TaskManager
-        task_manager = TaskManager(include_path=include_path)
+        task_manager = TaskManager(include_path=include_path, metadata=metadata)
         task_dict = get_task_dict(task_configs, task_manager=task_manager)
     finally:
         # Restore original relative_to

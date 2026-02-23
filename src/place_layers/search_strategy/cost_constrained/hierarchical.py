@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from math import comb
-from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence, assert_never
 
 from pydantic import Field
 
@@ -966,6 +966,8 @@ class HierarchicalConfig(AllocationIterationConfig):
                         continue
                 case MinCostProblemConfig():
                     pass  # No filtering - enumerate all allocations
+                case other:
+                    assert_never(other)
 
             # Apply cost floor (shared by both modes)
             if cost_floor is not None and alloc_cost < cost_floor - 1e-9:

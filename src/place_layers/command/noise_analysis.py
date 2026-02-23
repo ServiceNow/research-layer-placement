@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal, assert_never, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -165,10 +165,8 @@ class NoiseAnalysisCommand(BaseCommand):
                         return solution
                 logger.info("  exhausted %d allocations, no feasible solution", checked)
                 return None
-            case _:
-                raise ValueError(
-                    f"Unsupported problem type: {self.config.problem.problem_type}"
-                )
+            case other:
+                assert_never(other)
 
     async def run(self) -> None:
         """Execute noise analysis."""

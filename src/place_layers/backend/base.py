@@ -27,7 +27,7 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from typing import Any, ClassVar, Self, Sequence
+from typing import Any, ClassVar, Self, Sequence, assert_never
 
 from pydantic import BaseModel, Field
 
@@ -1052,6 +1052,7 @@ def get_model_path(config: BaseBackendConfig) -> str:
         or "unknown" for unrecognized config types.
     """
     # Lazy imports to avoid circular dependencies
+    from place_layers.backend.mock import MockBackendConfig
     from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
     from place_layers.backend.transformers import TransformersBackendConfig
     from place_layers.backend.vllm import VLLMBackendConfig
@@ -1067,5 +1068,7 @@ def get_model_path(config: BaseBackendConfig) -> str:
             return model
         case RESTBackendConfig() | RESTDNSBackendConfig():
             return "rest-backend"
-        case _:
-            return "unknown"
+        case MockBackendConfig():
+            return "mock-backend"
+        case other:
+            assert_never(other)

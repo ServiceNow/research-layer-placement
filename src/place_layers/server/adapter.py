@@ -15,7 +15,7 @@ import queue
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, assert_never
 
 from place_layers.backend.types import BackendError
 
@@ -670,9 +670,10 @@ def create_adapter(
     """Create appropriate adapter for backend type."""
     from place_layers.backend.base import AsyncBackend, SyncBackend
 
-    if isinstance(backend, SyncBackend):
-        return SyncBackendAdapter(backend, heartbeat_interval)
-    elif isinstance(backend, AsyncBackend):
-        return AsyncBackendAdapter(backend, heartbeat_interval)
-    else:
-        raise TypeError(f"Unknown backend type: {type(backend)}")
+    match backend:
+        case SyncBackend():
+            return SyncBackendAdapter(backend, heartbeat_interval)
+        case AsyncBackend():
+            return AsyncBackendAdapter(backend, heartbeat_interval)
+        case other:
+            assert_never(other)
