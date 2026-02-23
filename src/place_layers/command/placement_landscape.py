@@ -115,12 +115,19 @@ class PlacementLandscapeCommand(BaseCommand):
 
         landscape = self.config.landscape
 
+        # Auto-include validation_output_dir in supplemental dirs for pooling
+        supplemental_dirs = list(landscape.supplemental_data_dirs)
+        if self.config.validation_output_dir is not None:
+            val_dir = self.config.validation_output_dir
+            if val_dir not in supplemental_dirs:
+                supplemental_dirs.append(val_dir)
+
         dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path),
             landscape.cost_model,
             landscape.surrogate,
             landscape.seed,
-            supplemental_data_dirs=landscape.supplemental_data_dirs,
+            supplemental_data_dirs=supplemental_dirs,
         )
         num_layers = dataset.num_layers
 
@@ -221,14 +228,14 @@ class PlacementLandscapeCommand(BaseCommand):
         all_obs_allocs: list[dict[str, int]] = list(dataset.allocations)
         all_obs_scores: list[float] = list(dataset.scores)
 
-        if landscape.supplemental_data_dirs:
+        if supplemental_dirs:
             from place_layers.surrogate.evaluation_log import (
                 load_pooled_data,
                 resolve_supplemental_dirs,
             )
 
             supplemental_files = resolve_supplemental_dirs(
-                landscape.supplemental_data_dirs, obj_name,
+                supplemental_dirs, obj_name,
             )
             if supplemental_files:
                 pool = load_pooled_data(supplemental_files, deduplicate=True)
