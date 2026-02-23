@@ -21,7 +21,10 @@ from place_layers.annealing.sa_core import (
     run_multi_start_sa,
 )
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.forest_surrogate import ForestSurrogate
+
+_UNARY_FEATURES = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -223,7 +226,8 @@ class TestRunMultiStartSA:
             scores.append(sum(1.0 for i, m in enumerate(assignment) if i % 2 == 0 and m == "m1"))
 
         surrogate = ForestSurrogate(
-            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=20, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments_list, np.array(scores))
 
@@ -285,7 +289,8 @@ class TestRunMultiStartSA:
             scores.append(rng.random())
 
         surrogate = ForestSurrogate(
-            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names
+            n_estimators=10, max_depth=None, seed=42, mixer_names=mixer_names,
+            feature_config=_UNARY_FEATURES,
         )
         surrogate.fit(assignments_list, np.array(scores))
 

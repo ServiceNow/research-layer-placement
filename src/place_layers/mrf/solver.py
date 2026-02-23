@@ -14,8 +14,11 @@ where N = num_layers and K = num_mixers.
 
 from __future__ import annotations
 
+import heapq
+import logging
 from dataclasses import dataclass
 from itertools import product
+from math import comb
 from typing import TYPE_CHECKING
 
 from place_layers.core.types import LayerPlacement
@@ -24,6 +27,11 @@ from place_layers.cost_model.base_cost_model import Allocation
 if TYPE_CHECKING:
     from place_layers.mrf.model import MRFModelProtocol
 
+logger = logging.getLogger(__name__)
+
+# Type aliases for DP state representation
+_FullState = tuple[tuple[int, ...], tuple[int, ...]]  # (history, counts)
+
 
 @dataclass(frozen=True)
 class ExactSolution:
@@ -31,6 +39,19 @@ class ExactSolution:
 
     placement: LayerPlacement
     true_score: float
+
+
+@dataclass
+class _ConstrainedDPTables:
+    """Internal DP tables from constrained forward pass."""
+
+    V: list[dict[_FullState, float]]
+    backtrack: list[dict[_FullState, _FullState]]
+    feasible_set: set[tuple[int, ...]]
+    # Side index: terminal states grouped by counts (only feasible counts)
+    terminal_by_counts: dict[tuple[int, ...], dict[tuple[int, ...], float]]
+    N: int
+    names: tuple[str, ...]
 
 
 class ExactMRFSolver:
@@ -260,6 +281,218 @@ class ExactMRFSolver:
             true_score=best_score,
         )
 
+    # ------------------------------------------------------------------
+    # Internal: shared DP build + backtrack helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _estimate_peak_states(K: int, m: int, N: int, max_counts: list[int]) -> int:
+        """Upper-bound the peak number of DP states across all layers.
+
+        Uses inclusion-exclusion over ``max_counts`` caps for a tight,
+        cap-aware estimate.  For each layer *i* the number of distinct
+        ``(history, counts)`` states is bounded by::
+
+            K^min(i+1, m)  ×  #{tuples summing to i+1 with per-component caps}
+
+        The composition count with caps is computed via inclusion-exclusion::
+
+            count(n) = Σ_{S ⊆ [K]} (-1)^|S|
+                       × C(n - Σ_{k∈S}(cap[k]+1) + K-1, K-1)
+
+        Cost: O(N × 2^K) ``comb()`` calls — negligible for K ≤ 6.
+
+        Args:
+            K: Number of mixer types.
+            m: Model memory (history length).
+            N: Number of layers.
+            max_counts: Per-mixer upper bounds (length K).
+
+        Returns:
+            Upper bound on the maximum number of states at any single layer.
+        """
+        peak = 0
+        for i in range(N):
+            n = i + 1  # layers 0..i use counts summing to i+1
+            # Inclusion-exclusion over subsets of [K]
+            compositions = 0
+            for mask in range(1 << K):
+                excess = 0
+                bits = 0
+                for k in range(K):
+                    if mask & (1 << k):
+                        excess += max_counts[k] + 1
+                        bits += 1
+                remainder = n - excess + K - 1
+                if remainder < K - 1:
+                    continue  # C(neg, ...) = 0
+                term = comb(remainder, K - 1)
+                if bits % 2 == 0:
+                    compositions += term
+                else:
+                    compositions -= term
+            history_states = K ** min(i + 1, m)
+            layer_states = history_states * max(compositions, 0)
+            if layer_states > peak:
+                peak = layer_states
+        return peak
+
+    def _build_constrained_tables(
+        self,
+        feasible_allocations: list[Allocation],
+        *,
+        max_states_per_layer: int | None = None,
+    ) -> _ConstrainedDPTables | None:
+        """Build constrained DP tables for all feasible allocations simultaneously.
+
+        Args:
+            feasible_allocations: List of allocations to consider.
+            max_states_per_layer: If set and any layer exceeds this many states,
+                abort early and return None (signals caller to fall back).
+
+        Returns:
+            _ConstrainedDPTables if successful, None if feasible_set is empty
+            or early abort triggered.
+        """
+        N = self.model.num_layers
+        K = self.model.num_mixers
+        names = self.model.mixer_names
+        m = self.model.memory
+
+        # Convert allocations to target count tuples and build feasible set
+        feasible_set: set[tuple[int, ...]] = set()
+        for alloc in feasible_allocations:
+            target = tuple(alloc.get(name, 0) for name in names)
+            if sum(target) == N:
+                feasible_set.add(target)
+
+        if not feasible_set:
+            return None
+
+        # Max counts per mixer for pruning
+        max_counts = [0] * K
+        for target in feasible_set:
+            for k in range(K):
+                if target[k] > max_counts[k]:
+                    max_counts[k] = target[k]
+
+        # Pre-check: estimate peak states before allocating DP tables
+        if max_states_per_layer is not None:
+            estimated_peak = self._estimate_peak_states(K, m, N, max_counts)
+            if estimated_peak > max_states_per_layer:
+                logger.info(
+                    "DP pre-check: estimated peak states %d exceeds threshold %d "
+                    "(K=%d, m=%d, N=%d, max_counts=%s). Skipping DP build.",
+                    estimated_peak, max_states_per_layer, K, m, N, max_counts,
+                )
+                return None
+
+        # State: (history_tuple, counts_tuple)
+        V: list[dict[_FullState, float]] = [{} for _ in range(N)]
+        backtrack: list[dict[_FullState, _FullState]] = [{} for _ in range(N)]
+        terminal_by_counts: dict[tuple[int, ...], dict[tuple[int, ...], float]] = {}
+
+        # Base case: first layer
+        for j in range(K):
+            if 1 > max_counts[j]:
+                continue
+            counts = tuple(1 if k == j else 0 for k in range(K))
+            history = (j,)
+            state: _FullState = (history, counts)
+            V[0][state] = self.model.unary_potential(0, names[j])
+
+        # Forward pass
+        for i in range(1, N):
+            is_final = i == N - 1
+            for (prev_history, prev_counts), prev_score in V[i - 1].items():
+                for j in range(K):
+                    new_count_j = prev_counts[j] + 1
+                    if new_count_j > max_counts[j]:
+                        continue
+
+                    new_counts = tuple(
+                        prev_counts[k] + (1 if k == j else 0) for k in range(K)
+                    )
+
+                    unary = self.model.unary_potential(i, names[j])
+                    trans = self._transition_score(i, prev_history, j)
+                    score = prev_score + unary + trans
+
+                    new_history = (*prev_history, j)[-m:]
+                    new_state: _FullState = (new_history, new_counts)
+
+                    if new_state not in V[i] or score > V[i][new_state]:
+                        V[i][new_state] = score
+                        backtrack[i][new_state] = (prev_history, prev_counts)
+
+                        # Side index for final layer: record feasible terminal states
+                        if is_final and new_counts in feasible_set:
+                            by_counts = terminal_by_counts.get(new_counts)
+                            if by_counts is None:
+                                by_counts = {}
+                                terminal_by_counts[new_counts] = by_counts
+                            # Key by history (new_history) — the counts are the group key
+                            if new_history not in by_counts or score > by_counts[new_history]:
+                                by_counts[new_history] = score
+
+            # Early-abort guard
+            if max_states_per_layer is not None and len(V[i]) > max_states_per_layer:
+                logger.warning(
+                    "DP state space blowup: layer %d has %d states "
+                    "(max_counts=%s, threshold=%d). Aborting DP build.",
+                    i,
+                    len(V[i]),
+                    max_counts,
+                    max_states_per_layer,
+                )
+                return None
+
+        return _ConstrainedDPTables(
+            V=V,
+            backtrack=backtrack,
+            feasible_set=feasible_set,
+            terminal_by_counts=terminal_by_counts,
+            N=N,
+            names=tuple(names),
+        )
+
+    def _backtrack_one(
+        self,
+        tables: _ConstrainedDPTables,
+        score: float,
+        state: _FullState,
+    ) -> ExactSolution:
+        """Reconstruct a single placement from a final-layer state.
+
+        Args:
+            tables: DP tables from _build_constrained_tables.
+            score: The score of this final state.
+            state: (history, counts) tuple at the final layer.
+
+        Returns:
+            ExactSolution with reconstructed placement.
+        """
+        N = tables.N
+        names = tables.names
+        backtrack = tables.backtrack
+
+        assignment_indices: list[int] = [0] * N
+        current_state = state
+        assignment_indices[N - 1] = current_state[0][-1]
+
+        for i in range(N - 2, -1, -1):
+            prev_history, prev_counts = backtrack[i + 1][current_state]
+            assignment_indices[i] = prev_history[-1]
+            current_state = (prev_history, prev_counts)
+
+        assignments = tuple(names[j] for j in assignment_indices)
+        placement = LayerPlacement(assignments=assignments)
+        return ExactSolution(placement=placement, true_score=score)
+
+    # ------------------------------------------------------------------
+    # Public API: top-n methods
+    # ------------------------------------------------------------------
+
     def solve_top_n(
         self,
         feasible_allocations: list[Allocation],
@@ -282,74 +515,16 @@ class ExactMRFSolver:
         Returns:
             List of ExactSolution sorted by score descending, length <= n.
         """
-        N = self.model.num_layers
-        K = self.model.num_mixers
-        names = self.model.mixer_names
-        m = self.model.memory
-
-        # Convert allocations to target count tuples and build feasible set
-        feasible_set: set[tuple[int, ...]] = set()
-        for alloc in feasible_allocations:
-            target = tuple(alloc.get(name, 0) for name in names)
-            if sum(target) == N:
-                feasible_set.add(target)
-
-        if not feasible_set:
+        tables = self._build_constrained_tables(feasible_allocations)
+        if tables is None:
             return []
 
-        # Max counts per mixer for pruning
-        max_counts = [0] * K
-        for target in feasible_set:
-            for k in range(K):
-                if target[k] > max_counts[k]:
-                    max_counts[k] = target[k]
-
-        # State: (history_tuple, counts_tuple)
-        # V[layer][(history, counts)] = best score
-        V: list[dict[tuple[tuple[int, ...], tuple[int, ...]], float]] = [
-            {} for _ in range(N)
-        ]
-        backtrack: list[
-            dict[
-                tuple[tuple[int, ...], tuple[int, ...]],
-                tuple[tuple[int, ...], tuple[int, ...]],
-            ]
-        ] = [{} for _ in range(N)]
-
-        # Base case: first layer
-        for j in range(K):
-            if 1 > max_counts[j]:
-                continue
-            counts = tuple(1 if k == j else 0 for k in range(K))
-            history = (j,)
-            state = (history, counts)
-            V[0][state] = self.model.unary_potential(0, names[j])
-
-        # Forward pass
-        for i in range(1, N):
-            for (prev_history, prev_counts), prev_score in V[i - 1].items():
-                for j in range(K):
-                    new_count_j = prev_counts[j] + 1
-                    if new_count_j > max_counts[j]:
-                        continue
-
-                    new_counts = tuple(
-                        prev_counts[k] + (1 if k == j else 0) for k in range(K)
-                    )
-
-                    unary = self.model.unary_potential(i, names[j])
-                    trans = self._transition_score(i, prev_history, j)
-                    score = prev_score + unary + trans
-
-                    new_history = (*prev_history, j)[-m:]
-                    new_state = (new_history, new_counts)
-
-                    if new_state not in V[i] or score > V[i][new_state]:
-                        V[i][new_state] = score
-                        backtrack[i][new_state] = (prev_history, prev_counts)
+        N = tables.N
+        V = tables.V
+        feasible_set = tables.feasible_set
 
         # Collect all final-layer entries whose counts are feasible
-        candidates: list[tuple[float, tuple[tuple[int, ...], tuple[int, ...]]]] = []
+        candidates: list[tuple[float, _FullState]] = []
         for (history, counts), score in V[N - 1].items():
             if counts in feasible_set:
                 candidates.append((score, (history, counts)))
@@ -359,22 +534,159 @@ class ExactMRFSolver:
         top_candidates = candidates[:n]
 
         # Backtrack each to reconstruct placement
-        results: list[ExactSolution] = []
-        for score, state in top_candidates:
-            assignment_indices: list[int] = [0] * N
-            current_state = state
-            assignment_indices[N - 1] = current_state[0][-1]
+        return [
+            self._backtrack_one(tables, score, state)
+            for score, state in top_candidates
+        ]
 
-            for i in range(N - 2, -1, -1):
-                prev_history, prev_counts = backtrack[i + 1][current_state]
-                assignment_indices[i] = prev_history[-1]
-                current_state = (prev_history, prev_counts)
+    def solve_top_n_per_allocation(
+        self,
+        feasible_allocations: list[Allocation],
+        n_per_allocation: int,
+        *,
+        max_states_per_layer: int = 2_000_000,
+    ) -> dict[tuple[int, ...], list[ExactSolution]]:
+        """Find top-n placements per allocation using a single DP pass.
 
-            assignments = tuple(names[j] for j in assignment_indices)
-            placement = LayerPlacement(assignments=assignments)
-            results.append(ExactSolution(placement=placement, true_score=score))
+        Single forward pass builds tables for ALL allocations simultaneously.
+        Then for each allocation, filters terminal states matching that allocation
+        and backtracks top-n.
+
+        Args:
+            feasible_allocations: List of allocations to consider.
+            n_per_allocation: Maximum solutions per allocation.
+            max_states_per_layer: If any layer exceeds this many states during
+                the forward pass, fall back to the per-allocation loop.
+
+        Returns:
+            dict mapping counts tuple (in mixer_names order) to list of
+            ExactSolution, sorted by score descending. Callers can flatten
+            with itertools.chain.from_iterable(result.values()) for a pool.
+        """
+        tables = self._build_constrained_tables(
+            feasible_allocations, max_states_per_layer=max_states_per_layer
+        )
+        if tables is None:
+            return self._solve_top_n_bisect(
+                feasible_allocations, n_per_allocation,
+                max_states_per_layer=max_states_per_layer,
+            )
+
+        return self._extract_per_allocation_results(tables, n_per_allocation)
+
+    def _extract_per_allocation_results(
+        self,
+        tables: _ConstrainedDPTables,
+        n_per_allocation: int,
+    ) -> dict[tuple[int, ...], list[ExactSolution]]:
+        """Extract top-n solutions per allocation from completed DP tables.
+
+        Uses a streaming bounded min-heap per counts tuple, then backtracks
+        each kept state.
+
+        Args:
+            tables: DP tables from _build_constrained_tables.
+            n_per_allocation: Maximum solutions per allocation.
+
+        Returns:
+            dict mapping counts tuple to list of ExactSolution, sorted by
+            score descending.
+        """
+        # Streaming bounded min-heap per counts tuple
+        heaps: dict[tuple[int, ...], list[tuple[float, tuple[int, ...]]]] = {}
+        for counts_tuple, entries in tables.terminal_by_counts.items():
+            for history, score in entries.items():
+                h = heaps.get(counts_tuple)
+                if h is None:
+                    heaps[counts_tuple] = [(score, history)]
+                elif len(h) < n_per_allocation:
+                    heapq.heappush(h, (score, history))
+                elif score > h[0][0]:
+                    heapq.heapreplace(h, (score, history))
+
+        # Backtrack each kept state
+        results: dict[tuple[int, ...], list[ExactSolution]] = {}
+        for counts_tuple, heap in heaps.items():
+            results[counts_tuple] = [
+                self._backtrack_one(
+                    tables, score, (history, counts_tuple)
+                )
+                for score, history in sorted(heap, key=lambda x: x[0], reverse=True)
+            ]
 
         return results
+
+    def _solve_top_n_bisect(
+        self,
+        feasible_allocations: list[Allocation],
+        n_per_allocation: int,
+        *,
+        max_states_per_layer: int,
+    ) -> dict[tuple[int, ...], list[ExactSolution]]:
+        """Fallback: recursive bisection over allocations.
+
+        Deduplicates allocations by counts tuple, sorts lexicographically
+        (to cluster similar allocations), then recursively bisects until
+        each batch fits within max_states_per_layer.
+
+        Single-allocation base case builds with no threshold (always succeeds).
+        """
+        names = self.model.mixer_names
+
+        # Deduplicate by counts tuple, preserving one Allocation per unique tuple
+        seen: dict[tuple[int, ...], Allocation] = {}
+        for alloc in feasible_allocations:
+            counts = tuple(alloc.get(name, 0) for name in names)
+            if counts not in seen:
+                seen[counts] = alloc
+
+        # Sort lexicographically to cluster similar allocations
+        sorted_items = sorted(seen.items(), key=lambda x: x[0])
+        sorted_allocs = [alloc for _, alloc in sorted_items]
+
+        results: dict[tuple[int, ...], list[ExactSolution]] = {}
+        self._bisect_solve(sorted_allocs, n_per_allocation, max_states_per_layer, results)
+        return results
+
+    def _bisect_solve(
+        self,
+        allocs: list[Allocation],
+        n_per_allocation: int,
+        max_states_per_layer: int,
+        results: dict[tuple[int, ...], list[ExactSolution]],
+    ) -> None:
+        """Recursively bisect allocation list until DP build succeeds.
+
+        Args:
+            allocs: Batch of allocations to solve.
+            n_per_allocation: Maximum solutions per allocation.
+            max_states_per_layer: Threshold for DP state space.
+            results: Mutable accumulator for results.
+        """
+        if not allocs:
+            return
+
+        # Single allocation: build with no threshold (always succeeds)
+        if len(allocs) == 1:
+            tables = self._build_constrained_tables(allocs)
+            if tables is not None:
+                results.update(self._extract_per_allocation_results(tables, n_per_allocation))
+            return
+
+        # Try building tables for the whole batch
+        tables = self._build_constrained_tables(allocs, max_states_per_layer=max_states_per_layer)
+        if tables is not None:
+            results.update(self._extract_per_allocation_results(tables, n_per_allocation))
+            return
+
+        # Split at midpoint and recurse each half
+        mid = len(allocs) // 2
+        self._bisect_solve(allocs[:mid], n_per_allocation, max_states_per_layer, results)
+        self._bisect_solve(allocs[mid:], n_per_allocation, max_states_per_layer, results)
+
+    # ------------------------------------------------------------------
+    # Testing / enumeration helpers
+    # ------------------------------------------------------------------
 
     def enumerate_all(self) -> list[tuple[LayerPlacement, float]]:
         """Enumerate all possible placements with their true scores.

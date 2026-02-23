@@ -1,8 +1,8 @@
 """Validate landscape command: per-band real evaluation of surrogate predictions.
 
 For each objective and cost band:
-1. Compute surrogate DP optimal (single Ridge MRF, like placement_landscape)
-2. Run ViterbiSurrogateSearch restricted to that band (bootstrap ensemble + EI + real eval)
+1. Compute surrogate DP optimal (MRF extraction, like placement_landscape)
+2. Run Viterbi surrogate search restricted to that band (Ridge bootstrap+EI or Bayesian LCB + real eval)
 3. Save both surrogate DP and validated search results to JSON
 
 Per-band results are saved incrementally under ``bands_{obj_name}/band_NNN/`` so
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
@@ -47,10 +47,16 @@ from place_layers.problem.layer_placement import (
     MaxPerformanceProblemConfig,
 )
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
 
 logger = logging.getLogger(__name__)
+
+ViterbiSearchConfig = Annotated[
+    ViterbiSurrogateSearchConfig | ViterbiBayesianSurrogateSearchConfig,
+    Field(discriminator="strategy_type"),
+]
 
 
 # ============================================================================
@@ -136,9 +142,22 @@ class ValidateLandscapeCommand(BaseCommand):
         band_edges: np.ndarray,
     ) -> None:
         """Validate a single objective: fit surrogate, per-band search, save."""
+        from datetime import datetime, timezone
+
+        from place_layers.surrogate.evaluation_log import (
+            EvaluationLogMeta,
+            append_record,
+            load_records,
+            resolve_supplemental_dirs,
+            write_meta,
+        )
+
         landscape = self.config.landscape
 
         logger.info("=== Validating objective: %s ===", obj_name)
+
+        # Resolve supplemental dirs for this objective
+        supplemental_dirs = list(landscape.supplemental_data_dirs)
 
         # Load per-objective exploration dataset and fit surrogate
         dataset_path = objective_result_path(
@@ -147,7 +166,9 @@ class ValidateLandscapeCommand(BaseCommand):
         _dataset, surrogate, cost_model = load_and_fit_surrogate(
             str(dataset_path),
             landscape.cost_model,
+            landscape.surrogate,
             landscape.seed,
+            supplemental_data_dirs=supplemental_dirs,
         )
 
         band_results = compute_dp_per_band(
@@ -167,9 +188,15 @@ class ValidateLandscapeCommand(BaseCommand):
         validated_bands: list[BandValidationResult] = []
         total_evals = 0
 
+        # Resolve dirs to file-level supplemental for search strategy
+        # (internal plumbing stays file-level for cross-band safety)
+        supplemental_files = resolve_supplemental_dirs(supplemental_dirs, obj_name)
+        supplemental_paths: list[str] = [str(f) for f in supplemental_files]
+
         for step, band in enumerate(band_results):
             band_dir = bands_dir / f"band_{band.band_index:03d}"
             result_path = band_dir / "result.json"
+            eval_log_jsonl = band_dir / f"evaluations_{obj_name}.jsonl"
 
             # Skip if already completed (resumption)
             if result_path.exists():
@@ -207,6 +234,11 @@ class ValidateLandscapeCommand(BaseCommand):
                     )
                 )
                 total_evals += loaded_result["total_evaluations"]
+
+                # Add resumed band's JSONL to supplemental paths for future bands
+                if self.config.accumulate_across_bands and eval_log_jsonl.exists():
+                    supplemental_paths.append(str(eval_log_jsonl))
+
                 continue
 
             logger.info(
@@ -242,19 +274,44 @@ class ValidateLandscapeCommand(BaseCommand):
                 objective_name=obj_name,
             )
 
-            # Construct per-band search strategy
-            search_config = ViterbiSurrogateSearchConfig(
-                strategy_type="viterbi_surrogate",
-                exploration_dataset_path=str(dataset_path),
-                num_rounds=self.config.search_num_rounds,
-                evals_per_round=self.config.search_evals_per_round,
-                candidates_per_model=self.config.search_candidates_per_model,
-                cv_folds=self.config.search_cv_folds,
-                ei_xi=self.config.search_ei_xi,
-                seed=self.config.search_seed,
+            # Construct per-band search strategy with evaluation logging and
+            # cross-band supplemental data
+            search_config = self.config.search_strategy.model_copy(
+                update={
+                    "exploration_dataset_path": str(dataset_path),
+                    "evaluation_log_path": str(eval_log_jsonl),
+                    "supplemental_data_paths": (
+                        list(supplemental_paths)
+                        if self.config.accumulate_across_bands
+                        else []
+                    ),
+                }
             )
             strategy = search_config.create_search_strategy()
-            result = await strategy.search(problem)
+            try:
+                result = await strategy.search(problem)
+            except ValueError as exc:
+                logger.warning(
+                    "Band %d: search found no feasible placement (%s), "
+                    "skipping (objective=%s)",
+                    band.band_index,
+                    exc,
+                    obj_name,
+                )
+                continue
+
+            # Post-search cost guard: reject results outside band range
+            if not (band.cost_low - 1e-9 <= result.final_cost <= band.cost_high + 1e-9):
+                logger.warning(
+                    "Band %d: result cost %.4f outside band [%.4f, %.4f], "
+                    "skipping (objective=%s)",
+                    band.band_index,
+                    result.final_cost,
+                    band.cost_low,
+                    band.cost_high,
+                    obj_name,
+                )
+                continue
 
             # Save per-band result (CostConstrainedSearchResult as JSON)
             result_path.write_text(result.model_dump_json(indent=2))
@@ -285,6 +342,48 @@ class ValidateLandscapeCommand(BaseCommand):
                 validated_score,
                 result.total_evaluations,
                 obj_name,
+            )
+
+            # Add this band's JSONL to supplemental paths for future bands
+            if self.config.accumulate_across_bands and eval_log_jsonl.exists():
+                supplemental_paths.append(str(eval_log_jsonl))
+
+        # Write merged evaluation JSONL for the entire objective (snowball)
+        merged_jsonl = output_dir / f"evaluations_{obj_name}.jsonl"
+        all_band_jsonls = sorted(
+            bands_dir.rglob(f"evaluations_{obj_name}.jsonl"),
+            key=lambda p: p.name,
+        )
+        if supplemental_files or all_band_jsonls:
+            merged_record_count = 0
+            with merged_jsonl.open("w") as mf:
+                # Snowball: include prior chain data from supplemental dirs
+                for sp in supplemental_files:
+                    for rec in load_records(sp):
+                        append_record(mf, rec)
+                        merged_record_count += 1
+
+                # Current run's band evaluations
+                for band_jsonl in all_band_jsonls:
+                    for rec in load_records(band_jsonl):
+                        append_record(mf, rec)
+                        merged_record_count += 1
+            merged_meta = EvaluationLogMeta(
+                version=1,
+                objective_name=obj_name,
+                num_layers=num_layers,
+                mixer_names=list(cost_model.phase_order),
+                source_command="validate_landscape",
+                source_detail=f"{len(all_band_jsonls)}_bands_merged",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                num_records=merged_record_count,
+            )
+            write_meta(merged_jsonl, merged_meta)
+            logger.info(
+                "Wrote merged evaluation log: %d records from %d bands -> %s",
+                merged_record_count,
+                len(all_band_jsonls),
+                merged_jsonl,
             )
 
         # Compute summary statistics
@@ -358,27 +457,12 @@ class ValidateLandscapeCommandConfig(BaseCommandConfig):
     )
     evaluators: EvaluatorsConfig = Field(description="Evaluator configuration.")
 
-    # Per-band search (ViterbiSurrogateSearch params, inlined)
-    search_num_rounds: int = Field(
-        description="Surrogate refinement rounds per band.",
-        gt=0,
+    search_strategy: ViterbiSearchConfig = Field(
+        description="Per-band Viterbi search strategy configuration. "
+        "exploration_dataset_path is overridden per-objective at runtime.",
     )
-    search_evals_per_round: int = Field(
-        description="Real evaluations per round per band.",
-        gt=0,
-    )
-    search_candidates_per_model: int = Field(
-        description="Viterbi top-N candidates per bootstrap model.",
-        gt=0,
-    )
-    search_cv_folds: int = Field(
-        description="Cross-validation folds for surrogate quality.",
-        gt=1,
-    )
-    search_ei_xi: float = Field(
-        description="Exploration parameter for Expected Improvement.",
-        ge=0,
-    )
-    search_seed: int = Field(
-        description="Random seed for per-band search.",
+
+    accumulate_across_bands: bool = Field(
+        description="If true, each band's search includes evaluation data from all prior bands "
+        "in the same run. Introduces ordering dependence but provides neighborhood data.",
     )

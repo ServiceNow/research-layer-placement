@@ -10,7 +10,15 @@ defaults:
   - /evaluator@evaluators.configs.mock: mock_apriel_h_1_5_15b
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
+  - /search_strategy: viterbi_surrogate
   - _self_
+
+# Override search params for validation (lighter than optimize)
+search_strategy:
+  exploration_dataset_path: null
+  num_rounds: 1
+  evals_per_round: 20
+  candidates_per_model: 200
 
 hydra:
   job_logging:

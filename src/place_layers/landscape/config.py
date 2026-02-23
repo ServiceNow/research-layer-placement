@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from place_layers.cost_model import CostModelConfig
+from place_layers.surrogate.config import SurrogateConfig
 
 
 def objective_result_path(directory: Path, prefix: str, objective_name: str) -> Path:
@@ -48,4 +49,12 @@ class LandscapeConfig(BaseModel):
     num_cost_bins: int = Field(
         description="Number of cost bins for band computation.",
         gt=0,
+    )
+    surrogate: SurrogateConfig = Field(
+        description="Surrogate model configuration for DP solving and density prediction.",
+    )
+    supplemental_data_dirs: list[str] = Field(
+        description="Directories containing additional evaluation data to merge "
+        "into surrogate training. Each directory is searched per-objective "
+        "using the standard naming convention (evaluations_{obj}.jsonl, etc.).",
     )

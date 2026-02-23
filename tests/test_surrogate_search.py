@@ -9,6 +9,7 @@ import pytest
 from place_layers.command.explore_placements import _sample_batch
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
@@ -38,8 +39,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 _SURROGATE_CONFIG_DEFAULTS = dict(
     strategy_type="surrogate",
     exploration_dataset_path="PLACEHOLDER",
-    cv_folds=3,
-    ei_xi=0.01,
+    evaluation_log_path=None,
+    supplemental_data_paths=[],
     num_rounds=2,
     evals_per_round=20,
     sa=dict(
@@ -56,6 +57,13 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
         reheat=None,
         seed=42,
     ),
+    surrogate=dict(
+        surrogate_type="ridge",
+        n_bootstraps=50,
+        ei_xi=0.01,
+        cv_folds=3,
+    ),
+    risk_buckets=None,
 )
 
 
@@ -161,6 +169,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=np.array(scores),
         mixer_names=cost_model.phase_order,
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         cv_folds=5,
         seed=42,
     )
@@ -174,6 +183,7 @@ async def _build_exploration_dataset(
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,

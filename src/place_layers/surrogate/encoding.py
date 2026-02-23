@@ -18,9 +18,18 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from enum import Enum
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class FeatureScaling(str, Enum):
+    """Feature scaling mode for Bayesian Ridge surrogate."""
+
+    NONE = "none"
+    COUNTS_ONLY = "counts_only"
+    ALL = "all"
 
 
 class FeatureExpansionConfig(BaseModel):
@@ -32,14 +41,14 @@ class FeatureExpansionConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    max_order: int = 1
-    """Maximum n-body order. 1=unary only, 2=+pairwise, 3=+triplets, etc."""
+    max_order: int = Field(description="Maximum n-body order. 1=unary only, 2=+pairwise, 3=+triplets, etc.")
+    pairwise_max_range: int = Field(description="Max skip distance for order-2 terms (ignored if max_order < 2).")
+    allocation_counts: bool = Field(description="Whether to append allocation count features.")
 
-    pairwise_max_range: int = 1
-    """Max skip distance for order-2 terms (ignored if max_order < 2)."""
-
-    allocation_counts: bool = True
-    """Whether to append allocation count features."""
+    @classmethod
+    def unary(cls) -> "FeatureExpansionConfig":
+        """Unary-only features (order 1, no pairwise, with counts)."""
+        return cls(max_order=1, pairwise_max_range=1, allocation_counts=True)
 
 
 def build_type_mapping(
@@ -62,20 +71,18 @@ def build_type_mapping(
 def compute_feature_dim(
     num_layers: int,
     num_types: int,
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
 ) -> int:
     """Compute total feature dimension without encoding.
 
     Args:
         num_layers: Number of layers (N).
         num_types: Number of mixer types (K).
-        feature_config: Expansion config. None means default (unary + counts).
+        feature_config: Expansion config.
 
     Returns:
         Total number of features.
     """
-    if feature_config is None:
-        feature_config = FeatureExpansionConfig()
 
     N, K = num_layers, num_types
 
@@ -101,20 +108,18 @@ def compute_feature_dim(
 def encode_config(
     assignments: Sequence[str],
     type_to_int: dict[str, int],
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
 ) -> np.ndarray:
     """Encode a single placement as a feature vector.
 
     Args:
         assignments: Mixer name per layer.
         type_to_int: Type mapping from mixer name to int.
-        feature_config: Expansion config. None means default (unary + counts).
+        feature_config: Expansion config.
 
     Returns:
         Float32 feature vector.
     """
-    if feature_config is None:
-        feature_config = FeatureExpansionConfig()
 
     N = len(assignments)
     K = len(type_to_int)
@@ -162,14 +167,14 @@ def encode_config(
 def encode_batch(
     configs: Sequence[Sequence[str]],
     type_to_int: dict[str, int],
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
 ) -> np.ndarray:
     """Encode a batch of placements.
 
     Args:
         configs: List of placements (each is a sequence of mixer names).
         type_to_int: Type mapping.
-        feature_config: Expansion config. None means default (unary + counts).
+        feature_config: Expansion config.
 
     Returns:
         Float32 matrix of shape (n, feature_dim).
@@ -213,20 +218,18 @@ def decode_config(
 def feature_names(
     num_layers: int,
     int_to_type: dict[int, str],
-    feature_config: FeatureExpansionConfig | None = None,
+    feature_config: FeatureExpansionConfig,
 ) -> list[str]:
     """Human-readable feature names for diagnostics.
 
     Args:
         num_layers: Number of layers.
         int_to_type: Reverse ordinal mapping.
-        feature_config: Expansion config. None means default (unary + counts).
+        feature_config: Expansion config.
 
     Returns:
         List of feature names, one per feature dimension.
     """
-    if feature_config is None:
-        feature_config = FeatureExpansionConfig()
 
     N = num_layers
     K = len(int_to_type)

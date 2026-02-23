@@ -113,7 +113,7 @@ class SurrogateDisplayEntry(BaseModel):
     assignments: tuple[str, ...]
     score: float
     surrogate_mu: float
-    ei_value: float
+    acq_value: float
     is_new_best: bool
 
 
@@ -218,7 +218,8 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._surrogate_eval_index: int = 0
         self._surrogate_entries: list[SurrogateDisplayEntry] = []
         self._surrogate_dataset_size: int = 0
-        self._surrogate_rho: float = 0.0
+        self._surrogate_metric_label: str = ""
+        self._surrogate_metric_value: float = 0.0
         self._surrogate_best_score: float = float("-inf")
 
         # Annealing state
@@ -565,8 +566,8 @@ class LayermapDisplay(PlacementFormatterMixin):
             footer_parts.append(f"[green]Best: {self._surrogate_best_score:.4g}[/green]")
         if self._surrogate_dataset_size > 0:
             footer_parts.append(f"Dataset: {self._surrogate_dataset_size:,}")
-        if self._surrogate_rho > 0:
-            footer_parts.append(f"ρ {self._surrogate_rho:.2f}")
+        if self._surrogate_metric_value > 0 and self._surrogate_metric_label:
+            footer_parts.append(f"{self._surrogate_metric_label} {self._surrogate_metric_value:.2f}")
         if footer_parts:
             lines.append(Text.from_markup("  |  ".join(footer_parts)))
 
@@ -605,7 +606,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         result.append(f"  (μ̂ {entry.surrogate_mu:.4g})", style="dim")
 
         # EI value
-        result.append(f"  EI {entry.ei_value:.3g}", style="dim")
+        result.append(f"  acq {entry.acq_value:.3g}", style="dim")
 
         # New best marker
         if entry.is_new_best:
@@ -830,7 +831,8 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._surrogate_eval_index = 0
         self._surrogate_entries = []
         self._surrogate_dataset_size = 0
-        self._surrogate_rho = 0.0
+        self._surrogate_metric_label = ""
+        self._surrogate_metric_value = 0.0
         self._surrogate_best_score = float("-inf")
 
         # Print header
@@ -1094,7 +1096,8 @@ class LayermapDisplay(PlacementFormatterMixin):
         """Handle surrogate dataset loaded event."""
         self._active_strategy = "surrogate"
         self._surrogate_dataset_size = event.num_samples
-        self._surrogate_rho = event.exploration_rho
+        self._surrogate_metric_label = "\u03c1"
+        self._surrogate_metric_value = event.exploration_rho
         self._console.print(
             f"  Surrogate: {event.num_samples} samples, "
             f"exploration ρ={event.exploration_rho:.2f}"
@@ -1127,7 +1130,7 @@ class LayermapDisplay(PlacementFormatterMixin):
                 assignments=event.assignments,
                 score=event.score,
                 surrogate_mu=event.surrogate_mu,
-                ei_value=event.ei_value,
+                acq_value=event.acq_value,
                 is_new_best=event.is_new_best,
             )
         )
@@ -1154,15 +1157,16 @@ class LayermapDisplay(PlacementFormatterMixin):
 
     def on_surrogate_round_completed(self, event: SurrogateRoundCompletedEvent) -> None:
         """Handle surrogate round completed event."""
-        self._surrogate_rho = event.rho
+        self._surrogate_metric_label = event.surrogate_metric_label
+        self._surrogate_metric_value = event.surrogate_metric_value
         self._surrogate_dataset_size = event.dataset_size
         self._surrogate_best_score = event.best_score
 
         # Print permanent round summary with best placement layermap
         self._console.print(
-            f"  ✓ Round {event.round}: best={event.best_score:.4g}, "
+            f"  \u2713 Round {event.round}: best={event.best_score:.4g}, "
             f"r={event.prediction_correlation:.2f}, "
-            f"ρ={event.rho:.2f}, dataset={event.dataset_size}"
+            f"{event.surrogate_metric_label}={event.surrogate_metric_value:.2f}, dataset={event.dataset_size}"
         )
 
         # Show best placement from this round's entries

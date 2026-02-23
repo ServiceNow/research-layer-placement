@@ -516,7 +516,7 @@ class PlainDisplay(PlacementFormatterMixin):
                 f"#{event.eval_index}/{event.evals_planned}: "
                 f"score={event.score:.4g}, "
                 f"mu={event.surrogate_mu:.4g}, "
-                f"EI={event.ei_value:.3g}{marker}",
+                f"acq={event.acq_value:.3g}{marker}",
                 indent=2,
             )
 
@@ -525,5 +525,5 @@ class PlainDisplay(PlacementFormatterMixin):
         self._print(
             f"ROUND {event.round}/{event.total_rounds} complete",
             f"best={event.best_score:.4g}, pred_corr={event.prediction_correlation:.2f}, "
-            f"rho={event.rho:.4f}, dataset={event.dataset_size}",
+            f"{event.surrogate_metric_label}={event.surrogate_metric_value:.4f}, dataset={event.dataset_size}",
         )

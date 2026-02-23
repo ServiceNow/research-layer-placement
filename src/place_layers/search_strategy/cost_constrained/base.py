@@ -8,8 +8,11 @@ search algorithms via _search_max_performance() and _search_min_cost().
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Literal, Sequence, overload
+
+import numpy as np
 
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
@@ -35,6 +38,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def feasible_best(
+    all_assignments: list[tuple[str, ...]],
+    all_scores: list[float],
+    cost_model: BaseCostModel,
+    cost_budget: float,
+    cost_floor: float | None = None,
+) -> tuple[int, float] | None:
+    """Find best-scoring feasible entry within cost budget.
+
+    Returns (index, score), or None if no within-budget entries exist.
+    """
+    best_idx = -1
+    best_score = float("-inf")
+    for i, (a, s) in enumerate(zip(all_assignments, all_scores)):
+        c = cost_model.allocation_cost(dict(Counter(a)))
+        if c > cost_budget + 1e-9:
+            continue
+        if cost_floor is not None and c < cost_floor - 1e-9:
+            continue
+        if s > best_score:
+            best_score = s
+            best_idx = i
+    if best_idx == -1:
+        return None
+    return best_idx, best_score
 
 
 class BaseCostConstrainedSearch(BaseSearchStrategy[LayerPlacement]):
