@@ -19,7 +19,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field, ValidationError,model_validator, PrivateAttr
+from pydantic import BaseModel, Field, computed_field, ValidationError, model_validator, PrivateAttr
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 

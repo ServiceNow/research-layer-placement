@@ -37,7 +37,7 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator, Iterable, Self
+from typing import TYPE_CHECKING, AsyncGenerator, Iterable, Self, assert_never
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -221,10 +221,12 @@ class EvaluatorsConfig(BaseModel):
         match self.objective:
             case IndependentObjectiveConfig():
                 return evaluator_names
-            case AggregatingObjectiveConfig(include_individual=True):
-                return (self.objective.objective_type,) + evaluator_names
-            case _:
+            case AggregatingObjectiveConfig(include_individual=include):
+                if include:
+                    return (self.objective.objective_type,) + evaluator_names
                 return (self.objective.objective_type,)
+            case other:
+                assert_never(other)
 
     @model_validator(mode="after")
     def validate_objective(self) -> Self:

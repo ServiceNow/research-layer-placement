@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, assert_never
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
@@ -547,8 +547,8 @@ class PlacementLandscapeCommand(BaseCommand):
                 label = "Posterior \u00b12\u03c3"
             case RidgeSurrogateConfig():
                 label = "Bootstrap \u00b12\u03c3"
-            case _:
-                label = "\u00b12\u03c3"
+            case other:
+                assert_never(other)
 
         ax.fill_between(
             band_speedups,

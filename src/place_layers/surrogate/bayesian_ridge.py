@@ -13,7 +13,7 @@ doesn't grow in extrapolation regions.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 import numpy as np
 from sklearn.model_selection import KFold
@@ -192,6 +192,8 @@ class BayesianRidgeSurrogate(BaseSurrogate):
                 scale = np.std(X_centered, axis=0)
                 scale[scale < 1e-12] = 1.0
                 return scale
+            case other:
+                assert_never(other)
 
     def predict(
         self, assignments: Sequence[Sequence[str]]
