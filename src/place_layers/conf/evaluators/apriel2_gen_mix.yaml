@@ -21,10 +21,9 @@ defaults:
   # Generation config for long-context tasks (NIAH, RULER)
   - /generation@long_context_generation: greedy_very_short
 
-evaluators_dict:
+configs:
   mmlu:
     evaluator_type: likelihood
-    backend: ${backend}
     tasks: ${evaluators.mmlu_task.tasks}
     num_fewshot: ${evaluators.mmlu_task.num_fewshot}
     max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
@@ -34,7 +33,6 @@ evaluators_dict:
 
   fda:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.fda_task.tasks}
     num_fewshot: ${evaluators.fda_task.num_fewshot}
     max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
@@ -50,7 +48,6 @@ evaluators_dict:
 
   swde:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.swde_task.tasks}
     num_fewshot: ${evaluators.swde_task.num_fewshot}
     max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
@@ -66,7 +63,6 @@ evaluators_dict:
 
   aime24:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.aime24_task.tasks}
     num_fewshot: ${evaluators.aime24_task.num_fewshot}
     max_problems_per_task: ${evaluators.aime24_task.max_problems_per_task}
@@ -82,7 +78,6 @@ evaluators_dict:
 
   aime25:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.aime25_task.tasks}
     num_fewshot: ${evaluators.aime25_task.num_fewshot}
     max_problems_per_task: ${evaluators.aime25_task.max_problems_per_task}
@@ -98,7 +93,6 @@ evaluators_dict:
 
   math500:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.math500_task.tasks}
     num_fewshot: ${evaluators.math500_task.num_fewshot}
     max_problems_per_task: ${evaluators.math500_task.max_problems_per_task}
@@ -114,7 +108,6 @@ evaluators_dict:
   
   niah_single_2:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.niah_task.tasks}
     num_fewshot: ${evaluators.niah_task.num_fewshot}
     max_problems_per_task: ${evaluators.niah_task.max_problems_per_task}
@@ -132,7 +125,6 @@ evaluators_dict:
 
   ruler_qa_squad:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.ruler_task.tasks}
     num_fewshot: ${evaluators.ruler_task.num_fewshot}
     max_problems_per_task: ${evaluators.ruler_task.max_problems_per_task}

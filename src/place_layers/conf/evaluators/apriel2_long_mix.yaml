@@ -19,7 +19,7 @@ defaults:
 
 # The evaluators_dict is merged with the parent config
 # Add new evaluators here while keeping all from apriel2_mix
-evaluators_dict:
+configs:
   # All evaluators from apriel2_mix are inherited:
   # - mmlu (likelihood)
   # - fda (generative)
@@ -31,7 +31,6 @@ evaluators_dict:
   # Add new evaluators below:
   niah_single_2:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.niah_task.tasks}
     num_fewshot: ${evaluators.niah_task.num_fewshot}
     max_problems_per_task: ${evaluators.niah_task.max_problems_per_task}
@@ -49,7 +48,6 @@ evaluators_dict:
 
   ruler_qa_squad:
     evaluator_type: generative
-    backend: ${backend}
     tasks: ${evaluators.ruler_task.tasks}
     num_fewshot: ${evaluators.ruler_task.num_fewshot}
     max_problems_per_task: ${evaluators.ruler_task.max_problems_per_task}
