@@ -63,17 +63,16 @@ configs:
     max_seq_lengths: 16384
     doc_prefetch_count: 2
 
-# Weights are merged with parent - update as needed when adding new evaluators
-weights:
-  # Inherited weights from apriel2_mix (6 tasks @ 0.167 each ≈ 1.0)
-  mmlu: 0.125
-  fda: 0.125
-  swde: 0.125
-  aime24: 0.125
-  aime25: 0.125
-  math500: 0.125
-  # New long-context evaluators
-  niah_single_2: 0.125
-  ruler_qa_squad: 0.125
-
-aggregation: weighted_average
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    mmlu: 0.125
+    fda: 0.125
+    swde: 0.125
+    aime24: 0.125
+    aime25: 0.125
+    math500: 0.125
+    # New long-context evaluators
+    niah_single_2: 0.125
+    ruler_qa_squad: 0.125
