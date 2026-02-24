@@ -397,7 +397,7 @@ def _write_supplemental_jsonl(
     """Write a supplemental JSONL file with sidecar metadata."""
     if mixer_names is None:
         mixer_names = ["m0", "m1"]
-    path = directory / f"exploration_progress_{obj_name}.jsonl"
+    path = directory / f"evaluations_{obj_name}.jsonl"
     with path.open("w") as f:
         for rec in records:
             append_record(f, rec)
@@ -616,3 +616,166 @@ class TestSupplementalDataMerge:
         sidecar_num_records = len(all_assignments) - n_supplemental
         assert sidecar_num_records == num_local == 2
         assert len(all_assignments) == 4  # total includes supplemental
+
+
+# =============================================================================
+# Snowball file tests
+# =============================================================================
+
+
+class TestSnowballFile:
+    """Tests for incremental snowball evaluations_{obj}.jsonl in explore_placements."""
+
+    def test_snowball_incremental(self, tmp_path: Path) -> None:
+        """Snowball file gets supplemental + local records; progress only local."""
+        from place_layers.surrogate.evaluation_log import load_records, load_meta
+
+        output_dir = tmp_path / "run"
+        output_dir.mkdir()
+        obj_name = "obj"
+
+        # Supplemental records (simulating what was loaded from prior runs)
+        supp_records = [
+            EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2}),
+            EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m1": 2}),
+        ]
+
+        # Simulate the dual-write flow from explore_placements
+        progress_path = output_dir / f"exploration_progress_{obj_name}.jsonl"
+        snowball_path = output_dir / f"evaluations_{obj_name}.jsonl"
+
+        # Write sidecar metadata
+        from datetime import datetime, timezone
+
+        progress_meta = EvaluationLogMeta(
+            version=1, objective_name=obj_name, num_layers=2,
+            mixer_names=["m0", "m1"], source_command="explore_placements",
+            source_detail="exploration_progress",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            num_records=None,
+        )
+        snowball_meta = EvaluationLogMeta(
+            version=1, objective_name=obj_name, num_layers=2,
+            mixer_names=["m0", "m1"], source_command="explore_placements",
+            source_detail="merged_snowball",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            num_records=None,
+        )
+        write_meta(progress_path, progress_meta)
+        write_meta(snowball_path, snowball_meta)
+
+        # Open both files, seed snowball
+        progress_file = progress_path.open("a")
+        snowball_file = snowball_path.open("w")
+        try:
+            # Seed snowball with supplemental records
+            for rec in supp_records:
+                append_record(snowball_file, rec)
+
+            # Simulate evaluating 1 new local record
+            local_record = EvaluationRecord(
+                assignment=("m0", "m1"), score=0.6, allocation={"m0": 1, "m1": 1},
+            )
+            append_record(progress_file, local_record)
+            append_record(snowball_file, local_record)
+        finally:
+            progress_file.close()
+            snowball_file.close()
+
+        # Verify: progress has only local record
+        progress_records = load_records(progress_path)
+        assert len(progress_records) == 1
+        assert progress_records[0].assignment == ("m0", "m1")
+
+        # Verify: snowball has supplemental + local
+        snowball_records = load_records(snowball_path)
+        assert len(snowball_records) == 3
+        assert snowball_records[0].assignment == ("m0", "m0")  # supplemental
+        assert snowball_records[1].assignment == ("m1", "m1")  # supplemental
+        assert snowball_records[2].assignment == ("m0", "m1")  # local
+
+        # Update sidecars with final counts
+        write_meta(
+            progress_path,
+            progress_meta.model_copy(update={"num_records": 1}),
+        )
+        write_meta(
+            snowball_path,
+            snowball_meta.model_copy(update={"num_records": 3}),
+        )
+
+        progress_loaded_meta = load_meta(progress_path)
+        snowball_loaded_meta = load_meta(snowball_path)
+        assert progress_loaded_meta is not None
+        assert progress_loaded_meta.num_records == 1
+        assert snowball_loaded_meta is not None
+        assert snowball_loaded_meta.num_records == 3
+
+    def test_chaining_single_dir(self, tmp_path: Path) -> None:
+        """Chain 3 runs: each snowball accumulates prior data."""
+        from place_layers.surrogate.evaluation_log import (
+            load_records,
+            load_pooled_data,
+            resolve_supplemental_dirs,
+        )
+
+        # --- Run 1: 2 local records, no supplemental ---
+        run1_dir = tmp_path / "run1"
+        run1_dir.mkdir()
+        snowball1 = run1_dir / "evaluations_obj.jsonl"
+        with snowball1.open("w") as f:
+            append_record(f, EvaluationRecord(
+                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+            ))
+        write_meta(snowball1, EvaluationLogMeta(
+            version=1, objective_name="obj", num_layers=2,
+            mixer_names=["m0", "m1"], source_command="explore_placements",
+            source_detail="merged_snowball",
+            created_at="2026-01-01T00:00:00Z", num_records=2,
+        ))
+
+        # --- Run 2: supplemental=[run1], 2 new local records ---
+        run2_dir = tmp_path / "run2"
+        run2_dir.mkdir()
+
+        supp_files = resolve_supplemental_dirs([str(run1_dir)], "obj")
+        assert len(supp_files) > 0
+
+        pool = load_pooled_data(supp_files, deduplicate=True)
+        assert pool.num_samples == 2
+
+        snowball2 = run2_dir / "evaluations_obj.jsonl"
+        with snowball2.open("w") as f:
+            # Seed with supplemental
+            for rec in pool.as_records():
+                append_record(f, rec)
+            # Add 2 new local records
+            append_record(f, EvaluationRecord(
+                assignment=("m0", "m0"), score=0.4, allocation={"m0": 2},
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1", "m1"), score=0.7, allocation={"m1": 2},
+            ))
+        write_meta(snowball2, EvaluationLogMeta(
+            version=1, objective_name="obj", num_layers=2,
+            mixer_names=["m0", "m1"], source_command="explore_placements",
+            source_detail="merged_snowball",
+            created_at="2026-01-02T00:00:00Z", num_records=4,
+        ))
+
+        # Verify run2 snowball has 4 records
+        assert len(load_records(snowball2)) == 4
+
+        # --- Run 3: supplemental=[run2], loads all 4 ---
+        supp_files_3 = resolve_supplemental_dirs([str(run2_dir)], "obj")
+        pool3 = load_pooled_data(supp_files_3, deduplicate=True)
+        assert pool3.num_samples == 4
+        # All 4 assignments present
+        all_assignments = set(pool3.assignments)
+        assert ("m0", "m1") in all_assignments
+        assert ("m1", "m0") in all_assignments
+        assert ("m0", "m0") in all_assignments
+        assert ("m1", "m1") in all_assignments

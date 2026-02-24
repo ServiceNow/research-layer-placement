@@ -45,7 +45,7 @@ def load_and_fit_surrogate(
         seed: Random seed for surrogate fitting.
         supplemental_data_dirs: Directories containing additional evaluation
             data. Each is searched per-objective using
-            ``discover_evaluation_files()``.
+            ``resolve_supplemental_dirs()``.
 
     Returns:
         (dataset, surrogate, cost_model) tuple.

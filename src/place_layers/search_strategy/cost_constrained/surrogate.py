@@ -56,7 +56,6 @@ from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
     append_record,
-    load_pooled_data,
 )
 
 if TYPE_CHECKING:
@@ -256,26 +255,29 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             exploration.final_rho,
         )
 
-        # Load supplemental evaluation data
-        if self.config.supplemental_data_paths:
-            supplemental = load_pooled_data(
-                [Path(p) for p in self.config.supplemental_data_paths],
-                deduplicate=True,
-            )
-            n_before = len(all_assignments)
-            existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-            for a, s, alloc in zip(
-                supplemental.assignments, supplemental.scores, supplemental.allocations
-            ):
-                if (a, s) not in existing:
-                    all_assignments.append(a)
-                    all_scores.append(s)
-                    existing.add((a, s))
-            logger.info(
-                "Loaded %d supplemental samples (%d new after dedup)",
-                supplemental.num_samples,
-                len(all_assignments) - n_before,
-            )
+        # Read pre-seeded records from evaluation log (written by command)
+        eval_log_path = (
+            Path(self.config.evaluation_log_path)
+            if self.config.evaluation_log_path
+            else None
+        )
+        if eval_log_path is not None and eval_log_path.exists():
+            from place_layers.surrogate.evaluation_log import load_records
+
+            existing_records = load_records(eval_log_path)
+            if existing_records:
+                n_before = len(all_assignments)
+                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+                for rec in existing_records:
+                    if (rec.assignment, rec.score) not in existing:
+                        all_assignments.append(rec.assignment)
+                        all_scores.append(rec.score)
+                        existing.add((rec.assignment, rec.score))
+                logger.info(
+                    "Loaded %d pre-seeded records from eval log (%d new after dedup)",
+                    len(existing_records),
+                    len(all_assignments) - n_before,
+                )
 
         # Emit dataset loaded event
         if self.observers:
@@ -288,18 +290,13 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             for observer in self.observers:
                 observer.on_surrogate_dataset_loaded(dataset_event)
 
-        # Open evaluation log if configured
+        # Open evaluation log for appending strategy's own evaluations
         from place_layers.surrogate.evaluation_log import (
             EvaluationLogMeta,
             write_meta,
         )
 
         eval_log_file = None
-        eval_log_path = (
-            Path(self.config.evaluation_log_path)
-            if self.config.evaluation_log_path
-            else None
-        )
         eval_record_count = 0
 
         if eval_log_path is not None:
@@ -558,10 +555,6 @@ class SurrogateSearchConfig(BaseCostConstrainedConfig):
     exploration_dataset_path: str | None = Field(
         description="Path to JSON dataset from explore_placements command. "
         "Set to null in experiment YAMLs when derived at runtime.",
-    )
-
-    supplemental_data_paths: list[str] = Field(
-        description="Additional JSONL/JSON data files to load into surrogate training set.",
     )
 
     # Refinement loop

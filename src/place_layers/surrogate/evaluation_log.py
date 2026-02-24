@@ -6,7 +6,8 @@ Provides:
 - ``append_record`` / ``load_records``: write/read individual JSONL files.
 - ``PooledEvaluationData`` / ``load_pooled_data``: merge data from multiple
   evaluation sources (exploration JSON + evaluation JSONL).
-- ``discover_evaluation_files``: find all evaluation data in a directory tree.
+- ``resolve_supplemental_dirs``: find per-objective snowball JSONL files in
+  a set of directories.
 """
 
 from __future__ import annotations
@@ -131,6 +132,13 @@ class PooledEvaluationData(BaseModel):
     def num_samples(self) -> int:
         return len(self.assignments)
 
+    def as_records(self) -> list[EvaluationRecord]:
+        """Convert to list of EvaluationRecord for serialization."""
+        return [
+            EvaluationRecord(assignment=a, score=s, allocation=alloc)
+            for a, s, alloc in zip(self.assignments, self.scores, self.allocations)
+        ]
+
 
 def load_pooled_data(
     paths: Sequence[Path | str],
@@ -227,46 +235,21 @@ def resolve_supplemental_dirs(
     dirs: Sequence[str | Path],
     objective_name: str,
 ) -> list[Path]:
-    """Resolve supplemental directories to per-objective JSONL file paths."""
+    """Resolve supplemental directories to per-objective snowball JSONL paths.
+
+    For each directory, recursively finds ``evaluations_{objective_name}.jsonl``
+    snowball files (sorted by modification time within each directory).
+    Deduplicates by absolute path across directories.
+    """
     files: list[Path] = []
     seen: set[str] = set()
     for d in dirs:
-        discovered = discover_evaluation_files(Path(d), objective_name)
-        for f in discovered:
-            if f.suffix == ".jsonl" and str(f) not in seen:
+        for f in sorted(
+            Path(d).rglob(f"evaluations_{objective_name}.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+        ):
+            key = str(f)
+            if key not in seen:
                 files.append(f)
-                seen.add(str(f))
+                seen.add(key)
     return files
-
-
-def discover_evaluation_files(
-    directory: Path,
-    objective_name: str,
-) -> list[Path]:
-    """Find all evaluation data files for an objective in a directory tree.
-
-    Discovers (in order):
-    - ``exploration_results_{obj}.json`` (top-level)
-    - ``exploration_progress_{obj}.jsonl`` (top-level, from explore_placements)
-    - ``**/evaluations_{obj}.jsonl`` (recursive, sorted by mtime)
-    """
-    found: list[Path] = []
-
-    # Top-level exploration dataset
-    json_path = directory / f"exploration_results_{objective_name}.json"
-    if json_path.exists():
-        found.append(json_path)
-
-    # Top-level exploration progress JSONL (from explore_placements command)
-    progress_jsonl = directory / f"exploration_progress_{objective_name}.jsonl"
-    if progress_jsonl.exists():
-        found.append(progress_jsonl)
-
-    # Recursive JSONL files, sorted by mtime
-    jsonl_files = sorted(
-        directory.rglob(f"evaluations_{objective_name}.jsonl"),
-        key=lambda p: p.stat().st_mtime,
-    )
-    found.extend(jsonl_files)
-
-    return found

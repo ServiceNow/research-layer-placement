@@ -6,4 +6,5 @@ defaults:
   - _self_
 
 command: optimize
+supplemental_data_dirs: []
 dry_run: false
