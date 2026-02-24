@@ -396,19 +396,60 @@ class ExplorePlacementsCommand(BaseCommand):
             progress_path
         )
 
+        # Capture local count before merging supplemental data
+        num_local = len(all_assignments)
+        n_supplemental = 0
+
+        if self.config.supplemental_data_dirs:
+            from place_layers.surrogate.evaluation_log import (
+                load_pooled_data,
+                resolve_supplemental_dirs,
+            )
+            supplemental_files = resolve_supplemental_dirs(
+                self.config.supplemental_data_dirs, obj_name
+            )
+            if supplemental_files:
+                pool = load_pooled_data(supplemental_files, deduplicate=True)
+                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+                n_before = len(all_assignments)
+                for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+                    if (a, s) not in existing:
+                        all_assignments.append(a)
+                        all_scores.append(s)
+                        all_allocations.append(alloc)
+                        existing.add((a, s))
+                n_added = len(all_assignments) - n_before
+                n_supplemental = n_added
+                logger.info(
+                    "Supplemental data: loaded %d records from %d file(s), "
+                    "merged %d new (skipped %d duplicates) for objective '%s'",
+                    pool.num_samples, len(supplemental_files),
+                    n_added, pool.num_samples - n_added, obj_name,
+                )
+            else:
+                logger.info(
+                    "Supplemental data: no files found for objective '%s' in %d director%s",
+                    obj_name, len(self.config.supplemental_data_dirs),
+                    "y" if len(self.config.supplemental_data_dirs) == 1 else "ies",
+                )
+
         rho_history: list[float] = []
         samples_at_check: list[int] = []
 
         # Create RNG and fast-forward past completed samples
         rng = random.Random(self.config.seed)
-        if all_assignments:
+        if num_local > 0:
             _fast_forward_rng(
-                rng, len(all_assignments), feasible_allocations, num_layers,
+                rng, num_local, feasible_allocations, num_layers,
                 weights=sampling_weights,
             )
-            logger.info(
-                "Resumed from %d completed samples", len(all_assignments),
-            )
+            if len(all_assignments) > num_local:
+                logger.info(
+                    "Resumed from %d local samples (%d total with supplemental)",
+                    num_local, len(all_assignments),
+                )
+            else:
+                logger.info("Resumed from %d completed samples", num_local)
 
         # Write sidecar metadata for the progress JSONL so it can be loaded
         # standalone by load_pooled_data (without a companion .json file).
@@ -603,7 +644,7 @@ class ExplorePlacementsCommand(BaseCommand):
         # Update sidecar with final record count
         write_meta(
             progress_path,
-            progress_meta.model_copy(update={"num_records": len(all_assignments)}),
+            progress_meta.model_copy(update={"num_records": len(all_assignments) - n_supplemental}),
         )
 
         # Build result dataset
@@ -782,5 +823,14 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
             "running automatic expansion selection. Useful when you already "
             "know the desired order and range (e.g., order=3, range=1 for "
             "adjacent triplets)."
+        ),
+    )
+    supplemental_data_dirs: list[str] = Field(
+        description=(
+            "Directories containing pre-existing evaluation data to merge "
+            "before exploration begins. Each directory is searched per-objective "
+            "for exploration_progress_{obj}.jsonl and evaluations_{obj}.jsonl files. "
+            "Supplemental records are deduplicated against locally-generated progress "
+            "but do not advance the RNG, preserving deterministic resumption."
         ),
     )

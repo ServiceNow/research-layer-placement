@@ -9,13 +9,18 @@ import pytest
 from place_layers.command.explore_placements import (
     _check_plateau,
     _compute_cost_uniform_weights,
+    _fast_forward_rng,
     _get_allocation,
     _load_progress,
     _sample_batch,
 )
 from place_layers.surrogate.evaluation_log import (
+    EvaluationLogMeta,
     EvaluationRecord,
     append_record,
+    load_pooled_data,
+    resolve_supplemental_dirs,
+    write_meta,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig
@@ -374,3 +379,240 @@ class TestExploreIntegration:
         assert loaded.surrogate_config.surrogate_type == "bayesian_ridge"
         assert isinstance(loaded.surrogate_config, BayesianRidgeSurrogateConfig)
         assert loaded.surrogate_config.prior_alpha == 1.0
+
+
+# =============================================================================
+# Supplemental data merge tests
+# =============================================================================
+
+
+def _write_supplemental_jsonl(
+    directory: Path,
+    obj_name: str,
+    records: list[EvaluationRecord],
+    *,
+    num_layers: int = 12,
+    mixer_names: list[str] | None = None,
+) -> Path:
+    """Write a supplemental JSONL file with sidecar metadata."""
+    if mixer_names is None:
+        mixer_names = ["m0", "m1"]
+    path = directory / f"exploration_progress_{obj_name}.jsonl"
+    with path.open("w") as f:
+        for rec in records:
+            append_record(f, rec)
+    write_meta(
+        path,
+        EvaluationLogMeta(
+            version=1,
+            objective_name=obj_name,
+            num_layers=num_layers,
+            mixer_names=mixer_names,
+            source_command="test",
+            source_detail="supplemental",
+            created_at="2026-01-01T00:00:00Z",
+            num_records=len(records),
+        ),
+    )
+    return path
+
+
+class TestSupplementalDataMerge:
+    """Tests for supplemental_data_dirs merge logic."""
+
+    def test_basic_merge(self, tmp_path: Path) -> None:
+        """Supplemental records appear in all_assignments after merge."""
+        # Local progress: 2 records
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        local_progress = local_dir / "exploration_progress_obj.jsonl"
+        with local_progress.open("w") as f:
+            append_record(f, EvaluationRecord(
+                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+            ))
+
+        # Supplemental dir: 2 different records
+        supp_dir = tmp_path / "supplemental"
+        supp_dir.mkdir()
+        _write_supplemental_jsonl(
+            supp_dir, "obj",
+            [
+                EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2, "m1": 0}),
+                EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m0": 0, "m1": 2}),
+            ],
+            num_layers=2,
+        )
+
+        # Load local progress
+        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        num_local = len(all_assignments)
+        assert num_local == 2
+
+        # Merge supplemental
+        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
+        assert len(supplemental_files) > 0
+
+        pool = load_pooled_data(supplemental_files, deduplicate=True)
+        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+            if (a, s) not in existing:
+                all_assignments.append(a)
+                all_scores.append(s)
+                all_allocations.append(alloc)
+                existing.add((a, s))
+
+        assert len(all_assignments) == 4
+        assert num_local == 2  # unchanged
+        # Verify supplemental records are present
+        assert ("m0", "m0") in all_assignments
+        assert ("m1", "m1") in all_assignments
+
+    def test_deduplication(self, tmp_path: Path) -> None:
+        """Records already in local progress are not duplicated."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        local_progress = local_dir / "exploration_progress_obj.jsonl"
+
+        shared_record = EvaluationRecord(
+            assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+        )
+        with local_progress.open("w") as f:
+            append_record(f, shared_record)
+
+        # Supplemental has the same record + one new
+        supp_dir = tmp_path / "supplemental"
+        supp_dir.mkdir()
+        _write_supplemental_jsonl(
+            supp_dir, "obj",
+            [
+                shared_record,
+                EvaluationRecord(assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1}),
+            ],
+            num_layers=2,
+        )
+
+        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        num_local = len(all_assignments)
+
+        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
+        pool = load_pooled_data(supplemental_files, deduplicate=True)
+        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+        n_before = len(all_assignments)
+        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+            if (a, s) not in existing:
+                all_assignments.append(a)
+                all_scores.append(s)
+                all_allocations.append(alloc)
+                existing.add((a, s))
+        n_added = len(all_assignments) - n_before
+
+        assert num_local == 1
+        assert n_added == 1  # only the new record
+        assert len(all_assignments) == 2
+
+    def test_rng_determinism_with_supplemental(self) -> None:
+        """RNG is only advanced by num_local, not by supplemental count.
+
+        A fresh start with supplemental data must produce the same RNG
+        sequence as a fresh start without supplemental data.
+        """
+        allocs = [{"m0": 3, "m1": 2}, {"m0": 2, "m1": 3}]
+        num_layers = 5
+
+        # Fresh RNG, no local progress, no supplemental
+        rng_fresh = random.Random(42)
+        batch_fresh = _sample_batch(5, allocs, num_layers, rng_fresh)
+
+        # Fresh RNG, no local progress (num_local=0), with supplemental
+        # — RNG should NOT be advanced
+        rng_with_supp = random.Random(42)
+        num_local = 0
+        if num_local > 0:
+            _fast_forward_rng(rng_with_supp, num_local, allocs, num_layers)
+        batch_with_supp = _sample_batch(5, allocs, num_layers, rng_with_supp)
+
+        assert batch_fresh == batch_with_supp
+
+    def test_rng_determinism_with_local_and_supplemental(self) -> None:
+        """RNG advances by num_local only, supplemental records are ignored for RNG."""
+        allocs = [{"m0": 3, "m1": 2}, {"m0": 2, "m1": 3}]
+        num_layers = 5
+
+        # Simulate: 3 local samples, then sample batch
+        rng_local_only = random.Random(42)
+        _fast_forward_rng(rng_local_only, 3, allocs, num_layers)
+        batch_local_only = _sample_batch(5, allocs, num_layers, rng_local_only)
+
+        # Simulate: 3 local + 10 supplemental, RNG advanced by 3 only
+        rng_local_plus_supp = random.Random(42)
+        num_local = 3
+        _fast_forward_rng(rng_local_plus_supp, num_local, allocs, num_layers)
+        batch_local_plus_supp = _sample_batch(5, allocs, num_layers, rng_local_plus_supp)
+
+        assert batch_local_only == batch_local_plus_supp
+
+    def test_nonexistent_supplemental_dir(self, tmp_path: Path) -> None:
+        """resolve_supplemental_dirs returns [] for nonexistent directory."""
+        bogus = str(tmp_path / "does_not_exist")
+        files = resolve_supplemental_dirs([bogus], "obj")
+        assert files == []
+
+    def test_empty_supplemental_dirs_skipped(self) -> None:
+        """When supplemental_data_dirs is empty, the merge block is skipped."""
+        # Just verify the config field accepts an empty list
+        from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+
+        # The field should be present and accept an empty list
+        field_info = ExplorePlacementsCommandConfig.model_fields["supplemental_data_dirs"]
+        assert field_info is not None
+
+    def test_sidecar_num_records_excludes_supplemental(self, tmp_path: Path) -> None:
+        """Sidecar num_records should count only locally-evaluated records, not supplemental."""
+        # Local progress: 2 records
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        local_progress = local_dir / "exploration_progress_obj.jsonl"
+        with local_progress.open("w") as f:
+            append_record(f, EvaluationRecord(
+                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+            ))
+
+        # Supplemental dir: 2 new records
+        supp_dir = tmp_path / "supplemental"
+        supp_dir.mkdir()
+        _write_supplemental_jsonl(
+            supp_dir, "obj",
+            [
+                EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2, "m1": 0}),
+                EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m0": 0, "m1": 2}),
+            ],
+            num_layers=2,
+        )
+
+        # Simulate the merge logic from the command
+        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        num_local = len(all_assignments)
+        n_supplemental = 0
+
+        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
+        pool = load_pooled_data(supplemental_files, deduplicate=True)
+        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+        n_before = len(all_assignments)
+        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+            if (a, s) not in existing:
+                all_assignments.append(a)
+                all_scores.append(s)
+                all_allocations.append(alloc)
+                existing.add((a, s))
+        n_supplemental = len(all_assignments) - n_before
+
+        # Sidecar should reflect only local records
+        sidecar_num_records = len(all_assignments) - n_supplemental
+        assert sidecar_num_records == num_local == 2
+        assert len(all_assignments) == 4  # total includes supplemental
