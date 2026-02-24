@@ -100,6 +100,7 @@ class Trace(BaseGeneration):
     )
 
 
+
 class Generation(BaseGeneration):
     """A generation from evaluation (without teacher log-probs).
 
@@ -129,8 +130,8 @@ class SpeculativeGeneration(BaseGeneration):
     num_accepted_tokens: int = Field(
         description="Total accepted draft tokens"
     )
-    acceptance_rate: float = Field(
-        description="Fraction of draft tokens accepted (num_accepted / total_draft)"
+    step_acceptance_rate: float = Field(
+        description="Fraction of draft tokens accepted per step (num_accepted / total_draft)"
     )
 
     # Placement provenance
@@ -141,6 +142,54 @@ class SpeculativeGeneration(BaseGeneration):
     target_placement: list[str] | None = Field(
         default=None,
         description="Target model placement (mixer names per layer)",
+    )
+
+
+class AcceptanceRateRecord(BaseModel):
+    """Per-sample acceptance rate metrics from comparing target and draft distributions.
+
+    Computes two complementary metrics:
+
+    1. **Token acceptance probability** (alpha): the probability that a single
+       draft token is accepted, ``alpha_i = sum_v min(p_target(v), p_draft(v))``.
+
+    2. **Step acceptance rate**: the expected fraction of accepted tokens per
+       speculative decoding step of length gamma, estimated via importance
+       sampling over teacher-generated traces.
+    """
+
+    model_config = {"frozen": True}
+
+    record_type: Literal["acceptance_rate"] = "acceptance_rate"
+
+    problem_id: str = Field(description="Unique identifier (task_name:idx)")
+    task_name: str = Field(description="Name of the evaluation task")
+    sample_idx: int = Field(description="Sample index within the problem")
+
+    num_completion_tokens: int = Field(
+        description="Number of completion tokens scored"
+    )
+
+    mean_token_acceptance_prob: float = Field(
+        description="Mean token acceptance probability across completion positions"
+    )
+    per_token_acceptance_probs: tuple[float, ...] = Field(
+        description="Per-position alpha_i = sum_v min(p_target(v), p_draft(v))"
+    )
+
+    gamma: int = Field(description="Draft length used for step acceptance rate")
+    mean_step_acceptance_rate: float = Field(
+        description="IS-estimated mean step acceptance rate (E[# accepted / gamma])"
+    )
+    step_acceptance_rates: tuple[float, ...] = Field(
+        description="Per-block IS-estimated step acceptance rate"
+    )
+
+    draft_placement: list[str] = Field(
+        description="Draft model placement (mixer names per layer)"
+    )
+    target_placement: list[str] = Field(
+        description="Target model placement (mixer names per layer)"
     )
 
 
@@ -333,7 +382,7 @@ class ISProblemRecord(BaseModel):
 
 
 TraceRecord = Annotated[
-    Trace | Generation | SpeculativeGeneration | SkippedProblem | LikelihoodRecord | ISProblemRecord | TraceLikelihoodProblemRecord,
+    Trace | Generation | SpeculativeGeneration | AcceptanceRateRecord | SkippedProblem | LikelihoodRecord | ISProblemRecord | TraceLikelihoodProblemRecord,
     Field(discriminator="record_type"),
 ]
 

@@ -10,7 +10,7 @@
 #   evaluator.target_placement=[attention,gdn]
 #
 # In addition to accuracy, reports speculative decoding metrics:
-#   - avg_acceptance_rate: fraction of draft tokens accepted
+#   - avg_step_acceptance_rate: fraction of draft tokens accepted per step
 #   - avg_target_model_calls: target forward passes per problem
 #   - avg_tokens_generated: completion tokens per problem
 #

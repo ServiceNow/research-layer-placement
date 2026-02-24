@@ -1,0 +1,21 @@
+# @package evaluator
+# Acceptance rate estimator for speculative decoding.
+#
+# Computes two metrics from full-vocabulary logits (TransformersBackend only):
+#
+# 1. Token acceptance probability (alpha):
+#      alpha_i = sum_v min(p_target(v), p_draft(v))
+#    The per-position probability a draft token is accepted.
+#
+# 2. Step acceptance rate:
+#    IS-estimated E[# accepted / gamma] for speculative steps of length gamma.
+#
+# Requires pre-computed target traces (from precompute_traces command).
+# The draft placement is specified via +placement=... on the CLI.
+# Batch size is inherited from the backend config (e.g., backend.batch_size).
+
+evaluator_type: acceptance_rate
+trace_sources: ???
+target_placement:
+  - attention
+gamma: 8

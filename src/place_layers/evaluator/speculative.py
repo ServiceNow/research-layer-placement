@@ -115,7 +115,7 @@ class _ProblemResult:
         return len(self.steps)
 
     @property
-    def acceptance_rate(self) -> float:
+    def step_acceptance_rate(self) -> float:
         total = self.total_draft_tokens
         return self.total_accepted / total if total > 0 else 0.0
 
@@ -733,7 +733,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
                         num_speculative_steps=prob_result.num_target_calls,
                         total_draft_tokens=prob_result.total_draft_tokens,
                         num_accepted_tokens=prob_result.total_accepted,
-                        acceptance_rate=prob_result.acceptance_rate,
+                        step_acceptance_rate=prob_result.step_acceptance_rate,
                         draft_placement=draft_pl,
                         target_placement=target_pl,
                     )
@@ -750,8 +750,8 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
 
         # Compute and store speculative decoding metrics
         if problem_results:
-            avg_acceptance = sum(
-                r.acceptance_rate for r in problem_results
+            avg_step_acceptance = sum(
+                r.step_acceptance_rate for r in problem_results
             ) / len(problem_results)
             avg_target_calls = sum(
                 r.num_target_calls for r in problem_results
@@ -761,14 +761,14 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
             ) / len(problem_results)
 
             self._speculative_metrics = {
-                "avg_acceptance_rate": round(avg_acceptance, 4),
+                "avg_step_acceptance_rate": round(avg_step_acceptance, 4),
                 "avg_target_model_calls": round(avg_target_calls, 2),
                 "avg_tokens_generated": round(avg_tokens, 2),
             }
 
             logger.info(
                 f"Speculative metrics: "
-                f"acceptance_rate={avg_acceptance:.4f}, "
+                f"step_acceptance_rate={avg_step_acceptance:.4f}, "
                 f"target_calls={avg_target_calls:.1f}, "
                 f"tokens_generated={avg_tokens:.1f}"
             )

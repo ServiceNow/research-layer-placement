@@ -4,6 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
+from place_layers.evaluator.acceptance_rate import AcceptanceRateEvaluatorConfig
 from place_layers.evaluator.generative import GenerativeEvaluatorConfig
 from place_layers.evaluator.importance_weighted import ImportanceWeightedEvaluatorConfig
 from place_layers.evaluator.likelihood import LikelihoodEvaluatorConfig
@@ -16,7 +17,8 @@ from place_layers.evaluator.trace_precompute import TracePrecomputeEvaluatorConf
 
 # Discriminated union of all evaluators
 EvaluatorConfig = Annotated[
-    MockSupernetEvaluatorConfig
+    AcceptanceRateEvaluatorConfig
+    | MockSupernetEvaluatorConfig
     | ImportanceWeightedEvaluatorConfig
     | GenerativeEvaluatorConfig
     | LikelihoodEvaluatorConfig
