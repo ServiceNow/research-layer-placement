@@ -19,7 +19,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import Any, ClassVar, Literal, Self, Sequence
 
 import aiohttp
-from pydantic import BaseModel, Field, computed_field, model_validator, PrivateAttr
+from pydantic import BaseModel, Field, computed_field, ValidationError, model_validator, PrivateAttr
 from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_base
 
@@ -338,6 +338,11 @@ class RESTBackend(AsyncBackend):
             base_recovery_interval=config.base_recovery_interval,
             max_recovery_interval=config.max_recovery_interval,
         )
+
+    @property
+    def config(self) -> "RESTBackendConfig | RESTDNSBackendConfig":
+        """Backend configuration."""
+        return self._config
 
     @property
     def max_concurrent_requests(self) -> int:
@@ -718,6 +723,13 @@ class RESTBackend(AsyncBackend):
                     "/generate_chat", server_request, preferred_server=preferred_server
                 )
                 return GenerationResult.model_validate(data)
+            except ValidationError as e:
+                logger.warning(f"Invalid server response for {req.key}: {e}")
+                return BackendError(
+                    key=req.key,
+                    error_type="server_error",
+                    message=f"Invalid server response: {e}",
+                )
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
                 return BackendError(key=req.key, error_type=e.error_type, message=str(e))
@@ -750,12 +762,20 @@ class RESTBackend(AsyncBackend):
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,
                     top_p=req.top_p,
+                    ignore_eos=req.ignore_eos,
                     placement=self._current_placement,
                 )
                 data = await self._call_with_failover(
                     "/generate_text", server_request, preferred_server=preferred_server
                 )
                 return GenerationResult.model_validate(data)
+            except ValidationError as e:
+                logger.warning(f"Invalid server response for {req.key}: {e}")
+                return BackendError(
+                    key=req.key,
+                    error_type="server_error",
+                    message=f"Invalid server response: {e}",
+                )
             except RESTBackendError as e:
                 logger.warning(f"REST error for {req.key}: {e}")
                 return BackendError(key=req.key, error_type=e.error_type, message=str(e))

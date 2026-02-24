@@ -27,7 +27,7 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from typing import Any, ClassVar, Self, Sequence
+from typing import Any, ClassVar, Self, Sequence, assert_never
 
 from pydantic import BaseModel, Field
 
@@ -418,23 +418,28 @@ async def _concurrent_expand_map_sync[In, K, E, R, Out](
         yield out
 
     # Main loop
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-        # Collect results
-        for task in done:
-            key, idx, result = task.result()
-            if key not in results_by_key:
-                results_by_key[key] = []
-            results_by_key[key].append((idx, result))
+            # Collect results
+            for task in done:
+                key, idx, result = task.result()
+                if key not in results_by_key:
+                    results_by_key[key] = []
+                results_by_key[key].append((idx, result))
 
-        # Yield completed outputs
-        for out in yield_completed():
-            yield out
+            # Yield completed outputs
+            for out in yield_completed():
+                yield out
 
-        # Refill
-        expand_more_items()
-        schedule_from_buffer()
+            # Refill
+            expand_more_items()
+            schedule_from_buffer()
+    except BaseException:
+        for task in pending:
+            task.cancel()
+        raise
 
     # Final yield (for any remaining completed outputs)
     for out in yield_completed():
@@ -536,46 +541,53 @@ async def _concurrent_expand_map_async[In, K, E, R, Out](
         yield out
 
     # Main loop - wait on both processing tasks and next-item fetch
-    while pending or next_item_task is not None:
-        # Build wait set
-        wait_tasks: set[asyncio.Task[Any]] = set(pending)
+    try:
+        while pending or next_item_task is not None:
+            # Build wait set
+            wait_tasks: set[asyncio.Task[Any]] = set(pending)
+            if next_item_task is not None:
+                wait_tasks.add(next_item_task)
+
+            if not wait_tasks:
+                break
+
+            done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            # Handle completed next-item fetch
+            if next_item_task is not None and next_item_task in done:
+                done.discard(next_item_task)
+                try:
+                    item = next_item_task.result()
+                    next_item_task = None
+
+                    # Skip heartbeats (None values)
+                    if item is not None:
+                        expand_item(item)
+                except StopAsyncIteration:
+                    items_exhausted = True
+                    next_item_task = None
+
+            # Handle completed processing tasks
+            for task in done:
+                pending.discard(task)  # type: ignore[arg-type]
+                key, idx, result = task.result()
+                if key not in results_by_key:
+                    results_by_key[key] = []
+                results_by_key[key].append((idx, result))
+
+            # Yield completed outputs
+            for out in yield_completed():
+                yield out
+
+            # Schedule more work
+            schedule_from_buffer()
+            await start_next_item_fetch()
+    except BaseException:
+        for task in pending:
+            task.cancel()
         if next_item_task is not None:
-            wait_tasks.add(next_item_task)
-
-        if not wait_tasks:
-            break
-
-        done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
-
-        # Handle completed next-item fetch
-        if next_item_task is not None and next_item_task in done:
-            done.discard(next_item_task)
-            try:
-                item = next_item_task.result()
-                next_item_task = None
-
-                # Skip heartbeats (None values)
-                if item is not None:
-                    expand_item(item)
-            except StopAsyncIteration:
-                items_exhausted = True
-                next_item_task = None
-
-        # Handle completed processing tasks
-        for task in done:
-            pending.discard(task)  # type: ignore[arg-type]
-            key, idx, result = task.result()
-            if key not in results_by_key:
-                results_by_key[key] = []
-            results_by_key[key].append((idx, result))
-
-        # Yield completed outputs
-        for out in yield_completed():
-            yield out
-
-        # Schedule more work
-        schedule_from_buffer()
-        await start_next_item_fetch()
+            next_item_task.cancel()
+        raise
 
     # Final yield
     for out in yield_completed():
@@ -683,6 +695,12 @@ class AsyncBackend(ABC):
     concurrent requests. Scoring methods yield results as they complete
     (not necessarily in input order) - caller joins by key.
     """
+
+    @property
+    @abstractmethod
+    def config(self) -> "BaseBackendConfig":
+        """Backend configuration."""
+        ...
 
     @property
     @abstractmethod
@@ -851,6 +869,12 @@ class SyncBackend(ABC):
     Batching is handled internally - caller just iterates.
     """
 
+    @property
+    @abstractmethod
+    def config(self) -> "BaseBackendConfig":
+        """Backend configuration."""
+        ...
+
     @abstractmethod
     def __enter__(self) -> Self:
         """Initialize backend (e.g., load model)."""
@@ -860,6 +884,12 @@ class SyncBackend(ABC):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Cleanup backend resources (e.g., free GPU memory)."""
         pass
+
+    async def __aenter__(self) -> Self:
+        return self.__enter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.__exit__(exc_type, exc_val, exc_tb)
 
     @abstractmethod
     def generate_chat(
@@ -1022,6 +1052,7 @@ def get_model_path(config: BaseBackendConfig) -> str:
         or "unknown" for unrecognized config types.
     """
     # Lazy imports to avoid circular dependencies
+    from place_layers.backend.mock import MockBackendConfig
     from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
     from place_layers.backend.transformers import TransformersBackendConfig
     from place_layers.backend.vllm import VLLMBackendConfig
@@ -1037,5 +1068,7 @@ def get_model_path(config: BaseBackendConfig) -> str:
             return model
         case RESTBackendConfig() | RESTDNSBackendConfig():
             return "rest-backend"
-        case _:
-            return "unknown"
+        case MockBackendConfig():
+            return "mock-backend"
+        case other:
+            assert_never(other)

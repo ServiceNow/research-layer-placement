@@ -8,3 +8,5 @@ samples_per_problem: 1
 max_new_tokens: 48
 temperature: 0.0  # greedy
 top_p: 1.0
+# use_chat_template: true
+evaluate_truncated_samples: true

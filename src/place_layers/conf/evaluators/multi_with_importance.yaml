@@ -1,0 +1,26 @@
+# @package evaluators
+# Multi-evaluator: Generative + Likelihood + Importance-weighted
+# Use case: Optimize for combination of direct metrics and importance sampling
+
+configs:
+  gsm8k:
+    evaluator_type: generative
+    tasks: ["gsm8k"]
+    generation: ${generation}
+
+  mmlu:
+    evaluator_type: likelihood
+    tasks: ["mmlu"]
+
+  importance:
+    evaluator_type: importance_weighted
+    trace_dir: ${oc.env:HOME}/traces/gsm8k
+    num_samples: 8
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    gsm8k: 0.5
+    mmlu: 0.3
+    importance: 0.2

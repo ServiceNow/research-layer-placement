@@ -1,0 +1,12 @@
+# @package evaluators
+# Single evaluator example (backwards compatible with old 'evaluator' field)
+
+configs:
+  gsm8k:
+    evaluator_type: generative
+    tasks: ${task.tasks}
+    generation: ${generation}
+
+objective:
+  objective_type: weighted_average
+  include_individual: false

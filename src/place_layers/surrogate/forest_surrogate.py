@@ -10,11 +10,14 @@ mapping.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from scipy.stats import spearmanr
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import KFold
 
+from place_layers.surrogate.base_surrogate import BaseSurrogate
 from place_layers.surrogate.encoding import (
     FeatureExpansionConfig,
     build_type_mapping,
@@ -24,7 +27,7 @@ from place_layers.surrogate.encoding import (
 )
 
 
-class ForestSurrogate:
+class ForestSurrogate(BaseSurrogate):
     """Random Forest surrogate with predict-with-uncertainty.
 
     Not a Pydantic model — a plain wrapper whose parameters are passed
@@ -37,8 +40,8 @@ class ForestSurrogate:
         max_depth: int | None,
         seed: int,
         mixer_names: list[str],
+        feature_config: FeatureExpansionConfig,
         min_samples_leaf: int = 1,
-        feature_config: FeatureExpansionConfig | None = None,
     ) -> None:
         self._model = RandomForestRegressor(
             n_estimators=n_estimators,
@@ -53,7 +56,7 @@ class ForestSurrogate:
         self._type_to_int, self._int_to_type = build_type_mapping(mixer_names)
         self._feature_config = feature_config
 
-    def fit(self, assignments: list[tuple[str, ...]], y: np.ndarray) -> None:
+    def fit(self, assignments: Sequence[Sequence[str]], y: np.ndarray) -> None:
         """Fit the random forest on training data.
 
         Args:
@@ -64,12 +67,12 @@ class ForestSurrogate:
         self._model.fit(X, y)
         self._is_fitted = True
 
-    def predict_mean(self, assignments: list[tuple[str, ...]]) -> np.ndarray:
+    def predict_mean(self, assignments: Sequence[Sequence[str]]) -> np.ndarray:
         """Fast mean-only prediction using sklearn's optimized predict."""
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
         return self._model.predict(X)
 
-    def predict_mean_one(self, assignment: tuple[str, ...] | list[str]) -> float:
+    def predict_mean_one(self, assignment: Sequence[str]) -> float:
         """Single-assignment mean prediction for SA hot loop."""
         x = encode_config(
             assignment, self._type_to_int, self._feature_config
@@ -77,7 +80,7 @@ class ForestSurrogate:
         return float(self._model.predict(x)[0])
 
     def predict(
-        self, assignments: list[tuple[str, ...]]
+        self, assignments: Sequence[Sequence[str]]
     ) -> tuple[np.ndarray, np.ndarray]:
         """Predict with uncertainty from tree ensemble variance.
 
@@ -152,3 +155,22 @@ class ForestSurrogate:
             rhos.append(rho)
 
         return float(np.mean(np.array(rhos))) if rhos else 0.0
+
+    def diagnostics(
+        self,
+        assignments: Sequence[Sequence[str]],
+        y: np.ndarray,
+        *,
+        folds: int | None,
+        rng_seed: int = 0,
+    ) -> "FrequentistCVDiagnostics":
+        """Frequentist CV diagnostics: Spearman rank correlation."""
+        from place_layers.surrogate.base_surrogate import FrequentistCVDiagnostics
+
+        if folds is not None and len(y) >= folds * 2:
+            rho = self.cross_validate(
+                [tuple(a) for a in assignments], y, cv_folds=folds,
+            )
+        else:
+            rho = 0.0
+        return FrequentistCVDiagnostics(spearman_cv=rho)

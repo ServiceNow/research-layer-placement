@@ -1,0 +1,20 @@
+# @package evaluators
+# Multi-evaluator example: GSM8K (generative) + MMLU (likelihood)
+# Weighted average: 60% GSM8K, 40% MMLU
+
+configs:
+  gsm8k:
+    evaluator_type: generative
+    tasks: ["gsm8k"]
+    generation: ${generation}
+
+  mmlu:
+    evaluator_type: likelihood
+    tasks: ["mmlu"]
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    gsm8k: 0.6
+    mmlu: 0.4

@@ -6,7 +6,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: local_vllm
   - /task: gsm8k
   - /generation: greedy

@@ -1,0 +1,16 @@
+# @package _global_
+
+# Parse multi-evaluator exploration results into per-evaluator files.
+# Extracts individual evaluator scores from trace files and creates
+# exploration_results.json for each evaluator.
+
+command: parse_multi_eval_results
+
+# Path to exploration directory (must contain exploration_results.json and evals/)
+exploration_dir: ???
+
+# Number of parallel workers for processing evaluators
+num_workers: 4
+
+# Number of parallel workers for computing scores within each evaluator
+num_score_workers: 1

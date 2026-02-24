@@ -55,7 +55,8 @@ from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.command.placement_utils import resolve_placement
 from place_layers.core.memory_logging import log_memory, reset_peak_memory_stats
-from place_layers.evaluator.trace_precompute import TracePrecomputeEvaluatorConfig
+from place_layers.backend import BackendConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +75,20 @@ class PrecomputeTracesCommand(BaseCommand):
         log_memory("INIT")
         reset_peak_memory_stats()
 
-        async with self.config.evaluator.create_evaluator(output_dir) as evaluator:
-            # Resolve placement specification
-            resolved = resolve_placement(self.config.placement, evaluator)
+        from contextlib import nullcontext
 
-            # Run trace generation
-            accuracy = await evaluator.evaluate(resolved.placement)
-            logger.info(f"Teacher accuracy: {accuracy:.1%}")
+        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        async with backend_cm as backend:
+            async with self.config.evaluators.create_evaluators(
+                output_dir, backend=backend
+            ) as evals:
+                # Resolve placement specification
+                resolved = resolve_placement(self.config.placement, evals)
+
+                # Run trace generation
+                obj_scores = await evals.evaluate_objectives(resolved.placement)
+                for obj_name, obj_score in obj_scores.items():
+                    logger.info(f"Teacher accuracy ({obj_name}): {obj_score:.1%}")
 
         logger.info("Trace precomputation complete!")
 
@@ -92,8 +100,13 @@ class PrecomputeTracesCommandConfig(BaseCommandConfig):
 
     command: Literal["precompute_traces"] = "precompute_traces"
 
-    evaluator: TracePrecomputeEvaluatorConfig = Field(
-        description="Trace precompute evaluator configuration"
+    backend: BackendConfig | None = Field(
+        default=None,
+        description="Backend configuration. None for mock evaluators.",
+    )
+
+    evaluators: EvaluatorsConfig = Field(
+        description="Evaluator configuration (single trace_precompute evaluator)"
     )
 
     placement: list[str] | None = Field(

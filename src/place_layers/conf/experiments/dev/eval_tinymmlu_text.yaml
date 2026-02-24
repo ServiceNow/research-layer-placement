@@ -9,7 +9,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: vllm
   - _self_
 
@@ -20,11 +20,12 @@ backend:
 
 # Override evaluator settings
 # Note: tinyMMLU has few-shot examples baked into doc_to_text, so num_fewshot=0
-evaluator:
-  tasks:
-    - tinyMMLU
-  num_fewshot: 0
-  max_problems_per_task: null
-  split: test
-  use_chat_template: false
-  batch_size: 8
+evaluators:
+  configs:
+    mmlu:
+      tasks:
+        - tinyMMLU
+      num_fewshot: 0
+      max_problems_per_task: null
+      split: test
+      use_chat_template: false

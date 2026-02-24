@@ -63,6 +63,7 @@ class ValidationResults(BaseModel):
 
     model_config = {"frozen": True}
 
+    objective_name: str = ""
     num_layers: int
     baseline_cost: float
     num_cost_bins: int
@@ -86,6 +87,7 @@ class LandscapeData(BaseModel):
 
     model_config = {"frozen": True}
 
+    objective_name: str = ""
     num_layers: int
     baseline_cost: float
     num_cost_bins: int

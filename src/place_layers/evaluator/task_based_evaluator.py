@@ -66,14 +66,21 @@ class TaskBasedEvaluator(BackendEvaluator):
 
     config: "TaskBasedEvaluatorConfig"
 
-    def __init__(self, config: "TaskBasedEvaluatorConfig", *, output_dir: "Path") -> None:
+    def __init__(
+        self,
+        config: "TaskBasedEvaluatorConfig",
+        *,
+        output_dir: "Path",
+        backend: "AsyncBackend | SyncBackend",
+    ) -> None:
         """Initialize task-based evaluator.
 
         Args:
             config: Evaluator configuration with task settings.
             output_dir: Base output directory for results.
+            backend: Pre-created backend instance (lifecycle managed by caller).
         """
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
         # Cache for batch-loaded tasks (populated in __aenter__)
         self._task_cache: dict[str, "Task"] | None = None
         # Cache for docs - persists across placements (populated by prefetcher)
@@ -104,9 +111,19 @@ class TaskBasedEvaluator(BackendEvaluator):
 
         # Batch load all tasks for efficiency
         seed = self._get_fewshot_seed()
+        metadata: dict[str, Any] | None = None
+        if self.config.tokenizer or self.config.max_seq_lengths:
+            metadata = {}
+            if self.config.tokenizer:
+                metadata["pretrained"] = self.config.tokenizer
+            if self.config.max_seq_lengths is not None:
+                lengths = self.config.max_seq_lengths
+                metadata["max_seq_lengths"] = (
+                    [lengths] if isinstance(lengths, int) else lengths
+                )
         logger.info(f"Batch-loading {len(self.config.tasks)} tasks...")
         self._task_cache = load_tasks(
-            self.config.tasks, self.config.num_fewshot, seed
+            self.config.tasks, self.config.num_fewshot, seed, metadata=metadata
         )
         logger.info(f"Loaded {len(self._task_cache)} tasks")
 
@@ -460,6 +477,17 @@ class TaskBasedEvaluatorConfig(BackendEvaluatorConfig):
         description="Number of tasks to prefetch docs for ahead of evaluation. "
         "Higher values hide I/O latency but use more memory.",
         ge=1,
+    )
+    tokenizer: str | None = Field(
+        default=None,
+        description="Tokenizer name/path for synthetic task generation (e.g., RULER). "
+        "Required when using tasks with custom_dataset that need a tokenizer.",
+    )
+    max_seq_lengths: list[int] | int | None = Field(
+        default=None,
+        description="Context lengths for synthetic tasks (e.g., RULER). "
+        "Accepts a single int or list of ints. "
+        "Generates samples at each specified length. Default depends on task.",
     )
 
     @model_validator(mode="after")

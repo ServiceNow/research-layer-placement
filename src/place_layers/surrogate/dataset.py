@@ -7,11 +7,18 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.encoding import FeatureExpansionConfig
+from place_layers.surrogate.model_selection import ExpansionSelectionResult
 
 
 class ExplorationDataset(BaseModel):
-    """Serializable dataset of evaluated placements."""
+    """Serializable dataset of evaluated placements for a single objective.
+
+    Each dataset stores scalar scores for one objective (identified by
+    ``objective_name``).  When the optimizer has M objectives, the explore
+    command produces M independent datasets.
+    """
 
     model_config = {"frozen": True}
 
@@ -20,14 +27,21 @@ class ExplorationDataset(BaseModel):
     scores: list[float]
     allocations: list[dict[str, int]]
 
+    # Which objective this dataset is for
+    objective_name: str
+
     # Metadata
     num_layers: int
     mixer_names: list[str]
     num_samples: int
     termination_reason: Literal["target_reached", "plateau", "max_samples"]
 
-    # Feature expansion (None = Level 0 / unary only)
-    feature_config: FeatureExpansionConfig | None = None
+    # Feature expansion config — required (no backward compat)
+    feature_config: FeatureExpansionConfig
+
+    # Surrogate provenance (None for backward compat with pre-existing JSON)
+    surrogate_config: SurrogateConfig | None = None
+    expansion_result: ExpansionSelectionResult | None = None
 
     # Learning curve
     rho_history: list[float]

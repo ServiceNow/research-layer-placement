@@ -6,6 +6,7 @@ Tests the full pipeline:
 3. Verify ValidationResults structure and serialization
 4. Verify placement_landscape can load validation results
 5. Verify incremental per-band saving and resume-on-restart
+6. Verify multi-objective support
 """
 
 import json
@@ -27,23 +28,35 @@ from place_layers.landscape import (
     compute_band_edges,
     compute_dp_per_band,
     load_and_fit_surrogate,
+    objective_result_path,
 )
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
+from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.evaluator.mock_supernet_evaluator import (
     MockSupernetEvaluator,
     MockSupernetEvaluatorConfig,
+)
+from place_layers.evaluator.objective import (
+    IndependentObjectiveConfig,
+    MaxObjectiveConfig,
+    WeightedAverageObjectiveConfig,
 )
 from place_layers.problem.layer_placement import (
     CostConstrainedProblem,
     MaxPerformanceProblemConfig,
 )
+from place_layers.search_strategy.cost_constrained.risk_bucket_selection import RiskBucketConfig
 from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
+    ViterbiBayesianSurrogateSearchConfig,
     ViterbiSurrogateSearchConfig,
 )
+from place_layers.surrogate.config import RidgeSurrogateConfig
 from place_layers.surrogate.dataset import ExplorationDataset
+from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.model_selection import ridge_cv_rho
+from tests.helpers import wrap_evaluator
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -81,9 +94,31 @@ def _make_evaluator(noise_sigma: float = 0.0) -> MockSupernetEvaluator:
     return MockSupernetEvaluator(config=config)
 
 
+def _make_evaluator_config(
+    noise_sigma: float = 0.0,
+    noise_seed_shift: int = 0,
+) -> MockSupernetEvaluatorConfig:
+    return MockSupernetEvaluatorConfig(
+        evaluator_type="mock_supernet",
+        num_layers=_NUM_LAYERS,
+        mixer_names=["m0", "m1"],
+        seed=42,
+        unary_bonus=1.0,
+        unary_penalty=0.5,
+        pairwise_scale=0.3,
+        noise_sigma=noise_sigma,
+        noise_seed_shift=noise_seed_shift,
+        eval_delay_seconds=0.0,
+        pairwise_decay=0.5,
+        pairwise_max_range=1,
+        triplet_scale=0.0,
+    )
+
+
 async def _build_exploration_dataset(
     evaluator: MockSupernetEvaluator,
     num_samples: int = 100,
+    objective_name: str = "weighted_average",
 ) -> ExplorationDataset:
     """Build a small exploration dataset programmatically."""
     cost_model = _COST_MODEL_CONFIG.create_cost_model()
@@ -115,6 +150,7 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=np.array(scores),
         mixer_names=cost_model.phase_order,
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         cv_folds=5,
         seed=42,
     )
@@ -123,10 +159,12 @@ async def _build_exploration_dataset(
         assignments=assignments,
         scores=scores,
         allocations=allocations,
+        objective_name=objective_name,
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
+        feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,
@@ -154,7 +192,8 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         loaded_dataset, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         assert loaded_dataset.num_samples == 100
@@ -162,6 +201,73 @@ class TestLandscapeHelpers:
         # Surrogate should be able to predict
         preds = surrogate.predict_mean(dataset.assignments[:5])
         assert len(preds) == 5
+
+    async def test_load_and_fit_surrogate_with_supplemental(self, tmp_path: Path) -> None:
+        """load_and_fit_surrogate pools supplemental data from directories."""
+        from place_layers.surrogate.evaluation_log import (
+            EvaluationLogMeta,
+            EvaluationRecord,
+            append_record,
+            write_meta,
+        )
+
+        evaluator = _make_evaluator()
+        dataset = await _build_exploration_dataset(evaluator, num_samples=80)
+        dataset_path = _save_dataset(dataset, tmp_path)
+
+        # Write supplemental JSONL in a subdirectory using standard naming
+        supplemental_dir = tmp_path / "supplemental"
+        supplemental_dir.mkdir()
+        jsonl_path = supplemental_dir / "evaluations_weighted_average.jsonl"
+        extra_records = [
+            EvaluationRecord(
+                assignment=("m0",) * 6 + ("m1",) * 6,
+                score=0.42,
+                allocation={"m0": 6, "m1": 6},
+            ),
+            EvaluationRecord(
+                assignment=("m1",) * 6 + ("m0",) * 6,
+                score=0.38,
+                allocation={"m0": 6, "m1": 6},
+            ),
+        ]
+        with jsonl_path.open("w") as f:
+            for rec in extra_records:
+                append_record(f, rec)
+        meta = EvaluationLogMeta(
+            version=1,
+            objective_name="weighted_average",
+            num_layers=_NUM_LAYERS,
+            mixer_names=["m0", "m1"],
+            source_command="test",
+            source_detail="test",
+            created_at="2026-01-01T00:00:00+00:00",
+            num_records=2,
+        )
+        write_meta(jsonl_path, meta)
+
+        # Fit WITHOUT supplemental
+        ds_base, surr_base, _ = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        )
+
+        # Fit WITH supplemental dirs
+        ds_pooled, surr_pooled, _ = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+            supplemental_data_dirs=[str(supplemental_dir)],
+        )
+
+        # Dataset object is the same (only exploration data)
+        assert ds_base.num_samples == ds_pooled.num_samples == 80
+        # But surrogate was fitted on more data — predictions may differ
+        test_assignment = ("m0",) * 6 + ("m1",) * 6
+        pred_base = surr_base.predict_mean_one(test_assignment)
+        pred_pooled = surr_pooled.predict_mean_one(test_assignment)
+        # Both should produce valid floats (not NaN)
+        assert np.isfinite(pred_base)
+        assert np.isfinite(pred_pooled)
 
     async def test_compute_band_edges(self, tmp_path: Path) -> None:
         """Band edges should be sorted ascending with correct count."""
@@ -186,7 +292,8 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -227,6 +334,7 @@ class TestPydanticModels:
     def test_validation_results_roundtrip(self, tmp_path: Path) -> None:
         """ValidationResults should serialize and deserialize correctly."""
         results = ValidationResults(
+            objective_name="gsm8k",
             num_layers=12,
             baseline_cost=12.0,
             num_cost_bins=10,
@@ -259,6 +367,7 @@ class TestPydanticModels:
         results.save(path)
         loaded = ValidationResults.load(path)
 
+        assert loaded.objective_name == "gsm8k"
         assert loaded.num_layers == 12
         assert loaded.baseline_cost == 12.0
         assert len(loaded.bands) == 1
@@ -266,9 +375,30 @@ class TestPydanticModels:
         assert loaded.bands[0].validated.score == 0.28
         assert loaded.summary.spearman_rho == 0.95
 
+    def test_validation_results_backward_compat(self, tmp_path: Path) -> None:
+        """ValidationResults without objective_name loads with default ""."""
+        results = ValidationResults(
+            num_layers=12,
+            baseline_cost=12.0,
+            num_cost_bins=10,
+            cost_bin_edges=[6.0, 7.0, 8.0],
+            bands=[],
+            summary=ValidationSummary(
+                spearman_rho=0.0,
+                mean_residual=0.0,
+                total_bands=0,
+                total_evaluations=0,
+            ),
+        )
+        path = tmp_path / "validation_results.json"
+        results.save(path)
+        loaded = ValidationResults.load(path)
+        assert loaded.objective_name == ""
+
     def test_landscape_data_roundtrip(self, tmp_path: Path) -> None:
         """LandscapeData should serialize and deserialize correctly."""
         data = LandscapeData(
+            objective_name="mmlu",
             num_layers=12,
             baseline_cost=12.0,
             num_cost_bins=10,
@@ -289,9 +419,24 @@ class TestPydanticModels:
         data.save(path)
         loaded = LandscapeData.load(path)
 
+        assert loaded.objective_name == "mmlu"
         assert loaded.num_layers == 12
         assert len(loaded.bands) == 1
         assert loaded.bands[0].cost == 6.5
+
+    def test_landscape_data_backward_compat(self, tmp_path: Path) -> None:
+        """LandscapeData without objective_name loads with default ""."""
+        data = LandscapeData(
+            num_layers=12,
+            baseline_cost=12.0,
+            num_cost_bins=10,
+            cost_bin_edges=[6.0, 7.0, 8.0],
+            bands=[],
+        )
+        path = tmp_path / "landscape_data.json"
+        data.save(path)
+        loaded = LandscapeData.load(path)
+        assert loaded.objective_name == ""
 
 
 # =============================================================================
@@ -310,7 +455,8 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -345,17 +491,24 @@ class TestValidateLandscapePipeline:
                     cost_floor=band.cost_low,
                 )
                 problem = CostConstrainedProblem(
-                    evaluator=evaluator, config=problem_config
+                    evaluators=wrap_evaluator(evaluator), config=problem_config,
+                    objective_name="weighted_average",
                 )
 
                 search_config = ViterbiSurrogateSearchConfig(
                     strategy_type="viterbi_surrogate",
                     exploration_dataset_path=str(dataset_path),
+                    evaluation_log_path=None,
+                    supplemental_data_paths=[],
                     num_rounds=1,
                     evals_per_round=10,
                     candidates_per_model=50,
-                    cv_folds=3,
-                    ei_xi=0.01,
+                    surrogate=dict(
+                        surrogate_type="ridge",
+                        n_bootstraps=50,
+                        ei_xi=0.01,
+                        cv_folds=3,
+                    ),
                     seed=42,
                 )
                 strategy = search_config.create_search_strategy()
@@ -437,7 +590,8 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG, seed=42,
+            str(dataset_path), _COST_MODEL_CONFIG,
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
         )
 
         all_allocs = enumerate_feasible_allocations(
@@ -477,16 +631,23 @@ class TestValidateLandscapePipeline:
                 cost_floor=band.cost_low,
             )
             problem = CostConstrainedProblem(
-                evaluator=evaluator, config=problem_config
+                evaluators=wrap_evaluator(evaluator), config=problem_config,
+                objective_name="weighted_average",
             )
             search_config = ViterbiSurrogateSearchConfig(
                 strategy_type="viterbi_surrogate",
                 exploration_dataset_path=str(dataset_path),
+                evaluation_log_path=None,
+                supplemental_data_paths=[],
                 num_rounds=1,
                 evals_per_round=10,
                 candidates_per_model=50,
-                cv_folds=3,
-                ei_xi=0.01,
+                surrogate=dict(
+                    surrogate_type="ridge",
+                    n_bootstraps=50,
+                    ei_xi=0.01,
+                    cv_folds=3,
+                ),
                 seed=42,
             )
             strategy = search_config.create_search_strategy()
@@ -501,6 +662,8 @@ class TestValidateLandscapePipeline:
             (band_dir / "surrogate_dp.json").read_text()
         )
 
+        loaded_score = loaded_result["best_score"]
+
         resumed_band = BandValidationResult(
             band_index=band.band_index,
             cost_low=band.cost_low,
@@ -508,7 +671,7 @@ class TestValidateLandscapePipeline:
             surrogate_dp=loaded_dp,
             validated=PlacementResult(
                 cost=loaded_result["final_cost"],
-                score=loaded_result["best_score"],
+                score=loaded_score,
                 assignments=tuple(
                     loaded_result["best_parameters"]["assignments"]
                 ),
@@ -518,10 +681,118 @@ class TestValidateLandscapePipeline:
 
         # Verify restored band matches original result
         assert resumed_band.total_evaluations == result.total_evaluations
-        assert resumed_band.validated.score == result.best_score
+        expected_score = result.best_score
+        assert resumed_band.validated.score == expected_score
         assert resumed_band.validated.cost == result.final_cost
         assert resumed_band.surrogate_dp.cost == band.cost
         assert resumed_band.surrogate_dp.score == band.score
+
+    async def test_per_band_validation_bayesian(self, tmp_path: Path) -> None:
+        """Run per-band ViterbiBayesianSurrogateSearch and verify results."""
+        from place_layers.surrogate.config import BayesianRidgeSurrogateConfig
+
+        evaluator = _make_evaluator(noise_sigma=0.0)
+        dataset = await _build_exploration_dataset(evaluator, num_samples=100)
+        dataset_path = _save_dataset(dataset, tmp_path)
+
+        # 1. Fit Bayesian surrogate, compute bands
+        bayesian_config = BayesianRidgeSurrogateConfig(
+            prior_alpha=1.0,
+            prior_a0=1e-6,
+            prior_b0=1e-6,
+
+            feature_scaling="none",
+        )
+        _, surrogate, cost_model = load_and_fit_surrogate(
+            str(dataset_path), _COST_MODEL_CONFIG,
+            bayesian_config, seed=42,
+        )
+
+        all_allocs = enumerate_feasible_allocations(
+            cost_model, _NUM_LAYERS, cost_budget=None
+        )
+        alloc_costs = np.array(
+            [cost_model.allocation_cost(a) for a in all_allocs]
+        )
+        baseline_cost = cost_model.max_cost(_NUM_LAYERS)
+
+        num_cost_bins = 5
+        band_results = compute_dp_per_band(
+            surrogate, all_allocs, alloc_costs,
+            _NUM_LAYERS, baseline_cost, cost_model,
+            num_cost_bins,
+        )
+        band_edges = compute_band_edges(alloc_costs, baseline_cost, num_cost_bins)
+
+        assert len(band_results) > 0
+
+        # 2. Run per-band Bayesian search (just first 2 bands for speed)
+        bands_to_validate = band_results[:2]
+        validated_bands: list[BandValidationResult] = []
+
+        async with evaluator:
+            for band in bands_to_validate:
+                problem_config = MaxPerformanceProblemConfig(
+                    problem_type="cost_max_performance",
+                    cost_model=_COST_MODEL_CONFIG,
+                    cost_budget=band.cost_high,
+                    cost_floor=band.cost_low,
+                )
+                problem = CostConstrainedProblem(
+                    evaluators=wrap_evaluator(evaluator), config=problem_config,
+                    objective_name="weighted_average",
+                )
+
+                search_config = ViterbiBayesianSurrogateSearchConfig(
+                    strategy_type="viterbi_bayesian_surrogate",
+                    exploration_dataset_path=str(dataset_path),
+                    evaluation_log_path=None,
+                    supplemental_data_paths=[],
+                    num_rounds=1,
+                    evals_per_round=10,
+                    candidates_per_model=50,
+                    surrogate=dict(
+                        surrogate_type="bayesian_ridge",
+                        prior_alpha=1.0,
+                        prior_a0=1e-6,
+                        prior_b0=1e-6,
+            
+                        feature_scaling="none",
+                    ),
+                    risk_buckets=[
+                        RiskBucketConfig(name="safe", sign=-1, betas=[0.0, 1.0], quota=0.6, mean_floor_quantile=0.0),
+                        RiskBucketConfig(name="upside", sign=1, betas=[1.0], quota=0.3, mean_floor_quantile=0.5),
+                    ],
+                    seed=42,
+                )
+                strategy = search_config.create_search_strategy()
+                result = await strategy.search(problem)
+
+                validated_bands.append(
+                    BandValidationResult(
+                        band_index=band.band_index,
+                        cost_low=band.cost_low,
+                        cost_high=band.cost_high,
+                        surrogate_dp=PlacementResult(
+                            cost=band.cost,
+                            score=band.score,
+                            assignments=band.assignments,
+                        ),
+                        validated=PlacementResult(
+                            cost=result.final_cost,
+                            score=result.best_score,
+                            assignments=result.best_parameters.assignments,
+                        ),
+                        total_evaluations=result.total_evaluations,
+                    )
+                )
+
+        # 3. Verify results
+        assert len(validated_bands) == 2
+        for vb in validated_bands:
+            assert vb.total_evaluations > 0
+            assert len(vb.validated.assignments) == _NUM_LAYERS
+            assert len(vb.surrogate_dp.assignments) == _NUM_LAYERS
 
 
 # =============================================================================
@@ -541,21 +812,189 @@ class TestLandscapeConfig:
         """LandscapeConfig can be constructed with all fields."""
         cfg = LandscapeConfig(
             cost_model=_COST_MODEL_CONFIG,
-            exploration_dataset_path="/tmp/test.json",
+            explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            supplemental_data_dirs=[],
         )
         assert cfg.seed == 42
         assert cfg.num_cost_bins == 80
-        assert cfg.exploration_dataset_path == "/tmp/test.json"
+        assert cfg.explore_output_dir == "/tmp/test_dir"
 
     def test_landscape_config_frozen(self) -> None:
         """LandscapeConfig should be immutable."""
         cfg = LandscapeConfig(
             cost_model=_COST_MODEL_CONFIG,
-            exploration_dataset_path="/tmp/test.json",
+            explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            supplemental_data_dirs=[],
         )
         with pytest.raises(Exception):
             cfg.seed = 99  # type: ignore[misc]
+
+
+# =============================================================================
+# Tests: objective_result_path helper
+# =============================================================================
+
+
+class TestObjectiveResultPath:
+    """Test the shared objective_result_path helper."""
+
+    def test_produces_correct_path(self) -> None:
+        """objective_result_path produces expected filename."""
+        p = objective_result_path(Path("/out"), "exploration_results", "gsm8k")
+        assert p == Path("/out/exploration_results_gsm8k.json")
+
+    def test_different_prefixes(self) -> None:
+        """Works with different prefixes."""
+        p1 = objective_result_path(Path("/d"), "exploration_results", "mmlu")
+        p2 = objective_result_path(Path("/d"), "validation_results", "mmlu")
+        p3 = objective_result_path(Path("/d"), "landscape_data", "mmlu")
+        assert p1 == Path("/d/exploration_results_mmlu.json")
+        assert p2 == Path("/d/validation_results_mmlu.json")
+        assert p3 == Path("/d/landscape_data_mmlu.json")
+
+    def test_objective_name_with_special_chars(self) -> None:
+        """Objective names are used as-is in the filename."""
+        p = objective_result_path(Path("/d"), "exploration_results", "weighted_average")
+        assert p == Path("/d/exploration_results_weighted_average.json")
+
+
+# =============================================================================
+# Tests: EvaluatorsConfig.objective_names property
+# =============================================================================
+
+
+class TestEvaluatorsConfigObjectiveNames:
+    """Test EvaluatorsConfig.objective_names derives names from config data."""
+
+    def test_independent_objective(self) -> None:
+        """Independent objective -> evaluator names as objectives."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=IndependentObjectiveConfig(objective_type="independent"),
+        )
+        assert cfg.objective_names == ("gsm8k", "mmlu")
+
+    def test_weighted_average_no_individual(self) -> None:
+        """Weighted average without include_individual -> single aggregate name."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=False,
+                weights={"gsm8k": 0.5, "mmlu": 0.5},
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average",)
+
+    def test_weighted_average_with_individual(self) -> None:
+        """Weighted average with include_individual -> aggregate + evaluator names."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=True,
+                weights={"gsm8k": 0.5, "mmlu": 0.5},
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average", "gsm8k", "mmlu")
+
+    def test_max_objective_with_individual(self) -> None:
+        """Max objective with include_individual -> ('max',) + evaluator names."""
+        cfg = EvaluatorsConfig(
+            configs={
+                "gsm8k": _make_evaluator_config(),
+                "mmlu": _make_evaluator_config(noise_seed_shift=1),
+            },
+            objective=MaxObjectiveConfig(
+                objective_type="max",
+                include_individual=True,
+            ),
+        )
+        assert cfg.objective_names == ("max", "gsm8k", "mmlu")
+
+    def test_single_evaluator_weighted_average(self) -> None:
+        """Single evaluator with weighted_average -> ('weighted_average',)."""
+        cfg = EvaluatorsConfig(
+            configs={"main": _make_evaluator_config()},
+            objective=WeightedAverageObjectiveConfig(
+                objective_type="weighted_average",
+                include_individual=False,
+            ),
+        )
+        assert cfg.objective_names == ("weighted_average",)
+
+
+# =============================================================================
+# Tests: multi-objective validation pipeline
+# =============================================================================
+
+
+class TestMultiObjectiveValidation:
+    """Test multi-objective support in the validation pipeline."""
+
+    async def test_multi_objective_exploration_datasets(self, tmp_path: Path) -> None:
+        """Save and load per-objective exploration datasets via objective_result_path."""
+        evaluator = _make_evaluator()
+        explore_dir = tmp_path / "explore_output"
+        explore_dir.mkdir()
+
+        # Simulate 2-objective exploration output
+        for obj_name in ("gsm8k", "mmlu"):
+            dataset = await _build_exploration_dataset(
+                evaluator, num_samples=50, objective_name=obj_name,
+            )
+            path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            path.write_text(dataset.model_dump_json(indent=2))
+
+        # Verify both files exist and can be loaded
+        for obj_name in ("gsm8k", "mmlu"):
+            path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            assert path.exists()
+            loaded = ExplorationDataset.load(path)
+            assert loaded.objective_name == obj_name
+            assert loaded.num_samples == 50
+
+    async def test_multi_objective_validation_results(self, tmp_path: Path) -> None:
+        """Save per-objective validation results via objective_result_path."""
+        output_dir = tmp_path / "validate_output"
+        output_dir.mkdir()
+
+        for obj_name in ("gsm8k", "mmlu"):
+            results = ValidationResults(
+                objective_name=obj_name,
+                num_layers=12,
+                baseline_cost=12.0,
+                num_cost_bins=5,
+                cost_bin_edges=[6.0, 8.0, 10.0, 12.0],
+                bands=[],
+                summary=ValidationSummary(
+                    spearman_rho=0.9,
+                    mean_residual=0.01,
+                    total_bands=0,
+                    total_evaluations=0,
+                ),
+            )
+            path = objective_result_path(output_dir, "validation_results", obj_name)
+            results.save(path)
+
+        # Verify both exist and have correct objective_name
+        for obj_name in ("gsm8k", "mmlu"):
+            path = objective_result_path(output_dir, "validation_results", obj_name)
+            assert path.exists()
+            loaded = ValidationResults.load(path)
+            assert loaded.objective_name == obj_name

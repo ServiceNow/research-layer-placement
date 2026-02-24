@@ -7,17 +7,11 @@
 # Traces from all sources are merged by task_name. Optional task_weights
 # allow weighting different tasks differently in the final score.
 #
-# This config uses interpolation to compose with other config groups:
-#   - backend: Generation backend (transformers, vllm, or rest)
-#
 # Example usage:
-#   python -m place_layers +command=evaluate +evaluator=importance_weighted \
+#   python -m place_layers +command=evaluate +evaluator@evaluators.configs.gsm8k=importance_weighted \
 #       +backend=transformers +model=apriel2_0_5b_dev
 
 evaluator_type: importance_weighted
-
-# Backend configuration (composed from backend/ config group)
-backend: ${backend}
 
 # Trace sources - list of directories containing JSONL trace files
 # Traces are merged by task_name across all sources
@@ -34,6 +28,11 @@ task_weights: null
 #   gsm8k: 1.0
 #   math: 2.0    # MATH weighted 2x
 #   aime: 3.0    # AIME weighted 3x
+
+# Scoring mode: what evaluate() returns
+#   accuracy: IS-weighted accuracy (higher=better, range [0,1])
+#   student_log_prob: mean student log-prob per problem (higher=better, negative)
+scoring_mode: accuracy
 
 # Importance sampling clipping parameters
 # These bounds are applied at aggregation time (in summarize_is), not during

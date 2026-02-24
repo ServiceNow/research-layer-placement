@@ -258,6 +258,7 @@ def create_app(
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
+                ignore_eos=req.ignore_eos,
             )
 
             # Generate via adapter

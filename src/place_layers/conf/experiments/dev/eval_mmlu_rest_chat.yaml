@@ -9,7 +9,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator: likelihood
+  - /evaluator@evaluators.configs.mmlu: likelihood
   - /backend: rest
   - /task: mmlu
   - _self_
@@ -18,5 +18,7 @@ backend:
   servers:
     - http://localhost:8000
 
-evaluator:
-  use_chat_template: true
+evaluators:
+  configs:
+    mmlu:
+      use_chat_template: true

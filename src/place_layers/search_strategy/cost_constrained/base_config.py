@@ -8,11 +8,15 @@ from place_layers.search_strategy.base_search_strategy_config import (
 
 
 class BaseCostConstrainedConfig(BaseSearchStrategyConfig):
-    """Marker base for cost-constrained search strategies.
+    """Base for cost-constrained search strategies.
 
-    This is the shared base for all strategies that operate on
-    CostConstrainedProblem instances. It carries no extra fields.
+    All strategies that operate on CostConstrainedProblem instances
+    share the optional evaluation log path for JSONL recording.
     """
+
+    evaluation_log_path: str | None = Field(
+        description="Path to write evaluation JSONL log. None to skip.",
+    )
 
 
 class AllocationIterationConfig(BaseCostConstrainedConfig):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from math import comb
-from typing import TYPE_CHECKING, ClassVar, Literal, Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal, Sequence, assert_never
 
 from pydantic import Field
 
@@ -198,18 +198,10 @@ class HierarchicalSearch(AllocationIterationSearch):
         """
         Search for the best assignment within a fixed allocation using unified beam search.
 
-        Uses a single unified beam throughout all phases. Each beam entry carries its own
-        fixed_assignments from prior phases, so different "paths" emerge naturally through
-        competition. Entries compete at every step and across phases - weak entries get
-        eliminated regardless of their history.
-
-        Phase order is determined by the order of keys in mixer_costs config, not alphabetical.
-
         Returns:
-            List of BeamEntry results sorted by score descending, or empty list
-            if no valid assignments exist.
+            List of BeamEntry results sorted by score descending,
+            or empty list if no valid assignments exist.
         """
-        alloc_cost = cost_model.allocation_cost(allocation)
         # Allocation dict order IS the phase order (from config.mixer_costs keys)
         mixer_order = list(allocation.keys())
 
@@ -321,19 +313,22 @@ class HierarchicalSearch(AllocationIterationSearch):
 
             # Final evaluation
             placement = LayerPlacement(assignments=tuple(assignments))
-            final_score = await problem.evaluate(placement)
+            score = await problem.evaluate(placement)
             self.eval_count += 1
 
             results.append(
                 BeamEntry(
                     assignments=tuple(assignments),
                     allocation=allocation,
-                    score=final_score,
+                    score=score,
                 )
             )
 
         # Sort by score descending (higher is better)
-        results.sort(key=lambda e: e.score if e.score is not None else float("-inf"), reverse=True)
+        results.sort(
+            key=lambda e: e.score if e.score is not None else float("-inf"),
+            reverse=True,
+        )
         return results
 
     async def _run_phase(
@@ -869,7 +864,8 @@ class HierarchicalSearch(AllocationIterationSearch):
             )
             complete_placement = tuple(assignments)
             placement = LayerPlacement(assignments=complete_placement)
-            candidate["score"] = await problem.evaluate(placement)
+            score = await problem.evaluate(placement)
+            candidate["score"] = score
             candidate["placement"] = complete_placement  # Store for event reporting
             self.eval_count += 1
 
@@ -955,7 +951,7 @@ class HierarchicalConfig(AllocationIterationConfig):
 
         config = problem.config
         cost_model = problem.cost_model
-        num_layers = problem.evaluator.num_layers
+        num_layers = problem.num_layers
 
         # Enumerate allocations in the same order as search will use
         cost_floor = config.cost_floor
@@ -970,6 +966,8 @@ class HierarchicalConfig(AllocationIterationConfig):
                         continue
                 case MinCostProblemConfig():
                     pass  # No filtering - enumerate all allocations
+                case other:
+                    assert_never(other)
 
             # Apply cost floor (shared by both modes)
             if cost_floor is not None and alloc_cost < cost_floor - 1e-9:

@@ -6,7 +6,7 @@
 
 defaults:
   - /command: optimize
-  - /evaluator: mock_mrf_range1
+  - /evaluator@evaluators.configs.range1: mock_mrf_range1
   - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - /search_strategy: surrogate

@@ -32,6 +32,7 @@ from place_layers.evaluator.traces.types import (
     TextLikelihoodRecord,
     TraceRecord,
     TraceRecordAdapter,
+    TraceLikelihoodProblemRecord,
 )
 
 # Tuple for isinstance checks (union types don't work with isinstance)
@@ -171,10 +172,10 @@ class TraceWriter:
 
     def append(self, records: Sequence[TraceRecord]) -> None:
         """Append records to appropriate files based on record type."""
-        # Traces, Generations, LikelihoodRecords, and ISProblemRecords go to validation.jsonl
+        # Traces, Generations, LikelihoodRecords, ISProblemRecords, and TraceLikelihoodProblemRecords go to validation.jsonl
         valid = [
             r for r in records
-            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord))
+            if isinstance(r, (BaseGeneration, *_LikelihoodRecordTypes, ISProblemRecord, TraceLikelihoodProblemRecord))
         ]
         skipped = [r for r in records if isinstance(r, SkippedProblem)]
 
@@ -268,6 +269,7 @@ def _scan_completed_problems(output_dir: Path) -> tuple[dict[str, set[int]], int
                             | ChatLikelihoodRecord(task_name=tn, problem_id=pid)
                             | TextLikelihoodRecord(task_name=tn, problem_id=pid)
                             | ISProblemRecord(task_name=tn, problem_id=pid)
+                            | TraceLikelihoodProblemRecord(task_name=tn, problem_id=pid)
                         ):
                             if tn not in completed:
                                 completed[tn] = set()
@@ -429,6 +431,90 @@ def summarize_generations(output_dir: Path) -> GenerationSummary:
     )
 
 
+def summarize_generations_by_filter(output_dir: Path) -> dict[str, GenerationSummary]:
+    """Compute generation summaries per lm-eval filter.
+
+    Uses BaseGeneration.correct_by_filter when present, falling back to the scalar
+    BaseGeneration.correct as a single "none" filter when not present.
+    """
+    from collections import defaultdict
+
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        raise FileNotFoundError(f"No validation.jsonl found in {output_dir}")
+
+    # filter_name -> task_name -> problem_id -> list of correctness values
+    by_filter: dict[str, dict[str, dict[str, list[bool | None]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if not isinstance(record, BaseGeneration):
+                    continue
+
+                correctness_map = record.correct_by_filter
+                if not correctness_map:
+                    correctness_map = {"none": record.correct}
+
+                for filter_name, correct in correctness_map.items():
+                    by_filter[filter_name][record.task_name][record.problem_id].append(
+                        correct
+                    )
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in per-filter summary")
+
+    summaries: dict[str, GenerationSummary] = {}
+    for filter_name, task_problems in by_filter.items():
+        task_stats: dict[str, TaskStats] = {}
+        total_problems = 0
+        total_samples = 0
+        total_problems_correct = 0
+        total_samples_correct = 0
+
+        for task_name, problems in task_problems.items():
+            num_problems = len(problems)
+            num_samples = sum(len(samples) for samples in problems.values())
+            problems_correct = sum(
+                1 for samples in problems.values() if any(s is True for s in samples)
+            )
+            samples_correct = sum(
+                sum(1 for s in samples if s is True) for samples in problems.values()
+            )
+
+            task_stats[task_name] = TaskStats(
+                num_problems=num_problems,
+                num_samples=num_samples,
+                problems_correct=problems_correct,
+                samples_correct=samples_correct,
+            )
+
+            total_problems += num_problems
+            total_samples += num_samples
+            total_problems_correct += problems_correct
+            total_samples_correct += samples_correct
+
+        summaries[filter_name] = GenerationSummary(
+            task_stats=task_stats,
+            total_problems=total_problems,
+            total_samples=total_samples,
+            problems_correct=total_problems_correct,
+            samples_correct=total_samples_correct,
+        )
+
+    return summaries
+
+
 class LikelihoodTaskStats(BaseModel):
     """Per-task statistics for likelihood (multiple-choice) evaluation."""
 
@@ -569,6 +655,10 @@ class ISTaskStats(BaseModel):
     num_samples: int = Field(description="Total samples across all problems")
     is_accuracy: float = Field(description="Mean IS estimate of P(correct)")
     avg_ess: float = Field(description="Mean effective sample size")
+    avg_student_log_prob: float = Field(
+        default=0.0,
+        description="Mean student log-prob per problem (higher = better fit)",
+    )
 
 
 class ISSummary(BaseModel):
@@ -599,11 +689,27 @@ class ISSummary(BaseModel):
             if name in self.task_stats
         )
 
+    def weighted_student_log_prob(self, weights: dict[str, float]) -> float:
+        """Compute weighted mean student log-prob using provided task weights.
+
+        Args:
+            weights: Dict mapping task_name -> weight (should sum to 1).
+
+        Returns:
+            Weighted mean student log-prob (higher = better fit).
+        """
+        return sum(
+            self.task_stats[name].avg_student_log_prob * weight
+            for name, weight in weights.items()
+            if name in self.task_stats
+        )
+
     def __str__(self) -> str:
         lines = ["Importance-Weighted Evaluation Summary:"]
         for task_name, stats in sorted(self.task_stats.items()):
             lines.append(
                 f"  {task_name}: IS_acc={stats.is_accuracy:.4f}, "
+                f"avg_slp={stats.avg_student_log_prob:.1f}, "
                 f"ESS={stats.avg_ess:.1f}, "
                 f"problems={stats.num_problems}, samples={stats.num_samples}"
             )
@@ -651,8 +757,8 @@ def summarize_is(
     log_clip_max = math.log(clip_max)
 
     # Group records by task_name
-    # task_name -> list of (is_correct_estimate, ess, num_samples)
-    task_results: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
+    # task_name -> list of (is_correct_estimate, ess, num_samples, mean_student_lp)
+    task_results: dict[str, list[tuple[float, float, int, float]]] = defaultdict(list)
     malformed = 0
 
     with validation_path.open() as f:
@@ -671,8 +777,14 @@ def summarize_is(
                         log_clip_min,
                         log_clip_max,
                     )
+                    # Mean student log-prob for this problem
+                    mean_slp = (
+                        sum(record.student_log_probs) / len(record.student_log_probs)
+                        if record.student_log_probs
+                        else 0.0
+                    )
                     task_results[record.task_name].append(
-                        (is_estimate, ess, record.num_samples)
+                        (is_estimate, ess, record.num_samples, mean_slp)
                     )
             except Exception as e:
                 malformed += 1
@@ -688,15 +800,19 @@ def summarize_is(
 
     for task_name, results in task_results.items():
         num_problems = len(results)
-        num_samples = sum(ns for _, _, ns in results)
-        is_accuracy = sum(ice for ice, _, _ in results) / num_problems if num_problems > 0 else 0.0
-        avg_ess = sum(ess for _, ess, _ in results) / num_problems if num_problems > 0 else 0.0
+        num_samples = sum(ns for _, _, ns, _ in results)
+        is_accuracy = sum(ice for ice, _, _, _ in results) / num_problems if num_problems > 0 else 0.0
+        avg_ess = sum(ess for _, ess, _, _ in results) / num_problems if num_problems > 0 else 0.0
+        avg_student_log_prob = (
+            sum(slp for _, _, _, slp in results) / num_problems if num_problems > 0 else 0.0
+        )
 
         task_stats[task_name] = ISTaskStats(
             num_problems=num_problems,
             num_samples=num_samples,
             is_accuracy=is_accuracy,
             avg_ess=avg_ess,
+            avg_student_log_prob=avg_student_log_prob,
         )
 
         total_problems += num_problems

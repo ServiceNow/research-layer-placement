@@ -1,0 +1,16 @@
+# @package task
+# AIME 2025 with answer extraction from [BEGIN FINAL RESPONSE]...<|end|> blocks
+#
+# Use this for models that output their final answer wrapped like:
+#   [BEGIN FINAL RESPONSE]
+#   42
+#   <|end|>
+#
+# AIME answers are always integers from 0-999.
+
+tasks:
+  - aime25_strip_end
+
+num_fewshot: 0
+max_problems_per_task: null
+split: test

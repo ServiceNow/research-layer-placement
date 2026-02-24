@@ -10,7 +10,7 @@
 
 defaults:
   - /command: evaluate
-  - /evaluator: generative
+  - /evaluator@evaluators.configs.gsm8k: generative
   - /backend: rest
   - /task: gsm8k
   - /generation: greedy

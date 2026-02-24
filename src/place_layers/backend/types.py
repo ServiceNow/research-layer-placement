@@ -47,6 +47,10 @@ class GenerateRequestBase(BaseModel):
     max_tokens: int = Field(default=256, description="Maximum tokens to generate")
     temperature: float = Field(default=0.0, description="Sampling temperature")
     top_p: float = Field(default=1.0, description="Top-p (nucleus) sampling")
+    ignore_eos: bool = Field(
+        default=False,
+        description="If True, ignore EOS token and always generate max_tokens tokens",
+    )
 
 
 class GenerateChatRequest(GenerateRequestBase):

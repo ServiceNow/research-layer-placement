@@ -257,6 +257,7 @@ class LocalVLLMClient(BaseVLLMClient):
             top_p=top_p,
             logprobs=True,
             top_logprobs=1,
+            return_token_ids=True,
         )
 
         response = await self._chat_serving.create_chat_completion(request)
@@ -300,6 +301,7 @@ class LocalVLLMClient(BaseVLLMClient):
         temperature: float,
         top_p: float,
         key: str,
+        ignore_eos: bool = False,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -333,6 +335,8 @@ class LocalVLLMClient(BaseVLLMClient):
             temperature=temperature,
             top_p=top_p,
             logprobs=1,
+            return_token_ids=True,
+            ignore_eos=ignore_eos,
         )
 
         response = await self._completion_serving.create_completion(request)

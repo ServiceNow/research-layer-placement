@@ -64,6 +64,7 @@ class BaseVLLMClient(ABC):
         temperature: float,
         top_p: float,
         key: str,
+        ignore_eos: bool = False,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 

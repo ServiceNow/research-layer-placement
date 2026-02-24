@@ -1,0 +1,33 @@
+# @package search_strategy
+#
+# Bayesian Viterbi surrogate search with risk-bucket candidate selection.
+#
+# Pool generation is mean-only (single DP call on posterior mean MRF).
+# Candidate selection uses configurable risk buckets that score candidates
+# as mu + sign * beta * sigma, with optional mean-floor filtering.
+
+strategy_type: viterbi_bayesian_surrogate
+exploration_dataset_path: ???
+evaluation_log_path: null
+supplemental_data_paths: []
+num_rounds: 4
+evals_per_round: 500
+seed: 42
+candidates_per_model: 1000
+surrogate:
+  surrogate_type: bayesian_ridge
+  prior_alpha: 1.0
+  prior_a0: 1.0e-6
+  prior_b0: 1.0e-6
+  feature_scaling: counts_only
+risk_buckets:
+  - name: safe
+    sign: -1
+    betas: [0.0, 0.5, 1.0]
+    quota: 0.7
+    mean_floor_quantile: 0.0
+  - name: upside
+    sign: 1
+    betas: [0.5, 1.0]
+    quota: 0.3
+    mean_floor_quantile: 0.8

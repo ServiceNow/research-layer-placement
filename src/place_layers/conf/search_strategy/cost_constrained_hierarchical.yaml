@@ -38,6 +38,8 @@
 
 strategy_type: cost_constrained_hierarchical
 
+evaluation_log_path: null
+
 # Number of allocations to explore (54 = all feasible for typical problems)
 max_allocations: 50
 

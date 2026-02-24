@@ -1,0 +1,12 @@
+# @package task
+# SQuADv2 - Extractive QA with unanswerable questions
+#
+# Uses validation split (test labels are not public).
+# 11,873 answerable + 5,945 unanswerable = 17,818 total questions.
+
+tasks:
+  - squad_v2
+
+num_fewshot: 1
+max_problems_per_task: null  # null = full validation set
+split: validation
