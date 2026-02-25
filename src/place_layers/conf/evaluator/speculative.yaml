@@ -43,6 +43,9 @@ top_p: ${generation.top_p}
 # Prompt formatting
 use_chat_template: true
 
+# Document prefetch (higher values hide I/O latency but use more memory)
+doc_prefetch_count: 2
+
 # Truncated sample handling
 evaluate_truncated_samples: false
 

@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from lm_eval.api.task import Task
     from transformers import PreTrainedModel
 
+    from place_layers.backend.base import AsyncBackend, SyncBackend
     from place_layers.evaluator.traces.writer import GenerationSummary
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,13 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
     config: "SpeculativeEvaluatorConfig"
 
     def __init__(
-        self, config: "SpeculativeEvaluatorConfig", *, output_dir: Path
+        self,
+        config: "SpeculativeEvaluatorConfig",
+        *,
+        output_dir: Path,
+        backend: "AsyncBackend | SyncBackend",
     ) -> None:
-        super().__init__(config, output_dir=output_dir)
+        super().__init__(config, output_dir=output_dir, backend=backend)
         self._speculative_metrics: dict[str, float] | None = None
 
     # ------------------------------------------------------------------
