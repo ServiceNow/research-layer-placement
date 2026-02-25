@@ -43,7 +43,7 @@ class EvaluationResult(BaseModel):
     )
     objective_name: str = Field(description="Name of the objective")
     score: float = Field(description="Objective score")
-    metrics: dict[str, float] | None = Field(
+    metrics: dict[str, Any] | None = Field(
         default=None,
         description="Evaluator-specific metrics (e.g., speculative decoding stats)",
     )
@@ -74,8 +74,12 @@ class EvaluateCommand(BaseCommand):
                 for obj_name, obj_score in obj_scores.items():
                     logger.info(f"  {obj_name}: {obj_score:.6f}")
 
-            # Collect evaluator-specific metrics (if any)
-            extra_metrics = evaluator.get_metrics()
+                # Collect evaluator-specific metrics (if any)
+                extra_metrics: dict[str, Any] = {}
+                for name, evaluator in evals.evaluators.items():
+                    m = evaluator.get_metrics()
+                    if m:
+                        extra_metrics[name] = m
 
                 # Save per-objective results
                 result_handler = self.config.result_handler.create_result_handler()
@@ -86,7 +90,7 @@ class EvaluateCommand(BaseCommand):
                         placement_indices=resolved.placement_indices,
                         objective_name=obj_name,
                         score=obj_scores[obj_name],
-                        metrics=extra_metrics,
+                        metrics=extra_metrics or None,
                     )
                     result_path = objective_result_path(
                         output_dir, "evaluation_results", obj_name

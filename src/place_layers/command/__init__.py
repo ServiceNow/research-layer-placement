@@ -5,6 +5,9 @@ from typing import Annotated
 from pydantic import Field, TypeAdapter
 
 from place_layers.command.calibrate_sa import CalibrateSACommandConfig
+from place_layers.command.estimate_acceptance_rate import (
+    EstimateAcceptanceRateCommandConfig,
+)
 from place_layers.command.evaluate import EvaluateCommandConfig
 from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
 from place_layers.command.noise_analysis import NoiseAnalysisCommandConfig
@@ -22,6 +25,7 @@ from place_layers.command.validate_landscape import ValidateLandscapeCommandConf
 CommandConfig = Annotated[
     OptimizeCommandConfig
     | EvaluateCommandConfig
+    | EstimateAcceptanceRateCommandConfig
     | PrecomputeTracesCommandConfig
     | ServeCommandConfig
     | NoiseAnalysisCommandConfig
