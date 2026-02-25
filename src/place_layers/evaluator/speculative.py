@@ -89,6 +89,7 @@ class _StepResult:
     num_accepted: int  # accepted before first rejection
     all_accepted: bool  # True if all gamma accepted
     tokens_emitted: list[int]  # accepted draft tokens + 1 new token
+    token_acceptance_probs: list[float]  # per-position alpha_i
 
 
 @dataclass
@@ -119,6 +120,11 @@ class _ProblemResult:
     def step_acceptance_rate(self) -> float:
         total = self.total_draft_tokens
         return self.total_accepted / total if total > 0 else 0.0
+
+    @property
+    def avg_token_acceptance_prob(self) -> float:
+        all_probs = [a for s in self.steps for a in s.token_acceptance_probs]
+        return sum(all_probs) / len(all_probs) if all_probs else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +437,10 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
             adjusted = raw_logits
         p_probs = F.softmax(adjusted, dim=-1)
 
+        # ── Token acceptance probabilities ──────────────────────────────
+        alpha = torch.min(p_probs[:actual_gamma], q_probs).sum(dim=-1)
+        alpha_list = alpha.tolist()
+
         # ── Step 3: Accept / reject ────────────────────────────────────
         n_accepted = 0
 
@@ -470,7 +480,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
                 new_logits = refresh_out.logits[:, -1, :]  # (1, vocab)
 
                 return (
-                    _StepResult(actual_gamma, n_accepted, False, emitted),
+                    _StepResult(actual_gamma, n_accepted, False, emitted, alpha_list),
                     new_logits,
                 )
 
@@ -493,7 +503,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
         new_logits = refresh_out.logits[:, -1, :]  # (1, vocab)
 
         return (
-            _StepResult(actual_gamma, actual_gamma, True, emitted),
+            _StepResult(actual_gamma, actual_gamma, True, emitted, alpha_list),
             new_logits,
         )
 
@@ -739,6 +749,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
                         total_draft_tokens=prob_result.total_draft_tokens,
                         num_accepted_tokens=prob_result.total_accepted,
                         step_acceptance_rate=prob_result.step_acceptance_rate,
+                        avg_token_acceptance_prob=prob_result.avg_token_acceptance_prob,
                         draft_placement=draft_pl,
                         target_placement=target_pl,
                     )
@@ -758,6 +769,9 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
             avg_step_acceptance = sum(
                 r.step_acceptance_rate for r in problem_results
             ) / len(problem_results)
+            avg_token_acceptance = sum(
+                r.avg_token_acceptance_prob for r in problem_results
+            ) / len(problem_results)
             avg_target_calls = sum(
                 r.num_target_calls for r in problem_results
             ) / len(problem_results)
@@ -767,6 +781,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
 
             self._speculative_metrics = {
                 "avg_step_acceptance_rate": round(avg_step_acceptance, 4),
+                "avg_token_acceptance_prob": round(avg_token_acceptance, 4),
                 "avg_target_model_calls": round(avg_target_calls, 2),
                 "avg_tokens_generated": round(avg_tokens, 2),
             }
@@ -774,6 +789,7 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
             logger.info(
                 f"Speculative metrics: "
                 f"step_acceptance_rate={avg_step_acceptance:.4f}, "
+                f"token_acceptance_prob={avg_token_acceptance:.4f}, "
                 f"target_calls={avg_target_calls:.1f}, "
                 f"tokens_generated={avg_tokens:.1f}"
             )

@@ -133,6 +133,10 @@ class SpeculativeGeneration(BaseGeneration):
     step_acceptance_rate: float = Field(
         description="Fraction of draft tokens accepted per step (num_accepted / total_draft)"
     )
+    avg_token_acceptance_prob: float = Field(
+        default=0.0,
+        description="Mean per-position alpha = sum_v min(p_target(v), p_draft(v))",
+    )
 
     # Placement provenance
     draft_placement: list[str] | None = Field(
