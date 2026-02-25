@@ -610,9 +610,9 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
             else None
         )
         if eval_log_path is not None and eval_log_path.exists():
-            from place_layers.surrogate.evaluation_log import load_records as _load_records
+            from place_layers.surrogate.evaluation_log import load_records
 
-            existing_records = _load_records(eval_log_path)
+            existing_records = load_records(eval_log_path)
             if existing_records:
                 n_before = len(all_assignments)
                 existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
