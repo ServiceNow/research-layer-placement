@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -200,21 +199,22 @@ class EstimateAcceptanceRateCommand(BaseCommand):
 
         task_results: dict[str, dict[str, Any]] = {}
         for task_name, task_records in sorted(by_task.items()):
+            n = len(task_records)
             token_mean = sum(
                 r.mean_token_acceptance_prob for r in task_records
-            ) / len(task_records)
+            ) / n
             step_mean = sum(
                 r.mean_step_acceptance_rate for r in task_records
-            ) / len(task_records)
+            ) / n
             task_results[task_name] = {
                 "mean_token_acceptance_prob": round(token_mean, 6),
                 "mean_step_acceptance_rate": round(step_mean, 6),
-                "num_samples": len(task_records),
+                "num_samples": n,
             }
             logger.info(
                 f"  {task_name}: token_acceptance_prob={token_mean:.4f}, "
                 f"step_acceptance_rate={step_mean:.4f} "
-                f"({len(task_records)} samples)"
+                f"({n} samples)"
             )
 
         n_total = len(records)
@@ -318,16 +318,11 @@ def _process_batch(
         # Token acceptance probability
         alpha = torch.min(t_probs, d_probs).sum(dim=-1)
 
-        # Step acceptance rate (IS-estimated)
-        comp_ids = torch.tensor(
-            trace.completion_tokens, dtype=torch.long, device=device
-        )
-        p_x = t_probs[torch.arange(c_len, device=device), comp_ids]
-        q_x = d_probs[torch.arange(c_len, device=device), comp_ids]
-
-        block_rates = _compute_step_acceptance_rates(p_x, q_x, gamma)
+        # Step acceptance rate (from per-position alphas)
+        step_rates = _compute_step_acceptance_rates(alpha, gamma)
         mean_step = (
-            sum(block_rates) / len(block_rates) if block_rates else 0.0
+            sum(step_rates) / len(step_rates)
+            if step_rates else 0.0
         )
 
         records.append(AcceptanceRateRecord(
@@ -339,7 +334,7 @@ def _process_batch(
             per_token_acceptance_probs=tuple(alpha.tolist()),
             gamma=gamma,
             mean_step_acceptance_rate=mean_step,
-            step_acceptance_rates=tuple(block_rates),
+            step_acceptance_rates=tuple(step_rates),
             draft_placement=draft_pl,
             target_placement=target_pl,
         ))
@@ -357,65 +352,47 @@ def _append_records(
 
 
 # ---------------------------------------------------------------------------
-# IS-estimated step acceptance rate
+# Step acceptance rate estimators
 # ---------------------------------------------------------------------------
 
 
 def _compute_step_acceptance_rates(
-    p_x: torch.Tensor,
-    q_x: torch.Tensor,
+    alpha: torch.Tensor,
     gamma: int,
 ) -> list[float]:
-    """Compute IS-estimated step acceptance rate for each block of gamma tokens.
+    """Compute step acceptance rate from per-position marginal alphas.
 
-    For each block of gamma tokens x_{1:gamma} (generated from target p):
+    For each block of gamma positions, the expected accepted fraction is::
 
-    1. Per-token acceptance probability: ``min(1, p(x_i)/q(x_i))``
-    2. Expected accepted count (sequential): ``sum_k prod_{j=1}^{k} accept_prob_j``
-    3. IS weight (correcting p -> q): ``prod q(x_i)/p(x_i)``
-    4. IS-corrected step rate: ``is_weight * expected_accepted / gamma``
+        step_rate = (1/gamma) * sum_{k=1}^{gamma} prod_{j=1}^{k} alpha_{j}
+
+    where ``alpha_j = sum_v min(p(v), q(v))`` is the exact marginal
+    acceptance probability at position j.  Assumes acceptance decisions
+    are independent given the context. Note that this estimation is approximate;
+    within each step the tokens are generated according to the target rather than
+    the draft as in speculative decoding. We do not use importance weights due
+    to high variance.
 
     Args:
-        p_x: Target probabilities for the actual tokens, shape ``(C,)``.
-        q_x: Draft probabilities for the actual tokens, shape ``(C,)``.
+        alpha: Per-position token acceptance probabilities, shape ``(C,)``.
         gamma: Draft length (block size).
 
     Returns:
         List of per-block step acceptance rates.
     """
-    c_len = p_x.shape[0]
+    c_len = alpha.shape[0]
     if c_len == 0:
         return []
-
-    eps = 1e-30
-    p_safe = p_x.clamp(min=eps)
-    q_safe = q_x.clamp(min=eps)
-
-    # min(1, p/q) per token
-    accept_probs = torch.clamp(p_safe / q_safe, max=1.0)
-    # log(q/p) per token for IS weights
-    log_is = torch.log(q_safe) - torch.log(p_safe)
 
     block_rates: list[float] = []
     for s in range(0, c_len, gamma):
         e = min(s + gamma, c_len)
-        actual_g = e - s
-
-        block_accept = accept_probs[s:e]  # (g,)
-        block_log_is = log_is[s:e]  # (g,)
-
-        # expected accepted = sum_{k=1}^{g} prod_{j=1}^{k} accept_prob_j
-        cum_prod = torch.cumprod(block_accept, dim=0)
-        expected_accepted = cum_prod.sum().item()
-
-        log_is_weight = block_log_is.sum().item()
-        log_is_weight = max(min(log_is_weight, 50.0), -50.0)
-        is_weight = math.exp(log_is_weight)
-
-        block_rate = is_weight * expected_accepted / actual_g
-        block_rates.append(block_rate)
+        block_alpha = alpha[s:e]
+        cum_prod = torch.cumprod(block_alpha, dim=0)
+        block_rates.append(cum_prod.sum().item() / (e - s))
 
     return block_rates
+
 
 
 # ---------------------------------------------------------------------------

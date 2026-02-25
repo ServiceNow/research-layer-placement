@@ -153,9 +153,10 @@ class AcceptanceRateRecord(BaseModel):
     1. **Token acceptance probability** (alpha): the probability that a single
        draft token is accepted, ``alpha_i = sum_v min(p_target(v), p_draft(v))``.
 
-    2. **Step acceptance rate**: the expected fraction of accepted tokens per
-       speculative decoding step of length gamma, estimated via importance
-       sampling over teacher-generated traces.
+    2. **Step acceptance rate**: expected fraction of accepted tokens per
+       speculative step, computed from per-position alphas via
+       ``(1/gamma) * sum_k prod_{j=1}^{k} alpha_{block_j}``.  Assumes
+       acceptance decisions are independent given context.
     """
 
     model_config = {"frozen": True}
@@ -178,11 +179,12 @@ class AcceptanceRateRecord(BaseModel):
     )
 
     gamma: int = Field(description="Draft length used for step acceptance rate")
+
     mean_step_acceptance_rate: float = Field(
-        description="IS-estimated mean step acceptance rate (E[# accepted / gamma])"
+        description="Step acceptance rate from per-position alphas"
     )
     step_acceptance_rates: tuple[float, ...] = Field(
-        description="Per-block IS-estimated step acceptance rate"
+        description="Per-block step acceptance rate"
     )
 
     draft_placement: list[str] = Field(
