@@ -12,11 +12,11 @@ from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
     PooledEvaluationData,
     append_record,
-    discover_evaluation_files,
     load_meta,
     load_pooled_data,
     load_records,
     meta_path_for,
+    resolve_supplemental_dirs,
     write_meta,
 )
 
@@ -309,70 +309,82 @@ class TestPooledData:
         )
         assert pool.num_samples == 2
 
+    def test_as_records(self):
+        """as_records() converts parallel lists to EvaluationRecord list."""
+        pool = PooledEvaluationData(
+            assignments=[("attn", "gdn"), ("gdn", "gdn")],
+            scores=[0.5, 0.6],
+            allocations=[{"attn": 1, "gdn": 1}, {"gdn": 2}],
+            num_layers=2,
+            mixer_names=["attn", "gdn"],
+        )
+        records = pool.as_records()
+        assert len(records) == 2
+        assert records[0].assignment == ("attn", "gdn")
+        assert records[0].score == 0.5
+        assert records[0].allocation == {"attn": 1, "gdn": 1}
+        assert records[1].assignment == ("gdn", "gdn")
+        assert records[1].score == 0.6
+        assert records[1].allocation == {"gdn": 2}
+
+    def test_as_records_empty(self):
+        """as_records() returns empty list for empty pool."""
+        pool = PooledEvaluationData(
+            assignments=[], scores=[], allocations=[],
+            num_layers=2, mixer_names=["attn", "gdn"],
+        )
+        assert pool.as_records() == []
+
 
 # =============================================================================
-# discover_evaluation_files
+# resolve_supplemental_dirs
 # =============================================================================
 
 
-class TestDiscoverEvaluationFiles:
-    """Tests for discover_evaluation_files."""
+class TestResolveSupplementalDirs:
+    """Tests for resolve_supplemental_dirs."""
 
-    def test_discovers_exploration_json(self, tmp_path: Path):
-        """Finds exploration_results_{obj}.json at top level."""
-        (tmp_path / "exploration_results_gsm8k.json").write_text("{}")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
+    def test_finds_snowball(self, tmp_path: Path):
+        """Finds evaluations_{obj}.jsonl at top level."""
+        (tmp_path / "evaluations_gsm8k.jsonl").write_text("")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
         assert len(files) == 1
-        assert files[0].name == "exploration_results_gsm8k.json"
+        assert files[0].name == "evaluations_gsm8k.jsonl"
 
-    def test_discovers_nested_jsonl(self, tmp_path: Path):
+    def test_finds_nested_snowball(self, tmp_path: Path):
         """Finds evaluations_{obj}.jsonl recursively."""
         band_dir = tmp_path / "bands_gsm8k" / "band_001"
         band_dir.mkdir(parents=True)
         (band_dir / "evaluations_gsm8k.jsonl").write_text("")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
         assert len(files) == 1
         assert files[0].name == "evaluations_gsm8k.jsonl"
 
-    def test_discovers_both_types(self, tmp_path: Path):
-        """Finds both JSON and JSONL files."""
-        (tmp_path / "exploration_results_gsm8k.json").write_text("{}")
-        band_dir = tmp_path / "bands_gsm8k" / "band_001"
-        band_dir.mkdir(parents=True)
-        (band_dir / "evaluations_gsm8k.jsonl").write_text("")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
-        assert len(files) == 2
-        # JSON comes first
-        assert files[0].suffix == ".json"
-        assert files[1].suffix == ".jsonl"
-
-    def test_discovers_exploration_progress_jsonl(self, tmp_path: Path):
-        """Finds exploration_progress_{obj}.jsonl at top level."""
+    def test_ignores_progress_file(self, tmp_path: Path):
+        """exploration_progress_{obj}.jsonl is not discovered."""
         (tmp_path / "exploration_progress_gsm8k.jsonl").write_text("")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
-        assert len(files) == 1
-        assert files[0].name == "exploration_progress_gsm8k.jsonl"
-
-    def test_discovers_all_three_types(self, tmp_path: Path):
-        """Finds JSON, progress JSONL, and evaluation JSONL in correct order."""
-        (tmp_path / "exploration_results_gsm8k.json").write_text("{}")
-        (tmp_path / "exploration_progress_gsm8k.jsonl").write_text("")
-        band_dir = tmp_path / "bands_gsm8k" / "band_001"
-        band_dir.mkdir(parents=True)
-        (band_dir / "evaluations_gsm8k.jsonl").write_text("")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
-        assert len(files) == 3
-        assert files[0].suffix == ".json"
-        assert files[1].name == "exploration_progress_gsm8k.jsonl"
-        assert files[2].name == "evaluations_gsm8k.jsonl"
-
-    def test_ignores_wrong_objective(self, tmp_path: Path):
-        """Files for a different objective are not discovered."""
-        (tmp_path / "exploration_results_mmlu.json").write_text("{}")
-        files = discover_evaluation_files(tmp_path, "gsm8k")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
         assert len(files) == 0
+
+    def test_ignores_exploration_json(self, tmp_path: Path):
+        """exploration_results_{obj}.json is not discovered."""
+        (tmp_path / "exploration_results_gsm8k.json").write_text("{}")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        assert len(files) == 0
+
+    def test_deduplicates_across_dirs(self, tmp_path: Path):
+        """Same file referenced from two dirs appears once."""
+        (tmp_path / "evaluations_gsm8k.jsonl").write_text("")
+        files = resolve_supplemental_dirs([tmp_path, tmp_path], "gsm8k")
+        assert len(files) == 1
 
     def test_empty_directory(self, tmp_path: Path):
         """Empty directory returns no files."""
-        files = discover_evaluation_files(tmp_path, "gsm8k")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        assert len(files) == 0
+
+    def test_ignores_wrong_objective(self, tmp_path: Path):
+        """Files for a different objective are not discovered."""
+        (tmp_path / "evaluations_mmlu.jsonl").write_text("")
+        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
         assert len(files) == 0
