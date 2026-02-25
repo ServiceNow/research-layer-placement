@@ -315,18 +315,18 @@ class ValidateLandscapeCommand(BaseCommand):
                     objective_name=obj_name,
                 )
 
-                # Pre-populate band eval log with supplemental + cross-band strategy records
+                # Pre-populate band eval log with supplemental + cross-band strategy records.
+                # Always truncate/rewrite to avoid reusing stale records from a crashed prior run.
                 n_prepop = 0
-                if supplemental_records or (self.config.accumulate_across_bands and strategy_records_all_bands):
-                    eval_log_jsonl.parent.mkdir(parents=True, exist_ok=True)
-                    with eval_log_jsonl.open("w") as f:
-                        for rec in supplemental_records:
+                eval_log_jsonl.parent.mkdir(parents=True, exist_ok=True)
+                with eval_log_jsonl.open("w") as f:
+                    for rec in supplemental_records:
+                        append_record(f, rec)
+                        n_prepop += 1
+                    if self.config.accumulate_across_bands:
+                        for rec in strategy_records_all_bands:
                             append_record(f, rec)
                             n_prepop += 1
-                        if self.config.accumulate_across_bands:
-                            for rec in strategy_records_all_bands:
-                                append_record(f, rec)
-                                n_prepop += 1
 
                 # Construct per-band search strategy — reads pre-seeded eval log
                 search_config = self.config.search_strategy.model_copy(

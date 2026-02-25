@@ -98,11 +98,11 @@ class OptimizeCommand(BaseCommand):
                         )
 
                         meta = load_meta(eval_log)
-                        if meta is not None and meta.num_records is not None:
+                        if meta is not None:
                             write_meta(
                                 eval_log,
                                 meta.model_copy(update={
-                                    "num_records": meta.num_records + n_prepopulated,
+                                    "num_records": (meta.num_records or 0) + n_prepopulated,
                                 }),
                             )
 

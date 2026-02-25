@@ -136,7 +136,9 @@ class PooledEvaluationData(BaseModel):
         """Convert to list of EvaluationRecord for serialization."""
         return [
             EvaluationRecord(assignment=a, score=s, allocation=alloc)
-            for a, s, alloc in zip(self.assignments, self.scores, self.allocations)
+            for a, s, alloc in zip(
+                self.assignments, self.scores, self.allocations, strict=True,
+            )
         ]
 
 
