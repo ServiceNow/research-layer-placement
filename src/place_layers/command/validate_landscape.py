@@ -148,6 +148,7 @@ class ValidateLandscapeCommand(BaseCommand):
             EvaluationLogMeta,
             EvaluationRecord,
             append_record,
+            load_pooled_data,
             load_records,
             resolve_supplemental_dirs,
             write_meta,
@@ -193,10 +194,10 @@ class ValidateLandscapeCommand(BaseCommand):
         supplemental_files = resolve_supplemental_dirs(supplemental_dirs, obj_name)
 
         # Load supplemental records once for pre-populating band eval logs
-        supplemental_records = []
+        supplemental_records: list[EvaluationRecord] = []
         if supplemental_files:
-            for sp in supplemental_files:
-                supplemental_records.extend(load_records(sp))
+            pool = load_pooled_data(supplemental_files, deduplicate=True)
+            supplemental_records = pool.as_records()
 
         # Track strategy-generated records across bands for cross-band accumulation
         # and merged snowball (avoids geometric duplication from re-reading pre-populated logs)

@@ -248,7 +248,7 @@ def resolve_supplemental_dirs(
             Path(d).rglob(f"evaluations_{objective_name}.jsonl"),
             key=lambda p: p.stat().st_mtime,
         ):
-            key = str(f)
+            key = str(f.resolve())
             if key not in seen:
                 files.append(f)
                 seen.add(key)

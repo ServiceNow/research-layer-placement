@@ -154,7 +154,6 @@ class OptimizeCommandConfig(BaseCommandConfig):
     )
 
     supplemental_data_dirs: list[str] = Field(
-        default=[],
         description=(
             "Directories containing pre-existing evaluation data to pre-populate "
             "the eval log before search begins. Each directory is searched "
