@@ -23,7 +23,6 @@ defaults:
   - /command: precompute_traces
   - /evaluator@evaluators.configs.default: trace_precompute
   - /backend: transformers
-  - /task: ???
   - /generation: sampling
   - _self_
 
