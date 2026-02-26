@@ -29,6 +29,7 @@ from place_layers.evaluator.traces.types import (
     ChatLikelihoodRecord,
     ISProblemRecord,
     SkippedProblem,
+    SpeculativeGeneration,
     TextLikelihoodRecord,
     TraceRecord,
     TraceRecordAdapter,
@@ -513,6 +514,86 @@ def summarize_generations_by_filter(output_dir: Path) -> dict[str, GenerationSum
         )
 
     return summaries
+
+
+class SpeculativeMetrics(BaseModel):
+    """Aggregate speculative decoding metrics computed from disk records.
+
+    All fields are averages across all SpeculativeGeneration records
+    in validation.jsonl.
+    """
+
+    model_config = {"frozen": True}
+
+    num_problems: int = Field(description="Number of speculative generation records")
+    avg_step_acceptance_rate: float = Field(
+        description="Mean step acceptance rate across problems"
+    )
+    avg_token_acceptance_prob: float = Field(
+        description="Mean per-position token acceptance probability"
+    )
+    avg_target_model_calls: float = Field(
+        description="Mean number of target model forward passes per problem"
+    )
+    avg_tokens_generated: float = Field(
+        description="Mean total tokens emitted per problem (accepted + bonus/replacement)"
+    )
+
+
+def summarize_speculative(output_dir: Path) -> SpeculativeMetrics | None:
+    """Compute speculative decoding metrics from SpeculativeGeneration records on disk.
+
+    This is the authoritative way to compute speculative metrics.
+    The validation.jsonl file is the single source of truth.
+
+    Args:
+        output_dir: Directory containing validation.jsonl.
+
+    Returns:
+        SpeculativeMetrics with aggregate statistics, or None if no records found.
+    """
+    validation_path = output_dir / "validation.jsonl"
+    if not validation_path.exists():
+        return None
+
+    records: list[SpeculativeGeneration] = []
+    malformed = 0
+
+    with validation_path.open() as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = TraceRecordAdapter.validate_json(line)
+                if isinstance(record, SpeculativeGeneration):
+                    records.append(record)
+            except Exception as e:
+                malformed += 1
+                logger.warning(f"Malformed line {line_num}: {e}")
+
+    if malformed > 0:
+        logger.warning(f"{malformed} malformed lines ignored in speculative summary")
+
+    if not records:
+        return None
+
+    n = len(records)
+    avg_step_acceptance = sum(r.step_acceptance_rate for r in records) / n
+    avg_token_acceptance = sum(r.avg_token_acceptance_prob for r in records) / n
+    avg_target_calls = sum(r.num_speculative_steps for r in records) / n
+    # Total emitted per problem = accepted tokens + one new token per step
+    avg_tokens = sum(
+        r.num_accepted_tokens + r.num_speculative_steps for r in records
+    ) / n
+
+    return SpeculativeMetrics(
+        num_problems=n,
+        avg_step_acceptance_rate=round(avg_step_acceptance, 4),
+        avg_token_acceptance_prob=round(avg_token_acceptance, 4),
+        avg_target_model_calls=round(avg_target_calls, 2),
+        avg_tokens_generated=round(avg_tokens, 2),
+    )
 
 
 class LikelihoodTaskStats(BaseModel):

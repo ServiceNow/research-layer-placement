@@ -23,4 +23,5 @@ from place_layers.evaluator.traces.writer import (
     summarize_generations,
     summarize_is,
     summarize_likelihood,
+    summarize_speculative,
 )

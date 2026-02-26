@@ -64,7 +64,7 @@ from place_layers.evaluator.traces.types import (
     SpeculativeGeneration,
     TraceRecord,
 )
-from place_layers.evaluator.traces.writer import summarize_generations
+from place_layers.evaluator.traces.writer import summarize_generations, summarize_speculative
 
 if TYPE_CHECKING:
     from lm_eval.api.task import Task
@@ -679,8 +679,6 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
 
         log_memory("SPECULATIVE EVAL START")
 
-        # Collect per-problem stats for aggregate metrics
-        problem_results: list[_ProblemResult] = []
         processed = 0
 
         with create_progress() as progress:
@@ -710,8 +708,6 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
                     prob_result = self._run_speculative_problem(
                         prompt_ids, draft_pl, target_pl, backend, warpers, idx
                     )
-                    problem_results.append(prob_result)
-
                     # Decode completion and check correctness
                     all_emitted: list[int] = []
                     for step in prob_result.steps:
@@ -764,34 +760,23 @@ class SpeculativeEvaluator(BaseGenerativeEvaluator):
         summary = self._summarize()
         logger.info(f"\n{summary}")
 
-        # Compute and store speculative decoding metrics
-        if problem_results:
-            avg_step_acceptance = sum(
-                r.step_acceptance_rate for r in problem_results
-            ) / len(problem_results)
-            avg_token_acceptance = sum(
-                r.avg_token_acceptance_prob for r in problem_results
-            ) / len(problem_results)
-            avg_target_calls = sum(
-                r.num_target_calls for r in problem_results
-            ) / len(problem_results)
-            avg_tokens = sum(
-                r.total_emitted for r in problem_results
-            ) / len(problem_results)
-
+        # Compute speculative metrics from disk (single source of truth).
+        # This covers both freshly-processed and previously-completed problems,
+        # so metrics remain correct after resumption from interruption.
+        spec_metrics = summarize_speculative(self._output_dir)
+        if spec_metrics is not None:
             self._speculative_metrics = {
-                "avg_step_acceptance_rate": round(avg_step_acceptance, 4),
-                "avg_token_acceptance_prob": round(avg_token_acceptance, 4),
-                "avg_target_model_calls": round(avg_target_calls, 2),
-                "avg_tokens_generated": round(avg_tokens, 2),
+                "avg_step_acceptance_rate": spec_metrics.avg_step_acceptance_rate,
+                "avg_token_acceptance_prob": spec_metrics.avg_token_acceptance_prob,
+                "avg_target_model_calls": spec_metrics.avg_target_model_calls,
+                "avg_tokens_generated": spec_metrics.avg_tokens_generated,
             }
-
             logger.info(
-                f"Speculative metrics: "
-                f"step_acceptance_rate={avg_step_acceptance:.4f}, "
-                f"token_acceptance_prob={avg_token_acceptance:.4f}, "
-                f"target_calls={avg_target_calls:.1f}, "
-                f"tokens_generated={avg_tokens:.1f}"
+                f"Speculative metrics ({spec_metrics.num_problems} problems): "
+                f"step_acceptance_rate={spec_metrics.avg_step_acceptance_rate:.4f}, "
+                f"token_acceptance_prob={spec_metrics.avg_token_acceptance_prob:.4f}, "
+                f"target_calls={spec_metrics.avg_target_model_calls:.1f}, "
+                f"tokens_generated={spec_metrics.avg_tokens_generated:.1f}"
             )
         else:
             self._speculative_metrics = None
