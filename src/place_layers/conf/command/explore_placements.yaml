@@ -39,3 +39,5 @@ surrogate:
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
 expansion_max_range: 10         # ceiling for pairwise range search (auto-stops early)
 
+supplemental_data_dirs: []
+

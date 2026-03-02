@@ -15,7 +15,6 @@ from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
     PooledEvaluationData,
     append_record,
-    discover_evaluation_files,
     load_pooled_data,
     load_records,
     resolve_supplemental_dirs,

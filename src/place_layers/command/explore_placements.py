@@ -396,19 +396,60 @@ class ExplorePlacementsCommand(BaseCommand):
             progress_path
         )
 
+        # Capture local count before merging supplemental data
+        num_local = len(all_assignments)
+        n_supplemental = 0
+
+        if self.config.supplemental_data_dirs:
+            from place_layers.surrogate.evaluation_log import (
+                load_pooled_data,
+                resolve_supplemental_dirs,
+            )
+            supplemental_files = resolve_supplemental_dirs(
+                self.config.supplemental_data_dirs, obj_name
+            )
+            if supplemental_files:
+                pool = load_pooled_data(supplemental_files, deduplicate=True)
+                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
+                n_before = len(all_assignments)
+                for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+                    if (a, s) not in existing:
+                        all_assignments.append(a)
+                        all_scores.append(s)
+                        all_allocations.append(alloc)
+                        existing.add((a, s))
+                n_added = len(all_assignments) - n_before
+                n_supplemental = n_added
+                logger.info(
+                    "Supplemental data: loaded %d records from %d file(s), "
+                    "merged %d new (skipped %d duplicates) for objective '%s'",
+                    pool.num_samples, len(supplemental_files),
+                    n_added, pool.num_samples - n_added, obj_name,
+                )
+            else:
+                logger.info(
+                    "Supplemental data: no files found for objective '%s' in %d director%s",
+                    obj_name, len(self.config.supplemental_data_dirs),
+                    "y" if len(self.config.supplemental_data_dirs) == 1 else "ies",
+                )
+
         rho_history: list[float] = []
         samples_at_check: list[int] = []
 
         # Create RNG and fast-forward past completed samples
         rng = random.Random(self.config.seed)
-        if all_assignments:
+        if num_local > 0:
             _fast_forward_rng(
-                rng, len(all_assignments), feasible_allocations, num_layers,
+                rng, num_local, feasible_allocations, num_layers,
                 weights=sampling_weights,
             )
-            logger.info(
-                "Resumed from %d completed samples", len(all_assignments),
-            )
+            if len(all_assignments) > num_local:
+                logger.info(
+                    "Resumed from %d local samples (%d total with supplemental)",
+                    num_local, len(all_assignments),
+                )
+            else:
+                logger.info("Resumed from %d completed samples", num_local)
 
         # Write sidecar metadata for the progress JSONL so it can be loaded
         # standalone by load_pooled_data (without a companion .json file).
@@ -426,9 +467,30 @@ class ExplorePlacementsCommand(BaseCommand):
         )
         write_meta(progress_path, progress_meta)
 
+        # Open snowball file for incremental writes (supplemental + local).
+        # Written alongside progress file; discoverable for chaining.
+        snowball_path = output_dir / f"evaluations_{obj_name}.jsonl"
+        snowball_meta = EvaluationLogMeta(
+            version=1,
+            objective_name=obj_name,
+            num_layers=num_layers,
+            mixer_names=list(phase_order),
+            source_command="explore_placements",
+            source_detail="merged_snowball",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            num_records=None,
+        )
+        write_meta(snowball_path, snowball_meta)
+
         # Open progress file for incremental writes
         progress_file = progress_path.open("a")
+        snowball_file = snowball_path.open("w")
         try:
+            # Seed snowball with all records loaded so far (local progress + supplemental)
+            for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
+                append_record(snowball_file, EvaluationRecord(
+                    assignment=a, score=s, allocation=alloc,
+                ))
             # --- Phase 1: Initial batch ---
             remaining_initial = max(
                 0, self.config.min_samples - len(all_assignments)
@@ -451,6 +513,7 @@ class ExplorePlacementsCommand(BaseCommand):
                         assignment=assignment_tuple, score=score, allocation=allocation,
                     )
                     append_record(progress_file, record)
+                    append_record(snowball_file, record)
 
             # --- Phase 2: Initial expansion selection ---
             # Expansion selection is re-run in the adaptive loop (Phase 3) after
@@ -547,6 +610,7 @@ class ExplorePlacementsCommand(BaseCommand):
                         assignment=assignment_tuple, score=score, allocation=allocation,
                     )
                     append_record(progress_file, record)
+                    append_record(snowball_file, record)
 
                 # Re-run expansion selection with larger dataset.
                 # The feature-to-sample guard relaxes as data grows,
@@ -599,12 +663,18 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
         finally:
             progress_file.close()
-
-        # Update sidecar with final record count
-        write_meta(
-            progress_path,
-            progress_meta.model_copy(update={"num_records": len(all_assignments)}),
-        )
+            snowball_file.close()
+            try:
+                write_meta(
+                    progress_path,
+                    progress_meta.model_copy(update={"num_records": len(all_assignments) - n_supplemental}),
+                )
+                write_meta(
+                    snowball_path,
+                    snowball_meta.model_copy(update={"num_records": len(all_assignments)}),
+                )
+            except Exception:
+                logger.warning("Failed to update sidecar metadata", exc_info=True)
 
         # Build result dataset
         assert rho_history, (
@@ -782,5 +852,14 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
             "running automatic expansion selection. Useful when you already "
             "know the desired order and range (e.g., order=3, range=1 for "
             "adjacent triplets)."
+        ),
+    )
+    supplemental_data_dirs: list[str] = Field(
+        description=(
+            "Directories containing pre-existing evaluation data to merge "
+            "before exploration begins. Each directory is searched recursively "
+            "for evaluations_{obj}.jsonl snowball files. "
+            "Supplemental records are deduplicated against locally-generated progress "
+            "but do not advance the RNG, preserving deterministic resumption."
         ),
     )

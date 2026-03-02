@@ -146,7 +146,9 @@ class ValidateLandscapeCommand(BaseCommand):
 
         from place_layers.surrogate.evaluation_log import (
             EvaluationLogMeta,
+            EvaluationRecord,
             append_record,
+            load_pooled_data,
             load_records,
             resolve_supplemental_dirs,
             write_meta,
@@ -188,35 +190,184 @@ class ValidateLandscapeCommand(BaseCommand):
         validated_bands: list[BandValidationResult] = []
         total_evals = 0
 
-        # Resolve dirs to file-level supplemental for search strategy
-        # (internal plumbing stays file-level for cross-band safety)
+        # Resolve external supplemental dirs to file-level paths
         supplemental_files = resolve_supplemental_dirs(supplemental_dirs, obj_name)
-        supplemental_paths: list[str] = [str(f) for f in supplemental_files]
 
-        for step, band in enumerate(band_results):
-            band_dir = bands_dir / f"band_{band.band_index:03d}"
-            result_path = band_dir / "result.json"
-            eval_log_jsonl = band_dir / f"evaluations_{obj_name}.jsonl"
+        # Load supplemental records once for pre-populating band eval logs
+        supplemental_records: list[EvaluationRecord] = []
+        if supplemental_files:
+            pool = load_pooled_data(supplemental_files, deduplicate=True)
+            supplemental_records = pool.as_records()
 
-            # Skip if already completed (resumption)
-            if result_path.exists():
+        # Track strategy-generated records across bands for cross-band accumulation
+        # and merged snowball (avoids geometric duplication from re-reading pre-populated logs)
+        strategy_records_all_bands: list[EvaluationRecord] = []
+
+        # Open top-level snowball for incremental writes
+        merged_jsonl = output_dir / f"evaluations_{obj_name}.jsonl"
+        merged_meta = EvaluationLogMeta(
+            version=1,
+            objective_name=obj_name,
+            num_layers=num_layers,
+            mixer_names=list(cost_model.phase_order),
+            source_command="validate_landscape",
+            source_detail="incremental_bands_merged",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            num_records=None,
+        )
+        write_meta(merged_jsonl, merged_meta)
+        merged_record_count = 0
+        merged_file = merged_jsonl.open("w")
+        try:
+            # Seed snowball with supplemental records
+            for rec in supplemental_records:
+                append_record(merged_file, rec)
+                merged_record_count += 1
+
+            for step, band in enumerate(band_results):
+                band_dir = bands_dir / f"band_{band.band_index:03d}"
+                result_path = band_dir / "result.json"
+                eval_log_jsonl = band_dir / f"evaluations_{obj_name}.jsonl"
+
+                # Skip if already completed (resumption)
+                if result_path.exists():
+                    logger.info(
+                        "Band %d already validated, skipping (step %d / %d, objective=%s)",
+                        band.band_index,
+                        step + 1,
+                        len(band_results),
+                        obj_name,
+                    )
+                    loaded_result = json.loads(result_path.read_text())
+                    surrogate_dp = PlacementResult.model_validate_json(
+                        (band_dir / "surrogate_dp.json").read_text()
+                    )
+                    # Support both old (best_score: float) and new (best_scores: dict) formats
+                    raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
+                    if isinstance(raw_scores, dict):
+                        loaded_score = next(iter(evals.objectives(raw_scores).values()))
+                    else:
+                        loaded_score = float(raw_scores)
+                    validated_bands.append(
+                        BandValidationResult(
+                            band_index=band.band_index,
+                            cost_low=band.cost_low,
+                            cost_high=band.cost_high,
+                            surrogate_dp=surrogate_dp,
+                            validated=PlacementResult(
+                                cost=loaded_result["final_cost"],
+                                score=loaded_score,
+                                assignments=tuple(
+                                    loaded_result["best_parameters"]["assignments"]
+                                ),
+                            ),
+                            total_evaluations=loaded_result["total_evaluations"],
+                        )
+                    )
+                    total_evals += loaded_result["total_evaluations"]
+
+                    # Extract strategy's own records from resumed band
+                    if eval_log_jsonl.exists():
+                        all_band_records = load_records(eval_log_jsonl)
+                        n_strategy = loaded_result["total_evaluations"]
+                        band_strategy_records = (
+                            all_band_records[len(all_band_records) - n_strategy:]
+                            if n_strategy > 0
+                            else []
+                        )
+                        strategy_records_all_bands.extend(band_strategy_records)
+                        for rec in band_strategy_records:
+                            append_record(merged_file, rec)
+                            merged_record_count += 1
+
+                    continue
+
                 logger.info(
-                    "Band %d already validated, skipping (step %d / %d, objective=%s)",
-                    band.band_index,
+                    "Validating band %d / %d (cost %.4f – %.4f, surrogate score %.4f, objective=%s)",
                     step + 1,
                     len(band_results),
+                    band.cost_low,
+                    band.cost_high,
+                    band.score,
                     obj_name,
                 )
-                loaded_result = json.loads(result_path.read_text())
-                surrogate_dp = PlacementResult.model_validate_json(
-                    (band_dir / "surrogate_dp.json").read_text()
+
+                # Save surrogate DP first (before the search that might crash)
+                band_dir.mkdir(parents=True, exist_ok=True)
+                surrogate_dp = PlacementResult(
+                    cost=band.cost,
+                    score=band.score,
+                    assignments=band.assignments,
                 )
-                # Support both old (best_score: float) and new (best_scores: dict) formats
-                raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
-                if isinstance(raw_scores, dict):
-                    loaded_score = next(iter(evals.objectives(raw_scores).values()))
-                else:
-                    loaded_score = float(raw_scores)
+                (band_dir / "surrogate_dp.json").write_text(
+                    surrogate_dp.model_dump_json(indent=2)
+                )
+
+                # Construct per-band problem
+                problem_config = MaxPerformanceProblemConfig(
+                    problem_type="cost_max_performance",
+                    cost_model=landscape.cost_model,
+                    cost_budget=band.cost_high,
+                    cost_floor=band.cost_low,
+                )
+                problem = CostConstrainedProblem(
+                    evaluators=evals, config=problem_config,
+                    objective_name=obj_name,
+                )
+
+                # Pre-populate band eval log with supplemental + cross-band strategy records.
+                # Always truncate/rewrite to avoid reusing stale records from a crashed prior run.
+                n_prepop = 0
+                eval_log_jsonl.parent.mkdir(parents=True, exist_ok=True)
+                with eval_log_jsonl.open("w") as f:
+                    for rec in supplemental_records:
+                        append_record(f, rec)
+                        n_prepop += 1
+                    if self.config.accumulate_across_bands:
+                        for rec in strategy_records_all_bands:
+                            append_record(f, rec)
+                            n_prepop += 1
+
+                # Construct per-band search strategy — reads pre-seeded eval log
+                search_config = self.config.search_strategy.model_copy(
+                    update={
+                        "exploration_dataset_path": str(dataset_path),
+                        "evaluation_log_path": str(eval_log_jsonl),
+                    }
+                )
+                strategy = search_config.create_search_strategy()
+                try:
+                    result = await strategy.search(problem)
+                except ValueError as exc:
+                    logger.warning(
+                        "Band %d: search found no feasible placement (%s), "
+                        "skipping (objective=%s)",
+                        band.band_index,
+                        exc,
+                        obj_name,
+                    )
+                    continue
+
+                # Post-search cost guard: reject results outside band range
+                if not (band.cost_low - 1e-9 <= result.final_cost <= band.cost_high + 1e-9):
+                    logger.warning(
+                        "Band %d: result cost %.4f outside band [%.4f, %.4f], "
+                        "skipping (objective=%s)",
+                        band.band_index,
+                        result.final_cost,
+                        band.cost_low,
+                        band.cost_high,
+                        obj_name,
+                    )
+                    continue
+
+                # Save per-band result (CostConstrainedSearchResult as JSON)
+                result_path.write_text(result.model_dump_json(indent=2))
+
+                total_evals += result.total_evaluations
+
+                validated_score = result.best_score
+
                 validated_bands.append(
                     BandValidationResult(
                         band_index=band.band_index,
@@ -224,167 +375,46 @@ class ValidateLandscapeCommand(BaseCommand):
                         cost_high=band.cost_high,
                         surrogate_dp=surrogate_dp,
                         validated=PlacementResult(
-                            cost=loaded_result["final_cost"],
-                            score=loaded_score,
-                            assignments=tuple(
-                                loaded_result["best_parameters"]["assignments"]
-                            ),
+                            cost=result.final_cost,
+                            score=validated_score,
+                            assignments=result.best_parameters.assignments,
                         ),
-                        total_evaluations=loaded_result["total_evaluations"],
+                        total_evaluations=result.total_evaluations,
                     )
                 )
-                total_evals += loaded_result["total_evaluations"]
 
-                # Add resumed band's JSONL to supplemental paths for future bands
-                if self.config.accumulate_across_bands and eval_log_jsonl.exists():
-                    supplemental_paths.append(str(eval_log_jsonl))
+                logger.info(
+                    "Band %d: surrogate=%.4f, validated=%.4f, evals=%d (objective=%s)",
+                    band.band_index,
+                    band.score,
+                    validated_score,
+                    result.total_evaluations,
+                    obj_name,
+                )
 
-                continue
-
-            logger.info(
-                "Validating band %d / %d (cost %.4f – %.4f, surrogate score %.4f, objective=%s)",
-                step + 1,
-                len(band_results),
-                band.cost_low,
-                band.cost_high,
-                band.score,
-                obj_name,
-            )
-
-            # Save surrogate DP first (before the search that might crash)
-            band_dir.mkdir(parents=True, exist_ok=True)
-            surrogate_dp = PlacementResult(
-                cost=band.cost,
-                score=band.score,
-                assignments=band.assignments,
-            )
-            (band_dir / "surrogate_dp.json").write_text(
-                surrogate_dp.model_dump_json(indent=2)
-            )
-
-            # Construct per-band problem
-            problem_config = MaxPerformanceProblemConfig(
-                problem_type="cost_max_performance",
-                cost_model=landscape.cost_model,
-                cost_budget=band.cost_high,
-                cost_floor=band.cost_low,
-            )
-            problem = CostConstrainedProblem(
-                evaluators=evals, config=problem_config,
-                objective_name=obj_name,
-            )
-
-            # Construct per-band search strategy with evaluation logging and
-            # cross-band supplemental data
-            search_config = self.config.search_strategy.model_copy(
-                update={
-                    "exploration_dataset_path": str(dataset_path),
-                    "evaluation_log_path": str(eval_log_jsonl),
-                    "supplemental_data_paths": (
-                        list(supplemental_paths)
-                        if self.config.accumulate_across_bands
-                        else []
-                    ),
-                }
-            )
-            strategy = search_config.create_search_strategy()
+                # Extract strategy's own records and track for cross-band + snowball
+                if eval_log_jsonl.exists():
+                    all_band_records = load_records(eval_log_jsonl)
+                    band_strategy_records = all_band_records[n_prepop:]
+                    strategy_records_all_bands.extend(band_strategy_records)
+                    for rec in band_strategy_records:
+                        append_record(merged_file, rec)
+                        merged_record_count += 1
+        finally:
+            merged_file.close()
             try:
-                result = await strategy.search(problem)
-            except ValueError as exc:
-                logger.warning(
-                    "Band %d: search found no feasible placement (%s), "
-                    "skipping (objective=%s)",
-                    band.band_index,
-                    exc,
-                    obj_name,
+                write_meta(
+                    merged_jsonl,
+                    merged_meta.model_copy(update={"num_records": merged_record_count}),
                 )
-                continue
-
-            # Post-search cost guard: reject results outside band range
-            if not (band.cost_low - 1e-9 <= result.final_cost <= band.cost_high + 1e-9):
-                logger.warning(
-                    "Band %d: result cost %.4f outside band [%.4f, %.4f], "
-                    "skipping (objective=%s)",
-                    band.band_index,
-                    result.final_cost,
-                    band.cost_low,
-                    band.cost_high,
-                    obj_name,
+            except Exception:
+                logger.warning("Failed to update snowball sidecar", exc_info=True)
+            if merged_record_count > 0:
+                logger.info(
+                    "Wrote merged evaluation log: %d records -> %s",
+                    merged_record_count,
+                    merged_jsonl,
                 )
-                continue
-
-            # Save per-band result (CostConstrainedSearchResult as JSON)
-            result_path.write_text(result.model_dump_json(indent=2))
-
-            total_evals += result.total_evaluations
-
-            validated_score = result.best_score
-
-            validated_bands.append(
-                BandValidationResult(
-                    band_index=band.band_index,
-                    cost_low=band.cost_low,
-                    cost_high=band.cost_high,
-                    surrogate_dp=surrogate_dp,
-                    validated=PlacementResult(
-                        cost=result.final_cost,
-                        score=validated_score,
-                        assignments=result.best_parameters.assignments,
-                    ),
-                    total_evaluations=result.total_evaluations,
-                )
-            )
-
-            logger.info(
-                "Band %d: surrogate=%.4f, validated=%.4f, evals=%d (objective=%s)",
-                band.band_index,
-                band.score,
-                validated_score,
-                result.total_evaluations,
-                obj_name,
-            )
-
-            # Add this band's JSONL to supplemental paths for future bands
-            if self.config.accumulate_across_bands and eval_log_jsonl.exists():
-                supplemental_paths.append(str(eval_log_jsonl))
-
-        # Write merged evaluation JSONL for the entire objective (snowball)
-        merged_jsonl = output_dir / f"evaluations_{obj_name}.jsonl"
-        all_band_jsonls = sorted(
-            bands_dir.rglob(f"evaluations_{obj_name}.jsonl"),
-            key=lambda p: p.name,
-        )
-        if supplemental_files or all_band_jsonls:
-            merged_record_count = 0
-            with merged_jsonl.open("w") as mf:
-                # Snowball: include prior chain data from supplemental dirs
-                for sp in supplemental_files:
-                    for rec in load_records(sp):
-                        append_record(mf, rec)
-                        merged_record_count += 1
-
-                # Current run's band evaluations
-                for band_jsonl in all_band_jsonls:
-                    for rec in load_records(band_jsonl):
-                        append_record(mf, rec)
-                        merged_record_count += 1
-            merged_meta = EvaluationLogMeta(
-                version=1,
-                objective_name=obj_name,
-                num_layers=num_layers,
-                mixer_names=list(cost_model.phase_order),
-                source_command="validate_landscape",
-                source_detail=f"{len(all_band_jsonls)}_bands_merged",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                num_records=merged_record_count,
-            )
-            write_meta(merged_jsonl, merged_meta)
-            logger.info(
-                "Wrote merged evaluation log: %d records from %d bands -> %s",
-                merged_record_count,
-                len(all_band_jsonls),
-                merged_jsonl,
-            )
 
         # Compute summary statistics
         if len(validated_bands) >= 2:
