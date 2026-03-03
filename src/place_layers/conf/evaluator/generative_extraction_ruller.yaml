@@ -27,6 +27,7 @@ samples_per_problem: ${generation.samples_per_problem}
 max_new_tokens: ${generation.max_new_tokens}
 temperature: ${generation.temperature}
 top_p: ${generation.top_p}
+include_logprobs: ${generation.include_logprobs}
 
 # Prompt formatting
 # When true (default), uses chat template formatting with messages

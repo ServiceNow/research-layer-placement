@@ -25,6 +25,7 @@ samples_per_problem: ${generation.samples_per_problem}
 max_new_tokens: ${generation.max_new_tokens}
 temperature: ${generation.temperature}
 top_p: ${generation.top_p}
+include_logprobs: ${generation.include_logprobs}
 
 # Prompt formatting
 # When true (default), uses chat template formatting with messages
@@ -38,7 +39,7 @@ doc_prefetch_count: 2
 # Truncated sample handling
 # When false (default), truncated samples are marked incorrect (reasoning tasks)
 # When true, truncated samples are evaluated for correctness (extraction tasks)
-evaluate_truncated_samples: false
+evaluate_truncated_samples: true
 
 # Tokenizer for synthetic task generation (e.g., RULER)
 # Set to a HF model/tokenizer name when using tasks that generate synthetic data

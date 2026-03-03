@@ -99,6 +99,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         temperature: float,
         top_p: float,
         key: str,
+        include_logprobs: bool = False,
     ) -> GenerationResult:
         """Generate completions from chat messages.
 
@@ -117,16 +118,16 @@ class RemoteVLLMClient(BaseVLLMClient):
         """
         session = self._ensure_session()
         url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
-        payload = {
+        payload: dict = {
             "model": self.config.model,
             "messages": [m.model_dump() for m in messages],
             "n": n,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "logprobs": True,
-            "return_token_ids": True,
         }
+        if include_logprobs:
+            payload["logprobs"] = True
 
         async with session.post(url, json=payload) as resp:
             if resp.status == 400:
@@ -176,6 +177,7 @@ class RemoteVLLMClient(BaseVLLMClient):
         top_p: float,
         key: str,
         ignore_eos: bool = False,
+        include_logprobs: bool = False,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -194,16 +196,18 @@ class RemoteVLLMClient(BaseVLLMClient):
         """
         session = self._ensure_session()
         url = f"{self.config.base_url.rstrip('/')}/v1/completions"
-        payload = {
+        payload: dict = {
             "model": self.config.model,
             "prompt": prompt,
             "n": n,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "logprobs": 1,
-            "ignore_eos": ignore_eos,
         }
+        if include_logprobs:
+            payload["logprobs"] = 1
+        if ignore_eos:
+            payload["ignore_eos"] = True
 
         async with session.post(url, json=payload) as resp:
             if resp.status == 400:

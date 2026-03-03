@@ -133,6 +133,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 max_tokens=self.config.max_new_tokens,
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
+                include_logprobs=self.config.include_logprobs,
             ), None
         else:
             return GenerateTextRequest(
@@ -142,6 +143,7 @@ class BaseGenerativeEvaluator(TaskBasedEvaluator):
                 max_tokens=self.config.max_new_tokens,
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
+                include_logprobs=self.config.include_logprobs,
             ), None
 
     def _stream_to_backend_async(
@@ -280,6 +282,10 @@ class BaseGenerativeEvaluatorConfig(TaskBasedEvaluatorConfig):
         description="System message prepended to chat prompts. "
         "Only used when use_chat_template=True. "
         "Example: 'Answer directly without reasoning.'",
+    )
+    include_logprobs: bool = Field(
+        default=False,
+        description="If True, request per-token logprobs from the backend",
     )
     evaluate_truncated_samples: bool = Field(
         description="Whether to evaluate truncated samples for correctness. "

@@ -8,3 +8,5 @@ samples_per_problem: 1
 max_new_tokens: 512
 temperature: 0.0  # 0 = greedy (both backends)
 top_p: 1.0
+
+include_logprobs: false

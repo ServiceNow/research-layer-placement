@@ -223,6 +223,7 @@ class LocalVLLMClient(BaseVLLMClient):
         temperature: float,
         top_p: float,
         key: str,
+        include_logprobs: bool = False,
     ) -> GenerationResult:
         """Generate completions from chat messages.
 
@@ -255,8 +256,8 @@ class LocalVLLMClient(BaseVLLMClient):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            logprobs=True,
-            top_logprobs=1,
+            logprobs=include_logprobs or None,
+            top_logprobs=1 if include_logprobs else None,
             return_token_ids=True,
         )
 
@@ -302,6 +303,7 @@ class LocalVLLMClient(BaseVLLMClient):
         top_p: float,
         key: str,
         ignore_eos: bool = False,
+        include_logprobs: bool = False,
     ) -> GenerationResult:
         """Generate completions from a text prompt.
 
@@ -334,7 +336,7 @@ class LocalVLLMClient(BaseVLLMClient):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            logprobs=1,
+            logprobs=1 if include_logprobs else None,
             return_token_ids=True,
             ignore_eos=ignore_eos,
         )

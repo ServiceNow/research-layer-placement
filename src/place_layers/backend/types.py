@@ -51,6 +51,10 @@ class GenerateRequestBase(BaseModel):
         default=False,
         description="If True, ignore EOS token and always generate max_tokens tokens",
     )
+    include_logprobs: bool = Field(
+        default=False,
+        description="If True, request per-token logprobs from the backend",
+    )
 
 
 class GenerateChatRequest(GenerateRequestBase):
