@@ -83,8 +83,8 @@ class Evaluators[ParametersT]:
     def __init__(
         self,
         evaluators: dict[str, BaseEvaluator[ParametersT]],
-        num_layers: int,
-        mixer_names: frozenset[str],
+        num_layers: int | None,
+        mixer_names: frozenset[str] | None,
         objective: BaseObjective,
     ) -> None:
         self.evaluators = evaluators
@@ -96,15 +96,19 @@ class Evaluators[ParametersT]:
 
     @property
     def num_layers(self) -> int:
+        if self._num_layers is None:
+            raise RuntimeError("num_layers not available (non-supernet model)")
         return self._num_layers
 
     @property
     def mixer_names(self) -> frozenset[str]:
+        if self._mixer_names is None:
+            raise RuntimeError("mixer_names not available (non-supernet model)")
         return self._mixer_names
 
     @property
     def num_mixers(self) -> int:
-        return len(self._mixer_names)
+        return len(self.mixer_names)
 
     # -- Objective names (exposed for search strategies) ----------------------
 
@@ -319,16 +323,20 @@ class EvaluatorsConfig(BaseModel):
             mixer_names: frozenset[str] | None = None
 
             for name, e in evaluators.items():
-                if not hasattr(e, "num_layers"):
+                # Check _num_layers directly: the num_layers property raises
+                # RuntimeError (not AttributeError) when unset, which hasattr
+                # doesn't catch.
+                e_num_layers = getattr(e, "_num_layers", None)
+                if e_num_layers is None:
                     continue
                 if num_layers is None:
-                    num_layers = e.num_layers
+                    num_layers = e_num_layers
                     mixer_names = e.mixer_names
                 else:
-                    if e.num_layers != num_layers:
+                    if e_num_layers != num_layers:
                         raise ValueError(
                             f"Evaluator num_layers mismatch: "
-                            f"{num_layers} vs {e.num_layers}"
+                            f"{num_layers} vs {e_num_layers}"
                         )
                     if e.mixer_names != mixer_names:
                         raise ValueError(
@@ -337,20 +345,23 @@ class EvaluatorsConfig(BaseModel):
                         )
 
             if num_layers is None:
-                # Fallback for evaluators that don't expose num_layers
-                first = next(iter(evaluators.values()))
-                num_layers = first.num_layers
-                mixer_names = first.mixer_names
-
-            assert mixer_names is not None
-
-            logger.info(
-                "Created %d evaluator(s): %s (%d layers, %d mixers)",
-                len(evaluators),
-                list(evaluators.keys()),
-                num_layers,
-                len(mixer_names),
-            )
+                # No evaluator reported model structure (e.g., non-supernet model).
+                # This is fine for evaluators like ThroughputEvaluator that don't
+                # need placement switching.
+                logger.info(
+                    "Created %d evaluator(s): %s (no supernet structure available)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                )
+            else:
+                assert mixer_names is not None
+                logger.info(
+                    "Created %d evaluator(s): %s (%d layers, %d mixers)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                    num_layers,
+                    len(mixer_names),
+                )
 
             # Create objective from config
             objective = self.objective.create_objective(

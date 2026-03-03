@@ -57,6 +57,17 @@ def resolve_placement(
             placement_indices=None,
         )
 
+    # Non-supernet models don't support placement switching
+    if evaluators._num_layers is None:
+        logger.warning(
+            "Placement specified but model has no supernet structure — ignoring"
+        )
+        return PlacementResolution(
+            placement=None,
+            placement_names=None,
+            placement_indices=None,
+        )
+
     # Get model structure
     num_layers = evaluators.num_layers
     mixer_names = evaluators.mixer_names
