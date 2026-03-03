@@ -5,7 +5,7 @@ IDS=(300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318
 #### EVAL WITH RANDOM PLACEMENT
 ############
 # TODO
-# nohup env \
+# nohup env \I will contimnue with
 #   OUTPUT_BASE=outputs/generative_random_archs_2 \
 #   DNS="${DNS}" \
 #   IDS="320 321 322 323 324" \

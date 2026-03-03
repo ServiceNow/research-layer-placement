@@ -9,7 +9,8 @@
 set -euo pipefail
 
 SERVER_URL="${SERVER_URL:-http://localhost:8000}"
-OUTPUT_BASE="outputs/throughput_10_requests_test"
+# OUTPUT_BASE="outputs/throughput_10_requests_test_pure_attn_fixed_layout_vvlmserve"
+OUTPUT_BASE="outputs/throughput_10_requests_test_pure_attn_mode4"
 LOG_DIR="logs/throughput_10_requests"
 PLACEMENT_DIR="${OUTPUT_BASE}/_placement_configs/placement"
 mkdir -p "$LOG_DIR" "$PLACEMENT_DIR"
@@ -23,7 +24,7 @@ TIMEOUT=80000
 INPUT_SEQ_LEN=1
 OUTPUT_SEQ_LEN=16000
 NUM_REQUESTS=10
-NUM_WARMUP=5
+NUM_WARMUP=0
 
 # Generate placement YAML config file and return its name
 make_placement_config() {
