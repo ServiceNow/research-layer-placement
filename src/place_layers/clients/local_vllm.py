@@ -62,6 +62,11 @@ class LocalVLLMClientConfig(BaseModel):
         "If None, vLLM selects automatically. Set to 'TRITON_ATTN' to disable Flash Attention."
     )
     max_concurrent_requests: int = Field(description="Maximum concurrent requests")
+    compilation_config: dict | None = Field(
+        default=None,
+        description="vLLM CompilationConfig overrides as a dict, e.g. "
+        '{"cudagraph_copy_inputs": true, "cudagraph_mode": "FULL_AND_PIECEWISE"}',
+    )
 
 
 class LocalVLLMClient(BaseVLLMClient):
@@ -121,6 +126,8 @@ class LocalVLLMClient(BaseVLLMClient):
             enable_prefix_caching=self.config.enable_prefix_caching,
             enforce_eager=self.config.disable_compile,
             attention_backend=self.config.attention_backend,
+            **({"compilation_config": self.config.compilation_config}
+               if self.config.compilation_config is not None else {}),
         )
 
         # Create async engine
