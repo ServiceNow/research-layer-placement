@@ -145,17 +145,12 @@ async def _build_exploration_dataset(
 
     assignments: list[tuple[str, ...]] = []
     scores: list[float] = []
-    allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
         scores.append(score)
-        alloc: dict[str, int] = {}
-        for m in assignment:
-            alloc[m] = alloc.get(m, 0) + 1
-        allocations.append(alloc)
 
     rho = ridge_cv_rho(
         assignments=assignments,
@@ -169,7 +164,6 @@ async def _build_exploration_dataset(
     return ExplorationDataset(
         assignments=assignments,
         scores=scores,
-        allocations=allocations,
         objective_name="weighted_average",
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,

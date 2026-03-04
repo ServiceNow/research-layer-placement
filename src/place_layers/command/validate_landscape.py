@@ -4,19 +4,19 @@ For each objective and occupied cost band:
 1. Run Viterbi surrogate search restricted to that band (Ridge bootstrap+EI or Bayesian LCB + real eval)
 2. Save validated search results to JSON
 
-Per-band results are saved incrementally under ``bands_{obj_name}/band_NNN/`` so
+Per-band results are saved incrementally under ``{obj_name}/bands/band_NNN/`` so
 that a crash mid-way loses only the current band.  On restart, completed bands
 are detected and skipped automatically.
 
-Input: explore_output_dir (contains exploration_results_{obj_name}.json per objective)
+Input: explore_output_dir (contains {obj_name}/exploration_results.json per objective)
        + evaluator config + cost model config.
-Output: validation_results_{obj_name}.json per objective in Hydra output dir.
+Output: {obj_name}/validation_results.json per objective in Hydra output dir.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
@@ -26,6 +26,9 @@ from pydantic import Field
 
 from place_layers.command.base_command import BaseCommand
 from place_layers.command.base_command_config import BaseCommandConfig
+from place_layers.search_strategy.cost_constrained.types import (
+    CostConstrainedSearchResult,
+)
 from place_layers.landscape import (
     BandValidationResult,
     LandscapeConfig,
@@ -49,11 +52,9 @@ from place_layers.search_strategy.cost_constrained.viterbi_surrogate import (
 )
 
 from place_layers.surrogate.evaluation_log import (
-    load_pooled_data,
-    resolve_supplemental_dirs,
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
-    EvaluationRecord,
-    append_record,
+    discover_evaluation_records,
     load_records,
     write_meta,
 )
@@ -63,29 +64,23 @@ logger = logging.getLogger(__name__)
 
 def _load_completed_band_records(
     bands_dir: Path,
-    obj_name: str,
     prior_band_indices: list[int],
-) -> list[EvaluationRecord]:
-    """Load strategy-generated records from completed prior bands.
+) -> tuple[list[Path], int]:
+    """Find eval log paths from completed prior bands.
 
-    Each band's eval log contains pre-populated records followed by
-    strategy-generated records. The ``result.json`` stores the count
-    of strategy evaluations (``total_evaluations``), so the strategy
-    records are the last ``n_strategy`` entries in the eval log.
+    Returns (paths, total_records) where paths can be used as seed_data_paths.
     """
-    records: list[EvaluationRecord] = []
+    paths: list[Path] = []
+    total_records = 0
     for band_index in prior_band_indices:
         band_dir = bands_dir / f"band_{band_index:03d}"
         result_path = band_dir / "result.json"
-        eval_log = band_dir / f"evaluations_{obj_name}.jsonl"
+        eval_log = band_dir / EVALUATION_RECORDS_FILENAME
         if not result_path.exists() or not eval_log.exists():
             continue
-        result = json.loads(result_path.read_text())
-        n_strategy = result["total_evaluations"]
-        if n_strategy > 0:
-            all_records = load_records(eval_log)
-            records.extend(all_records[len(all_records) - n_strategy:])
-    return records
+        paths.append(eval_log)
+        total_records += len(load_records(eval_log))
+    return paths, total_records
 
 
 ViterbiSearchConfig = Annotated[
@@ -183,8 +178,6 @@ class ValidateLandscapeCommand(BaseCommand):
         band_edges: np.ndarray,
     ) -> None:
         """Validate a single objective: per-band search, save."""
-        from place_layers.surrogate.dataset import ExplorationDataset
-
         landscape = self.config.landscape
 
         logger.info("=== Validating objective: %s ===", obj_name)
@@ -201,19 +194,14 @@ class ValidateLandscapeCommand(BaseCommand):
             obj_name,
         )
 
-        # Collect base data (exploration + supplemental) for pre-populating band eval logs
-        dataset = ExplorationDataset.load(dataset_path)
+        # Resolve supplemental files via discovery (paths only, no loading)
         supplemental_files = (
-            resolve_supplemental_dirs(landscape.supplemental_data_dirs, dataset.objective_name)
+            discover_evaluation_records(landscape.supplemental_data_dirs, obj_name)
             if landscape.supplemental_data_dirs else []
         )
-        base_data = load_pooled_data(
-            [dataset_path, *supplemental_files], deduplicate=True,
-        )
-        base_records = base_data.as_records()
 
         # Per-band search with real evaluator (incremental save + resume)
-        bands_dir = output_dir / f"bands_{obj_name}"
+        bands_dir = output_dir / obj_name / "bands"
         validated_bands: list[BandValidationResult] = []
         total_evals = 0
 
@@ -223,7 +211,6 @@ class ValidateLandscapeCommand(BaseCommand):
 
             band_dir = bands_dir / f"band_{band_index:03d}"
             result_path = band_dir / "result.json"
-            eval_log_jsonl = band_dir / f"evaluations_{obj_name}.jsonl"
 
             # Skip if already completed (resumption)
             if result_path.exists():
@@ -234,29 +221,23 @@ class ValidateLandscapeCommand(BaseCommand):
                     len(occupied_bins),
                     obj_name,
                 )
-                loaded_result = json.loads(result_path.read_text())
-                # Support both old (best_score: float) and new (best_scores: dict) formats
-                raw_scores = loaded_result.get("best_scores", loaded_result.get("best_score"))
-                if isinstance(raw_scores, dict):
-                    loaded_score = next(iter(evals.objectives(raw_scores).values()))
-                else:
-                    loaded_score = float(raw_scores)
+                loaded = CostConstrainedSearchResult.model_validate_json(
+                    result_path.read_text()
+                )
                 validated_bands.append(
                     BandValidationResult(
                         band_index=band_index,
                         cost_low=cost_low,
                         cost_high=cost_high,
                         validated=PlacementResult(
-                            cost=loaded_result["final_cost"],
-                            score=loaded_score,
-                            assignments=tuple(
-                                loaded_result["best_parameters"]["assignments"]
-                            ),
+                            cost=loaded.final_cost,
+                            score=loaded.best_score,
+                            assignments=loaded.best_parameters.assignments,
                         ),
-                        total_evaluations=loaded_result["total_evaluations"],
+                        total_evaluations=loaded.total_evaluations,
                     )
                 )
-                total_evals += loaded_result["total_evaluations"]
+                total_evals += loaded.total_evaluations
 
                 # Incremental save of validation results
                 self._save_validation_results(
@@ -295,33 +276,43 @@ class ValidateLandscapeCommand(BaseCommand):
                 objective_name=obj_name,
             )
 
-            # Collect prior band strategy records from disk (same for fresh + resume)
-            prior_indices = [
-                bi for bi in occupied_bins[:step]
-                if (bands_dir / f"band_{bi:03d}" / "result.json").exists()
-            ]
-            prior_records = _load_completed_band_records(
-                bands_dir, obj_name, prior_indices,
-            )
+            # Build seed_data_paths: supplemental files + prior bands
+            seed_paths: list[str] = []
+            seed_paths.extend(str(f) for f in supplemental_files)
 
-            # Pre-populate band eval log with base data + cross-band strategy records.
-            # Always truncate/rewrite to avoid reusing stale records from a crashed prior run.
-            n_prepop = 0
-            eval_log_jsonl.parent.mkdir(parents=True, exist_ok=True)
-            with eval_log_jsonl.open("w") as f:
-                for rec in base_records:
-                    append_record(f, rec)
-                    n_prepop += 1
-                if self.config.accumulate_across_bands and prior_records:
-                    for rec in prior_records:
-                        append_record(f, rec)
-                        n_prepop += 1
+            if self.config.accumulate_across_bands:
+                prior_indices = [
+                    bi for bi in occupied_bins[:step]
+                    if (bands_dir / f"band_{bi:03d}" / "result.json").exists()
+                ]
+                prior_eval_paths, _ = _load_completed_band_records(
+                    bands_dir, prior_indices,
+                )
+                seed_paths.extend(str(p) for p in prior_eval_paths)
 
-            # Construct per-band search strategy — reads pre-seeded eval log
+            eval_log_path = band_dir / EVALUATION_RECORDS_FILENAME
+
+            # Write sidecar metadata (objective, band bounds, etc.)
+            write_meta(eval_log_path, EvaluationLogMeta(
+                version=1,
+                objective_name=obj_name,
+                num_layers=num_layers,
+                mixer_names=list(cost_model.phase_order),
+                source_command="validate_landscape",
+                source_detail="per_band_search",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                num_records=None,
+                cost_floor=cost_low,
+                cost_ceiling=cost_high,
+                band_index=band_index,
+            ))
+
+            # Construct per-band search strategy with seed data
             search_config = self.config.search_strategy.model_copy(
                 update={
                     "exploration_dataset_path": str(dataset_path),
-                    "evaluation_log_path": str(eval_log_jsonl),
+                    "evaluation_log_path": str(eval_log_path),
+                    "seed_data_paths": seed_paths,
                 }
             )
             strategy = search_config.create_search_strategy()
@@ -389,40 +380,6 @@ class ValidateLandscapeCommand(BaseCommand):
                 band_edges=band_edges,
                 total_evals=total_evals,
                 output_dir=output_dir,
-            )
-
-        # Build merged snowball from base_data + all completed band strategy records
-        merged_jsonl = output_dir / f"evaluations_{obj_name}.jsonl"
-        all_strategy_records = _load_completed_band_records(
-            bands_dir, obj_name, occupied_bins,
-        )
-        merged_record_count = 0
-        with merged_jsonl.open("w") as f:
-            for rec in base_records:
-                append_record(f, rec)
-                merged_record_count += 1
-            for rec in all_strategy_records:
-                append_record(f, rec)
-                merged_record_count += 1
-
-        from datetime import datetime, timezone
-
-        merged_meta = EvaluationLogMeta(
-            version=1,
-            objective_name=obj_name,
-            num_layers=num_layers,
-            mixer_names=list(cost_model.phase_order),
-            source_command="validate_landscape",
-            source_detail="incremental_bands_merged",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            num_records=merged_record_count,
-        )
-        write_meta(merged_jsonl, merged_meta)
-        if merged_record_count > 0:
-            logger.info(
-                "Wrote merged evaluation log: %d records -> %s",
-                merged_record_count,
-                merged_jsonl,
             )
 
         # Final save (covers edge case where no bands were validated)

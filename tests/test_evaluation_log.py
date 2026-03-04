@@ -8,15 +8,16 @@ from pathlib import Path
 import pytest
 
 from place_layers.surrogate.evaluation_log import (
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
     PooledEvaluationData,
     append_record,
+    discover_evaluation_records,
     load_meta,
     load_pooled_data,
     load_records,
     meta_path_for,
-    resolve_supplemental_dirs,
     write_meta,
 )
 
@@ -34,7 +35,6 @@ class TestEvaluationRecord:
         rec = EvaluationRecord(
             assignment=("attn", "gdn", "attn"),
             score=0.75,
-            allocation={"attn": 2, "gdn": 1},
         )
         json_str = rec.model_dump_json()
         loaded = EvaluationRecord.model_validate_json(json_str)
@@ -45,7 +45,7 @@ class TestEvaluationRecord:
     def test_frozen(self):
         """EvaluationRecord is frozen."""
         rec = EvaluationRecord(
-            assignment=("attn",), score=0.5, allocation={"attn": 1}
+            assignment=("attn",), score=0.5,
         )
         with pytest.raises(Exception):
             rec.score = 0.9  # type: ignore[misc]
@@ -60,6 +60,26 @@ class TestEvaluationRecord:
         rec = EvaluationRecord.model_validate_json(line)
         assert rec.assignment == ("attn", "gdn", "attn")
         assert rec.score == 0.8
+        # allocation is computed, stored value is ignored
+        assert rec.allocation == {"attn": 2, "gdn": 1}
+
+    def test_allocation_is_computed(self):
+        """allocation is computed from assignment, not stored."""
+        rec = EvaluationRecord(
+            assignment=("attn", "gdn", "gdn", "attn"),
+            score=0.5,
+        )
+        assert rec.allocation == {"attn": 2, "gdn": 2}
+
+    def test_allocation_in_dump(self):
+        """allocation appears in model_dump_json for backward compat."""
+        rec = EvaluationRecord(
+            assignment=("attn", "gdn"),
+            score=0.5,
+        )
+        data = json.loads(rec.model_dump_json())
+        assert "allocation" in data
+        assert data["allocation"] == {"attn": 1, "gdn": 1}
 
 
 # =============================================================================
@@ -74,13 +94,13 @@ class TestJsonlIO:
         """Write multiple records, read them back identically."""
         records = [
             EvaluationRecord(
-                assignment=("attn", "gdn"), score=0.5, allocation={"attn": 1, "gdn": 1}
+                assignment=("attn", "gdn"), score=0.5,
             ),
             EvaluationRecord(
-                assignment=("gdn", "gdn"), score=0.6, allocation={"gdn": 2}
+                assignment=("gdn", "gdn"), score=0.6,
             ),
             EvaluationRecord(
-                assignment=("attn", "attn"), score=0.7, allocation={"attn": 2}
+                assignment=("attn", "attn"), score=0.7,
             ),
         ]
 
@@ -105,7 +125,7 @@ class TestJsonlIO:
     def test_load_skips_blank_lines(self, tmp_path: Path):
         """Blank lines in JSONL are skipped."""
         rec = EvaluationRecord(
-            assignment=("attn",), score=0.5, allocation={"attn": 1}
+            assignment=("attn",), score=0.5,
         )
         jsonl_path = tmp_path / "with_blanks.jsonl"
         jsonl_path.write_text(
@@ -127,6 +147,11 @@ class TestMetadata:
         """meta_path_for maps .jsonl to .meta.yaml correctly."""
         p = meta_path_for(Path("/foo/bar/evaluations_gsm8k.jsonl"))
         assert p == Path("/foo/bar/evaluations_gsm8k.meta.yaml")
+
+    def test_meta_path_for_new_convention(self):
+        """meta_path_for maps evaluation_records.jsonl correctly."""
+        p = meta_path_for(Path("/foo/bar/evaluation_records.jsonl"))
+        assert p == Path("/foo/bar/evaluation_records.meta.yaml")
 
     def test_write_and_load_meta(self, tmp_path: Path):
         """Write and load sidecar metadata round-trip."""
@@ -153,6 +178,32 @@ class TestMetadata:
         assert loaded.mixer_names == ["attn", "gdn"]
         assert loaded.num_records == 42
 
+    def test_meta_with_band_fields(self, tmp_path: Path):
+        """EvaluationLogMeta supports cost_floor, cost_ceiling, band_index."""
+        jsonl_path = tmp_path / EVALUATION_RECORDS_FILENAME
+        jsonl_path.write_text("")
+
+        meta = EvaluationLogMeta(
+            version=1,
+            objective_name="gsm8k",
+            num_layers=24,
+            mixer_names=["attn", "gdn"],
+            source_command="validate_landscape",
+            source_detail="per_band_search",
+            created_at="2026-01-01T00:00:00+00:00",
+            num_records=10,
+            cost_floor=0.5,
+            cost_ceiling=0.8,
+            band_index=3,
+        )
+        write_meta(jsonl_path, meta)
+
+        loaded = load_meta(jsonl_path)
+        assert loaded is not None
+        assert loaded.cost_floor == 0.5
+        assert loaded.cost_ceiling == 0.8
+        assert loaded.band_index == 3
+
     def test_load_meta_missing(self, tmp_path: Path):
         """load_meta returns None when no sidecar exists."""
         jsonl_path = tmp_path / "evaluations_test.jsonl"
@@ -172,7 +223,7 @@ class TestPooledData:
             for rec in records:
                 append_record(f, rec)
 
-    def _write_exploration_json(self, path: Path, assignments, scores, allocations) -> None:
+    def _write_exploration_json(self, path: Path, assignments, scores) -> None:
         """Write a minimal ExplorationDataset JSON file."""
         from place_layers.surrogate.dataset import ExplorationDataset
         from place_layers.surrogate.encoding import FeatureExpansionConfig
@@ -180,7 +231,6 @@ class TestPooledData:
         ds = ExplorationDataset(
             assignments=assignments,
             scores=scores,
-            allocations=allocations,
             objective_name="test",
             num_layers=len(assignments[0]),
             mixer_names=["attn", "gdn"],
@@ -198,8 +248,8 @@ class TestPooledData:
     def test_load_jsonl_files(self, tmp_path: Path):
         """load_pooled_data loads JSONL files correctly."""
         records = [
-            EvaluationRecord(assignment=("attn", "gdn"), score=0.5, allocation={"attn": 1, "gdn": 1}),
-            EvaluationRecord(assignment=("gdn", "gdn"), score=0.6, allocation={"gdn": 2}),
+            EvaluationRecord(assignment=("attn", "gdn"), score=0.5),
+            EvaluationRecord(assignment=("gdn", "gdn"), score=0.6),
         ]
         jsonl_path = tmp_path / "evaluations_test.jsonl"
         self._write_jsonl(jsonl_path, records)
@@ -222,10 +272,9 @@ class TestPooledData:
         """load_pooled_data loads ExplorationDataset .json files."""
         assignments = [("attn", "gdn"), ("gdn", "attn")]
         scores = [0.5, 0.6]
-        allocations = [{"attn": 1, "gdn": 1}, {"attn": 1, "gdn": 1}]
 
         json_path = tmp_path / "exploration_results_test.json"
-        self._write_exploration_json(json_path, assignments, scores, allocations)
+        self._write_exploration_json(json_path, assignments, scores)
 
         pool = load_pooled_data([json_path])
         assert pool.num_samples == 2
@@ -236,13 +285,12 @@ class TestPooledData:
         # Write exploration JSON
         assignments = [("attn", "gdn"), ("gdn", "attn")]
         scores = [0.5, 0.6]
-        allocations = [{"attn": 1, "gdn": 1}, {"attn": 1, "gdn": 1}]
         json_path = tmp_path / "exploration_results_test.json"
-        self._write_exploration_json(json_path, assignments, scores, allocations)
+        self._write_exploration_json(json_path, assignments, scores)
 
         # Write JSONL with different data
         records = [
-            EvaluationRecord(assignment=("gdn", "gdn"), score=0.7, allocation={"gdn": 2}),
+            EvaluationRecord(assignment=("gdn", "gdn"), score=0.7),
         ]
         jsonl_path = tmp_path / "evaluations_test.jsonl"
         self._write_jsonl(jsonl_path, records)
@@ -252,7 +300,7 @@ class TestPooledData:
 
     def test_deduplication(self, tmp_path: Path):
         """Exact (assignment, score) duplicates are removed."""
-        rec = EvaluationRecord(assignment=("attn", "gdn"), score=0.5, allocation={"attn": 1, "gdn": 1})
+        rec = EvaluationRecord(assignment=("attn", "gdn"), score=0.5)
         jsonl1 = tmp_path / "eval1.jsonl"
         jsonl2 = tmp_path / "eval2.jsonl"
         self._write_jsonl(jsonl1, [rec])
@@ -276,7 +324,7 @@ class TestPooledData:
     def test_missing_file_skipped(self, tmp_path: Path):
         """Missing files are warned about but don't cause errors."""
         # Write one valid JSONL with sidecar
-        rec = EvaluationRecord(assignment=("attn",), score=0.5, allocation={"attn": 1})
+        rec = EvaluationRecord(assignment=("attn",), score=0.5)
         jsonl_path = tmp_path / "evaluations_test.jsonl"
         self._write_jsonl(jsonl_path, [rec])
         meta = EvaluationLogMeta(
@@ -303,7 +351,6 @@ class TestPooledData:
         pool = PooledEvaluationData(
             assignments=[("a", "b"), ("c", "d")],
             scores=[0.1, 0.2],
-            allocations=[{"a": 1, "b": 1}, {"c": 1, "d": 1}],
             num_layers=2,
             mixer_names=["a", "b", "c", "d"],
         )
@@ -314,7 +361,6 @@ class TestPooledData:
         pool = PooledEvaluationData(
             assignments=[("attn", "gdn"), ("gdn", "gdn")],
             scores=[0.5, 0.6],
-            allocations=[{"attn": 1, "gdn": 1}, {"gdn": 2}],
             num_layers=2,
             mixer_names=["attn", "gdn"],
         )
@@ -330,61 +376,121 @@ class TestPooledData:
     def test_as_records_empty(self):
         """as_records() returns empty list for empty pool."""
         pool = PooledEvaluationData(
-            assignments=[], scores=[], allocations=[],
+            assignments=[], scores=[],
             num_layers=2, mixer_names=["attn", "gdn"],
         )
         assert pool.as_records() == []
 
 
 # =============================================================================
-# resolve_supplemental_dirs
+# discover_evaluation_records
 # =============================================================================
 
 
-class TestResolveSupplementalDirs:
-    """Tests for resolve_supplemental_dirs."""
+class TestDiscoverEvaluationRecords:
+    """Tests for discover_evaluation_records."""
 
-    def test_finds_snowball(self, tmp_path: Path):
-        """Finds evaluations_{obj}.jsonl at top level."""
+    def _write_sidecar(self, path: Path, objective_name: str) -> None:
+        """Write a sidecar for the given path."""
+        meta = EvaluationLogMeta(
+            version=1, objective_name=objective_name, num_layers=24,
+            mixer_names=["attn", "gdn"], source_command="test",
+            source_detail="test", created_at="2026-01-01T00:00:00+00:00",
+            num_records=1,
+        )
+        write_meta(path, meta)
+
+    def test_finds_legacy_snowball(self, tmp_path: Path):
+        """Finds evaluations_{obj}.jsonl at top level (legacy)."""
         (tmp_path / "evaluations_gsm8k.jsonl").write_text("")
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        files = discover_evaluation_records([tmp_path], "gsm8k")
         assert len(files) == 1
         assert files[0].name == "evaluations_gsm8k.jsonl"
+
+    def test_finds_new_convention(self, tmp_path: Path):
+        """Finds evaluation_records.jsonl with matching sidecar."""
+        obj_dir = tmp_path / "gsm8k"
+        obj_dir.mkdir()
+        eval_path = obj_dir / EVALUATION_RECORDS_FILENAME
+        eval_path.write_text("")
+        self._write_sidecar(eval_path, "gsm8k")
+
+        files = discover_evaluation_records([tmp_path], "gsm8k")
+        assert len(files) == 1
+        assert files[0].name == EVALUATION_RECORDS_FILENAME
 
     def test_finds_nested_snowball(self, tmp_path: Path):
         """Finds evaluations_{obj}.jsonl recursively."""
         band_dir = tmp_path / "bands_gsm8k" / "band_001"
         band_dir.mkdir(parents=True)
         (band_dir / "evaluations_gsm8k.jsonl").write_text("")
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        files = discover_evaluation_records([tmp_path], "gsm8k")
         assert len(files) == 1
         assert files[0].name == "evaluations_gsm8k.jsonl"
 
-    def test_ignores_progress_file(self, tmp_path: Path):
-        """exploration_progress_{obj}.jsonl is not discovered."""
-        (tmp_path / "exploration_progress_gsm8k.jsonl").write_text("")
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+    def test_ignores_wrong_objective_sidecar(self, tmp_path: Path):
+        """evaluation_records.jsonl with wrong objective sidecar is skipped."""
+        eval_path = tmp_path / EVALUATION_RECORDS_FILENAME
+        eval_path.write_text("")
+        self._write_sidecar(eval_path, "mmlu")  # wrong objective
+
+        files = discover_evaluation_records([tmp_path], "gsm8k")
         assert len(files) == 0
 
-    def test_ignores_exploration_json(self, tmp_path: Path):
-        """exploration_results_{obj}.json is not discovered."""
-        (tmp_path / "exploration_results_gsm8k.json").write_text("{}")
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+    def test_ignores_no_sidecar(self, tmp_path: Path):
+        """evaluation_records.jsonl without sidecar is skipped."""
+        eval_path = tmp_path / EVALUATION_RECORDS_FILENAME
+        eval_path.write_text("")
+
+        files = discover_evaluation_records([tmp_path], "gsm8k")
         assert len(files) == 0
 
     def test_deduplicates_across_dirs(self, tmp_path: Path):
         """Same file referenced from two dirs appears once."""
         (tmp_path / "evaluations_gsm8k.jsonl").write_text("")
-        files = resolve_supplemental_dirs([tmp_path, tmp_path], "gsm8k")
+        files = discover_evaluation_records([tmp_path, tmp_path], "gsm8k")
         assert len(files) == 1
 
     def test_empty_directory(self, tmp_path: Path):
         """Empty directory returns no files."""
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        files = discover_evaluation_records([tmp_path], "gsm8k")
         assert len(files) == 0
 
     def test_ignores_wrong_objective(self, tmp_path: Path):
         """Files for a different objective are not discovered."""
         (tmp_path / "evaluations_mmlu.jsonl").write_text("")
-        files = resolve_supplemental_dirs([tmp_path], "gsm8k")
+        files = discover_evaluation_records([tmp_path], "gsm8k")
+        assert len(files) == 0
+
+    def test_cost_bound_filtering(self, tmp_path: Path):
+        """Cost bound constraints filter by sidecar metadata."""
+        band_dir = tmp_path / "band_001"
+        band_dir.mkdir()
+        eval_path = band_dir / EVALUATION_RECORDS_FILENAME
+        eval_path.write_text("")
+        meta = EvaluationLogMeta(
+            version=1, objective_name="gsm8k", num_layers=24,
+            mixer_names=["attn", "gdn"], source_command="test",
+            source_detail="test", created_at="2026-01-01T00:00:00+00:00",
+            num_records=1, cost_floor=0.3, cost_ceiling=0.6,
+        )
+        write_meta(eval_path, meta)
+
+        # Within range: should find
+        files = discover_evaluation_records(
+            [tmp_path], "gsm8k", cost_floor=0.2, cost_ceiling=0.7,
+        )
+        assert len(files) == 1
+
+        # Outside range (ceiling too low): should not find
+        files = discover_evaluation_records(
+            [tmp_path], "gsm8k", cost_floor=0.2, cost_ceiling=0.5,
+        )
+        assert len(files) == 0
+
+    def test_nonexistent_directory(self, tmp_path: Path):
+        """Nonexistent directory is handled gracefully."""
+        files = discover_evaluation_records(
+            [tmp_path / "does_not_exist"], "gsm8k"
+        )
         assert len(files) == 0

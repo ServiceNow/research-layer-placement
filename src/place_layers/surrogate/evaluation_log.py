@@ -6,20 +6,23 @@ Provides:
 - ``append_record`` / ``load_records``: write/read individual JSONL files.
 - ``PooledEvaluationData`` / ``load_pooled_data``: merge data from multiple
   evaluation sources (exploration JSON + evaluation JSONL).
-- ``resolve_supplemental_dirs``: find per-objective snowball JSONL files in
-  a set of directories.
+- ``discover_evaluation_records``: find per-objective evaluation record files
+  across directories (supports both new and legacy naming conventions).
 """
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import IO, Sequence
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 logger = logging.getLogger(__name__)
+
+EVALUATION_RECORDS_FILENAME = "evaluation_records.jsonl"
 
 
 # ============================================================================
@@ -30,15 +33,21 @@ logger = logging.getLogger(__name__)
 class EvaluationRecord(BaseModel):
     """Single evaluated placement. One per JSONL line.
 
-    Field names match the existing explore_placements progress format
-    (``assignment``, ``score``, ``allocation``) for backward compatibility.
+    ``allocation`` is computed from ``assignment`` — no need to store it
+    explicitly.  Old JSONL files with a stored ``allocation`` field are
+    silently accepted (the stored value is ignored in favor of the computed
+    one).
     """
 
     model_config = {"frozen": True}
 
     assignment: tuple[str, ...]
     score: float
-    allocation: dict[str, int]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def allocation(self) -> dict[str, int]:
+        return dict(Counter(self.assignment))
 
 
 # ============================================================================
@@ -59,6 +68,9 @@ class EvaluationLogMeta(BaseModel):
     source_detail: str
     created_at: str
     num_records: int | None
+    cost_floor: float | None = None
+    cost_ceiling: float | None = None
+    band_index: int | None = None
 
 
 # ============================================================================
@@ -91,7 +103,7 @@ def load_records(path: Path | str) -> list[EvaluationRecord]:
 
 
 def meta_path_for(jsonl_path: Path) -> Path:
-    """Public helper: ``evaluations_foo.jsonl`` → ``evaluations_foo.meta.yaml``."""
+    """Public helper: ``evaluation_records.jsonl`` → ``evaluation_records.meta.yaml``."""
     stem = jsonl_path.name
     if stem.endswith(".jsonl"):
         stem = stem[: -len(".jsonl")]
@@ -124,9 +136,13 @@ class PooledEvaluationData(BaseModel):
 
     assignments: list[tuple[str, ...]]
     scores: list[float]
-    allocations: list[dict[str, int]]
     num_layers: int
     mixer_names: list[str]
+
+    @property
+    def allocations(self) -> list[dict[str, int]]:
+        """Compute allocations from assignments (never stored)."""
+        return [dict(Counter(a)) for a in self.assignments]
 
     @property
     def num_samples(self) -> int:
@@ -135,10 +151,8 @@ class PooledEvaluationData(BaseModel):
     def as_records(self) -> list[EvaluationRecord]:
         """Convert to list of EvaluationRecord for serialization."""
         return [
-            EvaluationRecord(assignment=a, score=s, allocation=alloc)
-            for a, s, alloc in zip(
-                self.assignments, self.scores, self.allocations, strict=True,
-            )
+            EvaluationRecord(assignment=a, score=s)
+            for a, s in zip(self.assignments, self.scores, strict=True)
         ]
 
 
@@ -160,7 +174,6 @@ def load_pooled_data(
 
     all_assignments: list[tuple[str, ...]] = []
     all_scores: list[float] = []
-    all_allocations: list[dict[str, int]] = []
     num_layers: int | None = None
     mixer_names: list[str] | None = None
 
@@ -174,7 +187,6 @@ def load_pooled_data(
             ds = ExplorationDataset.load(p)
             all_assignments.extend(ds.assignments)
             all_scores.extend(ds.scores)
-            all_allocations.extend(ds.allocations)
             if num_layers is None:
                 num_layers = ds.num_layers
                 mixer_names = ds.mixer_names
@@ -183,7 +195,6 @@ def load_pooled_data(
             for rec in records:
                 all_assignments.append(rec.assignment)
                 all_scores.append(rec.score)
-                all_allocations.append(rec.allocation)
             # Try to get metadata from sidecar
             if num_layers is None:
                 meta = load_meta(p)
@@ -199,20 +210,22 @@ def load_pooled_data(
             "Could not determine num_layers from any loaded file. "
             f"Paths: {[str(p) for p in paths]}"
         )
-    assert mixer_names is not None
+    if mixer_names is None:
+        raise ValueError(
+            "Could not determine mixer_names from any loaded file. "
+            f"Paths: {[str(p) for p in paths]}"
+        )
 
     if deduplicate:
         seen: set[tuple[tuple[str, ...], float]] = set()
         deduped_assignments: list[tuple[str, ...]] = []
         deduped_scores: list[float] = []
-        deduped_allocations: list[dict[str, int]] = []
-        for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
+        for a, s in zip(all_assignments, all_scores):
             key = (a, s)
             if key not in seen:
                 seen.add(key)
                 deduped_assignments.append(a)
                 deduped_scores.append(s)
-                deduped_allocations.append(alloc)
         n_removed = len(all_assignments) - len(deduped_assignments)
         if n_removed > 0:
             logger.info(
@@ -222,36 +235,96 @@ def load_pooled_data(
             )
         all_assignments = deduped_assignments
         all_scores = deduped_scores
-        all_allocations = deduped_allocations
 
     return PooledEvaluationData(
         assignments=all_assignments,
         scores=all_scores,
-        allocations=all_allocations,
         num_layers=num_layers,
         mixer_names=mixer_names,
     )
 
 
-def resolve_supplemental_dirs(
+# ============================================================================
+# Discovery
+# ============================================================================
+
+
+def discover_evaluation_records(
     dirs: Sequence[str | Path],
     objective_name: str,
+    *,
+    num_layers: int | None = None,
+    mixer_names: list[str] | None = None,
+    cost_floor: float | None = None,
+    cost_ceiling: float | None = None,
 ) -> list[Path]:
-    """Resolve supplemental directories to per-objective snowball JSONL paths.
+    """Find evaluation record files matching constraints (recursive).
 
-    For each directory, recursively finds ``evaluations_{objective_name}.jsonl``
-    snowball files (sorted by modification time within each directory).
-    Deduplicates by absolute path across directories.
+    For new-convention files (evaluation_records.jsonl): reads companion
+    .meta.yaml sidecar, matches by objective_name and optional constraints.
+    For legacy files (evaluations_{obj}.jsonl): matches by filename.
+
+    Constraint semantics:
+    - objective_name: exact match (required)
+    - num_layers: exact match (if provided)
+    - mixer_names: set equality (if provided)
+    - cost_floor: meta.cost_floor >= this  (files with None cost_floor pass)
+    - cost_ceiling: meta.cost_ceiling <= this  (files with None cost_ceiling pass)
+
+    Cost bound semantics: files without cost bounds (exploration data) are
+    ALWAYS included — they're unscoped.  Files with cost bounds are only
+    included if their range is fully within the requested range.
+
+    Deduplicates by absolute path.  Sorted by modification time.
     """
     files: list[Path] = []
     seen: set[str] = set()
+
     for d in dirs:
-        for f in sorted(
-            Path(d).rglob(f"evaluations_{objective_name}.jsonl"),
-            key=lambda p: p.stat().st_mtime,
-        ):
-            key = str(f.resolve())
-            if key not in seen:
-                files.append(f)
-                seen.add(key)
+        d = Path(d)
+        if not d.exists():
+            continue
+
+        candidates: list[Path] = []
+
+        # New convention: evaluation_records.jsonl with sidecar
+        for f in d.rglob(EVALUATION_RECORDS_FILENAME):
+            candidates.append(f)
+
+        # Legacy convention: evaluations_{objective_name}.jsonl
+        for f in d.rglob(f"evaluations_{objective_name}.jsonl"):
+            candidates.append(f)
+
+        # Sort by modification time within each directory
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+
+        for f in candidates:
+            abs_key = str(f.resolve())
+            if abs_key in seen:
+                continue
+
+            # For new-convention files, check sidecar metadata
+            if f.name == EVALUATION_RECORDS_FILENAME:
+                meta = load_meta(f)
+                if meta is None:
+                    continue
+                if meta.objective_name != objective_name:
+                    continue
+                if num_layers is not None and meta.num_layers != num_layers:
+                    continue
+                if mixer_names is not None and set(meta.mixer_names) != set(mixer_names):
+                    continue
+                # Cost bound filtering
+                if cost_floor is not None and meta.cost_floor is not None:
+                    if meta.cost_floor < cost_floor:
+                        continue
+                if cost_ceiling is not None and meta.cost_ceiling is not None:
+                    if meta.cost_ceiling > cost_ceiling:
+                        continue
+
+            # Legacy files match by filename (already filtered by rglob pattern)
+
+            files.append(f)
+            seen.add(abs_key)
+
     return files

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -20,12 +21,16 @@ class ExplorationDataset(BaseModel):
     command produces M independent datasets.
     """
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "extra": "ignore"}
 
     # Data
     assignments: list[tuple[str, ...]]
     scores: list[float]
-    allocations: list[dict[str, int]]
+
+    @property
+    def allocations(self) -> list[dict[str, int]]:
+        """Compute allocations from assignments (never stored)."""
+        return [dict(Counter(a)) for a in self.assignments]
 
     # Which objective this dataset is for
     objective_name: str

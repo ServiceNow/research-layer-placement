@@ -135,17 +135,12 @@ async def _build_exploration_dataset(
 
     assignments: list[tuple[str, ...]] = []
     scores: list[float] = []
-    allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
         scores.append(score)
-        alloc: dict[str, int] = {}
-        for m in assignment:
-            alloc[m] = alloc.get(m, 0) + 1
-        allocations.append(alloc)
 
     rho = ridge_cv_rho(
         assignments=assignments,
@@ -159,7 +154,6 @@ async def _build_exploration_dataset(
     return ExplorationDataset(
         assignments=assignments,
         scores=scores,
-        allocations=allocations,
         objective_name=objective_name,
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
@@ -183,7 +177,6 @@ def _pool(dataset: ExplorationDataset) -> PooledEvaluationData:
     return PooledEvaluationData(
         assignments=list(dataset.assignments),
         scores=list(dataset.scores),
-        allocations=list(dataset.allocations),
         num_layers=dataset.num_layers,
         mixer_names=dataset.mixer_names,
     )
@@ -220,11 +213,12 @@ class TestLandscapeHelpers:
     async def test_pool_with_supplemental_dirs(self, tmp_path: Path) -> None:
         """load_pooled_data pools supplemental data from directories."""
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationLogMeta,
             EvaluationRecord,
             append_record,
+            discover_evaluation_records,
             load_pooled_data,
-            resolve_supplemental_dirs,
             write_meta,
         )
 
@@ -233,19 +227,17 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         # Write supplemental JSONL in a subdirectory using standard naming
-        supplemental_dir = tmp_path / "supplemental"
-        supplemental_dir.mkdir()
-        jsonl_path = supplemental_dir / "evaluations_weighted_average.jsonl"
+        supplemental_dir = tmp_path / "supplemental" / "weighted_average"
+        supplemental_dir.mkdir(parents=True)
+        jsonl_path = supplemental_dir / EVALUATION_RECORDS_FILENAME
         extra_records = [
             EvaluationRecord(
                 assignment=("m0",) * 6 + ("m1",) * 6,
                 score=0.42,
-                allocation={"m0": 6, "m1": 6},
             ),
             EvaluationRecord(
                 assignment=("m1",) * 6 + ("m0",) * 6,
                 score=0.38,
-                allocation={"m0": 6, "m1": 6},
             ),
         ]
         with jsonl_path.open("w") as f:
@@ -273,8 +265,8 @@ class TestLandscapeHelpers:
         surr_base.fit(pooled_base.assignments, np.array(pooled_base.scores))
 
         # Pool WITH supplemental dirs
-        supplemental_files = resolve_supplemental_dirs(
-            [str(supplemental_dir)], dataset.objective_name,
+        supplemental_files = discover_evaluation_records(
+            [tmp_path / "supplemental"], objective_name=dataset.objective_name,
         )
         pooled_with = load_pooled_data(
             [dataset_path, *supplemental_files], deduplicate=True,
@@ -886,21 +878,21 @@ class TestObjectiveResultPath:
     def test_produces_correct_path(self) -> None:
         """objective_result_path produces expected filename."""
         p = objective_result_path(Path("/out"), "exploration_results", "gsm8k")
-        assert p == Path("/out/exploration_results_gsm8k.json")
+        assert p == Path("/out/gsm8k/exploration_results.json")
 
     def test_different_prefixes(self) -> None:
         """Works with different prefixes."""
         p1 = objective_result_path(Path("/d"), "exploration_results", "mmlu")
         p2 = objective_result_path(Path("/d"), "validation_results", "mmlu")
         p3 = objective_result_path(Path("/d"), "landscape_data", "mmlu")
-        assert p1 == Path("/d/exploration_results_mmlu.json")
-        assert p2 == Path("/d/validation_results_mmlu.json")
-        assert p3 == Path("/d/landscape_data_mmlu.json")
+        assert p1 == Path("/d/mmlu/exploration_results.json")
+        assert p2 == Path("/d/mmlu/validation_results.json")
+        assert p3 == Path("/d/mmlu/landscape_data.json")
 
     def test_objective_name_with_special_chars(self) -> None:
-        """Objective names are used as-is in the filename."""
+        """Objective names are used as-is in the directory."""
         p = objective_result_path(Path("/d"), "exploration_results", "weighted_average")
-        assert p == Path("/d/exploration_results_weighted_average.json")
+        assert p == Path("/d/weighted_average/exploration_results.json")
 
 
 # =============================================================================
@@ -998,6 +990,7 @@ class TestMultiObjectiveValidation:
                 evaluator, num_samples=50, objective_name=obj_name,
             )
             path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(dataset.model_dump_json(indent=2))
 
         # Verify both files exist and can be loaded
@@ -1166,43 +1159,36 @@ class TestCrossBandDataLoading:
     """Test _load_completed_band_records and cross-band accumulation."""
 
     def test_load_completed_band_records(self, tmp_path: Path) -> None:
-        """_load_completed_band_records returns only strategy records."""
+        """_load_completed_band_records returns paths and record count."""
         from place_layers.command.validate_landscape import _load_completed_band_records
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationRecord,
             append_record,
+            load_records,
         )
 
-        bands_dir = tmp_path / "bands_obj"
-        obj_name = "obj"
+        bands_dir = tmp_path / "bands"
 
-        # Create band 0 with 3 pre-populated + 2 strategy records
+        # Create band 0 with 2 strategy-only records
         band_dir = bands_dir / "band_000"
         band_dir.mkdir(parents=True)
-        eval_log = band_dir / f"evaluations_{obj_name}.jsonl"
+        eval_log = band_dir / EVALUATION_RECORDS_FILENAME
         with eval_log.open("w") as f:
-            # 3 pre-populated records
-            for i in range(3):
-                append_record(f, EvaluationRecord(
-                    assignment=("m0",) * 6 + ("m1",) * 6,
-                    score=float(i),
-                    allocation={"m0": 6, "m1": 6},
-                ))
-            # 2 strategy records
             for i in range(2):
                 append_record(f, EvaluationRecord(
                     assignment=("m1",) * 6 + ("m0",) * 6,
                     score=10.0 + i,
-                    allocation={"m0": 6, "m1": 6},
                 ))
         result_path = band_dir / "result.json"
-        result_path.write_text(json.dumps({"total_evaluations": 2}))
+        result_path.write_text('{"total_evaluations": 2}')
 
-        # Load strategy records for band 0
-        records = _load_completed_band_records(bands_dir, obj_name, [0])
+        # Load paths for band 0
+        paths, total = _load_completed_band_records(bands_dir, [0])
 
-        assert len(records) == 2
-        # Should be the last 2 records (strategy records)
+        assert len(paths) == 1
+        assert total == 2
+        records = load_records(paths[0])
         assert records[0].score == 10.0
         assert records[1].score == 11.0
 
@@ -1210,135 +1196,91 @@ class TestCrossBandDataLoading:
         """_load_completed_band_records skips bands without result.json."""
         from place_layers.command.validate_landscape import _load_completed_band_records
 
-        bands_dir = tmp_path / "bands_obj"
+        bands_dir = tmp_path / "bands"
         bands_dir.mkdir()
 
         # No band dirs exist
-        records = _load_completed_band_records(bands_dir, "obj", [0, 1, 2])
-        assert records == []
+        paths, total = _load_completed_band_records(bands_dir, [0, 1, 2])
+        assert paths == []
+        assert total == 0
 
-    def test_cross_band_no_distinction_fresh_vs_resume(self, tmp_path: Path) -> None:
-        """Building pre-population data for band 1 is identical fresh vs resume."""
+    def test_cross_band_seed_paths(self, tmp_path: Path) -> None:
+        """Prior band eval logs become seed_data_paths for the next band."""
         from place_layers.command.validate_landscape import _load_completed_band_records
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationRecord,
             append_record,
         )
 
-        bands_dir = tmp_path / "bands_obj"
-        obj_name = "obj"
+        bands_dir = tmp_path / "bands"
 
-        # Create band 0 as completed
+        # Create band 0 with only strategy records
         band0_dir = bands_dir / "band_000"
         band0_dir.mkdir(parents=True)
-        eval_log = band0_dir / f"evaluations_{obj_name}.jsonl"
-        strategy_records = [
-            EvaluationRecord(
+        eval_log = band0_dir / EVALUATION_RECORDS_FILENAME
+        with eval_log.open("w") as f:
+            append_record(f, EvaluationRecord(
                 assignment=("m0",) * 6 + ("m1",) * 6,
                 score=0.5,
-                allocation={"m0": 6, "m1": 6},
-            ),
-            EvaluationRecord(
+            ))
+            append_record(f, EvaluationRecord(
                 assignment=("m1",) * 6 + ("m0",) * 6,
                 score=0.6,
-                allocation={"m0": 6, "m1": 6},
-            ),
-        ]
-        # Write 5 pre-populated + 2 strategy
-        with eval_log.open("w") as f:
-            for i in range(5):
-                append_record(f, EvaluationRecord(
-                    assignment=("m0",) * (6 + i % 2) + ("m1",) * (6 - i % 2),
-                    score=float(i) * 0.1,
-                    allocation={"m0": 6 + i % 2, "m1": 6 - i % 2},
-                ))
-            for rec in strategy_records:
-                append_record(f, rec)
-        result_path = band0_dir / "result.json"
-        result_path.write_text(json.dumps({"total_evaluations": 2}))
+            ))
+        (band0_dir / "result.json").write_text('{"total_evaluations": 2}')
 
-        # Whether band 0 was just completed or was already on disk,
-        # loading prior records for band 1 produces the same result
-        prior_records = _load_completed_band_records(
-            bands_dir, obj_name, [0],
-        )
+        # Loading prior records for band 1
+        paths, total = _load_completed_band_records(bands_dir, [0])
 
-        assert len(prior_records) == 2
-        assert prior_records[0].score == 0.5
-        assert prior_records[1].score == 0.6
+        assert len(paths) == 1
+        assert total == 2
 
-    def test_merged_snowball_correctness(self, tmp_path: Path) -> None:
-        """Merged snowball = base_data + band_0 strategy + band_1 strategy."""
+    def test_multi_band_seed_paths(self, tmp_path: Path) -> None:
+        """Multiple completed bands produce multiple seed paths."""
         from place_layers.command.validate_landscape import _load_completed_band_records
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationRecord,
-            PooledEvaluationData,
             append_record,
+            load_records,
         )
 
-        bands_dir = tmp_path / "bands_obj"
-        obj_name = "obj"
+        bands_dir = tmp_path / "bands"
 
-        # Create base data
-        base_data = PooledEvaluationData(
-            assignments=[("m0",) * 12],
-            scores=[1.0],
-            allocations=[{"m0": 12, "m1": 0}],
-            num_layers=12,
-            mixer_names=["m0", "m1"],
-        )
-        base_records = base_data.as_records()
-
-        # Create band 0 (3 pre-pop + 2 strategy)
+        # Create band 0 with 2 strategy records
         band0_dir = bands_dir / "band_000"
         band0_dir.mkdir(parents=True)
-        eval_log0 = band0_dir / f"evaluations_{obj_name}.jsonl"
+        eval_log0 = band0_dir / EVALUATION_RECORDS_FILENAME
         with eval_log0.open("w") as f:
-            for rec in base_records:
-                append_record(f, rec)
-            # strategy records
             for i in range(2):
                 append_record(f, EvaluationRecord(
                     assignment=("m0",) * 6 + ("m1",) * 6,
                     score=2.0 + i,
-                    allocation={"m0": 6, "m1": 6},
                 ))
-        (band0_dir / "result.json").write_text(json.dumps({"total_evaluations": 2}))
+        (band0_dir / "result.json").write_text('{"total_evaluations": 2}')
 
-        # Create band 1 (3 pre-pop + 2 from band 0 + 3 strategy)
+        # Create band 1 with 3 strategy records
         band1_dir = bands_dir / "band_001"
         band1_dir.mkdir(parents=True)
-        eval_log1 = band1_dir / f"evaluations_{obj_name}.jsonl"
+        eval_log1 = band1_dir / EVALUATION_RECORDS_FILENAME
         with eval_log1.open("w") as f:
-            for rec in base_records:
-                append_record(f, rec)
-            # cross-band records from band 0
-            for i in range(2):
-                append_record(f, EvaluationRecord(
-                    assignment=("m0",) * 6 + ("m1",) * 6,
-                    score=2.0 + i,
-                    allocation={"m0": 6, "m1": 6},
-                ))
-            # strategy records
             for i in range(3):
                 append_record(f, EvaluationRecord(
                     assignment=("m1",) * 12,
                     score=5.0 + i,
-                    allocation={"m0": 0, "m1": 12},
                 ))
-        (band1_dir / "result.json").write_text(json.dumps({"total_evaluations": 3}))
+        (band1_dir / "result.json").write_text('{"total_evaluations": 3}')
 
-        # Build merged snowball the same way validate_landscape does
-        all_strategy_records = _load_completed_band_records(
-            bands_dir, obj_name, [0, 1],
-        )
-        merged_records = list(base_records) + all_strategy_records
+        # Load both bands
+        paths, total = _load_completed_band_records(bands_dir, [0, 1])
 
-        # Verify: base (1) + band_0 strategy (2) + band_1 strategy (3) = 6
-        assert len(merged_records) == 6
-        assert merged_records[0].score == 1.0  # base
-        assert merged_records[1].score == 2.0  # band 0 strategy
-        assert merged_records[2].score == 3.0  # band 0 strategy
-        assert merged_records[3].score == 5.0  # band 1 strategy
-        assert merged_records[4].score == 6.0  # band 1 strategy
-        assert merged_records[5].score == 7.0  # band 1 strategy
+        assert len(paths) == 2
+        assert total == 5
+        # Verify records from each band
+        records0 = load_records(paths[0])
+        records1 = load_records(paths[1])
+        assert len(records0) == 2
+        assert len(records1) == 3
+        assert records0[0].score == 2.0
+        assert records1[0].score == 5.0

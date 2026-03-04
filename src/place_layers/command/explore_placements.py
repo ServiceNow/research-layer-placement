@@ -6,7 +6,7 @@ then be used by the surrogate_search command.
 
 Resumability
 ------------
-Each evaluated (assignment, score, allocation) is written incrementally to a
+Each evaluated (assignment, score) is written incrementally to a
 JSONL file. On restart, this file is loaded to recover progress. The RNG state
 is deterministic: with the same seed and sample count, the same next batch is
 generated, so exploration continues from the exact same point.
@@ -38,6 +38,7 @@ from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
     append_record,
@@ -73,14 +74,14 @@ logger = logging.getLogger(__name__)
 
 def _load_progress(
     path: Path,
-) -> tuple[list[tuple[str, ...]], list[float], list[dict[str, int]]]:
+) -> tuple[list[tuple[str, ...]], list[float]]:
     """Load incremental JSONL progress file.
 
     Returns:
-        (assignments, scores, allocations) — each a list of the same length.
+        (assignments, scores) — each a list of the same length.
     """
     if not path.exists():
-        return [], [], []
+        return [], []
 
     records = load_records(path)
     if records:
@@ -88,16 +89,7 @@ def _load_progress(
     return (
         [r.assignment for r in records],
         [r.score for r in records],
-        [r.allocation for r in records],
     )
-
-
-def _get_allocation(assignment: list[str] | tuple[str, ...]) -> dict[str, int]:
-    """Compute allocation counts from an assignment."""
-    alloc: dict[str, int] = {}
-    for mixer in assignment:
-        alloc[mixer] = alloc.get(mixer, 0) + 1
-    return alloc
 
 
 def _compute_cost_uniform_weights(
@@ -398,8 +390,10 @@ class ExplorePlacementsCommand(BaseCommand):
         )
 
         # Load existing progress (per-objective JSONL)
-        progress_path = output_dir / f"exploration_progress_{obj_name}.jsonl"
-        all_assignments, all_scores, all_allocations = _load_progress(progress_path)
+        obj_dir = output_dir / obj_name
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = obj_dir / "progress.jsonl"
+        all_assignments, all_scores = _load_progress(progress_path)
 
         # Capture local count before merging supplemental data
         num_local = len(all_assignments)
@@ -407,22 +401,21 @@ class ExplorePlacementsCommand(BaseCommand):
 
         if self.config.supplemental_data_dirs:
             from place_layers.surrogate.evaluation_log import (
+                discover_evaluation_records,
                 load_pooled_data,
-                resolve_supplemental_dirs,
             )
 
-            supplemental_files = resolve_supplemental_dirs(
+            supplemental_files = discover_evaluation_records(
                 self.config.supplemental_data_dirs, obj_name
             )
             if supplemental_files:
                 pool = load_pooled_data(supplemental_files, deduplicate=True)
                 existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
                 n_before = len(all_assignments)
-                for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
+                for a, s in zip(pool.assignments, pool.scores):
                     if (a, s) not in existing:
                         all_assignments.append(a)
                         all_scores.append(s)
-                        all_allocations.append(alloc)
                         existing.add((a, s))
                 n_added = len(all_assignments) - n_before
                 n_supplemental = n_added
@@ -483,7 +476,7 @@ class ExplorePlacementsCommand(BaseCommand):
 
         # Open snowball file for incremental writes (supplemental + local).
         # Written alongside progress file; discoverable for chaining.
-        snowball_path = output_dir / f"evaluations_{obj_name}.jsonl"
+        snowball_path = obj_dir / EVALUATION_RECORDS_FILENAME
         snowball_meta = EvaluationLogMeta(
             version=1,
             objective_name=obj_name,
@@ -501,13 +494,12 @@ class ExplorePlacementsCommand(BaseCommand):
         snowball_file = snowball_path.open("w")
         try:
             # Seed snowball with all records loaded so far (local progress + supplemental)
-            for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
+            for a, s in zip(all_assignments, all_scores):
                 append_record(
                     snowball_file,
                     EvaluationRecord(
                         assignment=a,
                         score=s,
-                        allocation=alloc,
                     ),
                 )
             # --- Phase 1: Initial batch ---
@@ -525,14 +517,11 @@ class ExplorePlacementsCommand(BaseCommand):
                     placement = LayerPlacement(assignments=tuple(assignment))
                     score = await problem.evaluate(placement)
                     assignment_tuple = tuple(assignment)
-                    allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
-                    all_allocations.append(allocation)
                     record = EvaluationRecord(
                         assignment=assignment_tuple,
                         score=score,
-                        allocation=allocation,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -632,14 +621,11 @@ class ExplorePlacementsCommand(BaseCommand):
                     placement = LayerPlacement(assignments=tuple(assignment))
                     score = await problem.evaluate(placement)
                     assignment_tuple = tuple(assignment)
-                    allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
-                    all_allocations.append(allocation)
                     record = EvaluationRecord(
                         assignment=assignment_tuple,
                         score=score,
-                        allocation=allocation,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -720,7 +706,6 @@ class ExplorePlacementsCommand(BaseCommand):
         dataset = ExplorationDataset(
             assignments=all_assignments,
             scores=all_scores,
-            allocations=all_allocations,
             objective_name=obj_name,
             num_layers=num_layers,
             mixer_names=phase_order,
@@ -883,8 +868,9 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         description=(
             "Directories containing pre-existing evaluation data to merge "
             "before exploration begins. Each directory is searched recursively "
-            "for evaluations_{obj}.jsonl snowball files. "
-            "Supplemental records are deduplicated against locally-generated progress "
-            "but do not advance the RNG, preserving deterministic resumption."
+            "for evaluation record files (evaluation_records.jsonl or legacy "
+            "evaluations_{obj}.jsonl). Supplemental records are deduplicated "
+            "against locally-generated progress but do not advance the RNG, "
+            "preserving deterministic resumption."
         ),
     )
