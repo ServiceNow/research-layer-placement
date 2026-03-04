@@ -45,7 +45,11 @@ from place_layers.surrogate.evaluation_log import (
     write_meta,
 )
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
-from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig, SurrogateConfig
+from place_layers.surrogate.config import (
+    BayesianRidgeSurrogateConfig,
+    RidgeSurrogateConfig,
+    SurrogateConfig,
+)
 from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
     ridge_cv_rho,
@@ -236,9 +240,7 @@ def _log_expansion_result(
 
     # --- Phase 2 ---
     if result.order_results:
-        lines.append(
-            f"  Phase 2 (order at range={result.selected_range}):"
-        )
+        lines.append(f"  Phase 2 (order at range={result.selected_range}):")
         # prev_score carries over from phase 1's last step
         for step in result.order_results:
             label = f"order={step.config.max_order}"
@@ -321,7 +323,11 @@ class ExplorePlacementsCommand(BaseCommand):
 
         from contextlib import nullcontext
 
-        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        backend_cm = (
+            self.config.backend.create_backend()
+            if self.config.backend
+            else nullcontext()
+        )
         async with backend_cm as backend:
             async with self.config.evaluators.create_evaluators(
                 output_dir, backend=backend
@@ -369,7 +375,8 @@ class ExplorePlacementsCommand(BaseCommand):
         )
         logger.info(
             "Found %d feasible allocations for %d layers",
-            len(feasible_allocations), num_layers,
+            len(feasible_allocations),
+            num_layers,
         )
         logger.info(
             "Stopping criteria: target_rho=%g, "
@@ -392,9 +399,7 @@ class ExplorePlacementsCommand(BaseCommand):
 
         # Load existing progress (per-objective JSONL)
         progress_path = output_dir / f"exploration_progress_{obj_name}.jsonl"
-        all_assignments, all_scores, all_allocations = _load_progress(
-            progress_path
-        )
+        all_assignments, all_scores, all_allocations = _load_progress(progress_path)
 
         # Capture local count before merging supplemental data
         num_local = len(all_assignments)
@@ -405,6 +410,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 load_pooled_data,
                 resolve_supplemental_dirs,
             )
+
             supplemental_files = resolve_supplemental_dirs(
                 self.config.supplemental_data_dirs, obj_name
             )
@@ -423,13 +429,17 @@ class ExplorePlacementsCommand(BaseCommand):
                 logger.info(
                     "Supplemental data: loaded %d records from %d file(s), "
                     "merged %d new (skipped %d duplicates) for objective '%s'",
-                    pool.num_samples, len(supplemental_files),
-                    n_added, pool.num_samples - n_added, obj_name,
+                    pool.num_samples,
+                    len(supplemental_files),
+                    n_added,
+                    pool.num_samples - n_added,
+                    obj_name,
                 )
             else:
                 logger.info(
                     "Supplemental data: no files found for objective '%s' in %d director%s",
-                    obj_name, len(self.config.supplemental_data_dirs),
+                    obj_name,
+                    len(self.config.supplemental_data_dirs),
                     "y" if len(self.config.supplemental_data_dirs) == 1 else "ies",
                 )
 
@@ -440,13 +450,17 @@ class ExplorePlacementsCommand(BaseCommand):
         rng = random.Random(self.config.seed)
         if num_local > 0:
             _fast_forward_rng(
-                rng, num_local, feasible_allocations, num_layers,
+                rng,
+                num_local,
+                feasible_allocations,
+                num_layers,
                 weights=sampling_weights,
             )
             if len(all_assignments) > num_local:
                 logger.info(
                     "Resumed from %d local samples (%d total with supplemental)",
-                    num_local, len(all_assignments),
+                    num_local,
+                    len(all_assignments),
                 )
             else:
                 logger.info("Resumed from %d completed samples", num_local)
@@ -488,17 +502,23 @@ class ExplorePlacementsCommand(BaseCommand):
         try:
             # Seed snowball with all records loaded so far (local progress + supplemental)
             for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
-                append_record(snowball_file, EvaluationRecord(
-                    assignment=a, score=s, allocation=alloc,
-                ))
+                append_record(
+                    snowball_file,
+                    EvaluationRecord(
+                        assignment=a,
+                        score=s,
+                        allocation=alloc,
+                    ),
+                )
             # --- Phase 1: Initial batch ---
-            remaining_initial = max(
-                0, self.config.min_samples - len(all_assignments)
-            )
+            remaining_initial = max(0, self.config.min_samples - len(all_assignments))
             if remaining_initial > 0:
                 logger.info("Sampling initial batch of %d", remaining_initial)
                 batch = _sample_batch(
-                    remaining_initial, feasible_allocations, num_layers, rng,
+                    remaining_initial,
+                    feasible_allocations,
+                    num_layers,
+                    rng,
                     weights=sampling_weights,
                 )
                 for assignment in batch:
@@ -510,7 +530,9 @@ class ExplorePlacementsCommand(BaseCommand):
                     all_scores.append(score)
                     all_allocations.append(allocation)
                     record = EvaluationRecord(
-                        assignment=assignment_tuple, score=score, allocation=allocation,
+                        assignment=assignment_tuple,
+                        score=score,
+                        allocation=allocation,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -527,7 +549,9 @@ class ExplorePlacementsCommand(BaseCommand):
                 and len(all_assignments) >= self.config.cv_folds
             ):
                 expansion_result = self._select_expansion(
-                    all_assignments, np.array(all_scores), phase_order,
+                    all_assignments,
+                    np.array(all_scores),
+                    phase_order,
                 )
                 last_expansion_result = expansion_result
                 _log_expansion_result(
@@ -560,9 +584,9 @@ class ExplorePlacementsCommand(BaseCommand):
                 rho = 0.0
 
             # --- Phase 3: Adaptive loop ---
-            termination_reason: Literal[
-                "target_reached", "plateau", "max_samples"
-            ] = "max_samples"
+            termination_reason: Literal["target_reached", "plateau", "max_samples"] = (
+                "max_samples"
+            )
 
             while len(all_assignments) < self.config.max_samples:
                 # Check stopping criteria
@@ -570,7 +594,8 @@ class ExplorePlacementsCommand(BaseCommand):
                     termination_reason = "target_reached"
                     logger.info(
                         "Target rho (%g) reached: %.4g",
-                        self.config.target_rank_correlation, rho,
+                        self.config.target_rank_correlation,
+                        rho,
                     )
                     break
 
@@ -581,7 +606,8 @@ class ExplorePlacementsCommand(BaseCommand):
                 ):
                     termination_reason = "plateau"
                     logger.info(
-                        "Plateau detected after %d checks", len(rho_history),
+                        "Plateau detected after %d checks",
+                        len(rho_history),
                     )
                     break
 
@@ -592,10 +618,14 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 logger.info(
                     "Sampling batch of %d (total: %d)",
-                    batch_size, len(all_assignments),
+                    batch_size,
+                    len(all_assignments),
                 )
                 batch = _sample_batch(
-                    batch_size, feasible_allocations, num_layers, rng,
+                    batch_size,
+                    feasible_allocations,
+                    num_layers,
+                    rng,
                     weights=sampling_weights,
                 )
                 for assignment in batch:
@@ -607,7 +637,9 @@ class ExplorePlacementsCommand(BaseCommand):
                     all_scores.append(score)
                     all_allocations.append(allocation)
                     record = EvaluationRecord(
-                        assignment=assignment_tuple, score=score, allocation=allocation,
+                        assignment=assignment_tuple,
+                        score=score,
+                        allocation=allocation,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -620,7 +652,9 @@ class ExplorePlacementsCommand(BaseCommand):
                     and len(all_assignments) >= self.config.cv_folds
                 ):
                     expansion_result = self._select_expansion(
-                        all_assignments, np.array(all_scores), phase_order,
+                        all_assignments,
+                        np.array(all_scores),
+                        phase_order,
                     )
                     last_expansion_result = expansion_result
                     new_config = expansion_result.selected_config
@@ -653,8 +687,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 rho_history.append(rho)
                 samples_at_check.append(len(all_assignments))
                 logger.info(
-                    "Ridge CV rho=%.4g (%+.4g) at %d samples "
-                    "[order=%d, range=%d]",
+                    "Ridge CV rho=%.4g (%+.4g) at %d samples " "[order=%d, range=%d]",
                     rho,
                     rho_delta,
                     len(all_assignments),
@@ -667,19 +700,23 @@ class ExplorePlacementsCommand(BaseCommand):
             try:
                 write_meta(
                     progress_path,
-                    progress_meta.model_copy(update={"num_records": len(all_assignments) - n_supplemental}),
+                    progress_meta.model_copy(
+                        update={"num_records": len(all_assignments) - n_supplemental}
+                    ),
                 )
                 write_meta(
                     snowball_path,
-                    snowball_meta.model_copy(update={"num_records": len(all_assignments)}),
+                    snowball_meta.model_copy(
+                        update={"num_records": len(all_assignments)}
+                    ),
                 )
             except Exception:
                 logger.warning("Failed to update sidecar metadata", exc_info=True)
 
         # Build result dataset
-        assert rho_history, (
-            "Quality check was never run — need at least cv_folds samples"
-        )
+        assert (
+            rho_history
+        ), "Quality check was never run — need at least cv_folds samples"
         dataset = ExplorationDataset(
             assignments=all_assignments,
             scores=all_scores,
@@ -739,13 +776,13 @@ class ExplorePlacementsCommand(BaseCommand):
                     max_pairwise_range=self.config.expansion_max_range,
                     max_order=self.config.expansion_max_order,
                 )
-            case RidgeSurrogateConfig():
+            case RidgeSurrogateConfig() as cfg:
                 return select_expansion_ridge_cv(
                     assignments=assignments,
                     scores=scores,
                     mixer_names=mixer_names,
-                    cv_folds=self.config.cv_folds,
-                    target_rho=self.config.target_rank_correlation,
+                    cv_folds=cfg.cv_folds,
+                    target_rho=cfg.target_rank_correlation,
                     max_pairwise_range=self.config.expansion_max_range,
                     max_order=self.config.expansion_max_order,
                     seed=self.config.seed,
@@ -800,14 +837,6 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     )
 
     # Stopping criteria
-    target_rank_correlation: float = Field(
-        description=(
-            "Stop when Ridge CV Spearman rho reaches this value. "
-            "Also used as the target for expansion level selection."
-        ),
-        gt=0,
-        le=1,
-    )
     plateau_patience: int = Field(
         description="Stop if rho doesn't improve for this many batches.",
         gt=0,
@@ -815,10 +844,6 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     plateau_min_improvement: float = Field(
         description="Minimum rho improvement to count as progress.",
         ge=0,
-    )
-    cv_folds: int = Field(
-        description="Number of cross-validation folds for quality estimation.",
-        gt=1,
     )
 
     seed: int = Field(description="Random seed for reproducibility.")

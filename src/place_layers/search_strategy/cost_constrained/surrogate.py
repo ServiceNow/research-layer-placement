@@ -56,6 +56,7 @@ from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
     append_record,
+    load_pooled_data,
 )
 
 if TYPE_CHECKING:
@@ -243,41 +244,27 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         rng = random.Random(self.config.sa.seed)
         mixer_names = cost_model.phase_order
 
-        # Load exploration dataset
+        # Load exploration dataset + eval log records via pooled loader
         exploration = ExplorationDataset.load(
             Path(self.config.exploration_dataset_path)
         )
-        all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.scores)
-        logger.info(
-            "Loaded exploration dataset: %d samples, rho=%.4f",
-            len(all_assignments),
-            exploration.final_rho,
-        )
-
-        # Read pre-seeded records from evaluation log (written by command)
         eval_log_path = (
             Path(self.config.evaluation_log_path)
             if self.config.evaluation_log_path
             else None
         )
+        paths: list[str | Path] = [self.config.exploration_dataset_path]
         if eval_log_path is not None and eval_log_path.exists():
-            from place_layers.surrogate.evaluation_log import load_records
-
-            existing_records = load_records(eval_log_path)
-            if existing_records:
-                n_before = len(all_assignments)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                for rec in existing_records:
-                    if (rec.assignment, rec.score) not in existing:
-                        all_assignments.append(rec.assignment)
-                        all_scores.append(rec.score)
-                        existing.add((rec.assignment, rec.score))
-                logger.info(
-                    "Loaded %d pre-seeded records from eval log (%d new after dedup)",
-                    len(existing_records),
-                    len(all_assignments) - n_before,
-                )
+            paths.append(str(eval_log_path))
+        pooled = load_pooled_data(paths, deduplicate=True)
+        all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
+        all_scores: list[float] = list(pooled.scores)
+        logger.info(
+            "Loaded %d samples (exploration: %d, rho=%.4f)",
+            len(all_assignments),
+            exploration.num_samples,
+            exploration.final_rho,
+        )
 
         # Emit dataset loaded event
         if self.observers:
@@ -476,11 +463,19 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 # Step 5: Refit surrogate
                 surrogate.fit(all_assignments, np.array(all_scores))
 
-                folds = self.config.surrogate.cv_folds if isinstance(self.config.surrogate, RidgeSurrogateConfig) else None
-                diag = surrogate.diagnostics(
-                    all_assignments, np.array(all_scores),
-                    folds=folds, rng_seed=self.config.sa.seed or 0,
-                )
+                match self.config.surrogate:
+                    case RidgeSurrogateConfig(cv_folds=cv_folds):
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=cv_folds, rng_seed=self.config.sa.seed or 0,
+                        )
+                    case BayesianRidgeSurrogateConfig():
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=None, rng_seed=self.config.sa.seed or 0,
+                        )
+                    case other:
+                        assert_never(other)
                 label, value = diag.summary()
                 logger.debug(
                     "Round %d complete: best=%.6f, %s=%.4f, pred_corr=%.4f",

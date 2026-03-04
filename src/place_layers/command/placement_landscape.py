@@ -28,10 +28,12 @@ from place_layers.landscape import (
     LandscapeConfig,
     LandscapeData,
     ValidationResults,
-    compute_band_edges,
     compute_dp_per_band,
-    load_and_fit_surrogate,
     objective_result_path,
+)
+from place_layers.surrogate.evaluation_log import (
+    load_pooled_data,
+    resolve_supplemental_dirs,
 )
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -122,13 +124,29 @@ class PlacementLandscapeCommand(BaseCommand):
             if val_dir not in supplemental_dirs:
                 supplemental_dirs.append(val_dir)
 
-        dataset, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path),
-            landscape.cost_model,
-            landscape.surrogate,
-            landscape.seed,
-            supplemental_data_dirs=supplemental_dirs,
+        from place_layers.surrogate.dataset import ExplorationDataset
+
+        dataset = ExplorationDataset.load(dataset_path)
+        logger.info(
+            "Loaded dataset: %d samples, %d layers, rho=%.4f",
+            dataset.num_samples,
+            dataset.num_layers,
+            dataset.final_rho,
         )
+        cost_model = landscape.cost_model.create_cost_model()
+
+        supplemental_files = (
+            resolve_supplemental_dirs(supplemental_dirs, dataset.objective_name)
+            if supplemental_dirs else []
+        )
+        pooled = load_pooled_data(
+            [dataset_path, *supplemental_files], deduplicate=True,
+        )
+        surrogate = landscape.surrogate.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=landscape.seed,
+            feature_config=dataset.feature_config,
+        )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
         num_layers = dataset.num_layers
 
         # Enumerate ALL allocations (no budget filter)
@@ -165,7 +183,7 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Compute DP-optimal per cost band
-        band_results = compute_dp_per_band(
+        band_results, cost_bin_edges = compute_dp_per_band(
             surrogate, all_allocations, alloc_costs,
             num_layers, baseline_cost, cost_model,
             landscape.num_cost_bins,
@@ -185,9 +203,6 @@ class PlacementLandscapeCommand(BaseCommand):
             )
 
         # Save band data as JSON
-        cost_bin_edges = compute_band_edges(
-            alloc_costs, baseline_cost, landscape.num_cost_bins,
-        )
         landscape_data = LandscapeData(
             objective_name=obj_name,
             num_layers=num_layers,
@@ -212,10 +227,9 @@ class PlacementLandscapeCommand(BaseCommand):
             if validation_path.exists():
                 validation = ValidationResults.load(validation_path)
                 logger.info(
-                    "Loaded validation results for %s: %d bands, rho=%.4f",
+                    "Loaded validation results for %s: %d bands",
                     obj_name,
                     len(validation.bands),
-                    validation.summary.spearman_rho,
                 )
                 # Filter out bands with validated cost outside their band range
                 in_band = [
@@ -247,28 +261,11 @@ class PlacementLandscapeCommand(BaseCommand):
                     validation_path,
                 )
 
-        # Observed data overlay (always shown) — exploration + supplemental
-        all_obs_allocs: list[dict[str, int]] = list(dataset.allocations)
-        all_obs_scores: list[float] = list(dataset.scores)
-
-        if supplemental_dirs:
-            from place_layers.surrogate.evaluation_log import (
-                load_pooled_data,
-                resolve_supplemental_dirs,
-            )
-
-            supplemental_files = resolve_supplemental_dirs(
-                supplemental_dirs, obj_name,
-            )
-            if supplemental_files:
-                pool = load_pooled_data(supplemental_files, deduplicate=True)
-                all_obs_allocs.extend(pool.allocations)
-                all_obs_scores.extend(pool.scores)
-
+        # Observed data overlay (always shown) — pooled already has exploration + supplemental
         observed_costs = np.array(
-            [cost_model.allocation_cost(a) for a in all_obs_allocs]
+            [cost_model.allocation_cost(a) for a in pooled.allocations]
         )
-        observed_scores = np.array(all_obs_scores)
+        observed_scores = np.array(pooled.scores)
 
         # Plot
         self._plot(

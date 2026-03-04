@@ -20,9 +20,10 @@ import logging
 import math
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, assert_never
 
 import numpy as np
 from pydantic import Field, model_validator  # noqa: F401 (model_validator used in config)
@@ -55,8 +56,11 @@ from place_layers.surrogate.config import (
 )
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
+    EvaluationLogMeta,
     EvaluationRecord,
     append_record,
+    load_pooled_data,
+    write_meta,
 )
 
 if TYPE_CHECKING:
@@ -64,9 +68,33 @@ if TYPE_CHECKING:
     from place_layers.search_strategy.base_search_strategy import BaseSearchStrategy
     from place_layers.search_strategy.progress import SearchObserver
     from place_layers.search_strategy.progress.estimator import SearchProgressEstimator
+    from place_layers.surrogate.base_surrogate import BaseSurrogate
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Internal data types for candidate selection
+# ============================================================================
+
+
+@dataclass
+class _SelectedCandidate:
+    """A candidate selected for real evaluation by a subclass."""
+
+    assignment: tuple[str, ...]
+    surrogate_mu: float
+    acq_value: float
+
+
+@dataclass
+class _RoundCandidates:
+    """Result of ``_select_candidates_for_round``."""
+
+    candidates: list[_SelectedCandidate]
+    predicted_scores: np.ndarray  # Surrogate predictions for correlation diagnostic
+    num_pool_candidates: int  # Total pool size (before selection) for observer event
 
 
 # ============================================================================
@@ -75,12 +103,16 @@ logger = logging.getLogger(__name__)
 
 
 class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
-    """Shared search_max_performance / search_min_cost for Viterbi surrogate strategies.
+    """Shared surrogate loop for Viterbi surrogate strategies.
 
-    Subclasses implement ``_run_surrogate_loop()`` with the concrete surrogate type.
+    Implements the full setup → round loop → teardown framework.
+    Subclasses implement only ``_select_candidates_for_round()`` with the
+    algorithm-specific candidate generation and selection logic.
     """
 
     config: "_BaseViterbiSurrogateConfig"
+
+    _source_detail: ClassVar[str]  # "ridge_viterbi" or "bayesian_viterbi"
 
     async def _search_max_performance(
         self,
@@ -222,7 +254,287 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
         cost_budget: float | None,
         cost_floor: float | None = None,
     ) -> tuple[list[tuple[str, ...]], list[float]]:
-        """Load exploration data and run Viterbi refinement loop."""
+        """Full surrogate loop: setup -> rounds -> teardown."""
+        config = self.config
+        mixer_names = cost_model.phase_order
+
+        if config.exploration_dataset_path is None:
+            raise ValueError(
+                "exploration_dataset_path is null — it must be set before search. "
+                "The validate_landscape command derives it per-objective at runtime."
+            )
+
+        # --- Data loading (shared) ---
+        exploration = ExplorationDataset.load(
+            Path(config.exploration_dataset_path)
+        )
+        eval_log_path = (
+            Path(config.evaluation_log_path)
+            if config.evaluation_log_path
+            else None
+        )
+        paths: list[str | Path] = [config.exploration_dataset_path]
+        if eval_log_path is not None and eval_log_path.exists():
+            paths.append(str(eval_log_path))
+        pooled = load_pooled_data(paths, deduplicate=True)
+        all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
+        all_scores: list[float] = list(pooled.scores)
+        logger.info(
+            "Loaded %d samples (exploration: %d, rho=%.4f)",
+            len(all_assignments),
+            exploration.num_samples,
+            exploration.final_rho,
+        )
+
+        # --- Observer: dataset loaded (shared) ---
+        if self.observers:
+            from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
+
+            dataset_event = SurrogateDatasetLoadedEvent(
+                num_samples=len(all_assignments),
+                exploration_rho=exploration.final_rho,
+            )
+            for observer in self.observers:
+                observer.on_surrogate_dataset_loaded(dataset_event)
+
+        # --- Open eval log for appending (shared) ---
+        eval_log_file = None
+        eval_record_count = 0
+
+        if eval_log_path is not None:
+            eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+            meta = EvaluationLogMeta(
+                version=1,
+                objective_name=exploration.objective_name,
+                num_layers=num_layers,
+                mixer_names=list(mixer_names),
+                source_command="surrogate_search",
+                source_detail=self._source_detail,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                num_records=None,
+            )
+            write_meta(eval_log_path, meta)
+            eval_log_file = eval_log_path.open("a")
+
+        try:
+            # --- Initial surrogate fit (shared) ---
+            surrogate = config.surrogate.create_surrogate(
+                mixer_names=mixer_names,
+                seed=config.seed,
+                feature_config=exploration.feature_config,
+            )
+            t0 = time.perf_counter()
+            surrogate.fit(all_assignments, np.array(all_scores))
+            logger.info(
+                "Initial surrogate fit: %.3fs (%d samples)",
+                time.perf_counter() - t0,
+                len(all_assignments),
+            )
+
+            # --- f_best initialization (shared) ---
+            if cost_budget is not None:
+                fb = feasible_best(
+                    all_assignments, all_scores, cost_model, cost_budget,
+                    cost_floor,
+                )
+                f_best = fb[1] if fb is not None else float("-inf")
+            else:
+                f_best = float(np.max(all_scores))
+
+            # --- Round loop (shared framework, subclass generates candidates) ---
+            for round_num in range(config.num_rounds):
+                round_result = self._select_candidates_for_round(
+                    surrogate=surrogate,
+                    feasible_allocations=feasible_allocations,
+                    num_layers=num_layers,
+                    cost_budget=cost_budget,
+                    cost_floor=cost_floor,
+                    f_best=f_best,
+                    round_num=round_num,
+                )
+
+                if round_result is None:
+                    continue  # No candidates this round
+
+                # Emit round started event
+                if self.observers:
+                    from place_layers.search_strategy.progress import (
+                        SurrogateRoundStartedEvent,
+                    )
+
+                    round_started_event = SurrogateRoundStartedEvent(
+                        round=round_num + 1,
+                        total_rounds=config.num_rounds,
+                        num_candidates=round_result.num_pool_candidates,
+                        evals_planned=len(round_result.candidates),
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_round_started(round_started_event)
+
+                # --- Evaluate candidates (shared) ---
+                for eval_i, cand in enumerate(round_result.candidates):
+                    candidate = cand.assignment
+                    placement = LayerPlacement(assignments=candidate)
+                    score = await problem.evaluate(placement)
+                    self.eval_count += 1
+
+                    all_assignments.append(candidate)
+                    all_scores.append(score)
+
+                    alloc = dict(Counter(candidate))
+                    candidate_cost = cost_model.allocation_cost(alloc)
+
+                    # Write to evaluation log
+                    if eval_log_file is not None:
+                        record = EvaluationRecord(
+                            assignment=candidate,
+                            score=score,
+                            allocation=alloc,
+                        )
+                        append_record(eval_log_file, record)
+                        eval_record_count += 1
+
+                    is_new_best = False
+                    if score > f_best:
+                        f_best = score
+                        is_new_best = True
+
+                        if self.observers:
+                            from place_layers.search_strategy.progress import (
+                                BestUpdatedEvent,
+                            )
+
+                            event = BestUpdatedEvent(
+                                score=score,
+                                cost=candidate_cost,
+                                allocation=alloc,
+                                assignments=candidate,
+                            )
+                            for observer in self.observers:
+                                observer.on_best_updated(event)
+
+                    if self.observers:
+                        for observer in self.observers:
+                            observer.on_eval_completed(self.eval_count)
+
+                        from place_layers.search_strategy.progress import (
+                            SurrogateCandidateEvaluatedEvent,
+                        )
+
+                        eval_event = SurrogateCandidateEvaluatedEvent(
+                            round=round_num + 1,
+                            total_rounds=config.num_rounds,
+                            eval_index=eval_i + 1,
+                            evals_planned=len(round_result.candidates),
+                            assignments=candidate,
+                            score=score,
+                            surrogate_mu=cand.surrogate_mu,
+                            acq_value=cand.acq_value,
+                            cost=candidate_cost,
+                            is_new_best=is_new_best,
+                            f_best=f_best,
+                        )
+                        for observer in self.observers:
+                            observer.on_surrogate_candidate_evaluated(eval_event)
+
+                # --- Prediction correlation (shared) ---
+                n_evaluated = len(round_result.candidates)
+                actual_scores = np.array(all_scores[-n_evaluated:])
+                predicted = round_result.predicted_scores[:n_evaluated]
+                if len(actual_scores) >= 2:
+                    corr_result = spearmanr(predicted, actual_scores)
+                    prediction_correlation = float(corr_result.statistic)
+                else:
+                    prediction_correlation = 0.0
+
+                # --- Refit + diagnostics (shared) ---
+                t0 = time.perf_counter()
+                surrogate.fit(all_assignments, np.array(all_scores))
+                t_refit = time.perf_counter() - t0
+
+                t0 = time.perf_counter()
+                match config.surrogate:
+                    case RidgeSurrogateConfig(cv_folds=cv_folds):
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=cv_folds, rng_seed=config.seed,
+                        )
+                    case BayesianRidgeSurrogateConfig():
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=None, rng_seed=config.seed,
+                        )
+                    case other:
+                        assert_never(other)
+                label, value = diag.summary()
+                t_diag = time.perf_counter() - t0
+                logger.info(
+                    "Round %d complete: refit %.3fs, diag %.3fs, "
+                    "best=%.6f, %s=%.4f, pred_corr=%.4f",
+                    round_num + 1,
+                    t_refit,
+                    t_diag,
+                    f_best,
+                    label,
+                    value,
+                    prediction_correlation,
+                )
+
+                # Emit round completed event
+                if self.observers:
+                    from place_layers.search_strategy.progress import (
+                        SurrogateRoundCompletedEvent,
+                    )
+
+                    round_completed_event = SurrogateRoundCompletedEvent(
+                        round=round_num + 1,
+                        total_rounds=config.num_rounds,
+                        surrogate_metric_label=label,
+                        surrogate_metric_value=value,
+                        diagnostics=diag,
+                        prediction_correlation=prediction_correlation,
+                        dataset_size=len(all_assignments),
+                        best_score=f_best,
+                    )
+                    for observer in self.observers:
+                        observer.on_surrogate_round_completed(round_completed_event)
+
+        finally:
+            # Close evaluation log and update metadata with record count
+            if eval_log_file is not None:
+                eval_log_file.close()
+                if eval_log_path is not None and eval_record_count > 0:
+                    meta_final = EvaluationLogMeta(
+                        version=1,
+                        objective_name=exploration.objective_name,
+                        num_layers=num_layers,
+                        mixer_names=list(mixer_names),
+                        source_command="surrogate_search",
+                        source_detail=self._source_detail,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        num_records=eval_record_count,
+                    )
+                    write_meta(eval_log_path, meta_final)
+
+        return all_assignments, all_scores
+
+    def _select_candidates_for_round(
+        self,
+        *,
+        surrogate: "BaseSurrogate",
+        feasible_allocations: list["Allocation"],
+        num_layers: int,
+        cost_budget: float | None,
+        cost_floor: float | None,
+        f_best: float,
+        round_num: int,
+    ) -> _RoundCandidates | None:
+        """Generate and select candidates for one round.
+
+        Returns ``None`` to skip the round (e.g. no candidates generated).
+
+        Subclasses must override this method.
+        """
         raise NotImplementedError
 
 
@@ -236,324 +548,87 @@ class ViterbiSurrogateSearch(_BaseViterbiSurrogateSearch):
 
     config: "ViterbiSurrogateSearchConfig"
 
-    async def _run_surrogate_loop(
+    _source_detail: ClassVar[str] = "ridge_viterbi"
+
+    def _select_candidates_for_round(
         self,
-        problem: CostConstrainedProblem,
-        cost_model: BaseCostModel,
-        num_layers: int,
+        *,
+        surrogate: "BaseSurrogate",
         feasible_allocations: list["Allocation"],
+        num_layers: int,
         cost_budget: float | None,
-        cost_floor: float | None = None,
-    ) -> tuple[list[tuple[str, ...]], list[float]]:
-        """Bootstrap Viterbi loop."""
-        mixer_names = cost_model.phase_order
-
-        if self.config.exploration_dataset_path is None:
-            raise ValueError(
-                "exploration_dataset_path is null — it must be set before search. "
-                "The validate_landscape command derives it per-objective at runtime."
-            )
-
-        # Load exploration dataset
-        exploration = ExplorationDataset.load(
-            Path(self.config.exploration_dataset_path)
+        cost_floor: float | None,
+        f_best: float,
+        round_num: int,
+    ) -> _RoundCandidates | None:
+        """Bootstrap MRF extraction + Viterbi DP + EI selection."""
+        logger.debug(
+            "Round %d/%d: Bootstrap Viterbi (%d models x %d candidates)",
+            round_num + 1,
+            self.config.num_rounds,
+            len(surrogate._bootstrap_models),
+            self.config.candidates_per_model,
         )
-        all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.scores)
+
+        # Step 1: Extract MRF models from bootstrap ensemble
+        t0 = time.perf_counter()
+        mrf_models = surrogate.extract_bootstrap_mrf_models(num_layers)
+        t_extract = time.perf_counter() - t0
+
+        # Step 2: For each MRF model, run Viterbi to get globally top-M
+        t0 = time.perf_counter()
+        candidate_set: set[tuple[str, ...]] = set()
+        for mrf_model in mrf_models:
+            solver = ExactMRFSolver(mrf_model)
+            top_n = solver.solve_top_n(
+                feasible_allocations, n=self.config.candidates_per_model
+            )
+            for solution in top_n:
+                candidate_set.add(solution.placement.assignments)
+        t_viterbi = time.perf_counter() - t0
+
+        candidate_list = list(candidate_set)
         logger.info(
-            "Loaded exploration dataset: %d samples, rho=%.4f",
-            len(all_assignments),
-            exploration.final_rho,
+            "Round %d/%d: MRF extract %.3fs, Viterbi DP %.3fs "
+            "(%d models × %d allocs → %d candidates)",
+            round_num + 1,
+            self.config.num_rounds,
+            t_extract,
+            t_viterbi,
+            len(mrf_models),
+            len(feasible_allocations),
+            len(candidate_list),
         )
 
-        # Read pre-seeded records from evaluation log (written by command)
-        eval_log_path = (
-            Path(self.config.evaluation_log_path)
-            if self.config.evaluation_log_path
-            else None
-        )
-        if eval_log_path is not None and eval_log_path.exists():
-            from place_layers.surrogate.evaluation_log import load_records
+        if not candidate_list:
+            logger.warning("No candidates from Viterbi, skipping round")
+            return None
 
-            existing_records = load_records(eval_log_path)
-            if existing_records:
-                n_before = len(all_assignments)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                for rec in existing_records:
-                    if (rec.assignment, rec.score) not in existing:
-                        all_assignments.append(rec.assignment)
-                        all_scores.append(rec.score)
-                        existing.add((rec.assignment, rec.score))
-                logger.info(
-                    "Loaded %d pre-seeded records from eval log (%d new after dedup)",
-                    len(existing_records),
-                    len(all_assignments) - n_before,
-                )
-
-        # Emit dataset loaded event
-        if self.observers:
-            from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
-
-            dataset_event = SurrogateDatasetLoadedEvent(
-                num_samples=len(all_assignments),
-                exploration_rho=exploration.final_rho,
-            )
-            for observer in self.observers:
-                observer.on_surrogate_dataset_loaded(dataset_event)
-
-        # Open evaluation log for appending strategy's own evaluations
-        from place_layers.surrogate.evaluation_log import (
-            EvaluationLogMeta,
-            write_meta,
+        # Step 3: Score with EI (full predict: mu and sigma)
+        mu, sigma = surrogate.predict(candidate_list)
+        ei = expected_improvement(
+            mu, sigma, f_best, xi=self.config.surrogate.ei_xi
         )
 
-        eval_log_file = None
-        eval_record_count = 0
+        # Step 4: Select top evals_per_round by EI
+        n_select = min(self.config.evals_per_round, len(candidate_list))
+        top_indices = np.argsort(ei)[-n_select:][::-1]
 
-        if eval_log_path is not None:
-            eval_log_path.parent.mkdir(parents=True, exist_ok=True)
-            meta = EvaluationLogMeta(
-                version=1,
-                objective_name=exploration.objective_name,
-                num_layers=num_layers,
-                mixer_names=list(mixer_names),
-                source_command="surrogate_search",
-                source_detail="ridge_viterbi",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                num_records=None,
+        predicted_scores = mu[top_indices].copy()
+        candidates = [
+            _SelectedCandidate(
+                assignment=candidate_list[idx],
+                surrogate_mu=float(mu[idx]),
+                acq_value=float(ei[idx]),
             )
-            write_meta(eval_log_path, meta)
-            eval_log_file = eval_log_path.open("a")
+            for idx in top_indices
+        ]
 
-        try:
-            # Initial surrogate fit
-            surrogate = self.config.surrogate.create_surrogate(
-                mixer_names=mixer_names,
-                seed=self.config.seed,
-                feature_config=exploration.feature_config,
-            )
-            t0 = time.perf_counter()
-            surrogate.fit(all_assignments, np.array(all_scores))
-            logger.info(
-                "Initial surrogate fit: %.3fs (%d samples)",
-                time.perf_counter() - t0,
-                len(all_assignments),
-            )
-            if cost_budget is not None:
-                fb = feasible_best(
-                    all_assignments, all_scores, cost_model, cost_budget,
-                    cost_floor,
-                )
-                f_best = fb[1] if fb is not None else float("-inf")
-            else:
-                f_best = float(np.max(all_scores))
-
-            for round_num in range(self.config.num_rounds):
-                logger.debug(
-                    "Round %d/%d: Bootstrap Viterbi (%d models x %d candidates)",
-                    round_num + 1,
-                    self.config.num_rounds,
-                    len(surrogate._bootstrap_models),
-                    self.config.candidates_per_model,
-                )
-
-                # Step 1: Extract MRF models from bootstrap ensemble
-                t0 = time.perf_counter()
-                mrf_models = surrogate.extract_bootstrap_mrf_models(num_layers)
-                t_extract = time.perf_counter() - t0
-
-                # Step 2: For each MRF model, run Viterbi to get globally top-M
-                t0 = time.perf_counter()
-                candidate_set: set[tuple[str, ...]] = set()
-                for mrf_model in mrf_models:
-                    solver = ExactMRFSolver(mrf_model)
-                    top_n = solver.solve_top_n(
-                        feasible_allocations, n=self.config.candidates_per_model
-                    )
-                    for solution in top_n:
-                        candidate_set.add(solution.placement.assignments)
-                t_viterbi = time.perf_counter() - t0
-
-                candidate_list = list(candidate_set)
-                logger.info(
-                    "Round %d/%d: MRF extract %.3fs, Viterbi DP %.3fs "
-                    "(%d models × %d allocs → %d candidates)",
-                    round_num + 1,
-                    self.config.num_rounds,
-                    t_extract,
-                    t_viterbi,
-                    len(mrf_models),
-                    len(feasible_allocations),
-                    len(candidate_list),
-                )
-
-                if not candidate_list:
-                    logger.warning("No candidates from Viterbi, skipping round")
-                    continue
-
-                # Step 3: Score with EI (full predict: mu and sigma)
-                mu, sigma = surrogate.predict(candidate_list)
-                ei = expected_improvement(
-                    mu, sigma, f_best, xi=self.config.surrogate.ei_xi
-                )
-
-                # Step 4: Select top evals_per_round by EI
-                n_select = min(self.config.evals_per_round, len(candidate_list))
-                top_indices = np.argsort(ei)[-n_select:][::-1]
-
-                # Emit round started event
-                if self.observers:
-                    from place_layers.search_strategy.progress import (
-                        SurrogateRoundStartedEvent,
-                    )
-
-                    round_started_event = SurrogateRoundStartedEvent(
-                        round=round_num + 1,
-                        total_rounds=self.config.num_rounds,
-                        num_candidates=len(candidate_list),
-                        evals_planned=n_select,
-                    )
-                    for observer in self.observers:
-                        observer.on_surrogate_round_started(round_started_event)
-
-                # Record surrogate predictions for correlation diagnostic
-                predicted_scores = mu[top_indices].copy()
-
-                # Step 5: Evaluate with real evaluator
-                for eval_i, idx in enumerate(top_indices):
-                    candidate = candidate_list[idx]
-                    placement = LayerPlacement(assignments=candidate)
-                    score = await problem.evaluate(placement)
-                    self.eval_count += 1
-
-                    all_assignments.append(candidate)
-                    all_scores.append(score)
-
-                    alloc = dict(Counter(candidate))
-                    candidate_cost = cost_model.allocation_cost(alloc)
-
-                    # Write to evaluation log
-                    if eval_log_file is not None:
-                        record = EvaluationRecord(
-                            assignment=candidate,
-                            score=score,
-                            allocation=alloc,
-                        )
-                        append_record(eval_log_file, record)
-                        eval_record_count += 1
-
-                    is_new_best = False
-                    if score > f_best:
-                        f_best = score
-                        is_new_best = True
-
-                        if self.observers:
-                            from place_layers.search_strategy.progress import (
-                                BestUpdatedEvent,
-                            )
-
-                            event = BestUpdatedEvent(
-                                score=score,
-                                cost=candidate_cost,
-                                allocation=alloc,
-                                assignments=candidate,
-                            )
-                            for observer in self.observers:
-                                observer.on_best_updated(event)
-
-                    if self.observers:
-                        for observer in self.observers:
-                            observer.on_eval_completed(self.eval_count)
-
-                        from place_layers.search_strategy.progress import (
-                            SurrogateCandidateEvaluatedEvent,
-                        )
-
-                        eval_event = SurrogateCandidateEvaluatedEvent(
-                            round=round_num + 1,
-                            total_rounds=self.config.num_rounds,
-                            eval_index=eval_i + 1,
-                            evals_planned=n_select,
-                            assignments=candidate,
-                            score=score,
-                            surrogate_mu=float(mu[idx]),
-                            acq_value=float(ei[idx]),
-                            cost=candidate_cost,
-                            is_new_best=is_new_best,
-                            f_best=f_best,
-                        )
-                        for observer in self.observers:
-                            observer.on_surrogate_candidate_evaluated(eval_event)
-
-                # Compute prediction correlation for this round's candidates
-                actual_scores = np.array(all_scores[-n_select:])
-                if len(actual_scores) >= 2:
-                    corr_result = spearmanr(predicted_scores, actual_scores)
-                    prediction_correlation = float(corr_result.statistic)
-                else:
-                    prediction_correlation = 0.0
-
-                # Step 6: Refit surrogate
-                t0 = time.perf_counter()
-                surrogate.fit(all_assignments, np.array(all_scores))
-                t_refit = time.perf_counter() - t0
-
-                t0 = time.perf_counter()
-                diag = surrogate.diagnostics(
-                    all_assignments, np.array(all_scores),
-                    folds=self.config.surrogate.cv_folds, rng_seed=self.config.seed,
-                )
-                label, value = diag.summary()
-                t_diag = time.perf_counter() - t0
-                logger.info(
-                    "Round %d complete: refit %.3fs, diag %.3fs, "
-                    "best=%.6f, %s=%.4f, pred_corr=%.4f",
-                    round_num + 1,
-                    t_refit,
-                    t_diag,
-                    f_best,
-                    label,
-                    value,
-                    prediction_correlation,
-                )
-
-                # Emit round completed event
-                if self.observers:
-                    from place_layers.search_strategy.progress import (
-                        SurrogateRoundCompletedEvent,
-                    )
-
-                    round_completed_event = SurrogateRoundCompletedEvent(
-                        round=round_num + 1,
-                        total_rounds=self.config.num_rounds,
-                        surrogate_metric_label=label,
-                        surrogate_metric_value=value,
-                        diagnostics=diag,
-                        prediction_correlation=prediction_correlation,
-                        dataset_size=len(all_assignments),
-                        best_score=f_best,
-                    )
-                    for observer in self.observers:
-                        observer.on_surrogate_round_completed(round_completed_event)
-
-        finally:
-            # Close evaluation log and update metadata with record count
-            if eval_log_file is not None:
-                eval_log_file.close()
-                if eval_log_path is not None and eval_record_count > 0:
-                    meta_final = EvaluationLogMeta(
-                        version=1,
-                        objective_name=exploration.objective_name,
-                        num_layers=num_layers,
-                        mixer_names=list(mixer_names),
-                        source_command="surrogate_search",
-                        source_detail="ridge_viterbi",
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                        num_records=eval_record_count,
-                    )
-                    write_meta(eval_log_path, meta_final)
-
-        return all_assignments, all_scores
+        return _RoundCandidates(
+            candidates=candidates,
+            predicted_scores=predicted_scores,
+            num_pool_candidates=len(candidate_list),
+        )
 
 
 # ============================================================================
@@ -566,347 +641,101 @@ class ViterbiBayesianSurrogateSearch(_BaseViterbiSurrogateSearch):
 
     config: "ViterbiBayesianSurrogateSearchConfig"
 
-    async def _run_surrogate_loop(
+    _source_detail: ClassVar[str] = "bayesian_viterbi"
+
+    def _select_candidates_for_round(
         self,
-        problem: CostConstrainedProblem,
-        cost_model: BaseCostModel,
-        num_layers: int,
+        *,
+        surrogate: "BaseSurrogate",
         feasible_allocations: list["Allocation"],
+        num_layers: int,
         cost_budget: float | None,
-        cost_floor: float | None = None,
-    ) -> tuple[list[tuple[str, ...]], list[float]]:
-        """Bayesian Viterbi loop with risk-bucket selection."""
-        mixer_names = cost_model.phase_order
-
-        if self.config.exploration_dataset_path is None:
-            raise ValueError(
-                "exploration_dataset_path is null — it must be set before search. "
-                "The validate_landscape command derives it per-objective at runtime."
-            )
-
-        # Pool sizing guard
-        if self.config.candidates_per_model < self.config.evals_per_round:
-            raise ValueError(
-                f"candidates_per_model ({self.config.candidates_per_model}) must be "
-                f">= evals_per_round ({self.config.evals_per_round})"
-            )
-
-        # Load exploration dataset
-        exploration = ExplorationDataset.load(
-            Path(self.config.exploration_dataset_path)
+        cost_floor: float | None,
+        f_best: float,
+        round_num: int,
+    ) -> _RoundCandidates | None:
+        """Mean-only DP pool generation + risk-bucket selection."""
+        logger.debug(
+            "Round %d/%d: Bayesian Viterbi (%d risk buckets, %d candidates)",
+            round_num + 1,
+            self.config.num_rounds,
+            len(self.config.risk_buckets),
+            self.config.candidates_per_model,
         )
-        all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.scores)
+
+        # Step 1: Pool generation — per-allocation DP (allocation-diverse)
+        t0 = time.perf_counter()
+        mrf = surrogate.extract_mrf_model(num_layers)
+        t_extract = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        solver = ExactMRFSolver(mrf)
+        k_per_alloc = int(math.ceil(
+            self.config.candidates_per_model / len(feasible_allocations)
+        ))
+        per_alloc = solver.solve_top_n_per_allocation(
+            feasible_allocations, n_per_allocation=k_per_alloc
+        )
+        candidate_set: set[tuple[str, ...]] = set()
+        for sols in per_alloc.values():
+            candidate_set.update(sol.placement.assignments for sol in sols)
+
+        pool = list(candidate_set)
+        t_viterbi = time.perf_counter() - t0
+
         logger.info(
-            "Loaded exploration dataset: %d samples, rho=%.4f",
-            len(all_assignments),
-            exploration.final_rho,
+            "Round %d/%d: MRF extract %.3fs, DP %.3fs "
+            "(%d allocs → %d unique candidates in pool)",
+            round_num + 1,
+            self.config.num_rounds,
+            t_extract,
+            t_viterbi,
+            len(feasible_allocations),
+            len(pool),
         )
 
-        # Read pre-seeded records from evaluation log (written by command)
-        eval_log_path = (
-            Path(self.config.evaluation_log_path)
-            if self.config.evaluation_log_path
-            else None
-        )
-        if eval_log_path is not None and eval_log_path.exists():
-            from place_layers.surrogate.evaluation_log import load_records
+        if not pool:
+            logger.warning("No candidates from DP, skipping round")
+            return None
 
-            existing_records = load_records(eval_log_path)
-            if existing_records:
-                n_before = len(all_assignments)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                for rec in existing_records:
-                    if (rec.assignment, rec.score) not in existing:
-                        all_assignments.append(rec.assignment)
-                        all_scores.append(rec.score)
-                        existing.add((rec.assignment, rec.score))
-                logger.info(
-                    "Loaded %d pre-seeded records from eval log (%d new after dedup)",
-                    len(existing_records),
-                    len(all_assignments) - n_before,
-                )
+        # Step 2: Predict mu/sigma for pool
+        mu, sigma = surrogate.predict(pool)
 
-        # Emit dataset loaded event
-        if self.observers:
-            from place_layers.search_strategy.progress import SurrogateDatasetLoadedEvent
-
-            dataset_event = SurrogateDatasetLoadedEvent(
-                num_samples=len(all_assignments),
-                exploration_rho=exploration.final_rho,
-            )
-            for observer in self.observers:
-                observer.on_surrogate_dataset_loaded(dataset_event)
-
-        # Open evaluation log for appending strategy's own evaluations
-        from place_layers.surrogate.evaluation_log import (
-            EvaluationLogMeta,
-            write_meta,
+        # Step 3: Select via risk_buckets
+        n_select = min(self.config.evals_per_round, len(pool))
+        selected, bucket_selection_log = select_by_risk_buckets(
+            mu, sigma, n_select, self.config.risk_buckets,
         )
 
-        eval_log_file = None
-        eval_record_count = 0
+        # Step 4: Log pool/selection stats
+        logger.info(
+            "Round %d/%d: pool=%d, n_select=%d, σ range=[%.4f, %.4f], "
+            "σ mean=%.4f\n%s",
+            round_num + 1,
+            self.config.num_rounds,
+            len(pool),
+            n_select,
+            float(np.min(sigma)),
+            float(np.max(sigma)),
+            float(np.mean(sigma)),
+            "\n".join(bucket_selection_log) if bucket_selection_log else "  (no selections)",
+        )
 
-        if eval_log_path is not None:
-            eval_log_path.parent.mkdir(parents=True, exist_ok=True)
-            meta = EvaluationLogMeta(
-                version=1,
-                objective_name=exploration.objective_name,
-                num_layers=num_layers,
-                mixer_names=list(mixer_names),
-                source_command="surrogate_search",
-                source_detail="bayesian_viterbi",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                num_records=None,
+        predicted_scores = mu[np.array(selected)]
+        candidates = [
+            _SelectedCandidate(
+                assignment=pool[idx],
+                surrogate_mu=float(mu[idx]),
+                acq_value=0.0,  # N/A for risk-bucket mode
             )
-            write_meta(eval_log_path, meta)
-            eval_log_file = eval_log_path.open("a")
+            for idx in selected
+        ]
 
-        try:
-            # Initial surrogate fit
-            surrogate = self.config.surrogate.create_surrogate(
-                mixer_names=mixer_names,
-                seed=self.config.seed,
-                feature_config=exploration.feature_config,
-            )
-            t0 = time.perf_counter()
-            surrogate.fit(all_assignments, np.array(all_scores))
-            logger.info(
-                "Initial Bayesian surrogate fit: %.3fs (%d samples)",
-                time.perf_counter() - t0,
-                len(all_assignments),
-            )
-            if cost_budget is not None:
-                fb = feasible_best(
-                    all_assignments, all_scores, cost_model, cost_budget,
-                    cost_floor,
-                )
-                f_best = fb[1] if fb is not None else float("-inf")
-            else:
-                f_best = float(np.max(all_scores))
-
-            for round_num in range(self.config.num_rounds):
-                logger.debug(
-                    "Round %d/%d: Bayesian Viterbi (%d risk buckets, %d candidates)",
-                    round_num + 1,
-                    self.config.num_rounds,
-                    len(self.config.risk_buckets),
-                    self.config.candidates_per_model,
-                )
-
-                # Step 1: Pool generation — per-allocation DP (allocation-diverse)
-                t0 = time.perf_counter()
-                mrf = surrogate.extract_mrf_model(num_layers)
-                t_extract = time.perf_counter() - t0
-
-                t0 = time.perf_counter()
-                solver = ExactMRFSolver(mrf)
-                k_per_alloc = int(math.ceil(
-                    self.config.candidates_per_model / len(feasible_allocations)
-                ))
-                per_alloc = solver.solve_top_n_per_allocation(
-                    feasible_allocations, n_per_allocation=k_per_alloc
-                )
-                candidate_set: set[tuple[str, ...]] = set()
-                for sols in per_alloc.values():
-                    candidate_set.update(sol.placement.assignments for sol in sols)
-
-                pool = list(candidate_set)
-                t_viterbi = time.perf_counter() - t0
-
-                logger.info(
-                    "Round %d/%d: MRF extract %.3fs, DP %.3fs "
-                    "(%d allocs → %d unique candidates in pool)",
-                    round_num + 1,
-                    self.config.num_rounds,
-                    t_extract,
-                    t_viterbi,
-                    len(feasible_allocations),
-                    len(pool),
-                )
-
-                if not pool:
-                    logger.warning("No candidates from DP, skipping round")
-                    continue
-
-                # Step 2: Predict mu/sigma for pool
-                mu, sigma = surrogate.predict(pool)
-
-                # Step 3: Select via risk_buckets
-                n_select = min(self.config.evals_per_round, len(pool))
-                selected, bucket_selection_log = select_by_risk_buckets(
-                    mu, sigma, n_select, self.config.risk_buckets,
-                )
-
-                # Step 4: Log pool/selection stats
-                logger.info(
-                    "Round %d/%d: pool=%d, n_select=%d, σ range=[%.4f, %.4f], "
-                    "σ mean=%.4f\n%s",
-                    round_num + 1,
-                    self.config.num_rounds,
-                    len(pool),
-                    n_select,
-                    float(np.min(sigma)),
-                    float(np.max(sigma)),
-                    float(np.mean(sigma)),
-                    "\n".join(bucket_selection_log) if bucket_selection_log else "  (no selections)",
-                )
-
-                candidate_list = [pool[i] for i in selected]
-
-                # Emit round started event
-                if self.observers:
-                    from place_layers.search_strategy.progress import (
-                        SurrogateRoundStartedEvent,
-                    )
-
-                    round_started_event = SurrogateRoundStartedEvent(
-                        round=round_num + 1,
-                        total_rounds=self.config.num_rounds,
-                        num_candidates=len(pool),
-                        evals_planned=len(candidate_list),
-                    )
-                    for observer in self.observers:
-                        observer.on_surrogate_round_started(round_started_event)
-
-                # Record surrogate predictions for correlation diagnostic
-                predicted_scores = mu[np.array(selected)]
-
-                # Step 5: Evaluate with real evaluator
-                for eval_i, candidate in enumerate(candidate_list):
-                    placement = LayerPlacement(assignments=candidate)
-                    score = await problem.evaluate(placement)
-                    self.eval_count += 1
-
-                    all_assignments.append(candidate)
-                    all_scores.append(score)
-
-                    alloc = dict(Counter(candidate))
-                    candidate_cost = cost_model.allocation_cost(alloc)
-
-                    # Write to evaluation log
-                    if eval_log_file is not None:
-                        record = EvaluationRecord(
-                            assignment=candidate,
-                            score=score,
-                            allocation=alloc,
-                        )
-                        append_record(eval_log_file, record)
-                        eval_record_count += 1
-
-                    is_new_best = False
-                    if score > f_best:
-                        f_best = score
-                        is_new_best = True
-
-                        if self.observers:
-                            from place_layers.search_strategy.progress import (
-                                BestUpdatedEvent,
-                            )
-
-                            event = BestUpdatedEvent(
-                                score=score,
-                                cost=candidate_cost,
-                                allocation=alloc,
-                                assignments=candidate,
-                            )
-                            for observer in self.observers:
-                                observer.on_best_updated(event)
-
-                    if self.observers:
-                        for observer in self.observers:
-                            observer.on_eval_completed(self.eval_count)
-
-                        from place_layers.search_strategy.progress import (
-                            SurrogateCandidateEvaluatedEvent,
-                        )
-
-                        mu_val = float(mu[selected[eval_i]])
-                        eval_event = SurrogateCandidateEvaluatedEvent(
-                            round=round_num + 1,
-                            total_rounds=self.config.num_rounds,
-                            eval_index=eval_i + 1,
-                            evals_planned=len(candidate_list),
-                            assignments=candidate,
-                            score=score,
-                            surrogate_mu=mu_val,
-                            acq_value=0.0,  # N/A for risk-bucket mode
-                            cost=candidate_cost,
-                            is_new_best=is_new_best,
-                            f_best=f_best,
-                        )
-                        for observer in self.observers:
-                            observer.on_surrogate_candidate_evaluated(eval_event)
-
-                # Compute prediction correlation for this round's candidates
-                actual_scores_arr = np.array(all_scores[-len(candidate_list):])
-                if len(actual_scores_arr) >= 2:
-                    corr_result = spearmanr(predicted_scores[:len(actual_scores_arr)], actual_scores_arr)
-                    prediction_correlation = float(corr_result.statistic)
-                else:
-                    prediction_correlation = 0.0
-
-                # Step 6: Refit surrogate
-                t0 = time.perf_counter()
-                surrogate.fit(all_assignments, np.array(all_scores))
-                t_refit = time.perf_counter() - t0
-
-                t0 = time.perf_counter()
-                diag = surrogate.diagnostics(
-                    all_assignments, np.array(all_scores),
-                    folds=None, rng_seed=self.config.seed,
-                )
-                label, value = diag.summary()
-                t_diag = time.perf_counter() - t0
-                logger.info(
-                    "Round %d complete: refit %.3fs, diag %.3fs, "
-                    "best=%.6f, %s=%.4f, pred_corr=%.4f",
-                    round_num + 1,
-                    t_refit,
-                    t_diag,
-                    f_best,
-                    label,
-                    value,
-                    prediction_correlation,
-                )
-
-                # Emit round completed event
-                if self.observers:
-                    from place_layers.search_strategy.progress import (
-                        SurrogateRoundCompletedEvent,
-                    )
-
-                    round_completed_event = SurrogateRoundCompletedEvent(
-                        round=round_num + 1,
-                        total_rounds=self.config.num_rounds,
-                        surrogate_metric_label=label,
-                        surrogate_metric_value=value,
-                        diagnostics=diag,
-                        prediction_correlation=prediction_correlation,
-                        dataset_size=len(all_assignments),
-                        best_score=f_best,
-                    )
-                    for observer in self.observers:
-                        observer.on_surrogate_round_completed(round_completed_event)
-
-        finally:
-            # Close evaluation log and update metadata with record count
-            if eval_log_file is not None:
-                eval_log_file.close()
-                if eval_log_path is not None and eval_record_count > 0:
-                    meta_final = EvaluationLogMeta(
-                        version=1,
-                        objective_name=exploration.objective_name,
-                        num_layers=num_layers,
-                        mixer_names=list(mixer_names),
-                        source_command="surrogate_search",
-                        source_detail="bayesian_viterbi",
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                        num_records=eval_record_count,
-                    )
-                    write_meta(eval_log_path, meta_final)
-
-        return all_assignments, all_scores
+        return _RoundCandidates(
+            candidates=candidates,
+            predicted_scores=predicted_scores,
+            num_pool_candidates=len(pool),
+        )
 
 
 # ============================================================================
@@ -1000,5 +829,14 @@ class ViterbiBayesianSurrogateSearchConfig(_BaseViterbiSurrogateConfig):
         if total_quota > 1.0 + 1e-9:
             raise ValueError(
                 f"risk_buckets quota sum ({total_quota:.4f}) must be <= 1.0"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pool_size(self) -> "ViterbiBayesianSurrogateSearchConfig":
+        if self.candidates_per_model < self.evals_per_round:
+            raise ValueError(
+                f"candidates_per_model ({self.candidates_per_model}) must be "
+                f">= evals_per_round ({self.evals_per_round})"
             )
         return self
