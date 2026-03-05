@@ -736,9 +736,12 @@ class ExplorePlacementsCommand(BaseCommand):
                 logger.warning("Failed to update sidecar metadata", exc_info=True)
 
         # Build result dataset
-        assert (
-            quality_history
-        ), "Quality check was never run — need enough samples for first check"
+        if not quality_history:
+            raise CommandError(
+                "No quality scores computed — increase max_samples beyond "
+                f"min_samples ({self.config.min_samples}) to allow at least "
+                "two quality checkpoints for Bayesian surrogate."
+            )
         dataset = ExplorationDataset(
             assignments=all_assignments,
             scores=all_scores,
@@ -825,7 +828,11 @@ class ExplorePlacementsCommand(BaseCommand):
                 seed=self.config.seed,
                 feature_config=feature_config,
             )
-            surrogate.fit(assignments, scores)
+            if cfg.alpha_selection == "evidence":
+                selected_alpha = surrogate.fit_optimize_alpha(assignments, scores)
+                logger.info("Type-II ML alpha: %.4g", selected_alpha)
+            else:
+                surrogate.fit(assignments, scores)
             self._prev_surrogate = surrogate
             return None
 

@@ -86,6 +86,12 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         description="Ridge regularization / prior precision.",
         gt=0,
     )
+    alpha_selection: Literal["fixed", "evidence"] = Field(
+        default="fixed",
+        description="Alpha selection mode: 'fixed' uses prior_alpha as-is, "
+        "'evidence' optimizes alpha via Type-II ML (grid search on log "
+        "marginal likelihood) on the initial fit.",
+    )
     prior_a0: float = Field(
         description="InvGamma shape for noise variance prior.",
         gt=0,

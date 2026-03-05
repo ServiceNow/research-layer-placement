@@ -310,12 +310,24 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
                 feature_config=exploration.feature_config,
             )
             t0 = time.perf_counter()
-            surrogate.fit(all_assignments, np.array(all_scores))
-            logger.info(
-                "Initial surrogate fit: %.3fs (%d samples)",
-                time.perf_counter() - t0,
-                len(all_assignments),
-            )
+            match config.surrogate:
+                case BayesianRidgeSurrogateConfig(alpha_selection="evidence"):
+                    selected_alpha = surrogate.fit_optimize_alpha(
+                        all_assignments, np.array(all_scores),
+                    )
+                    logger.info(
+                        "Initial surrogate fit (Type-II ML alpha=%.4g): %.3fs (%d samples)",
+                        selected_alpha,
+                        time.perf_counter() - t0,
+                        len(all_assignments),
+                    )
+                case _:
+                    surrogate.fit(all_assignments, np.array(all_scores))
+                    logger.info(
+                        "Initial surrogate fit: %.3fs (%d samples)",
+                        time.perf_counter() - t0,
+                        len(all_assignments),
+                    )
 
             # --- f_best initialization (shared) ---
             if cost_budget is not None:

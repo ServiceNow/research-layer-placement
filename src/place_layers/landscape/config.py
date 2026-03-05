@@ -27,6 +27,25 @@ def objective_result_path(directory: Path, prefix: str, objective_name: str) -> 
     return directory / objective_name / f"{prefix}.json"
 
 
+def find_objective_result(directory: Path, prefix: str, objective_name: str) -> Path:
+    """Find an objective result file, trying new convention then legacy.
+
+    New convention: ``{directory}/{objective_name}/{prefix}.json``
+    Legacy convention: ``{directory}/{prefix}_{objective_name}.json``
+
+    Raises FileNotFoundError if neither exists.
+    """
+    new = objective_result_path(directory, prefix, objective_name)
+    if new.exists():
+        return new
+    legacy = directory / f"{prefix}_{objective_name}.json"
+    if legacy.exists():
+        return legacy
+    raise FileNotFoundError(
+        f"No result file found at {new} or {legacy}"
+    )
+
+
 class LandscapeConfig(BaseModel):
     """Shared configuration for landscape analysis commands.
 

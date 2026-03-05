@@ -9,7 +9,11 @@ from place_layers.landscape.analysis import (
     compute_bin_assignments,
     compute_dp_per_band,
 )
-from place_layers.landscape.config import LandscapeConfig, objective_result_path
+from place_layers.landscape.config import (
+    LandscapeConfig,
+    find_objective_result,
+    objective_result_path,
+)
 from place_layers.landscape.models import (
     BandResult,
     BandValidationResult,

@@ -152,6 +152,37 @@ class BayesianRidgeSurrogate(BaseSurrogate):
         L_inv = np.linalg.solve(self._L, np.eye(d, dtype=np.float64))
         self._diag_Vn = np.sum(L_inv ** 2, axis=0)
 
+    def fit_optimize_alpha(
+        self,
+        assignments: Sequence[Sequence[str]],
+        y: np.ndarray,
+        alpha_candidates: np.ndarray | None = None,
+    ) -> float:
+        """Fit with Type-II ML alpha selection.
+
+        Grid-searches alpha to maximize log marginal likelihood.
+        Returns the selected alpha.  The surrogate is left fitted with the
+        optimal alpha, and subsequent ``fit()`` calls reuse it automatically.
+        """
+        if alpha_candidates is None:
+            alpha_candidates = np.logspace(-3, 3, 13)
+
+        best_alpha = self._prior_alpha
+        best_lml = -np.inf
+
+        for alpha in alpha_candidates:
+            self._prior_alpha = float(alpha)
+            self.fit(assignments, y)
+            lml = self.log_marginal_likelihood()
+            if lml > best_lml:
+                best_lml = lml
+                best_alpha = float(alpha)
+
+        # Final fit with best alpha
+        self._prior_alpha = best_alpha
+        self.fit(assignments, y)
+        return best_alpha
+
     def log_marginal_likelihood(self) -> float:
         """Log marginal likelihood of the data under the NIG model.
 

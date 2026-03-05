@@ -37,6 +37,7 @@ from place_layers.landscape import (
     ValidationSummary,
     compute_band_edges,
     compute_bin_assignments,
+    find_objective_result,
     objective_result_path,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -112,7 +113,7 @@ class ValidateLandscapeCommand(BaseCommand):
         cost_model = landscape.cost_model.create_cost_model()
         # We need num_layers from the first exploration dataset
         first_obj_name = self.config.evaluators.objective_names[0]
-        first_dataset_path = objective_result_path(
+        first_dataset_path = find_objective_result(
             explore_dir, "exploration_results", first_obj_name,
         )
         from place_layers.surrogate.dataset import ExplorationDataset
@@ -183,7 +184,7 @@ class ValidateLandscapeCommand(BaseCommand):
         logger.info("=== Validating objective: %s ===", obj_name)
 
         # Exploration dataset path (needed for strategy's exploration_dataset_path)
-        dataset_path = objective_result_path(
+        dataset_path = find_objective_result(
             explore_dir, "exploration_results", obj_name,
         )
 

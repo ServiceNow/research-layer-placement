@@ -29,6 +29,7 @@ from place_layers.landscape import (
     LandscapeData,
     ValidationResults,
     compute_dp_per_band,
+    find_objective_result,
     objective_result_path,
 )
 from place_layers.surrogate.evaluation_log import (
@@ -96,7 +97,7 @@ class PlacementLandscapeCommand(BaseCommand):
         explore_dir = Path(landscape.explore_output_dir)
 
         for obj_name in self.config.evaluators.objective_names:
-            dataset_path = objective_result_path(
+            dataset_path = find_objective_result(
                 explore_dir, "exploration_results", obj_name,
             )
             await self._generate_landscape(
@@ -146,7 +147,14 @@ class PlacementLandscapeCommand(BaseCommand):
             mixer_names=pooled.mixer_names, seed=landscape.seed,
             feature_config=dataset.feature_config,
         )
-        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        match landscape.surrogate:
+            case BayesianRidgeSurrogateConfig(alpha_selection="evidence"):
+                selected_alpha = surrogate.fit_optimize_alpha(
+                    pooled.assignments, np.array(pooled.scores),
+                )
+                logger.info("Type-II ML alpha: %.4g", selected_alpha)
+            case _:
+                surrogate.fit(pooled.assignments, np.array(pooled.scores))
         num_layers = dataset.num_layers
 
         # Enumerate ALL allocations (no budget filter)
@@ -219,12 +227,15 @@ class PlacementLandscapeCommand(BaseCommand):
         # Load validation data if provided
         validation: ValidationResults | None = None
         if self.config.validation_output_dir is not None:
-            validation_path = objective_result_path(
-                Path(self.config.validation_output_dir),
-                "validation_results",
-                obj_name,
-            )
-            if validation_path.exists():
+            try:
+                validation_path = find_objective_result(
+                    Path(self.config.validation_output_dir),
+                    "validation_results",
+                    obj_name,
+                )
+            except FileNotFoundError:
+                validation_path = None
+            if validation_path is not None:
                 validation = ValidationResults.load(validation_path)
                 logger.info(
                     "Loaded validation results for %s: %d bands",
@@ -256,9 +267,9 @@ class PlacementLandscapeCommand(BaseCommand):
                     )
             else:
                 logger.warning(
-                    "Validation results not found for %s at %s, skipping overlay",
+                    "Validation results not found for %s in %s, skipping overlay",
                     obj_name,
-                    validation_path,
+                    self.config.validation_output_dir,
                 )
 
         # Observed data overlay (always shown) — pooled already has exploration + supplemental
