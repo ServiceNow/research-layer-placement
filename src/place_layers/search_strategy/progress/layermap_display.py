@@ -1097,10 +1097,10 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._active_strategy = "surrogate"
         self._surrogate_dataset_size = event.num_samples
         self._surrogate_metric_label = "\u03c1"
-        self._surrogate_metric_value = event.exploration_rho
+        self._surrogate_metric_value = event.exploration_quality
         self._console.print(
             f"  Surrogate: {event.num_samples} samples, "
-            f"exploration ρ={event.exploration_rho:.2f}"
+            f"exploration quality={event.exploration_quality:.4f}"
         )
 
     def on_surrogate_round_started(self, event: SurrogateRoundStartedEvent) -> None:

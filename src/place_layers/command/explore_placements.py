@@ -1,8 +1,8 @@
 """Explore placements command: build dataset for surrogate model training.
 
 Uses adaptive sampling to evaluate random placements until surrogate quality
-(Spearman rank correlation) reaches a target or plateaus. The dataset can
-then be used by the surrogate_search command.
+reaches a target or plateaus. The dataset can then be used by the
+surrogate_search command.
 
 Resumability
 ------------
@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import random
 from pathlib import Path
-from typing import Any, ClassVar, Literal, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
@@ -57,6 +57,9 @@ from place_layers.surrogate.model_selection import (
     select_expansion_bayes_evidence,
     select_expansion_ridge_cv,
 )
+
+if TYPE_CHECKING:
+    from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 
 
 logger = logging.getLogger(__name__)
@@ -168,14 +171,14 @@ def _fast_forward_rng(
 
 
 def _check_plateau(
-    rho_history: list[float],
+    quality_history: list[float],
     patience: int,
     min_improvement: float,
 ) -> bool:
     """Return True if last `patience` improvements are all < min_improvement."""
-    if len(rho_history) < patience + 1:
+    if len(quality_history) < patience + 1:
         return False
-    recent = rho_history[-(patience + 1) :]
+    recent = quality_history[-(patience + 1) :]
     for i in range(1, len(recent)):
         if recent[i] - recent[i - 1] >= min_improvement:
             return False
@@ -307,7 +310,7 @@ class ExplorePlacementsCommand(BaseCommand):
 
     # Stashed surrogate for Bayesian batch predictive scoring.
     # None means the next quality check is "stash only" (no score returned).
-    _prev_surrogate: object | None = None
+    _prev_surrogate: BayesianRidgeSurrogate | None = None
 
     async def run(self) -> None:
         """Execute adaptive exploration loop."""
@@ -753,9 +756,9 @@ class ExplorePlacementsCommand(BaseCommand):
             feature_config=feature_config,
             surrogate_config=self.config.surrogate,
             expansion_result=last_expansion_result,
-            rho_history=quality_history,
+            quality_history=quality_history,
             samples_at_check=samples_at_check,
-            final_rho=quality_history[-1] if quality_history else 0.0,
+            final_quality=quality_history[-1] if quality_history else 0.0,
         )
 
         # Save using result handler
@@ -771,7 +774,7 @@ class ExplorePlacementsCommand(BaseCommand):
             obj_name,
             dataset.num_samples,
             self.config.max_samples,
-            dataset.final_rho,
+            dataset.final_quality,
             dataset.termination_reason,
             self.config.surrogate.surrogate_type,
         )

@@ -27,3 +27,4 @@ surrogate:
   prior_a0: 1.0e-6
   prior_b0: 1.0e-6
   feature_scaling: counts_only
+  alpha_selection: fixed

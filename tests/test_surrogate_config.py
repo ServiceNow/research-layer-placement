@@ -43,7 +43,7 @@ class TestBayesianRidgeSurrogateConfig:
     def test_create_surrogate(self) -> None:
         config = BayesianRidgeSurrogateConfig(
             prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4,
-            feature_scaling="none",
+            feature_scaling="none", alpha_selection="fixed",
         )
         feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
@@ -58,7 +58,7 @@ class TestBayesianRidgeSurrogateConfig:
         with pytest.raises(ValidationError):
             BayesianRidgeSurrogateConfig(
                 prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6,
-                feature_scaling="none",
+                feature_scaling="none", alpha_selection="fixed",
             )  # prior_alpha gt=0
 
 
@@ -82,6 +82,7 @@ class TestSurrogateConfigUnion:
                 "prior_a0": 1e-6,
                 "prior_b0": 1e-6,
                 "feature_scaling": "none",
+                "alpha_selection": "fixed",
             }
         )
         assert isinstance(config, BayesianRidgeSurrogateConfig)

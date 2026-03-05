@@ -259,10 +259,10 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
         all_scores: list[float] = list(pooled.scores)
         logger.info(
-            "Loaded %d samples (exploration: %d, rho=%.4f)",
+            "Loaded %d samples (exploration: %d, quality=%.4f)",
             len(all_assignments),
             exploration.num_samples,
-            exploration.final_rho,
+            exploration.final_quality,
         )
 
         # Emit dataset loaded event
@@ -271,7 +271,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             dataset_event = SurrogateDatasetLoadedEvent(
                 num_samples=len(all_assignments),
-                exploration_rho=exploration.final_rho,
+                exploration_quality=exploration.final_quality,
             )
             for observer in self.observers:
                 observer.on_surrogate_dataset_loaded(dataset_event)

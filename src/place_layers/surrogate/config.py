@@ -87,7 +87,6 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
         gt=0,
     )
     alpha_selection: Literal["fixed", "evidence"] = Field(
-        default="fixed",
         description="Alpha selection mode: 'fixed' uses prior_alpha as-is, "
         "'evidence' optimizes alpha via Type-II ML (grid search on log "
         "marginal likelihood) on the initial fit.",

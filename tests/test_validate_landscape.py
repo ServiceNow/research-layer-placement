@@ -160,9 +160,9 @@ async def _build_exploration_dataset(
         num_samples=num_samples,
         termination_reason="max_samples",
         feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        rho_history=[rho],
+        quality_history=[rho],
         samples_at_check=[num_samples],
-        final_rho=rho,
+        final_quality=rho,
     )
 
 
@@ -738,7 +738,7 @@ class TestValidateLandscapePipeline:
             prior_alpha=1.0,
             prior_a0=1e-6,
             prior_b0=1e-6,
-
+            alpha_selection="fixed",
             feature_scaling="none",
         )
         pooled = _pool(dataset)
@@ -795,7 +795,7 @@ class TestValidateLandscapePipeline:
                         prior_alpha=1.0,
                         prior_a0=1e-6,
                         prior_b0=1e-6,
-            
+                        alpha_selection="fixed",
                         feature_scaling="none",
                     ),
                     risk_buckets=[

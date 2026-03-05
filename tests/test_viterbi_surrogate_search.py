@@ -171,9 +171,9 @@ async def _build_exploration_dataset(
         num_samples=num_samples,
         termination_reason="max_samples",
         feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        rho_history=[rho],
+        quality_history=[rho],
         samples_at_check=[num_samples],
-        final_rho=rho,
+        final_quality=rho,
         surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
     )
 
@@ -289,6 +289,7 @@ class TestViterbiSurrogateSearchIntegration:
                 prior_a0=1e-6,
                 prior_b0=1e-6,
                 feature_scaling="none",
+                alpha_selection="fixed",
             ),
             risk_buckets=[
                 RiskBucketConfig(name="safe", sign=-1, betas=[0.0, 1.0], quota=0.6, mean_floor_quantile=0.0),
@@ -330,6 +331,7 @@ class TestRiskBucketValidation:
                 prior_a0=1e-6,
                 prior_b0=1e-6,
                 feature_scaling="none",
+                alpha_selection="fixed",
             ),
         )
         defaults.update(overrides)

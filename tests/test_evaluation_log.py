@@ -239,9 +239,9 @@ class TestPooledData:
             feature_config=FeatureExpansionConfig(
                 max_order=1, pairwise_max_range=1, allocation_counts=True
             ),
-            rho_history=[0.9],
+            quality_history=[0.9],
             samples_at_check=[len(assignments)],
-            final_rho=0.9,
+            final_quality=0.9,
         )
         path.write_text(ds.model_dump_json())
 

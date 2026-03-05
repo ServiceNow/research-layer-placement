@@ -204,9 +204,9 @@ class TestHelpers:
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
                 target_rank_correlation=0.95,
             ),
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[1],
-            final_rho=0.3,
+            final_quality=0.3,
         )
         path = tmp_path / "exploration_results.json"
         path.write_text(dataset.model_dump_json(indent=2))
@@ -214,7 +214,7 @@ class TestHelpers:
         loaded = ExplorationDataset.load(path)
         assert loaded.num_samples == 1
         assert loaded.assignments == [("m0", "m1")]
-        assert loaded.final_rho == 0.3
+        assert loaded.final_quality == 0.3
         assert loaded.objective_name == "weighted_average"
         assert loaded.surrogate_config is not None
         assert loaded.surrogate_config.surrogate_type == "ridge"
@@ -286,7 +286,7 @@ class TestExploreIntegration:
             cv_folds=5,
             seed=42,
         )
-        rho_history = [rho1]
+        quality_history = [rho1]
 
         # One more batch
         batch = _sample_batch(batch_size, feasible, num_layers, rng)
@@ -304,12 +304,12 @@ class TestExploreIntegration:
             cv_folds=5,
             seed=42,
         )
-        rho_history.append(rho2)
+        quality_history.append(rho2)
 
         # Assertions
         assert len(all_assignments) == min_samples + batch_size
-        assert rho_history[0] > -1.0  # Sanity: rho is computed
-        assert len(rho_history) == 2
+        assert quality_history[0] > -1.0  # Sanity: rho is computed
+        assert len(quality_history) == 2
 
     async def test_exploration_dataset_serialization(self) -> None:
         """ExplorationDataset should serialize and deserialize correctly."""
@@ -326,9 +326,9 @@ class TestExploreIntegration:
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
                 target_rank_correlation=0.95,
             ),
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[2],
-            final_rho=0.3,
+            final_quality=0.3,
         )
 
         # Serialize to JSON and back
@@ -350,6 +350,7 @@ class TestExploreIntegration:
             prior_a0=1e-6,
             prior_b0=1e-6,
             feature_scaling="counts_only",
+            alpha_selection="fixed",
         )
         dataset = ExplorationDataset(
             assignments=[("m0", "m1")],
@@ -361,9 +362,9 @@ class TestExploreIntegration:
             termination_reason="max_samples",
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=cfg,
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[1],
-            final_rho=0.3,
+            final_quality=0.3,
         )
 
         json_str = dataset.model_dump_json()

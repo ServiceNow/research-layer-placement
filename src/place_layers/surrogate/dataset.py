@@ -49,9 +49,9 @@ class ExplorationDataset(BaseModel):
     expansion_result: ExpansionSelectionResult | None = None
 
     # Learning curve
-    rho_history: list[float]
+    quality_history: list[float]
     samples_at_check: list[int]
-    final_rho: float
+    final_quality: float
 
     @classmethod
     def load(cls, path: Path) -> "ExplorationDataset":

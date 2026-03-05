@@ -129,10 +129,10 @@ class PlacementLandscapeCommand(BaseCommand):
 
         dataset = ExplorationDataset.load(dataset_path)
         logger.info(
-            "Loaded dataset: %d samples, %d layers, rho=%.4f",
+            "Loaded dataset: %d samples, %d layers, quality=%.4f",
             dataset.num_samples,
             dataset.num_layers,
-            dataset.final_rho,
+            dataset.final_quality,
         )
         cost_model = landscape.cost_model.create_cost_model()
 
