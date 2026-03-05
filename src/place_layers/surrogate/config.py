@@ -55,6 +55,11 @@ class RidgeSurrogateConfig(BaseSurrogateConfig):
         description="K-fold CV folds for surrogate diagnostics (Spearman rho).",
         gt=1,
     )
+    target_rank_correlation: float = Field(
+        description="Stop exploration when Ridge CV Spearman rho reaches this.",
+        gt=0,
+        le=1,
+    )
 
     def create_surrogate(
         self,

@@ -197,7 +197,7 @@ class TestLandscapeHelpers:
         _save_dataset(dataset, tmp_path)
 
         pooled = _pool(dataset)
-        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         surrogate = config.create_surrogate(
             mixer_names=pooled.mixer_names, seed=42,
             feature_config=dataset.feature_config,
@@ -256,7 +256,7 @@ class TestLandscapeHelpers:
         write_meta(jsonl_path, meta)
 
         # Pool WITHOUT supplemental (via load_pooled_data for fair dedup comparison)
-        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         pooled_base = load_pooled_data([dataset_path], deduplicate=True)
         surr_base = ridge_config.create_surrogate(
             mixer_names=pooled_base.mixer_names, seed=42,
@@ -326,7 +326,7 @@ class TestLandscapeHelpers:
         _save_dataset(dataset, tmp_path)
 
         pooled = _pool(dataset)
-        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         surrogate = config.create_surrogate(
             mixer_names=pooled.mixer_names, seed=42,
             feature_config=dataset.feature_config,
@@ -524,7 +524,7 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         pooled = _pool(dataset)
-        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         surrogate = ridge_config.create_surrogate(
             mixer_names=pooled.mixer_names, seed=42,
             feature_config=dataset.feature_config,
@@ -579,6 +579,7 @@ class TestValidateLandscapePipeline:
                         n_bootstraps=50,
                         ei_xi=0.01,
                         cv_folds=3,
+                        target_rank_correlation=0.95,
                     ),
                     seed=42,
                 )
@@ -636,7 +637,7 @@ class TestValidateLandscapePipeline:
 
         # 1. Fit surrogate, compute bands
         pooled = _pool(dataset)
-        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         surrogate = ridge_config.create_surrogate(
             mixer_names=pooled.mixer_names, seed=42,
             feature_config=dataset.feature_config,
@@ -689,6 +690,7 @@ class TestValidateLandscapePipeline:
                     n_bootstraps=50,
                     ei_xi=0.01,
                     cv_folds=3,
+                    target_rank_correlation=0.95,
                 ),
                 seed=42,
             )
@@ -846,7 +848,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
         )
         assert cfg.seed == 42
@@ -860,7 +862,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
         )
         with pytest.raises(Exception):
@@ -1047,7 +1049,7 @@ class TestIncrementalValidationResults:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         pooled = _pool(dataset)
-        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
         surrogate = ridge_config.create_surrogate(
             mixer_names=pooled.mixer_names, seed=42,
             feature_config=dataset.feature_config,
@@ -1104,6 +1106,7 @@ class TestIncrementalValidationResults:
                         n_bootstraps=50,
                         ei_xi=0.01,
                         cv_folds=3,
+                        target_rank_correlation=0.95,
                     ),
                     seed=42,
                 )

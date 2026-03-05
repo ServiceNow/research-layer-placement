@@ -55,6 +55,7 @@ _VITERBI_CONFIG_DEFAULTS = dict(
         n_bootstraps=50,
         ei_xi=0.01,
         cv_folds=3,
+        target_rank_correlation=0.95,
     ),
 )
 
@@ -173,7 +174,7 @@ async def _build_exploration_dataset(
         rho_history=[rho],
         samples_at_check=[num_samples],
         final_rho=rho,
-        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
     )
 
 

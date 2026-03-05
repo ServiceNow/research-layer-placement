@@ -32,8 +32,8 @@ from place_layers.landscape import (
     objective_result_path,
 )
 from place_layers.surrogate.evaluation_log import (
+    discover_evaluation_records,
     load_pooled_data,
-    resolve_supplemental_dirs,
 )
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -136,7 +136,7 @@ class PlacementLandscapeCommand(BaseCommand):
         cost_model = landscape.cost_model.create_cost_model()
 
         supplemental_files = (
-            resolve_supplemental_dirs(supplemental_dirs, dataset.objective_name)
+            discover_evaluation_records(supplemental_dirs, dataset.objective_name)
             if supplemental_dirs else []
         )
         pooled = load_pooled_data(
@@ -214,7 +214,7 @@ class PlacementLandscapeCommand(BaseCommand):
         landscape_data.save(
             objective_result_path(output_dir, "landscape_data", obj_name)
         )
-        logger.info("Saved landscape_data_%s.json", obj_name)
+        logger.info("Saved %s/landscape_data.json", obj_name)
 
         # Load validation data if provided
         validation: ValidationResults | None = None
@@ -412,8 +412,10 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Save
-        pdf_path = output_dir / f"placement_landscape_{obj_name}.pdf"
-        png_path = output_dir / f"placement_landscape_{obj_name}.png"
+        obj_dir = output_dir / obj_name
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = obj_dir / "placement_landscape.pdf"
+        png_path = obj_dir / "placement_landscape.png"
         fig.savefig(pdf_path, bbox_inches="tight")
         fig.savefig(png_path, bbox_inches="tight")
         plt.close(fig)
@@ -703,7 +705,7 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
     validation_output_dir: str | None = Field(
         default=None,
         description="Path to the output directory from validate_landscape "
-        "(contains validation_results_{obj_name}.json files). "
+        "(contains {obj_name}/validation_results.json files). "
         "If provided, overlays real evaluated scores and uses validated placements in layermap.",
     )
 

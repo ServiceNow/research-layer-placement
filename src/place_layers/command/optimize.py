@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -45,35 +46,50 @@ class OptimizeCommand(BaseCommand):
                 for key in evals.objective_names:
                     problem = self.config.problem.create_problem(evals, objective_name=key)
 
-                    # Pre-populate eval log with supplemental data for snowball.
-                    # Strategy reads pre-seeded records on startup.
-                    eval_log = output_dir / f"evaluations_{key}.jsonl"
-                    n_prepopulated = 0
+                    # Resolve supplemental data as seed paths
+                    seed_paths: list[str] = []
                     if self.config.supplemental_data_dirs:
                         from place_layers.surrogate.evaluation_log import (
-                            append_record,
-                            load_pooled_data,
-                            resolve_supplemental_dirs,
+                            discover_evaluation_records,
                         )
 
-                        supp_files = resolve_supplemental_dirs(
+                        supp_files = discover_evaluation_records(
                             self.config.supplemental_data_dirs, key
                         )
+                        seed_paths.extend(str(f) for f in supp_files)
                         if supp_files:
-                            pool = load_pooled_data(supp_files, deduplicate=True)
-                            eval_log.parent.mkdir(parents=True, exist_ok=True)
-                            with eval_log.open("w") as f:
-                                for rec in pool.as_records():
-                                    append_record(f, rec)
-                            n_prepopulated = pool.num_samples
                             logger.info(
-                                "Pre-populated eval log with %d supplemental records -> %s",
-                                n_prepopulated, eval_log,
+                                "Discovered %d supplemental data files for objective '%s'",
+                                len(supp_files), key,
                             )
 
-                    # Strategy only needs evaluation_log_path — it reads pre-seeded records on startup
+                    from place_layers.surrogate.evaluation_log import (
+                        EVALUATION_RECORDS_FILENAME,
+                        EvaluationLogMeta,
+                        write_meta,
+                    )
+
+                    eval_log = output_dir / key / EVALUATION_RECORDS_FILENAME
+                    eval_log.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Write sidecar metadata
+                    write_meta(eval_log, EvaluationLogMeta(
+                        version=1,
+                        objective_name=key,
+                        num_layers=evals.num_layers,
+                        mixer_names=list(evals.mixer_names),
+                        source_command="optimize",
+                        source_detail="surrogate_search",
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        num_records=None,
+                    ))
+
+                    # Strategy uses seed_data_paths for input, evaluation_log_path for output
                     search_cfg = self.config.search_strategy.model_copy(
-                        update={"evaluation_log_path": str(eval_log)}
+                        update={
+                            "seed_data_paths": seed_paths,
+                            "evaluation_log_path": str(eval_log),
+                        }
                     )
 
                     # Create progress estimator
@@ -89,22 +105,6 @@ class OptimizeCommand(BaseCommand):
                         result = await search_strategy.search(
                             problem=problem, dry_run=self.config.dry_run
                         )
-
-                    # Update eval log sidecar to reflect pre-populated + strategy records
-                    if n_prepopulated > 0 and result is not None:
-                        from place_layers.surrogate.evaluation_log import (
-                            load_meta,
-                            write_meta,
-                        )
-
-                        meta = load_meta(eval_log)
-                        if meta is not None:
-                            write_meta(
-                                eval_log,
-                                meta.model_copy(update={
-                                    "num_records": (meta.num_records or 0) + n_prepopulated,
-                                }),
-                            )
 
                 if result is None:
                     return
@@ -155,9 +155,8 @@ class OptimizeCommandConfig(BaseCommandConfig):
 
     supplemental_data_dirs: list[str] = Field(
         description=(
-            "Directories containing pre-existing evaluation data to pre-populate "
-            "the eval log before search begins. Each directory is searched "
-            "recursively for evaluations_{obj}.jsonl snowball files."
+            "Directories containing pre-existing evaluation data. "
+            "Each directory is searched recursively for evaluation record files."
         ),
     )
 

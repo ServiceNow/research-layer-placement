@@ -202,6 +202,7 @@ class TestHelpers:
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
+                target_rank_correlation=0.95,
             ),
             rho_history=[0.3],
             samples_at_check=[1],
@@ -323,6 +324,7 @@ class TestExploreIntegration:
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
+                target_rank_correlation=0.95,
             ),
             rho_history=[0.3],
             samples_at_check=[2],
@@ -549,6 +551,22 @@ class TestSupplementalDataMerge:
         bogus = str(tmp_path / "does_not_exist")
         files = discover_evaluation_records([bogus], "obj")
         assert files == []
+
+    def test_deprecated_top_level_cv_folds_rejected(self) -> None:
+        """ExplorePlacementsCommandConfig rejects deprecated top-level keys."""
+        from pydantic import ValidationError
+        from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+
+        with pytest.raises((ValidationError, ValueError)):
+            ExplorePlacementsCommandConfig(cv_folds=5)  # type: ignore[call-arg]
+
+    def test_deprecated_top_level_target_rank_correlation_rejected(self) -> None:
+        """ExplorePlacementsCommandConfig rejects deprecated target_rank_correlation."""
+        from pydantic import ValidationError
+        from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+
+        with pytest.raises((ValidationError, ValueError)):
+            ExplorePlacementsCommandConfig(target_rank_correlation=0.95)  # type: ignore[call-arg]
 
     def test_empty_supplemental_dirs_skipped(self) -> None:
         """When supplemental_data_dirs is empty, the merge block is skipped."""

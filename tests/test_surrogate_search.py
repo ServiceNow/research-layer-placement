@@ -61,6 +61,7 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
         n_bootstraps=50,
         ei_xi=0.01,
         cv_folds=3,
+        target_rank_correlation=0.95,
     ),
     risk_buckets=None,
 )

@@ -21,7 +21,6 @@ import math
 import time
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, assert_never
 
@@ -56,11 +55,9 @@ from place_layers.surrogate.config import (
 )
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
-    EvaluationLogMeta,
     EvaluationRecord,
     append_record,
     load_pooled_data,
-    write_meta,
 )
 
 if TYPE_CHECKING:
@@ -273,10 +270,10 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
             if config.evaluation_log_path
             else None
         )
-        paths: list[str | Path] = [config.exploration_dataset_path]
-        if eval_log_path is not None and eval_log_path.exists():
-            paths.append(str(eval_log_path))
-        pooled = load_pooled_data(paths, deduplicate=True)
+        pooled = load_pooled_data(
+            [config.exploration_dataset_path, *config.seed_data_paths],
+            deduplicate=True,
+        )
         all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
         all_scores: list[float] = list(pooled.scores)
         logger.info(
@@ -303,17 +300,6 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
 
         if eval_log_path is not None:
             eval_log_path.parent.mkdir(parents=True, exist_ok=True)
-            meta = EvaluationLogMeta(
-                version=1,
-                objective_name=exploration.objective_name,
-                num_layers=num_layers,
-                mixer_names=list(mixer_names),
-                source_command="surrogate_search",
-                source_detail=self._source_detail,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                num_records=None,
-            )
-            write_meta(eval_log_path, meta)
             eval_log_file = eval_log_path.open("a")
 
         try:
@@ -389,7 +375,6 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
                         record = EvaluationRecord(
                             assignment=candidate,
                             score=score,
-                            allocation=alloc,
                         )
                         append_record(eval_log_file, record)
                         eval_record_count += 1
@@ -500,21 +485,8 @@ class _BaseViterbiSurrogateSearch(BaseCostConstrainedSearch):
                         observer.on_surrogate_round_completed(round_completed_event)
 
         finally:
-            # Close evaluation log and update metadata with record count
             if eval_log_file is not None:
                 eval_log_file.close()
-                if eval_log_path is not None and eval_record_count > 0:
-                    meta_final = EvaluationLogMeta(
-                        version=1,
-                        objective_name=exploration.objective_name,
-                        num_layers=num_layers,
-                        mixer_names=list(mixer_names),
-                        source_command="surrogate_search",
-                        source_detail=self._source_detail,
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                        num_records=eval_record_count,
-                    )
-                    write_meta(eval_log_path, meta_final)
 
         return all_assignments, all_scores
 

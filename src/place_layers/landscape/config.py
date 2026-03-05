@@ -22,9 +22,9 @@ def objective_result_path(directory: Path, prefix: str, objective_name: str) -> 
     Examples::
 
         objective_result_path(out, "exploration_results", "gsm8k")
-        # -> out / "exploration_results_gsm8k.json"
+        # -> out / "gsm8k" / "exploration_results.json"
     """
-    return directory / f"{prefix}_{objective_name}.json"
+    return directory / objective_name / f"{prefix}.json"
 
 
 class LandscapeConfig(BaseModel):
@@ -41,7 +41,7 @@ class LandscapeConfig(BaseModel):
     )
     explore_output_dir: str = Field(
         description="Path to the output directory from explore_placements "
-        "(contains exploration_results_{obj_name}.json files).",
+        "(contains {obj_name}/exploration_results.json files).",
     )
     seed: int = Field(
         description="Random seed for surrogate fitting and model selection.",
@@ -56,5 +56,5 @@ class LandscapeConfig(BaseModel):
     supplemental_data_dirs: list[str] = Field(
         description="Directories containing additional evaluation data to merge "
         "into surrogate training. Each directory is searched per-objective "
-        "using the standard naming convention (evaluations_{obj}.jsonl, etc.).",
+        "using the standard naming convention ({obj}/evaluation_records.jsonl, etc.).",
     )

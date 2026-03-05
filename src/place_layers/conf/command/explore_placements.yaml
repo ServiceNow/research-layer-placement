@@ -22,18 +22,20 @@ batch_size: 500         # Samples per subsequent batch
 max_samples: 10000      # Hard cap on total evaluations
 
 # Stopping criteria
-target_rank_correlation: 0.95  # Stop when Ridge CV Spearman rho reaches this (also used for expansion selection)
 plateau_patience: 3            # Batches without improvement before stopping
-plateau_min_improvement: 0.02  # Minimum rho improvement to count as progress
-cv_folds: 5                    # Cross-validation folds for quality estimation
+plateau_min_improvement: 0.02  # Minimum quality improvement to count as progress
 
 seed: 42
 
-# Surrogate model — determines expansion selection method
+# Surrogate model — determines expansion selection method and quality metric.
+# Ridge: cv_folds + target_rank_correlation control stopping.
+# Bayesian Ridge: plateau on batch predictive score (no target).
 surrogate:
   surrogate_type: ridge
   n_bootstraps: 50
   ei_xi: 0.01
+  cv_folds: 5
+  target_rank_correlation: 0.95
 
 # Feature expansion selection
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)

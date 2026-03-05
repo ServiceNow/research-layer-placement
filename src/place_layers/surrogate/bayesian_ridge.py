@@ -226,6 +226,20 @@ class BayesianRidgeSurrogate(BaseSurrogate):
 
         return mu, sigma
 
+    def predictive_logpdf(
+        self, assignments: Sequence[Sequence[str]], y: np.ndarray,
+    ) -> np.ndarray:
+        """Log posterior predictive density for each observation.
+
+        Uses the same Student-t predictive as predict():
+        p(y|x, D) = Student-t(y; mu, sigma, df=2*a_n)
+        """
+        from scipy.stats import t as student_t
+
+        mu, sigma = self.predict(assignments)
+        df = self.degrees_of_freedom
+        return student_t.logpdf(y, df=df, loc=mu, scale=sigma)
+
     def predict_mean(self, assignments: Sequence[Sequence[str]]) -> np.ndarray:
         """Fast mean-only prediction.
 
