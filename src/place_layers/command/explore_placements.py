@@ -572,7 +572,6 @@ class ExplorePlacementsCommand(BaseCommand):
             # --- Phase 2b: First quality check ---
             # Initialize Bayesian stashed-surrogate tracking.
             self._prev_surrogate = None
-            prev_n_samples = 0
 
             if len(all_assignments) >= min_for_check:
                 quality_or_none = self._check_quality(
@@ -580,9 +579,7 @@ class ExplorePlacementsCommand(BaseCommand):
                     np.array(all_scores),
                     phase_order,
                     feature_config,
-                    prev_n_samples=prev_n_samples,
                 )
-                prev_n_samples = len(all_assignments)
                 if quality_or_none is not None:
                     quality = quality_or_none
                     quality_history.append(quality)
@@ -691,9 +688,7 @@ class ExplorePlacementsCommand(BaseCommand):
                     np.array(all_scores),
                     phase_order,
                     feature_config,
-                    prev_n_samples=prev_n_samples,
                 )
-                prev_n_samples = len(all_assignments)
                 if quality_or_none is not None:
                     quality_delta = (
                         quality_or_none - quality_history[-1]
@@ -784,8 +779,6 @@ class ExplorePlacementsCommand(BaseCommand):
         scores: np.ndarray,
         mixer_names: list[str],
         feature_config: FeatureExpansionConfig,
-        *,
-        prev_n_samples: int,
     ) -> float | None:
         """Compute surrogate quality metric, dispatching by surrogate type.
 
@@ -793,40 +786,10 @@ class ExplorePlacementsCommand(BaseCommand):
         (Bayesian first checkpoint — no previous posterior to score against).
         """
         match self.config.surrogate:
-            case BayesianRidgeSurrogateConfig() as cfg:
-                if self._prev_surrogate is None:
-                    # First check: stash surrogate, no quality value.
-                    surrogate = cfg.create_surrogate(
-                        mixer_names=mixer_names,
-                        seed=self.config.seed,
-                        feature_config=feature_config,
-                    )
-                    surrogate.fit(assignments, scores)
-                    self._prev_surrogate = surrogate
-                    return None  # No quality value yet
-
-                # Score new batch under OLD posterior
-                from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
-
-                assert isinstance(self._prev_surrogate, BayesianRidgeSurrogate)
-                new_assignments = assignments[prev_n_samples:]
-                new_scores = scores[prev_n_samples:]
-                quality = float(np.mean(
-                    self._prev_surrogate.predictive_logpdf(
-                        new_assignments, new_scores
-                    )
-                ))
-
-                # Refit on all data for next checkpoint
-                surrogate = cfg.create_surrogate(
-                    mixer_names=mixer_names,
-                    seed=self.config.seed,
-                    feature_config=feature_config,
+            case BayesianRidgeSurrogateConfig():
+                return self._bayesian_quality_check(
+                    assignments, scores, mixer_names, feature_config,
                 )
-                surrogate.fit(assignments, scores)
-                self._prev_surrogate = surrogate
-                return quality
-
             case RidgeSurrogateConfig() as cfg:
                 return ridge_cv_rho(
                     assignments=assignments,
@@ -838,6 +801,46 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
             case other:
                 assert_never(other)
+
+    def _bayesian_quality_check(
+        self,
+        assignments: list[tuple[str, ...]],
+        scores: np.ndarray,
+        mixer_names: list[str],
+        feature_config: FeatureExpansionConfig,
+    ) -> float | None:
+        """Bayesian batch posterior predictive quality check.
+
+        First call (no stashed surrogate): fit and stash, return None.
+        Subsequent calls: score new batch under old posterior, refit in-place.
+        """
+        from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+
+        cfg = self.config.surrogate
+        assert isinstance(cfg, BayesianRidgeSurrogateConfig)
+
+        if self._prev_surrogate is None:
+            surrogate = cfg.create_surrogate(
+                mixer_names=mixer_names,
+                seed=self.config.seed,
+                feature_config=feature_config,
+            )
+            surrogate.fit(assignments, scores)
+            self._prev_surrogate = surrogate
+            return None
+
+        assert isinstance(self._prev_surrogate, BayesianRidgeSurrogate)
+        prev_n = self._prev_surrogate.n_samples
+        quality = float(np.mean(
+            self._prev_surrogate.predictive_logpdf(
+                assignments[prev_n:], scores[prev_n:]
+            )
+        ))
+
+        # Refit in-place on all data for next checkpoint.
+        # fit() is idempotent — fully replaces posterior state.
+        self._prev_surrogate.fit(assignments, scores)
+        return quality
 
     def _check_target_reached(self, quality: float) -> bool:
         """Check if quality target is reached (Ridge only; Bayesian has no target)."""

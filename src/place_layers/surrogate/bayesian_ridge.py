@@ -237,6 +237,7 @@ class BayesianRidgeSurrogate(BaseSurrogate):
         from scipy.stats import t as student_t
 
         mu, sigma = self.predict(assignments)
+        sigma = np.maximum(sigma, 1e-12)  # Prevent log(0) in degenerate cases
         df = self.degrees_of_freedom
         return student_t.logpdf(y, df=df, loc=mu, scale=sigma)
 
@@ -400,6 +401,10 @@ class BayesianRidgeSurrogate(BaseSurrogate):
         )
 
         return mean_model, var_model
+
+    @property
+    def n_samples(self) -> int:
+        return self._n_samples
 
     @property
     def degrees_of_freedom(self) -> float:
