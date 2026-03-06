@@ -33,7 +33,7 @@ configs:
     evaluator_type: generative
     tasks: ${evaluators.niah_task.tasks}
     num_fewshot: ${evaluators.niah_task.num_fewshot}
-    max_problems_per_task: ${evaluators.niah_task.max_problems_per_task}
+    max_problems_per_task: 100
     split: ${evaluators.niah_task.split}
     samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
     max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
@@ -50,7 +50,7 @@ configs:
     evaluator_type: generative
     tasks: ${evaluators.ruler_task.tasks}
     num_fewshot: ${evaluators.ruler_task.num_fewshot}
-    max_problems_per_task: ${evaluators.ruler_task.max_problems_per_task}
+    max_problems_per_task: 100
     split: ${evaluators.ruler_task.split}
     samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
     max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
