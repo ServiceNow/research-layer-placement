@@ -1,0 +1,6 @@
+# @package _global_
+# Placement obtained via optimization of bayesian surrogate fit on apriel-long-mix
+# "cost": 18.2820
+# "score": 0.80878
+# Model: apriel2_1p6_v2_annealed_0204
+placement: ['sliding_window', 'sliding_window', 'sliding_window', 'attention', 'sliding_window', 'sliding_window', 'attention', 'sliding_window', 'sliding_window', 'attention', 'attention', 'sliding_window', 'sliding_window', 'attention', 'attention', 'sliding_window', 'attention', 'sliding_window', 'sliding_window', 'attention', 'sliding_window', 'gdn', 'attention', 'attention', 'sliding_window', 'sliding_window', 'sliding_window', 'kda', 'attention', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'attention', 'gdn', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'sliding_window', 'attention', 'sliding_window']
