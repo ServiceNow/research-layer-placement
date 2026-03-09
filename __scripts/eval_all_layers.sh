@@ -151,7 +151,7 @@ run_one() {
     local cmd=(
       python -m place_layers
       "+command=${COMMAND}"
-      "+evaluator=${EVALUATOR_CFG}"
+      "+evaluator@evaluators.configs.${task}=${EVALUATOR_CFG}"
       +backend=rest
       "+task=${task}"
       "+generation=${GENERATION_CFG}"
@@ -179,6 +179,12 @@ PY
 
     if [[ -n "${MAX_PROBLEMS_PER_TASK}" ]]; then
       cmd+=("task.max_problems_per_task=${MAX_PROBLEMS_PER_TASK}")
+    fi
+
+    # Pass any extra Hydra overrides (space-separated)
+    if [[ -n "${EXTRA_OVERRIDES:-}" ]]; then
+      read -r -a extras <<<"$EXTRA_OVERRIDES"
+      cmd+=("${extras[@]}")
     fi
 
     echo "[$idx/$((NUM_LAYERS))][task=${task}] ${cmd[*]}"

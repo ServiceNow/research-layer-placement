@@ -376,46 +376,49 @@ IDS=(300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318
 ################ PRECOMPUTE TRACES
 ################################################################################
 # # TODO
-# nohup env \
-#   OUTPUT_BASE=outputs/math_traces_very_long \
-#   DNS="${DNS}" \
-#   IDS="300 301 302 303 304 305 306 307" \
-#   PORT="8080" \
-#   COMMAND="precompute_traces" \
-#   TIMEOUT_SECONDS=1800 \
-#   BASE_MIXER=attention REPLACE_MIXER=kda \
-#   START_LAYER=0 NUM_LAYERS=1 MAX_JOBS=1 MAX_PROBLEMS_PER_TASK=30 MAX_CONCURRENT_PER_SERVER=4 \
-#   TASK_CFG=aime25_strip_end,aime24_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_very_very_long \
-#   bash __scripts/eval_all_layers.sh \
-#   > nohup_precompute_all_aime_very_long.out 2>&1 &
+nohup env \
+  OUTPUT_BASE=outputs/traces/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/math_traces_very_very_long \
+  DNS="${DNS}" \
+  IDS="340 341 342 343 344 345 346 347 348 349 350 351 352 353 354" \
+  PORT="8080" \
+  COMMAND="precompute_traces" \
+  TIMEOUT_SECONDS=15000 \
+  EXTRA_OVERRIDES="generation.include_logprobs=true" \
+  BASE_MIXER=attention REPLACE_MIXER=kda \
+  START_LAYER=0 NUM_LAYERS=1 MAX_JOBS=1 MAX_PROBLEMS_PER_TASK=30 MAX_CONCURRENT_PER_SERVER=4 \
+  TASK_CFG=aime24_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_very_very_long \
+  bash __scripts/eval_all_layers.sh \
+  > nohup_precompute_all_aime_traces.out 2>&1 &
+
+
+nohup env \
+  OUTPUT_BASE=outputs/traces/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/math_traces_very_long \
+  DNS="${DNS}" \
+  IDS="355 356 357 358 359" \
+  PORT="8080" \
+  COMMAND="precompute_traces" \
+  TIMEOUT_SECONDS=15000 \
+  EXTRA_OVERRIDES="generation.include_logprobs=true" \
+  BASE_MIXER=attention REPLACE_MIXER=kda \
+  START_LAYER=0 NUM_LAYERS=1 MAX_JOBS=1 MAX_PROBLEMS_PER_TASK=500 MAX_CONCURRENT_PER_SERVER=4 \
+  TASK_CFG=math_500_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_very_long \
+  bash __scripts/eval_all_layers.sh \
+  > nohup_precompute_all_math_traces.out 2>&1 &
 
 
 # nohup env \
-#   OUTPUT_BASE=outputs/math_traces_long \
+#   OUTPUT_BASE=outputs/traces/ap1p6_frm1p5_distil_annealed_cpt10k_mixo_gs/aime_traces_very_very_long \
 #   DNS="${DNS}" \
-#   IDS="308 309 310 311 312 313 314 315 316 317 318 319" \
+#   IDS="313 314 315 316 317 318 319" \
 #   PORT="8080" \
 #   COMMAND="precompute_traces" \
-#   TIMEOUT_SECONDS=1800 \
-#   BASE_MIXER=attention REPLACE_MIXER=kda \
-#   START_LAYER=0 NUM_LAYERS=1 MAX_JOBS=1 MAX_PROBLEMS_PER_TASK=500 MAX_CONCURRENT_PER_SERVER=4 \
-#   TASK_CFG=math_500_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_long \
-#   bash __scripts/eval_all_layers.sh \
-#   > nohup_precompute_all_math.out 2>&1 &
-
-
-# nohup env \
-#   OUTPUT_BASE=outputs/aime_traces_long \
-#   DNS="${DNS}" \
-#   IDS="330 331 332 333 334 335 336 337 338 339" \
-#   PORT="8080" \
-#   COMMAND="precompute_traces" \
-#   TIMEOUT_SECONDS=1800 \
+#   TIMEOUT_SECONDS=15000 \
+#   EXTRA_OVERRIDES="generation.include_logprobs=true" \
 #   BASE_MIXER=attention REPLACE_MIXER=kda \
 #   START_LAYER=0 NUM_LAYERS=1 MAX_JOBS=1 MAX_PROBLEMS_PER_TASK=30 MAX_CONCURRENT_PER_SERVER=1 \
-#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_long_long \
+#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=trace_precompute GENERATION_CFG=greedy_very_very_long \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_generative_aime.out 2>&1 &
+#   > nohup_generative_aime_+traces.out 2>&1 &
 
 
 ################################################################################
@@ -613,108 +616,443 @@ IDS=(300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318
 #   bash __scripts/eval_all_layers.sh \
 #   > nohup_baseline_extraction.out 2>&1 &
 
-# SEARCH RESULTS
+################################################################################
+# EVALs apriel2_1p6_frm1p5_distil_annealed_cpt40k
 
 # GSM8K
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="300 301 303 304 305" \
+#   IDS="317 318 319" \
 #   PORT="8080" \
 #   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
-#   TASK_CFG=gsm8k_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy \
+#   TASK_CFG=gsm8k_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_long \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_gsm8k.out 2>&1 &
+#   > nohup_outs/nohup_baseline_gsm8k_a1p6.out 2>&1 &
 
-# MATH 500
-nohup env \
-  OUTPUT_BASE=outputs/evals/optimal_ss_10 \
-  DNS="${DNS}" \
-  IDS="306 307 308 309 310" \
-  PORT="8080" \
-  TIMEOUT_SECONDS=1800 \
-  PLACEMENT_CFG=surogate_search_lieklihood_10cost \
-  NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
-  TASK_CFG=math_500_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_long \
-  bash __scripts/eval_all_layers.sh \
-  > nohup_baseline_math500.out 2>&1 &
-
-# AIME 24
+# # MATH 500
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="311 312 313 314 315" \
+#   IDS="313 314 315 316" \
 #   PORT="8080" \
-#   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   TIMEOUT_SECONDS=2500 \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
-#   TASK_CFG=aime24_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
+#   TASK_CFG=math_500_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_aime24.out 2>&1 &
+#   > nohup_outs/nohup_baseline_math500_a1p6.out 2>&1 &
 
-# # AIME 25
+# # AIME 24
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="316 317 318 319 320" \
+#   IDS="307 308 309 310 311 312 317 318 319" \
 #   PORT="8080" \
-#   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
-#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
+#   TASK_CFG=aime24_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_aime25.out 2>&1 &
+#   > nohup_outs/nohup_baseline_aime24_a1p6.out 2>&1 &
+
+# # # # AIME 25
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
+#   DNS="${DNS}" \
+#   IDS="300 301 302 303 304 305 306 313 314 315 316" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime25_a1p6.out 2>&1 &
 
 # # RULER QA SQUAD
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="321 322 323 324 325" \
+#   IDS="301" \
 #   PORT="8080" \
 #   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
-#   TASK_CFG=ruler_qa_squad EVALUATOR_CFG=generative_extraction_ruller.yaml GENERATION_CFG=greedy_very_short \
+#   TASK_CFG=ruler_qa_squad EVALUATOR_CFG=generative_extraction_ruller.yaml GENERATION_CFG=greedy_short \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_ruler_qa_squad.out 2>&1 &
+#   > nohup_outs/nohup_baseline_ruler_qa_squad_a1p6.out 2>&1 &
 
 # # NIAH
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="326 327 328 329" \
+#   IDS="300" \
 #   PORT="8080" \
 #   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
-#   TASK_CFG=niah_single_2 EVALUATOR_CFG=generative_extraction_ruller_long.yaml GENERATION_CFG=greedy_very_short \
+#   TASK_CFG=niah_single_2 EVALUATOR_CFG=generative_extraction_ruller_long.yaml GENERATION_CFG=greedy_short \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_niah.out 2>&1 &
+#   > nohup_outs/nohup_baseline_niah_a1p6.out 2>&1 &
 
 # # MMLU
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="330 331 332 333 334" \
+#   IDS="342" \
 #   PORT="8080" \
 #   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=10 MAX_PROBLEMS_PER_TASK=10 \
 #   TASK_CFG=mmlu EVALUATOR_CFG=likelihood GENERATION_CFG=greedy_long \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_mmlu.out 2>&1 &
+#   > nohup_outs/nohup_baseline_mmlu_a1p6.out 2>&1 &
 
 # # Extraction (SWDE + FDA)
 # nohup env \
-#   OUTPUT_BASE=outputs/evals/optimal_ss_10 \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/all_attn_longer \
 #   DNS="${DNS}" \
-#   IDS="336 337 338 339" \
+#   IDS="343" \
 #   PORT="8080" \
 #   TIMEOUT_SECONDS=1800 \
-#   PLACEMENT_CFG=surogate_search_lieklihood_10cost \
+#   PLACEMENT_CFG=all-attention \
 #   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
 #   TASK_CFG=swde,fda EVALUATOR_CFG=extraction GENERATION_CFG=extraction \
 #   bash __scripts/eval_all_layers.sh \
-#   > nohup_baseline_extraction.out 2>&1 &
+#   > nohup_outs/nohup_baseline_extraction_a1p6.out 2>&1 &
+
+################################################################################
+# EVALs — apriel2_1p6_frm1p5_distil_annealed_cpt40k optimal placement (IDs 300-319)
+# Placement: surogate_search_lieklihood_6.4cost_cpt40k
+# ID allocation (no overlaps):
+#   AIME25: 300-304 (5), AIME24: 305-310 (6), MATH: 311-313 (3),
+#   GSM8K: 314-315 (2), RULER: 316, NIAH: 317, MMLU: 318, Extraction: 319
+################################################################################
+
+# AIME 25
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="300 301 302 303 304" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime25_cpt40k_optimal.out 2>&1 &
+
+# # AIME 24
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="305 306 307 308 309 310" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime24_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime24_cpt40k_optimal.out 2>&1 &
+
+# # MATH 500
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="311 312 313" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=2500 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=math_500_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_math500_cpt40k_optimal.out 2>&1 &
+
+# # GSM8K
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="314 315" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=gsm8k_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_gsm8k_cpt40k_optimal.out 2>&1 &
+
+# # RULER QA SQUAD
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="316" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=ruler_qa_squad EVALUATOR_CFG=generative_extraction_ruller.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_ruler_qa_squad_cpt40k_optimal.out 2>&1 &
+
+# # NIAH
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="317" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=niah_single_2 EVALUATOR_CFG=generative_extraction_ruller_long.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_niah_cpt40k_optimal.out 2>&1 &
+
+# # MMLU
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="318" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=10 MAX_PROBLEMS_PER_TASK=10 \
+#   TASK_CFG=mmlu EVALUATOR_CFG=likelihood GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_mmlu_cpt40k_optimal.out 2>&1 &
+
+# # Extraction (SWDE + FDA)
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt40k/surogate_search_lieklihood_6.4cost_cpt40k \
+#   DNS="${DNS}" \
+#   IDS="319" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=surogate_search_lieklihood_6.4cost_cpt40k \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=swde,fda EVALUATOR_CFG=extraction GENERATION_CFG=extraction \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_extraction_cpt40k_optimal.out 2>&1 &
+
+################################################################################
+# EVALs — apriel2_1p6_frm1p5_distil_annealed_cpt10k (IDs 320-339)
+# ID allocation (no overlaps):
+#   AIME25: 320-324 (5), AIME24: 325-330 (6), MATH: 331-333 (3),
+#   GSM8K: 334-335 (2), RULER: 336, NIAH: 337, MMLU: 338, Extraction: 339
+################################################################################
+
+# AIME 25
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="320 321 322 323 324" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime25_cpt10k.out 2>&1 &
+
+# # AIME 24
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="325 326 327 328 329 330" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime24_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime24_cpt10k.out 2>&1 &
+
+# # MATH 500
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="331 332 333" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=2500 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=math_500_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_math500_cpt10k.out 2>&1 &
+
+# # GSM8K
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="334 335" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=gsm8k_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_gsm8k_cpt10k.out 2>&1 &
+
+# # RULER QA SQUAD
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="336" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=ruler_qa_squad EVALUATOR_CFG=generative_extraction_ruller.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_ruler_qa_squad_cpt10k.out 2>&1 &
+
+# # NIAH
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="337" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=niah_single_2 EVALUATOR_CFG=generative_extraction_ruller_long.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_niah_cpt10k.out 2>&1 &
+
+# # MMLU
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="338" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=10 MAX_PROBLEMS_PER_TASK=10 \
+#   TASK_CFG=mmlu EVALUATOR_CFG=likelihood GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_mmlu_cpt10k.out 2>&1 &
+
+# # Extraction (SWDE + FDA)
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k/all_attn \
+#   DNS="${DNS}" \
+#   IDS="339" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=swde,fda EVALUATOR_CFG=extraction GENERATION_CFG=extraction \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_extraction_cpt10k.out 2>&1 &
+
+# ################################################################################
+# # EVALs — apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo (IDs 340-359)
+# # ID allocation (no overlaps):
+# #   AIME25: 340-344 (5), AIME24: 345-350 (6), MATH: 351-353 (3),
+# #   GSM8K: 354-355 (2), RULER: 356, NIAH: 357, MMLU: 358, Extraction: 359
+# ################################################################################
+
+# # AIME 25
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="340 341 342 343 344" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime25_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime25_cpt10k_mixo.out 2>&1 &
+
+# # AIME 24
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="345 346 347 348 349 350" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=12000 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=aime24_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_aime24_cpt10k_mixo.out 2>&1 &
+
+# # MATH 500
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="351 352 353" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=2500 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=math_500_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_very_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_math500_cpt10k_mixo.out 2>&1 &
+
+# # GSM8K
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="354 355" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+#   TASK_CFG=gsm8k_strip_end EVALUATOR_CFG=generative GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_gsm8k_cpt10k_mixo.out 2>&1 &
+
+# # RULER QA SQUAD
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="356" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=ruler_qa_squad EVALUATOR_CFG=generative_extraction_ruller.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_ruler_qa_squad_cpt10k_mixo.out 2>&1 &
+
+# # NIAH
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="357" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=15 \
+#   TASK_CFG=niah_single_2 EVALUATOR_CFG=generative_extraction_ruller_long.yaml GENERATION_CFG=greedy_short \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_niah_cpt10k_mixo.out 2>&1 &
+
+# # MMLU
+# nohup env \
+#   OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+#   DNS="${DNS}" \
+#   IDS="358" \
+#   PORT="8080" \
+#   TIMEOUT_SECONDS=1800 \
+#   PLACEMENT_CFG=all-attention \
+#   NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=10 MAX_PROBLEMS_PER_TASK=10 \
+#   TASK_CFG=mmlu EVALUATOR_CFG=likelihood GENERATION_CFG=greedy_long \
+#   bash __scripts/eval_all_layers.sh \
+#   > nohup_outs/nohup_baseline_mmlu_cpt10k_mixo.out 2>&1 &
+
+# # Extraction (SWDE + FDA)
+# nohup env \
+  OUTPUT_BASE=outputs/evals/apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo/all_attn \
+  DNS="${DNS}" \
+  IDS="359" \
+  PORT="8080" \
+  TIMEOUT_SECONDS=1800 \
+  PLACEMENT_CFG=all-attention \
+  NUM_LAYERS=1 MAX_JOBS=1 MAX_CONCURRENT_PER_SERVER=4 \
+  TASK_CFG=swde,fda EVALUATOR_CFG=extraction GENERATION_CFG=extraction \
+  bash __scripts/eval_all_layers.sh \
+  > nohup_outs/nohup_baseline_extraction_cpt10k_mixo.out 2>&1 &
