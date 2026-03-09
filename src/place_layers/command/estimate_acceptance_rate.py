@@ -268,14 +268,14 @@ def _process_batch(
     max_len = max(len(s) for s in sequences)
     pad_id = getattr(backend.tokenizer, "pad_token_id", None) or 0
 
+    # Right-pad so recurrent layers (GDN/KDA) don't process padding
+    # tokens before the real sequence.
     padded = []
     attention_masks = []
-    pad_lens: list[int] = []
     for seq in sequences:
         pad_len = max_len - len(seq)
-        pad_lens.append(pad_len)
-        padded.append([pad_id] * pad_len + seq)
-        attention_masks.append([0] * pad_len + [1] * len(seq))
+        padded.append(seq + [pad_id] * pad_len)
+        attention_masks.append([1] * len(seq) + [0] * pad_len)
 
     input_ids = torch.tensor(padded, dtype=torch.long, device=device)
     attention_mask = torch.tensor(
@@ -303,10 +303,9 @@ def _process_batch(
     for i, trace in enumerate(batch):
         p_len = prompt_lens[i]
         c_len = completion_lens[i]
-        offset = pad_lens[i]
 
-        start = offset + p_len - 1
-        end = offset + p_len + c_len - 1
+        start = p_len - 1
+        end = p_len + c_len - 1
 
         t_probs = F.softmax(
             target_logits[i, start:end, :].float(), dim=-1
