@@ -7,7 +7,7 @@
 
 defaults:
   - /command: explore_placements
-  - /evaluator: importance_weighted
+  - /evaluator@evaluators.configs.is: importance_weighted
   - /backend: transformers
   - /model: apriel2_0_5b_dev
   - /problem: apriel_h_1_5_15b
@@ -15,12 +15,14 @@ defaults:
   - _self_
 
 # IS traces for aime25, aime24, math_500
-evaluator:
-  scoring_mode: student_log_prob
-  trace_sources:
-    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
-    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
-    - /home/toolkit/dev/research-layer-placement/outputs/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+evaluators:
+  configs:
+    is:
+      scoring_mode: student_log_prob
+      trace_sources:
+        - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
+        - /home/toolkit/dev/research-layer-placement/outputs/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+        - /home/toolkit/dev/research-layer-placement/outputs/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
 
 # Fixed 3rd-order adjacent features (skip model selection)
 fixed_expansion_config:

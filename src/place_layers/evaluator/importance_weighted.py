@@ -148,6 +148,7 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
     ) -> None:
         self._weight_clip_min = config.weight_clip_min
         self._weight_clip_max = config.weight_clip_max
+        self._scoring_mode = config.scoring_mode
 
         # Pre-compute log weight clip bounds for numerical stability
         self._log_weight_clip_min = math.log(self._weight_clip_min)
@@ -216,7 +217,13 @@ class ImportanceWeightedEvaluator(TraceBasedEvaluator):
         )
 
         logger.info(f"\n{summary}")
-        logger.info(f"Weighted accuracy: {final_score:.4f}")
+
+        if self._scoring_mode == "student_log_prob":
+            final_score = summary.weighted_student_log_prob(self.task_weights)
+            logger.info(f"Weighted student log-prob: {final_score:.4f}")
+        else:
+            final_score = summary.weighted_accuracy(self.task_weights)
+            logger.info(f"Weighted accuracy: {final_score:.4f}")
 
         return final_score
 
@@ -227,6 +234,13 @@ class ImportanceWeightedEvaluatorConfig(TraceBasedEvaluatorConfig):
     _impl_class: ClassVar[type[BaseEvaluator]] = ImportanceWeightedEvaluator
 
     evaluator_type: Literal["importance_weighted"] = "importance_weighted"
+
+    scoring_mode: Literal["accuracy", "student_log_prob"] = Field(
+        default="accuracy",
+        description="What evaluate() returns: "
+        "'accuracy' for IS-weighted accuracy (range [0,1]), "
+        "'student_log_prob' for mean student log-prob per problem (negative).",
+    )
 
     # Importance sampling parameters
     weight_clip_min: float = Field(

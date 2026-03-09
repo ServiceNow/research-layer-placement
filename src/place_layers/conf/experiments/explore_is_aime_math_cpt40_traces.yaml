@@ -1,0 +1,34 @@
+# @package _global_
+# Surrogate exploration with importance-weighted evaluation (aime24, aime25, math_500)
+# Uses fixed 3rd-order adjacent features (no expansion selection).
+#
+# Usage:
+#   python -m place_layers +experiments=explore_is_aime_math
+
+defaults:
+  - /command: explore_placements
+  - /evaluator@evaluators.configs.is: importance_weighted
+  - /backend: transformers
+  - /model: apriel2_0_5b_dev
+  - /problem: apriel_h_1_5_15b
+  - /cost_model: uniform_apriel_15b
+  - _self_
+
+# IS traces for aime25, aime24, math_500
+evaluators:
+  configs:
+    is:
+      scoring_mode: student_log_prob
+      trace_sources:
+        - /home/toolkit/dev/research-layer-placement/outputs/traces/apriel2_1p6_frm1p5_distil_annealed_cpt40k/aime2425_traces_very_very_long/+backend=rest,+command=precompute_traces,+evaluator@evaluators.configs.aime25_strip_end=trace_precompute,+generation=gre__ec8795cb98f0/evals/aime25_strip_end/a48/
+        - /home/toolkit/dev/research-layer-placement/outputs/traces/apriel2_1p6_frm1p5_distil_annealed_cpt40k/aime2425_traces_very_very_long/+backend=rest,+command=precompute_traces,+evaluator@evaluators.configs.aime24_strip_end=trace_precompute,+generation=gre__1fd47b0376a1/evals/aime24_strip_end/a48/
+        - /home/toolkit/dev/research-layer-placement/outputs/traces/apriel2_1p6_frm1p5_distil_annealed_cpt40k/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator@evaluators.configs.math_500_strip_end=trace_precompute,+generation=g__3df439a0d74a/evals/math_500_strip_end/a48/
+fixed_expansion_config:
+  max_order: 3
+  pairwise_max_range: 1
+  allocation_counts: true
+
+# Adaptive sampling: start small, grow as needed
+min_samples: 200
+batch_size: 100
+max_samples: 5000
