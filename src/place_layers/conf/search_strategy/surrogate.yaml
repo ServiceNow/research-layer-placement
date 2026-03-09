@@ -17,7 +17,6 @@ strategy_type: surrogate
 exploration_dataset_path: ???
 
 evaluation_log_path: null
-supplemental_data_paths: []
 
 # --- Refinement loop ---
 num_rounds: 4
