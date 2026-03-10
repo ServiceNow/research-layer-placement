@@ -185,10 +185,20 @@ class AcceptanceRateRecord(BaseModel):
     gamma: int = Field(description="Draft length used for step acceptance rate")
 
     mean_step_acceptance_rate: float = Field(
-        description="Step acceptance rate from per-position alphas"
+        description="Step acceptance rate from per-position marginal alphas (biased)"
     )
     step_acceptance_rates: tuple[float, ...] = Field(
-        description="Per-block step acceptance rate"
+        description="Per-block step acceptance rate from marginal alphas"
+    )
+
+    mean_is_step_acceptance_rate: float = Field(
+        default=0.0,
+        description="Unbiased IS step acceptance rate: "
+        "E[prod min(q(x_j)/p(x_j), 1)] where x ~ p",
+    )
+    is_step_acceptance_rates: tuple[float, ...] = Field(
+        default=(),
+        description="Per-block IS step acceptance rates",
     )
 
     draft_placement: list[str] = Field(

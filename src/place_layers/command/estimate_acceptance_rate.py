@@ -1,6 +1,6 @@
 """Estimate speculative decoding acceptance rates between two placements.
 
-Computes two complementary metrics from pre-computed teacher traces:
+Computes three metrics from pre-computed teacher traces:
 
 1. **Token acceptance probability** (alpha): the analytical per-position
    probability that a draft token is accepted by rejection sampling::
@@ -8,9 +8,18 @@ Computes two complementary metrics from pre-computed teacher traces:
        alpha_i = sum_v min(p_target(v | x_{<i}), p_draft(v | x_{<i}))
                = 1 - D_TV(p_target, p_draft)
 
-2. **Step acceptance rate**: the expected fraction of draft tokens accepted
-   per speculative decoding step of length gamma, estimated via importance
-   sampling.
+2. **Marginal step acceptance rate** (biased): the expected fraction of
+   accepted draft tokens per step, estimated as a product of per-position
+   marginal alphas.  Biased because it evaluates alpha under the teacher
+   context distribution (p) rather than the acceptance-conditional
+   distribution min(p, q) / alpha.
+
+3. **IS step acceptance rate** (unbiased): Monte Carlo estimate using::
+
+       P(first k accepted) = E_{x ~ p}[ prod_{j=1}^{k} min(q(x_j)/p(x_j), 1) ]
+
+   Each teacher trace provides one sample.  Unbiased but higher variance
+   than the marginal estimator.
 
 Requires ``TransformersBackend`` for direct model access to obtain
 full-vocabulary logit tensors.
@@ -98,6 +107,10 @@ class EstimateAcceptanceRateCommand(BaseCommand):
             logger.info(f"Target placement: {target_pl}")
             logger.info(f"Draft placement:  {draft_pl}")
             logger.info(f"Gamma: {gamma}")
+            logger.info(
+                f"Temperature: {self.config.temperature}, "
+                f"top_p: {self.config.top_p}"
+            )
 
             # Check for already-completed traces (resumption)
             results_path = output_dir / "results.jsonl"
@@ -126,6 +139,8 @@ class EstimateAcceptanceRateCommand(BaseCommand):
                         records = _process_batch(
                             batch, target_pl, draft_pl,
                             backend, gamma,
+                            self.config.temperature,
+                            self.config.top_p,
                         )
                         _append_records(results_path, records)
                         progress.advance(ptask, len(batch))
@@ -134,7 +149,8 @@ class EstimateAcceptanceRateCommand(BaseCommand):
         summary = self._summarize(results_path, output_dir)
         logger.info(
             f"Done. token_acceptance_prob={summary['overall_token_acceptance_prob']:.4f}, "
-            f"step_acceptance_rate={summary['overall_step_acceptance_rate']:.4f}"
+            f"step_acceptance_rate={summary['overall_step_acceptance_rate']:.4f}, "
+            f"is_step_acceptance_rate={summary['overall_is_step_acceptance_rate']:.4f}"
         )
 
     def _load_traces(self) -> list[Trace]:
@@ -185,6 +201,7 @@ class EstimateAcceptanceRateCommand(BaseCommand):
             summary: dict[str, Any] = {
                 "overall_token_acceptance_prob": 0.0,
                 "overall_step_acceptance_rate": 0.0,
+                "overall_is_step_acceptance_rate": 0.0,
                 "gamma": self.config.gamma,
                 "task_results": {},
             }
@@ -206,14 +223,19 @@ class EstimateAcceptanceRateCommand(BaseCommand):
             step_mean = sum(
                 r.mean_step_acceptance_rate for r in task_records
             ) / n
+            is_step_mean = sum(
+                r.mean_is_step_acceptance_rate for r in task_records
+            ) / n
             task_results[task_name] = {
                 "mean_token_acceptance_prob": round(token_mean, 6),
                 "mean_step_acceptance_rate": round(step_mean, 6),
+                "mean_is_step_acceptance_rate": round(is_step_mean, 6),
                 "num_samples": n,
             }
             logger.info(
                 f"  {task_name}: token_acceptance_prob={token_mean:.4f}, "
-                f"step_acceptance_rate={step_mean:.4f} "
+                f"step_acceptance_rate={step_mean:.4f}, "
+                f"is_step_acceptance_rate={is_step_mean:.4f} "
                 f"({n} samples)"
             )
 
@@ -224,10 +246,14 @@ class EstimateAcceptanceRateCommand(BaseCommand):
         overall_step = sum(
             r.mean_step_acceptance_rate for r in records
         ) / n_total
+        overall_is_step = sum(
+            r.mean_is_step_acceptance_rate for r in records
+        ) / n_total
 
         summary = {
             "overall_token_acceptance_prob": round(overall_token, 6),
             "overall_step_acceptance_rate": round(overall_step, 6),
+            "overall_is_step_acceptance_rate": round(overall_is_step, 6),
             "gamma": self.config.gamma,
             "num_samples": n_total,
             "task_results": task_results,
@@ -250,10 +276,13 @@ def _process_batch(
     draft_pl: list[str],
     backend: TransformersBackend,
     gamma: int,
+    temperature: float,
+    top_p: float,
 ) -> list[AcceptanceRateRecord]:
     """Run target + draft forward passes and compute both metrics."""
     device = backend.device
     model = backend.model
+    warpers = _make_warpers(temperature, top_p)
 
     sequences: list[list[int]] = []
     prompt_lens: list[int] = []
@@ -307,21 +336,37 @@ def _process_batch(
         start = p_len - 1
         end = p_len + c_len - 1
 
-        t_probs = F.softmax(
-            target_logits[i, start:end, :].float(), dim=-1
-        )
-        d_probs = F.softmax(
-            draft_logits[i, start:end, :].float(), dim=-1
-        )
+        t_logits_i = target_logits[i, start:end, :].float()
+        d_logits_i = draft_logits[i, start:end, :].float()
 
-        # Token acceptance probability
+        if warpers is not None:
+            dummy_ids = torch.zeros(
+                c_len, 1, dtype=torch.long, device=device
+            )
+            t_logits_i = warpers(dummy_ids, t_logits_i.clone())
+            d_logits_i = warpers(dummy_ids, d_logits_i.clone())
+
+        t_probs = F.softmax(t_logits_i, dim=-1)
+        d_probs = F.softmax(d_logits_i, dim=-1)
+
+        # Token acceptance probability (marginal per position)
         alpha = torch.min(t_probs, d_probs).sum(dim=-1)
 
-        # Step acceptance rate (from per-position alphas)
+        # Step acceptance rate from marginal alphas (biased estimator)
         step_rates = _compute_step_acceptance_rates(alpha, gamma)
         mean_step = (
             sum(step_rates) / len(step_rates)
             if step_rates else 0.0
+        )
+
+        # IS step acceptance rate (unbiased estimator)
+        comp_tokens = list(trace.completion_tokens)
+        is_step_rates = _compute_is_step_acceptance_rates(
+            t_probs, d_probs, comp_tokens, gamma,
+        )
+        mean_is_step = (
+            sum(is_step_rates) / len(is_step_rates)
+            if is_step_rates else 0.0
         )
 
         records.append(AcceptanceRateRecord(
@@ -334,6 +379,8 @@ def _process_batch(
             gamma=gamma,
             mean_step_acceptance_rate=mean_step,
             step_acceptance_rates=tuple(step_rates),
+            mean_is_step_acceptance_rate=mean_is_step,
+            is_step_acceptance_rates=tuple(is_step_rates),
             draft_placement=draft_pl,
             target_placement=target_pl,
         ))
@@ -348,6 +395,29 @@ def _append_records(
     with path.open("a") as f:
         for rec in records:
             f.write(rec.model_dump_json() + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Logits warping (matches speculative evaluator)
+# ---------------------------------------------------------------------------
+
+
+def _make_warpers(
+    temperature: float, top_p: float
+) -> "torch.nn.Module | None":
+    """Build logits warpers matching the speculative evaluator's sampling."""
+    from transformers.generation.logits_process import (
+        LogitsProcessorList,
+        TemperatureLogitsWarper,
+        TopPLogitsWarper,
+    )
+
+    warpers = LogitsProcessorList()
+    if temperature > 0 and temperature != 1.0:
+        warpers.append(TemperatureLogitsWarper(temperature=temperature))
+    if 0 < top_p < 1.0:
+        warpers.append(TopPLogitsWarper(top_p=top_p))
+    return warpers if len(warpers) > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +463,49 @@ def _compute_step_acceptance_rates(
     return block_rates
 
 
+def _compute_is_step_acceptance_rates(
+    t_probs: torch.Tensor,
+    d_probs: torch.Tensor,
+    completion_tokens: list[int],
+    gamma: int,
+) -> list[float]:
+    """Unbiased IS estimate of step acceptance rate.
+
+    Uses the identity::
+
+        P(A_1, ..., A_k) = E_{x ~ p}[ prod_{j=1}^{k} min(q(x_j)/p(x_j), 1) ]
+
+    where x is sampled from the target p (the teacher trace).  Each teacher
+    trace provides one Monte Carlo sample of the product.
+
+    Args:
+        t_probs: Target probabilities, shape ``(C, V)``.
+        d_probs: Draft probabilities, shape ``(C, V)``.
+        completion_tokens: Actual completion token ids, length ``C``.
+        gamma: Draft length (block size).
+
+    Returns:
+        List of per-block IS step acceptance rates (full blocks only).
+    """
+    c_len = len(completion_tokens)
+    if c_len == 0:
+        return []
+
+    token_idx = torch.tensor(completion_tokens, device=t_probs.device)
+    t_at_token = t_probs[torch.arange(c_len, device=t_probs.device), token_idx]
+    d_at_token = d_probs[torch.arange(c_len, device=d_probs.device), token_idx]
+
+    # min(q(x_j)/p(x_j), 1) — clamp denominator to avoid division by zero
+    ratio = torch.clamp(d_at_token / t_at_token.clamp(min=1e-20), max=1.0)
+
+    block_rates: list[float] = []
+    for s in range(0, c_len - gamma + 1, gamma):
+        block_ratio = ratio[s : s + gamma]
+        cum_prod = torch.cumprod(block_ratio, dim=0)
+        block_rates.append(cum_prod.sum().item() / gamma)
+
+    return block_rates
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -430,4 +543,20 @@ class EstimateAcceptanceRateCommandConfig(BaseCommandConfig):
         default=8,
         gt=0,
         description="Draft length (block size) for step acceptance rate estimation.",
+    )
+
+    temperature: float = Field(
+        default=1.0,
+        gt=0,
+        description="Sampling temperature applied to logits before computing "
+        "acceptance probabilities. Must match the temperature used in "
+        "speculative decoding for accurate estimation.",
+    )
+
+    top_p: float = Field(
+        default=1.0,
+        gt=0,
+        le=1.0,
+        description="Nucleus sampling threshold applied to logits. "
+        "Must match the top_p used in speculative decoding.",
     )
