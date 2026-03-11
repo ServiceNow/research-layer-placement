@@ -34,6 +34,7 @@ surrogate:
   surrogate_type: ridge
   n_bootstraps: 50
   ei_xi: 0.01
+  cv_folds: ${cv_folds}
 
 # Feature expansion selection
 expansion_max_order: 3          # max n-body order to test (1=skip expansion selection)
