@@ -4,11 +4,20 @@ Estimates speculative decoding acceptance rates between a fixed target
 placement and varying draft placements using pre-computed teacher traces.
 
 The target placement is fixed (typically all-attention); the draft placement
-is the ``parameters`` argument to ``evaluate()``. Target probabilities are
-cached after the first ``evaluate()`` call so subsequent calls only compute
-draft forward passes (halving the per-evaluation cost).
+is the ``parameters`` argument to ``evaluate()``.
 
-Three metrics are computed per evaluation:
+Two caching strategies depending on ``score_metric``:
+
+- **is_step_acceptance_rate** (default, recommended): caches only the target
+  probability at each actual completion token — one float per position.
+  Memory is negligible (~MB). Only the draft forward pass runs per
+  ``evaluate()`` call.
+
+- **token_acceptance_prob** / **step_acceptance_rate**: these need full
+  ``(C, V)`` probability vectors from both target and draft.  No caching is
+  used; both forward passes run each ``evaluate()`` call.
+
+Three metrics:
 
 1. **Token acceptance probability** (alpha): per-position marginal
    ``alpha_i = sum_v min(p_target(v), p_draft(v))``
@@ -55,7 +64,7 @@ ScoreMetric = Literal[
 
 
 # ---------------------------------------------------------------------------
-# Logits warping (shared with estimate_acceptance_rate / speculative evaluator)
+# Logits warping (shared with speculative evaluator)
 # ---------------------------------------------------------------------------
 
 
@@ -78,7 +87,7 @@ def _make_warpers(
 
 
 # ---------------------------------------------------------------------------
-# Step acceptance rate estimators (moved from estimate_acceptance_rate command)
+# Step acceptance rate estimators
 # ---------------------------------------------------------------------------
 
 
@@ -113,13 +122,12 @@ def _compute_step_acceptance_rates(
     return block_rates
 
 
-def _compute_is_step_acceptance_rates(
-    t_probs: torch.Tensor,
-    d_probs: torch.Tensor,
-    completion_tokens: list[int],
+def _compute_is_step_acceptance_rates_from_probs(
+    t_at_token: torch.Tensor,
+    d_at_token: torch.Tensor,
     gamma: int,
 ) -> list[float]:
-    """Unbiased IS estimate of step acceptance rate.
+    """Unbiased IS estimate of step acceptance rate from per-token probs.
 
     Uses the identity::
 
@@ -128,21 +136,16 @@ def _compute_is_step_acceptance_rates(
     where x is sampled from the target p (the teacher trace).
 
     Args:
-        t_probs: Target probabilities, shape ``(C, V)``.
-        d_probs: Draft probabilities, shape ``(C, V)``.
-        completion_tokens: Actual completion token ids, length ``C``.
+        t_at_token: Target probability at actual tokens, shape ``(C,)``.
+        d_at_token: Draft probability at actual tokens, shape ``(C,)``.
         gamma: Draft length (block size).
 
     Returns:
         List of per-block IS step acceptance rates (full blocks only).
     """
-    c_len = len(completion_tokens)
+    c_len = t_at_token.shape[0]
     if c_len == 0:
         return []
-
-    token_idx = torch.tensor(completion_tokens, device=t_probs.device)
-    t_at_token = t_probs[torch.arange(c_len, device=t_probs.device), token_idx]
-    d_at_token = d_probs[torch.arange(c_len, device=d_probs.device), token_idx]
 
     ratio = torch.clamp(d_at_token / t_at_token.clamp(min=1e-20), max=1.0)
 
@@ -161,15 +164,16 @@ def _compute_is_step_acceptance_rates(
 
 
 @torch.inference_mode()
-def _compute_completion_probs(
+def _forward_batch(
     traces: list[Trace],
     backend: "TransformersBackend",
     warpers: "torch.nn.Module | None",
-) -> list[torch.Tensor]:
-    """Run a forward pass over *traces* and return per-trace completion probs.
+) -> tuple[torch.Tensor, list[int], list[int]]:
+    """Run a forward pass and return raw logits + per-trace offsets.
 
-    Returns a list of CPU tensors, each of shape ``(C_i, V)`` in float32,
-    where C_i is the completion length of trace i.
+    Returns:
+        (logits, prompt_lens, completion_lens) where logits is
+        ``(B, max_len, V)`` on device.
     """
     device = backend.device
     model = backend.model
@@ -199,8 +203,22 @@ def _compute_completion_probs(
         use_cache=False,
     ).logits
 
+    return logits, prompt_lens, completion_lens
+
+
+def _extract_completion_probs(
+    logits: torch.Tensor,
+    prompt_lens: list[int],
+    completion_lens: list[int],
+    warpers: "torch.nn.Module | None",
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Extract per-trace completion probability tensors from batch logits.
+
+    Returns list of ``(C_i, V)`` CPU tensors in float32.
+    """
     results: list[torch.Tensor] = []
-    for i in range(len(traces)):
+    for i in range(len(prompt_lens)):
         p_len = prompt_lens[i]
         c_len = completion_lens[i]
         start = p_len - 1
@@ -218,6 +236,42 @@ def _compute_completion_probs(
     return results
 
 
+def _extract_token_probs(
+    logits: torch.Tensor,
+    traces: list[Trace],
+    prompt_lens: list[int],
+    completion_lens: list[int],
+    warpers: "torch.nn.Module | None",
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Extract per-trace target probability at actual completion tokens.
+
+    Returns list of ``(C_i,)`` CPU tensors in float32 — compact cache.
+    """
+    results: list[torch.Tensor] = []
+    for i in range(len(prompt_lens)):
+        p_len = prompt_lens[i]
+        c_len = completion_lens[i]
+        start = p_len - 1
+        end = p_len + c_len - 1
+
+        trace_logits = logits[i, start:end, :].float()
+
+        if warpers is not None:
+            dummy_ids = torch.zeros(c_len, 1, dtype=torch.long, device=device)
+            trace_logits = warpers(dummy_ids, trace_logits.clone())
+
+        probs = F.softmax(trace_logits, dim=-1)
+
+        token_ids = torch.tensor(
+            list(traces[i].completion_tokens), device=device
+        )
+        at_token = probs[torch.arange(c_len, device=device), token_ids]
+        results.append(at_token.cpu())
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
@@ -229,8 +283,10 @@ class AcceptanceRateEvaluator(BackendEvaluator):
     Loads pre-computed teacher traces and computes acceptance rate metrics
     for each draft placement against a fixed target placement.
 
-    On first ``evaluate()`` call, caches target probabilities for all traces.
-    Subsequent calls only compute draft forward passes.
+    When ``score_metric="is_step_acceptance_rate"`` (default), caches only
+    the scalar target probability at each actual completion token (~MB).
+    Other metrics require full probability vectors and recompute target
+    logits each call (2x forward passes per evaluation).
     """
 
     config: "AcceptanceRateEvaluatorConfig"
@@ -244,7 +300,9 @@ class AcceptanceRateEvaluator(BackendEvaluator):
     ) -> None:
         super().__init__(config, output_dir=output_dir, backend=backend)
         self._traces: list[Trace] = []
-        self._target_probs_cache: list[torch.Tensor] | None = None
+        # Compact cache: t_probs[pos, actual_token] per trace — list of (C_i,) tensors.
+        # Used when score_metric == "is_step_acceptance_rate".
+        self._target_at_token_cache: list[torch.Tensor] | None = None
         self._target_pl: list[str] = []
         self._warpers: torch.nn.Module | None = None
         self._last_metrics: dict[str, float] | None = None
@@ -283,42 +341,118 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         logger.info("Total: %d traces loaded", len(traces))
         return traces
 
-    def _cache_target_probs(self, backend: "TransformersBackend") -> None:
-        """Compute and cache target probabilities for all traces."""
+    @property
+    def _needs_full_probs(self) -> bool:
+        """Whether the selected score_metric needs full (C, V) prob vectors."""
+        return self.config.score_metric in (
+            "token_acceptance_prob",
+            "step_acceptance_rate",
+        )
+
+    # -- Compact cache (IS metric only) -------------------------------------
+
+    def _build_compact_cache(self, backend: "TransformersBackend") -> None:
+        """Compute and cache target probability at each actual token.
+
+        Stores one float per completion position per trace — negligible memory.
+        """
         logger.info(
-            "Caching target probabilities for %d traces...",
+            "Caching target token probabilities for %d traces "
+            "(compact mode)...",
             len(self._traces),
         )
         backend.set_placement(self._target_pl)
-
         batch_size = backend.config.batch_size
-        self._target_probs_cache = []
+        self._target_at_token_cache = []
 
         with create_progress() as progress:
             ptask = progress.add_task(
-                "[cyan]caching target probs",
+                "[cyan]caching target probs (compact)",
                 total=len(self._traces),
             )
             for start in range(0, len(self._traces), batch_size):
                 batch = self._traces[start : start + batch_size]
-                batch_probs = _compute_completion_probs(
+                logits, p_lens, c_lens = _forward_batch(
                     batch, backend, self._warpers
                 )
-                self._target_probs_cache.extend(batch_probs)
+                batch_at_token = _extract_token_probs(
+                    logits, batch, p_lens, c_lens,
+                    self._warpers, backend.device,
+                )
+                self._target_at_token_cache.extend(batch_at_token)
                 progress.advance(ptask, len(batch))
 
+        total_floats = sum(t.numel() for t in self._target_at_token_cache)
+        mem_mb = total_floats * 4 / 1e6
         logger.info(
-            "Target probabilities cached (%d traces)", len(self._target_probs_cache)
+            "Target token probs cached: %d traces, %.1f MB",
+            len(self._target_at_token_cache), mem_mb,
         )
 
-    def _compute_draft_and_score(
+    # -- IS-only scoring (compact cache) ------------------------------------
+
+    def _score_is_only(
         self,
         backend: "TransformersBackend",
         draft_pl: list[str],
     ) -> float:
-        """Compute draft probs, compare to cached target probs, return score."""
+        """Score using only IS step acceptance rate with compact cache."""
         backend.set_placement(draft_pl)
+        batch_size = backend.config.batch_size
+        gamma = self.config.gamma
+        all_is_step_rates: list[float] = []
 
+        cache_idx = 0
+        with create_progress() as progress:
+            ptask = progress.add_task(
+                "[cyan]draft acceptance rate (IS)",
+                total=len(self._traces),
+            )
+            for start in range(0, len(self._traces), batch_size):
+                batch = self._traces[start : start + batch_size]
+                logits, p_lens, c_lens = _forward_batch(
+                    batch, backend, self._warpers
+                )
+                d_at_token_list = _extract_token_probs(
+                    logits, batch, p_lens, c_lens,
+                    self._warpers, backend.device,
+                )
+
+                for i in range(len(batch)):
+                    t_at = self._target_at_token_cache[cache_idx].to(  # type: ignore[union-attr]
+                        backend.device
+                    )
+                    d_at = d_at_token_list[i].to(backend.device)
+                    cache_idx += 1
+
+                    is_rates = _compute_is_step_acceptance_rates_from_probs(
+                        t_at, d_at, gamma
+                    )
+                    if is_rates:
+                        all_is_step_rates.append(
+                            sum(is_rates) / len(is_rates)
+                        )
+
+                progress.advance(ptask, len(batch))
+
+        score = (
+            sum(all_is_step_rates) / len(all_is_step_rates)
+            if all_is_step_rates
+            else 0.0
+        )
+        self._last_metrics = {
+            "is_step_acceptance_rate": score,
+        }
+        return score
+
+    # -- Full-probs scoring (no cache, both forward passes) -----------------
+
+    def _score_full_probs(
+        self,
+        backend: "TransformersBackend",
+        draft_pl: list[str],
+    ) -> float:
+        """Score using full probability vectors (2x forward passes)."""
         batch_size = backend.config.batch_size
         gamma = self.config.gamma
 
@@ -326,24 +460,37 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         all_step_rates: list[float] = []
         all_is_step_rates: list[float] = []
 
-        cache_idx = 0
         with create_progress() as progress:
             ptask = progress.add_task(
-                "[cyan]draft acceptance rate",
+                "[cyan]acceptance rate (full probs)",
                 total=len(self._traces),
             )
             for start in range(0, len(self._traces), batch_size):
                 batch = self._traces[start : start + batch_size]
-                draft_probs_list = _compute_completion_probs(
+
+                # Target forward
+                backend.set_placement(self._target_pl)
+                t_logits, p_lens, c_lens = _forward_batch(
                     batch, backend, self._warpers
+                )
+                t_probs_list = _extract_completion_probs(
+                    t_logits, p_lens, c_lens,
+                    self._warpers, backend.device,
+                )
+
+                # Draft forward
+                backend.set_placement(draft_pl)
+                d_logits, _, _ = _forward_batch(
+                    batch, backend, self._warpers
+                )
+                d_probs_list = _extract_completion_probs(
+                    d_logits, p_lens, c_lens,
+                    self._warpers, backend.device,
                 )
 
                 for i, trace in enumerate(batch):
-                    t_probs = self._target_probs_cache[cache_idx].to(  # type: ignore[union-attr]
-                        backend.device
-                    )
-                    d_probs = draft_probs_list[i].to(backend.device)
-                    cache_idx += 1
+                    t_probs = t_probs_list[i].to(backend.device)
+                    d_probs = d_probs_list[i].to(backend.device)
 
                     alpha = torch.min(t_probs, d_probs).sum(dim=-1)
                     all_token_probs.append(float(alpha.mean()))
@@ -354,9 +501,18 @@ class AcceptanceRateEvaluator(BackendEvaluator):
                             sum(step_rates) / len(step_rates)
                         )
 
-                    comp_tokens = list(trace.completion_tokens)
-                    is_rates = _compute_is_step_acceptance_rates(
-                        t_probs, d_probs, comp_tokens, gamma
+                    c_len = len(trace.completion_tokens)
+                    token_idx = torch.tensor(
+                        list(trace.completion_tokens), device=backend.device,
+                    )
+                    t_at = t_probs[
+                        torch.arange(c_len, device=backend.device), token_idx
+                    ]
+                    d_at = d_probs[
+                        torch.arange(c_len, device=backend.device), token_idx
+                    ]
+                    is_rates = _compute_is_step_acceptance_rates_from_probs(
+                        t_at, d_at, gamma,
                     )
                     if is_rates:
                         all_is_step_rates.append(
@@ -382,11 +538,12 @@ class AcceptanceRateEvaluator(BackendEvaluator):
                 else 0.0
             ),
         }
-
         return self._last_metrics[self.config.score_metric]
 
+    # -- Public interface ---------------------------------------------------
+
     def get_metrics(self) -> dict[str, float] | None:
-        """Return all acceptance rate metrics from the last evaluation."""
+        """Return acceptance rate metrics from the last evaluation."""
         return self._last_metrics
 
     async def evaluate(self, parameters: LayerPlacement | None) -> float:
@@ -419,17 +576,18 @@ class AcceptanceRateEvaluator(BackendEvaluator):
             else list(self._target_pl)
         )
 
-        if self._target_probs_cache is None:
-            self._cache_target_probs(backend)
-
-        score = self._compute_draft_and_score(backend, draft_pl)
+        if self._needs_full_probs:
+            score = self._score_full_probs(backend, draft_pl)
+        else:
+            if self._target_at_token_cache is None:
+                self._build_compact_cache(backend)
+            score = self._score_is_only(backend, draft_pl)
 
         logger.info(
-            "Acceptance rate: token=%.4f, step=%.4f, is_step=%.4f "
-            "(returning %s=%.4f)",
-            self._last_metrics["token_acceptance_prob"],  # type: ignore[index]
-            self._last_metrics["step_acceptance_rate"],  # type: ignore[index]
-            self._last_metrics["is_step_acceptance_rate"],  # type: ignore[index]
+            "Acceptance rate: %s (returning %s=%.4f)",
+            ", ".join(
+                f"{k}={v:.4f}" for k, v in (self._last_metrics or {}).items()
+            ),
             self.config.score_metric,
             score,
         )
@@ -489,5 +647,7 @@ class AcceptanceRateEvaluatorConfig(BackendEvaluatorConfig):
         default="is_step_acceptance_rate",
         description="Which metric evaluate() returns as the scalar score: "
         "'token_acceptance_prob', 'step_acceptance_rate', or "
-        "'is_step_acceptance_rate' (unbiased, recommended).",
+        "'is_step_acceptance_rate' (unbiased, recommended). "
+        "is_step_acceptance_rate uses a compact cache (~MB); the others "
+        "require 2x forward passes per evaluation (no caching).",
     )
