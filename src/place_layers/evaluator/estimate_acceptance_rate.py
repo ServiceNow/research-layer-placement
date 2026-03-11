@@ -1,0 +1,493 @@
+"""Acceptance rate evaluator for speculative decoding placement exploration.
+
+Estimates speculative decoding acceptance rates between a fixed target
+placement and varying draft placements using pre-computed teacher traces.
+
+The target placement is fixed (typically all-attention); the draft placement
+is the ``parameters`` argument to ``evaluate()``. Target probabilities are
+cached after the first ``evaluate()`` call so subsequent calls only compute
+draft forward passes (halving the per-evaluation cost).
+
+Three metrics are computed per evaluation:
+
+1. **Token acceptance probability** (alpha): per-position marginal
+   ``alpha_i = sum_v min(p_target(v), p_draft(v))``
+
+2. **Step acceptance rate** (biased): expected fraction of accepted tokens
+   per speculative step from marginal alphas.
+
+3. **IS step acceptance rate** (unbiased): Monte Carlo estimate using
+   ``P(first k accepted) = E_{x ~ p}[ prod min(q(x_j)/p(x_j), 1) ]``
+
+The ``score_metric`` config field selects which metric ``evaluate()`` returns.
+
+Requires ``TransformersBackend`` for direct model access (full-vocabulary
+logit tensors).
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+import torch
+import torch.nn.functional as F
+from pydantic import Field
+
+from place_layers.evaluator.base_evaluator import BaseEvaluator
+from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
+from place_layers.evaluator.progress import create_progress
+from place_layers.evaluator.traces.types import Trace, TraceDataset
+from place_layers.core.types import LayerPlacement
+
+if TYPE_CHECKING:
+    from place_layers.backend.base import AsyncBackend, SyncBackend
+    from place_layers.backend.transformers import TransformersBackend
+
+logger = logging.getLogger(__name__)
+
+ScoreMetric = Literal[
+    "token_acceptance_prob",
+    "step_acceptance_rate",
+    "is_step_acceptance_rate",
+]
+
+
+# ---------------------------------------------------------------------------
+# Logits warping (shared with estimate_acceptance_rate / speculative evaluator)
+# ---------------------------------------------------------------------------
+
+
+def _make_warpers(
+    temperature: float, top_p: float
+) -> "torch.nn.Module | None":
+    """Build logits warpers matching the speculative evaluator's sampling."""
+    from transformers.generation.logits_process import (
+        LogitsProcessorList,
+        TemperatureLogitsWarper,
+        TopPLogitsWarper,
+    )
+
+    warpers = LogitsProcessorList()
+    if temperature > 0 and temperature != 1.0:
+        warpers.append(TemperatureLogitsWarper(temperature=temperature))
+    if 0 < top_p < 1.0:
+        warpers.append(TopPLogitsWarper(top_p=top_p))
+    return warpers if len(warpers) > 0 else None
+
+
+# ---------------------------------------------------------------------------
+# Step acceptance rate estimators (moved from estimate_acceptance_rate command)
+# ---------------------------------------------------------------------------
+
+
+def _compute_step_acceptance_rates(
+    alpha: torch.Tensor,
+    gamma: int,
+) -> list[float]:
+    """Compute step acceptance rate from per-position marginal alphas.
+
+    For each block of gamma positions, the expected accepted fraction is::
+
+        step_rate = (1/gamma) * sum_{k=1}^{gamma} prod_{j=1}^{k} alpha_{j}
+
+    Args:
+        alpha: Per-position token acceptance probabilities, shape ``(C,)``.
+        gamma: Draft length (block size).
+
+    Returns:
+        List of per-block step acceptance rates.
+    """
+    c_len = alpha.shape[0]
+    if c_len == 0:
+        return []
+
+    block_rates: list[float] = []
+    for s in range(0, c_len, gamma):
+        e = min(s + gamma, c_len)
+        block_alpha = alpha[s:e]
+        cum_prod = torch.cumprod(block_alpha, dim=0)
+        block_rates.append(cum_prod.sum().item() / (e - s))
+
+    return block_rates
+
+
+def _compute_is_step_acceptance_rates(
+    t_probs: torch.Tensor,
+    d_probs: torch.Tensor,
+    completion_tokens: list[int],
+    gamma: int,
+) -> list[float]:
+    """Unbiased IS estimate of step acceptance rate.
+
+    Uses the identity::
+
+        P(A_1, ..., A_k) = E_{x ~ p}[ prod_{j=1}^{k} min(q(x_j)/p(x_j), 1) ]
+
+    where x is sampled from the target p (the teacher trace).
+
+    Args:
+        t_probs: Target probabilities, shape ``(C, V)``.
+        d_probs: Draft probabilities, shape ``(C, V)``.
+        completion_tokens: Actual completion token ids, length ``C``.
+        gamma: Draft length (block size).
+
+    Returns:
+        List of per-block IS step acceptance rates (full blocks only).
+    """
+    c_len = len(completion_tokens)
+    if c_len == 0:
+        return []
+
+    token_idx = torch.tensor(completion_tokens, device=t_probs.device)
+    t_at_token = t_probs[torch.arange(c_len, device=t_probs.device), token_idx]
+    d_at_token = d_probs[torch.arange(c_len, device=d_probs.device), token_idx]
+
+    ratio = torch.clamp(d_at_token / t_at_token.clamp(min=1e-20), max=1.0)
+
+    block_rates: list[float] = []
+    for s in range(0, c_len - gamma + 1, gamma):
+        block_ratio = ratio[s : s + gamma]
+        cum_prod = torch.cumprod(block_ratio, dim=0)
+        block_rates.append(cum_prod.sum().item() / gamma)
+
+    return block_rates
+
+
+# ---------------------------------------------------------------------------
+# Forward pass helpers
+# ---------------------------------------------------------------------------
+
+
+@torch.inference_mode()
+def _compute_completion_probs(
+    traces: list[Trace],
+    backend: "TransformersBackend",
+    warpers: "torch.nn.Module | None",
+) -> list[torch.Tensor]:
+    """Run a forward pass over *traces* and return per-trace completion probs.
+
+    Returns a list of CPU tensors, each of shape ``(C_i, V)`` in float32,
+    where C_i is the completion length of trace i.
+    """
+    device = backend.device
+    model = backend.model
+
+    sequences: list[list[int]] = []
+    prompt_lens: list[int] = []
+    completion_lens: list[int] = []
+
+    for trace in traces:
+        seq = list(trace.prompt_tokens) + list(trace.completion_tokens)
+        sequences.append(seq)
+        prompt_lens.append(len(trace.prompt_tokens))
+        completion_lens.append(len(trace.completion_tokens))
+
+    max_len = max(len(s) for s in sequences)
+    pad_id = getattr(backend.tokenizer, "pad_token_id", None) or 0
+
+    padded = [s + [pad_id] * (max_len - len(s)) for s in sequences]
+    attention_masks = [[1] * len(s) + [0] * (max_len - len(s)) for s in sequences]
+
+    input_ids = torch.tensor(padded, dtype=torch.long, device=device)
+    attention_mask = torch.tensor(attention_masks, dtype=torch.long, device=device)
+
+    logits = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        use_cache=False,
+    ).logits
+
+    results: list[torch.Tensor] = []
+    for i in range(len(traces)):
+        p_len = prompt_lens[i]
+        c_len = completion_lens[i]
+        start = p_len - 1
+        end = p_len + c_len - 1
+
+        trace_logits = logits[i, start:end, :].float()
+
+        if warpers is not None:
+            dummy_ids = torch.zeros(c_len, 1, dtype=torch.long, device=device)
+            trace_logits = warpers(dummy_ids, trace_logits.clone())
+
+        probs = F.softmax(trace_logits, dim=-1)
+        results.append(probs.cpu())
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Evaluator
+# ---------------------------------------------------------------------------
+
+
+class AcceptanceRateEvaluator(BackendEvaluator):
+    """Evaluator that computes speculative decoding acceptance rates.
+
+    Loads pre-computed teacher traces and computes acceptance rate metrics
+    for each draft placement against a fixed target placement.
+
+    On first ``evaluate()`` call, caches target probabilities for all traces.
+    Subsequent calls only compute draft forward passes.
+    """
+
+    config: "AcceptanceRateEvaluatorConfig"
+
+    def __init__(
+        self,
+        config: "AcceptanceRateEvaluatorConfig",
+        *,
+        output_dir: Path,
+        backend: "AsyncBackend | SyncBackend",
+    ) -> None:
+        super().__init__(config, output_dir=output_dir, backend=backend)
+        self._traces: list[Trace] = []
+        self._target_probs_cache: list[torch.Tensor] | None = None
+        self._target_pl: list[str] = []
+        self._warpers: torch.nn.Module | None = None
+        self._last_metrics: dict[str, float] | None = None
+
+    async def __aenter__(self):
+        await super().__aenter__()
+        self._traces = self._load_traces()
+        self._target_pl = [
+            self.config.target_placement[i % len(self.config.target_placement)]
+            for i in range(self.num_layers)
+        ]
+        self._warpers = _make_warpers(self.config.temperature, self.config.top_p)
+        logger.info(
+            "AcceptanceRateEvaluator: %d traces, gamma=%d, "
+            "target=%s, score_metric=%s",
+            len(self._traces),
+            self.config.gamma,
+            self._target_pl[:4],
+            self.config.score_metric,
+        )
+        return self
+
+    def _load_traces(self) -> list[Trace]:
+        """Load Trace records from all configured trace source directories."""
+        traces: list[Trace] = []
+        for source in self.config.trace_sources:
+            source_dir = Path(source)
+            if not source_dir.exists():
+                logger.warning("Trace source not found: %s", source_dir)
+                continue
+            dataset = TraceDataset.load_from_directory(source_dir)
+            traces.extend(dataset.traces)
+            logger.info(
+                "  Loaded %d traces from %s", len(dataset.traces), source_dir
+            )
+        logger.info("Total: %d traces loaded", len(traces))
+        return traces
+
+    def _cache_target_probs(self, backend: "TransformersBackend") -> None:
+        """Compute and cache target probabilities for all traces."""
+        logger.info(
+            "Caching target probabilities for %d traces...",
+            len(self._traces),
+        )
+        backend.set_placement(self._target_pl)
+
+        batch_size = backend.config.batch_size
+        self._target_probs_cache = []
+
+        with create_progress() as progress:
+            ptask = progress.add_task(
+                "[cyan]caching target probs",
+                total=len(self._traces),
+            )
+            for start in range(0, len(self._traces), batch_size):
+                batch = self._traces[start : start + batch_size]
+                batch_probs = _compute_completion_probs(
+                    batch, backend, self._warpers
+                )
+                self._target_probs_cache.extend(batch_probs)
+                progress.advance(ptask, len(batch))
+
+        logger.info(
+            "Target probabilities cached (%d traces)", len(self._target_probs_cache)
+        )
+
+    def _compute_draft_and_score(
+        self,
+        backend: "TransformersBackend",
+        draft_pl: list[str],
+    ) -> float:
+        """Compute draft probs, compare to cached target probs, return score."""
+        backend.set_placement(draft_pl)
+
+        batch_size = backend.config.batch_size
+        gamma = self.config.gamma
+
+        all_token_probs: list[float] = []
+        all_step_rates: list[float] = []
+        all_is_step_rates: list[float] = []
+
+        cache_idx = 0
+        with create_progress() as progress:
+            ptask = progress.add_task(
+                "[cyan]draft acceptance rate",
+                total=len(self._traces),
+            )
+            for start in range(0, len(self._traces), batch_size):
+                batch = self._traces[start : start + batch_size]
+                draft_probs_list = _compute_completion_probs(
+                    batch, backend, self._warpers
+                )
+
+                for i, trace in enumerate(batch):
+                    t_probs = self._target_probs_cache[cache_idx].to(  # type: ignore[union-attr]
+                        backend.device
+                    )
+                    d_probs = draft_probs_list[i].to(backend.device)
+                    cache_idx += 1
+
+                    alpha = torch.min(t_probs, d_probs).sum(dim=-1)
+                    all_token_probs.append(float(alpha.mean()))
+
+                    step_rates = _compute_step_acceptance_rates(alpha, gamma)
+                    if step_rates:
+                        all_step_rates.append(
+                            sum(step_rates) / len(step_rates)
+                        )
+
+                    comp_tokens = list(trace.completion_tokens)
+                    is_rates = _compute_is_step_acceptance_rates(
+                        t_probs, d_probs, comp_tokens, gamma
+                    )
+                    if is_rates:
+                        all_is_step_rates.append(
+                            sum(is_rates) / len(is_rates)
+                        )
+
+                progress.advance(ptask, len(batch))
+
+        self._last_metrics = {
+            "token_acceptance_prob": (
+                sum(all_token_probs) / len(all_token_probs)
+                if all_token_probs
+                else 0.0
+            ),
+            "step_acceptance_rate": (
+                sum(all_step_rates) / len(all_step_rates)
+                if all_step_rates
+                else 0.0
+            ),
+            "is_step_acceptance_rate": (
+                sum(all_is_step_rates) / len(all_is_step_rates)
+                if all_is_step_rates
+                else 0.0
+            ),
+        }
+
+        return self._last_metrics[self.config.score_metric]
+
+    def get_metrics(self) -> dict[str, float] | None:
+        """Return all acceptance rate metrics from the last evaluation."""
+        return self._last_metrics
+
+    async def evaluate(self, parameters: LayerPlacement | None) -> float:
+        """Evaluate acceptance rate for a draft placement.
+
+        The *parameters* argument is the **draft** placement. The target
+        placement is fixed in the config.
+
+        Args:
+            parameters: Draft layer placement, or None for default.
+
+        Returns:
+            The acceptance rate metric selected by ``score_metric``.
+        """
+        from place_layers.backend.transformers import TransformersBackend
+
+        if not isinstance(self._backend, TransformersBackend):
+            raise TypeError(
+                f"AcceptanceRateEvaluator requires TransformersBackend, "
+                f"got {type(self._backend).__name__}. "
+                f"Full-vocabulary logit computation needs direct model access."
+            )
+        backend: TransformersBackend = self._backend
+
+        if parameters is not None:
+            await self._set_placement(parameters)
+        draft_pl = (
+            list(self._current_placement)
+            if self._current_placement
+            else list(self._target_pl)
+        )
+
+        if self._target_probs_cache is None:
+            self._cache_target_probs(backend)
+
+        score = self._compute_draft_and_score(backend, draft_pl)
+
+        logger.info(
+            "Acceptance rate: token=%.4f, step=%.4f, is_step=%.4f "
+            "(returning %s=%.4f)",
+            self._last_metrics["token_acceptance_prob"],  # type: ignore[index]
+            self._last_metrics["step_acceptance_rate"],  # type: ignore[index]
+            self._last_metrics["is_step_acceptance_rate"],  # type: ignore[index]
+            self.config.score_metric,
+            score,
+        )
+
+        return score
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+class AcceptanceRateEvaluatorConfig(BackendEvaluatorConfig):
+    """Configuration for acceptance rate evaluator.
+
+    Computes speculative decoding acceptance rates between a fixed target
+    placement and the draft placement passed to ``evaluate()``.
+    """
+
+    _impl_class: ClassVar[type[BaseEvaluator]] = AcceptanceRateEvaluator
+
+    evaluator_type: Literal["estimate_acceptance_rate"] = "estimate_acceptance_rate"
+
+    trace_sources: list[str] = Field(
+        description="Directories containing pre-computed teacher traces "
+        "(from precompute_traces command).",
+    )
+
+    target_placement: list[str] = Field(
+        default=["attention"],
+        description="Target placement pattern (cyclically extended to num_layers).",
+    )
+
+    gamma: int = Field(
+        default=8,
+        gt=0,
+        description="Draft length (block size) for step acceptance rate estimation.",
+    )
+
+    temperature: float = Field(
+        default=1.0,
+        gt=0,
+        description="Sampling temperature applied to logits before computing "
+        "acceptance probabilities. Must match the temperature used in "
+        "speculative decoding for accurate estimation.",
+    )
+
+    top_p: float = Field(
+        default=1.0,
+        gt=0,
+        le=1.0,
+        description="Nucleus sampling threshold applied to logits. "
+        "Must match the top_p used in speculative decoding.",
+    )
+
+    score_metric: ScoreMetric = Field(
+        default="is_step_acceptance_rate",
+        description="Which metric evaluate() returns as the scalar score: "
+        "'token_acceptance_prob', 'step_acceptance_rate', or "
+        "'is_step_acceptance_rate' (unbiased, recommended).",
+    )
