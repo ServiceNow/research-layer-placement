@@ -25,7 +25,8 @@ defaults:
 command: batch_evaluate
 
 # Path to an explore run output directory (exploration_results_*.json or
-# evaluations_*.jsonl files). Must be overridden on the command line.
+# evaluations_*.jsonl files). Must be set on the command line as:
+#   source_dir="/path/to/explore/output"
 source_dir: ???
 
 # Optional cap on number of placements to evaluate (null = all)
