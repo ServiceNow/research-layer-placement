@@ -1,0 +1,32 @@
+# @package _global_
+#
+# Batch Evaluate Command
+# ======================
+# Loads all placements from an explore run output directory and evaluates each
+# one with the configured evaluators. Saves all results to a single JSON file.
+#
+# Required config groups:
+#   - evaluator@evaluators.configs.<name>: generative, likelihood, etc.
+#   - backend: rest, transformers, vllm
+#
+# Required overrides:
+#   - command.source_dir: path to explore run output directory
+#
+# Usage:
+#   python -m place_layers +command=batch_evaluate \
+#       +evaluator@evaluators.configs.gsm8k=... \
+#       +backend=rest \
+#       command.source_dir=/mnt/evaluations/layer_placement/explore/2026-02-23/...
+
+defaults:
+  - /result_handler: json
+  - /objective@evaluators.objective: weighted_average
+
+command: batch_evaluate
+
+# Path to an explore run output directory (exploration_results_*.json or
+# evaluations_*.jsonl files). Must be overridden on the command line.
+source_dir: ???
+
+# Optional cap on number of placements to evaluate (null = all)
+max_placements: null
