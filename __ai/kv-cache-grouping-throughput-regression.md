@@ -21,7 +21,8 @@ How vLLM's KV cache grouping algorithm interacts with hybrid supernet models, wh
 11. [The Sliding Window Case](#the-sliding-window-case)
 12. [Runtime Crash: Missing PIECEWISE Splitting Op](#runtime-crash-missing-piecewise-splitting-op)
 13. [Runtime Crash: Triton constexpr JIT on Large Prefill Batches](#runtime-crash-triton-constexpr-jit-on-large-prefill-batches)
-14. [Key Takeaways and Learnings](#key-takeaways-and-learnings)
+14. [Runtime Crash: Import-by-Value Bug in cudagraph_capturing_enabled](#runtime-crash-import-by-value-bug-in-cudagraph_capturing_enabled)
+15. [Key Takeaways and Learnings](#key-takeaways-and-learnings)
 
 ---
 
@@ -609,6 +610,107 @@ As a regular argument, `total_elements` is passed as a kernel launch parameter, 
 
 ---
 
+## Runtime Crash: Import-by-Value Bug in cudagraph_capturing_enabled
+
+After fixing the three issues above (grouping, splitting op, constexpr), the benchmark crashed during large re-prefill after KV cache preemption:
+
+```
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+```
+
+at `initial_state[~has_initial_state, ...] = 0` in the GDN layer's `_forward_core()`. The crash only appeared when vLLM evicted requests and re-prefilled them with large token batches (e.g., 16384 tokens).
+
+### Debugging odyssey
+
+Adding `torch.cuda.synchronize()` debug sync points proved difficult because they were gated by:
+
+```python
+if DEBUG_SYNC and not torch.compiler.is_compiling() and not cudagraph_capturing_enabled:
+```
+
+The syncs **never fired**. Three runs with different debug approaches all showed no sync output, yet the crash persisted at the same location. The imported `cudagraph_capturing_enabled` was always `True`.
+
+### Root cause: Python import-by-value semantics
+
+```python
+# In vllm/compilation/monitor.py:
+cudagraph_capturing_enabled: bool = True  # <-- default is True!
+
+def set_cudagraph_capturing_enabled(enabled: bool) -> None:
+    global cudagraph_capturing_enabled
+    cudagraph_capturing_enabled = enabled
+```
+
+```python
+# In modeling_apriel2.py:
+from vllm.compilation.monitor import cudagraph_capturing_enabled
+```
+
+Python's `from module import name` copies the **value** at import time. When vLLM later calls `set_cudagraph_capturing_enabled(False)`, the module's global changes but the imported name in `modeling_apriel2.py` still holds the original `True`.
+
+This caused two critical failures:
+
+**1. Debug syncs were permanently disabled** — all `not cudagraph_capturing_enabled` guards evaluated to `not True` = `False`, silently skipping every sync point. This wasted three debugging iterations trying to figure out why sync output never appeared.
+
+**2. `num_actual_tokens` was always clamped to `num_cache_lines`** — the guard intended to run only during CUDA graph capture ran unconditionally:
+
+```python
+# Line 1936 (GDN) and 2423 (KDA):
+if cudagraph_capturing_enabled and num_actual_tokens > num_cache_lines:
+    num_actual_tokens = num_cache_lines  # Always executes!
+```
+
+The clamping was designed for CUDA graph capture, where the dummy batch size can exceed the number of allocated cache lines. During normal inference, `num_actual_tokens` should NOT be clamped — the full token batch must be processed.
+
+### The crash mechanism
+
+During a 16384-token re-prefill after preemption:
+
+1. `num_cache_lines = 1606` (KV cache blocks for GDN layer)
+2. `num_actual_tokens = 16384` (the full re-prefill batch)
+3. The always-True guard clamps `num_actual_tokens` to 1606
+4. `mixed_qkv = mixed_qkv[:1606]` — input tensor truncated to 1606 tokens
+5. But `query_start_loc = [0, 15873, 16384]` — still references all 16384 tokens
+6. `causal_conv1d_fn` Triton kernel reads positions 1606–16383 from the truncated tensor → **illegal memory access**
+
+The diagnostic output confirmed the mismatch:
+```
+[PRE-CONV] model.layers.12.mixer: conv_state.shape=torch.Size([1606, 1152, 3]),
+  x.shape=torch.Size([1152, 1606]),       ← truncated!
+  query_start_loc=[0, 15873, 16384],      ← still full size!
+```
+
+### Fix
+
+Import the module and access the attribute dynamically:
+
+```python
+import vllm.compilation.monitor as _compile_monitor
+
+# Before (broken — always True):
+if cudagraph_capturing_enabled and num_actual_tokens > num_cache_lines:
+
+# After (reads live value):
+if _compile_monitor.cudagraph_capturing_enabled and num_actual_tokens > num_cache_lines:
+```
+
+All references to `cudagraph_capturing_enabled` in `modeling_apriel2.py` were updated to use `_compile_monitor.cudagraph_capturing_enabled`.
+
+### After the fix
+
+```
+[PRE-CONV] model.layers.12.mixer: conv_state.shape=torch.Size([1606, 1152, 3]),
+  x.shape=torch.Size([1152, 16384]),      ← full size, not truncated!
+  query_start_loc=[0, 15873, 16384],
+[SYNC-2] model.layers.12.mixer: post-causal_conv1d_fn sync OK
+[SYNC-3] model.layers.12.mixer: post-fused_gdn_gating sync OK
+[SYNC-5] model.layers.12.mixer: post-chunk_gated_delta_rule sync OK
+```
+
+Multiple re-prefills succeeded without any crashes.
+
+---
+
 ## Key Takeaways and Learnings
 
 1. **vLLM's grouping algorithm was designed for fixed-pattern hybrids** (like Gemma3's 5:1 ratio), not arbitrary supernet placements. The `group_size = min(layers per type)` heuristic degenerates when any type has a singleton.
@@ -632,6 +734,8 @@ As a regular argument, `total_elements` is passed as a kernel launch parameter, 
 10. **Never use `tl.constexpr` for batch-dependent kernel arguments.** Triton bakes constexpr values into the compiled binary. Different values trigger JIT recompilation, which can call `synchronize()` during graph capture or produce stale function pointers during replay. Use `tl.constexpr` only for structural parameters (block sizes, head counts, thresholds) that never change between capture and replay.
 
 11. **FlashInfer requires homogeneous `window_left` within a group.** `infer_global_hyperparameters()` checks `impl.sliding_window` from the actual attention implementation, not the KVCacheSpec. Layers with different window sizes MUST be in separate groups, which means returning different spec types (`SlidingWindowSpec` vs `FullAttentionSpec`).
+
+12. **Never use `from module import mutable_global` for flags that change at runtime.** Python's `from module import name` copies the value at import time. If the module later mutates the global (e.g., `set_cudagraph_capturing_enabled(False)`), the imported name retains the stale value. Use `import module; module.flag` instead. This bug silently disabled all debug sync points AND caused the `num_actual_tokens` clamping guard to fire unconditionally, truncating prefill input tensors while `query_start_loc` still referenced the full batch → OOB memory access in `causal_conv1d_fn`.
 
 ---
 
@@ -657,3 +761,9 @@ As a regular argument, `total_elements` is passed as a kernel launch parameter, 
 | `fused_gdn_gating_kernel` (Triton) | Same file, `@triton.jit` kernel |
 | FlashInfer `window_left` check | `vllm/v1/attention/backends/utils.py` : `infer_global_hyperparameters()` |
 | `SlidingWindowSpec` definition | `vllm/v1/kv_cache_interface.py` : `class SlidingWindowSpec(AttentionSpec)` |
+| `cudagraph_capturing_enabled` default | `vllm/compilation/monitor.py` : line 45, defaults to `True` |
+| `set_cudagraph_capturing_enabled()` | `vllm/compilation/monitor.py` : mutates module global |
+| Import fix (`_compile_monitor`) | `modeling_apriel2.py` : `import vllm.compilation.monitor as _compile_monitor` |
+| `num_actual_tokens` clamping (GDN) | `modeling_apriel2.py` : `_forward_core()`, `if _compile_monitor.cudagraph_capturing_enabled` |
+| `num_actual_tokens` clamping (KDA) | `modeling_apriel2.py` : `Apriel2KDAMixer._forward_core()`, same pattern |
+| Debug sync points (`APRIEL2_DEBUG_SYNC`) | `modeling_apriel2.py` : SYNC-1 through SYNC-6, gated by `DEBUG_SYNC` flag |
