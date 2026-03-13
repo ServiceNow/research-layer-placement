@@ -9,6 +9,7 @@ from place_layers.command.evaluate import EvaluateCommandConfig
 from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
 from place_layers.command.noise_analysis import NoiseAnalysisCommandConfig
 from place_layers.command.optimize import OptimizeCommandConfig
+from place_layers.command.optimize_speculative import OptimizeSpeculativeCommandConfig
 from place_layers.command.parse_multi_eval_results import (
     ParseMultiEvalResultsCommandConfig,
 )
@@ -29,7 +30,8 @@ CommandConfig = Annotated[
     | ExplorePlacementsCommandConfig
     | PlacementLandscapeCommandConfig
     | ParseMultiEvalResultsCommandConfig
-    | ValidateLandscapeCommandConfig,
+    | ValidateLandscapeCommandConfig
+    | OptimizeSpeculativeCommandConfig,
     Field(discriminator="command"),
 ]
 
