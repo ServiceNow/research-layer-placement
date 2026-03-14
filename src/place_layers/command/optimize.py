@@ -54,7 +54,9 @@ class OptimizeCommand(BaseCommand):
                         )
 
                         supp_files = discover_evaluation_records(
-                            self.config.supplemental_data_dirs, key
+                            self.config.supplemental_data_dirs, key,
+                            num_layers=evals.num_layers,
+                            mixer_names=list(evals.mixer_names),
                         )
                         seed_paths.extend(str(f) for f in supp_files)
                         if supp_files:

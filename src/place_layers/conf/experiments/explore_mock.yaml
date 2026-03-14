@@ -1,9 +1,9 @@
 # @package _global_
-# Consolidated mock exploration: all MRF variants, unconstrained
+# Mock exploration: MRF variants, linear cost model, evidence-based alpha.
 defaults:
   - /command: explore_placements
-  - /problem: apriel_h_1_5_15b
-  - /cost_model: uniform_apriel_15b
+  - /problem: cost_max_perf_apriel_15b
+  - /cost_model: linear_apriel_15b
   - /evaluators: mock_mrf_variants
   - _self_
 
@@ -21,4 +21,4 @@ surrogate:
   prior_a0: 1.0e-6
   prior_b0: 1.0e-6
   feature_scaling: counts_only
-  alpha_selection: fixed
+  alpha_selection: evidence

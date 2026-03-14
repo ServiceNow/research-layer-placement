@@ -33,8 +33,8 @@ from place_layers.landscape import (
     objective_result_path,
 )
 from place_layers.surrogate.evaluation_log import (
+    PooledEvaluationData,
     discover_evaluation_records,
-    load_pooled_data,
 )
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -136,25 +136,33 @@ class PlacementLandscapeCommand(BaseCommand):
         )
         cost_model = landscape.cost_model.create_cost_model()
 
+        # Start with exploration data, merge supplemental .jsonl files
+        pooled = PooledEvaluationData.from_exploration(dataset)
         supplemental_files = (
-            discover_evaluation_records(supplemental_dirs, dataset.objective_name)
+            discover_evaluation_records(
+                supplemental_dirs, dataset.objective_name,
+                num_layers=dataset.num_layers,
+                mixer_names=list(dataset.mixer_names),
+            )
             if supplemental_dirs else []
         )
-        pooled = load_pooled_data(
-            [dataset_path, *supplemental_files], deduplicate=True,
-        )
+        if supplemental_files:
+            pooled = pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(pooled.assignments)
+        all_scores = list(pooled.scores)
+
         surrogate = landscape.surrogate.create_surrogate(
-            mixer_names=pooled.mixer_names, seed=landscape.seed,
+            mixer_names=list(dataset.mixer_names), seed=landscape.seed,
             feature_config=dataset.feature_config,
         )
         match landscape.surrogate:
             case BayesianRidgeSurrogateConfig(alpha_selection="evidence"):
                 selected_alpha = surrogate.fit_optimize_alpha(
-                    pooled.assignments, np.array(pooled.scores),
+                    all_assignments, np.array(all_scores),
                 )
                 logger.info("Type-II ML alpha: %.4g", selected_alpha)
             case _:
-                surrogate.fit(pooled.assignments, np.array(pooled.scores))
+                surrogate.fit(all_assignments, np.array(all_scores))
         num_layers = dataset.num_layers
 
         # Enumerate ALL allocations (no budget filter)
@@ -272,11 +280,13 @@ class PlacementLandscapeCommand(BaseCommand):
                     self.config.validation_output_dir,
                 )
 
-        # Observed data overlay (always shown) — pooled already has exploration + supplemental
+        # Observed data overlay (always shown) — merged exploration + supplemental
+        from collections import Counter
+        observed_allocations = [dict(Counter(a)) for a in all_assignments]
         observed_costs = np.array(
-            [cost_model.allocation_cost(a) for a in pooled.allocations]
+            [cost_model.allocation_cost(a) for a in observed_allocations]
         )
-        observed_scores = np.array(pooled.scores)
+        observed_scores = np.array(all_scores)
 
         # Plot
         self._plot(
@@ -373,13 +383,24 @@ class PlacementLandscapeCommand(BaseCommand):
         min_speedup = 1.0
         max_speedup = float(speedups.max())
 
-        # Mixer color map: one color per mixer type by phase_order index
-        tab_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red",
-                       "tab:purple", "tab:brown", "tab:pink", "tab:gray"]
-        mixer_colors = {
-            name: tab_colors[i % len(tab_colors)]
-            for i, name in enumerate(phase_order)
+        # Canonical mixer colors (Tab10 order: FA, SWA, KDA, GDN, Mamba)
+        _MIXER_TAB_COLORS: dict[str, str] = {
+            "attention":      "tab:blue",
+            "sliding_window": "tab:orange",
+            "kda":            "tab:green",
+            "gdn":            "tab:red",
+            "mamba":          "tab:purple",
         }
+        _fallback = ["tab:blue", "tab:orange", "tab:green", "tab:red",
+                     "tab:purple", "tab:brown", "tab:pink", "tab:gray"]
+        mixer_colors = {}
+        fallback_idx = 0
+        for name in phase_order:
+            if name in _MIXER_TAB_COLORS:
+                mixer_colors[name] = _MIXER_TAB_COLORS[name]
+            else:
+                mixer_colors[name] = _fallback[fallback_idx % len(_fallback)]
+                fallback_idx += 1
 
         # GridSpec layout: density plot + colorbar column, layermap below
         fig = plt.figure(figsize=(7, 7), dpi=300)

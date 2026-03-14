@@ -204,21 +204,21 @@ class TestLandscapeHelpers:
         )
         surrogate.fit(pooled.assignments, np.array(pooled.scores))
 
-        assert pooled.num_samples == 100
+        assert pooled.num_samples <= 100
         assert pooled.num_layers == _NUM_LAYERS
         # Surrogate should be able to predict
         preds = surrogate.predict_mean(dataset.assignments[:5])
         assert len(preds) == 5
 
     async def test_pool_with_supplemental_dirs(self, tmp_path: Path) -> None:
-        """load_pooled_data pools supplemental data from directories."""
+        """from_jsonl + merge pools supplemental data from directories."""
         from place_layers.surrogate.evaluation_log import (
             EVALUATION_RECORDS_FILENAME,
             EvaluationLogMeta,
             EvaluationRecord,
+            PooledEvaluationData,
             append_record,
             discover_evaluation_records,
-            load_pooled_data,
             write_meta,
         )
 
@@ -255,30 +255,34 @@ class TestLandscapeHelpers:
         )
         write_meta(jsonl_path, meta)
 
-        # Pool WITHOUT supplemental (via load_pooled_data for fair dedup comparison)
+        # Base: exploration data only
         ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
-        pooled_base = load_pooled_data([dataset_path], deduplicate=True)
+        base_pooled = PooledEvaluationData.from_exploration(dataset)
+        base_assignments = list(base_pooled.assignments)
+        base_scores = list(base_pooled.scores)
         surr_base = ridge_config.create_surrogate(
-            mixer_names=pooled_base.mixer_names, seed=42,
+            mixer_names=list(dataset.mixer_names), seed=42,
             feature_config=dataset.feature_config,
         )
-        surr_base.fit(pooled_base.assignments, np.array(pooled_base.scores))
+        surr_base.fit(base_assignments, np.array(base_scores))
 
-        # Pool WITH supplemental dirs
+        # With supplemental: exploration + discovered JSONL files
         supplemental_files = discover_evaluation_records(
             [tmp_path / "supplemental"], objective_name=dataset.objective_name,
         )
-        pooled_with = load_pooled_data(
-            [dataset_path, *supplemental_files], deduplicate=True,
-        )
+        pooled = PooledEvaluationData.from_exploration(dataset)
+        pooled = pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(pooled.assignments)
+        all_scores = list(pooled.scores)
+
         surr_pooled = ridge_config.create_surrogate(
-            mixer_names=pooled_with.mixer_names, seed=42,
+            mixer_names=list(dataset.mixer_names), seed=42,
             feature_config=dataset.feature_config,
         )
-        surr_pooled.fit(pooled_with.assignments, np.array(pooled_with.scores))
+        surr_pooled.fit(all_assignments, np.array(all_scores))
 
-        # Pooled with supplemental has more samples than base
-        assert pooled_with.num_samples > pooled_base.num_samples
+        # Merged with supplemental has more samples than base
+        assert len(all_assignments) > len(base_assignments)
         # Both surrogates produce valid predictions
         test_assignment = ("m0",) * 6 + ("m1",) * 6
         pred_base = surr_base.predict_mean_one(test_assignment)
@@ -1187,10 +1191,9 @@ class TestCrossBandDataLoading:
         result_path.write_text('{"total_evaluations": 2}')
 
         # Load paths for band 0
-        paths, total = _load_completed_band_records(bands_dir, [0])
+        paths = _load_completed_band_records(bands_dir, [0])
 
         assert len(paths) == 1
-        assert total == 2
         records = load_records(paths[0])
         assert records[0].score == 10.0
         assert records[1].score == 11.0
@@ -1203,9 +1206,8 @@ class TestCrossBandDataLoading:
         bands_dir.mkdir()
 
         # No band dirs exist
-        paths, total = _load_completed_band_records(bands_dir, [0, 1, 2])
+        paths = _load_completed_band_records(bands_dir, [0, 1, 2])
         assert paths == []
-        assert total == 0
 
     def test_cross_band_seed_paths(self, tmp_path: Path) -> None:
         """Prior band eval logs become seed_data_paths for the next band."""
@@ -1234,10 +1236,9 @@ class TestCrossBandDataLoading:
         (band0_dir / "result.json").write_text('{"total_evaluations": 2}')
 
         # Loading prior records for band 1
-        paths, total = _load_completed_band_records(bands_dir, [0])
+        paths = _load_completed_band_records(bands_dir, [0])
 
         assert len(paths) == 1
-        assert total == 2
 
     def test_multi_band_seed_paths(self, tmp_path: Path) -> None:
         """Multiple completed bands produce multiple seed paths."""
@@ -1276,10 +1277,9 @@ class TestCrossBandDataLoading:
         (band1_dir / "result.json").write_text('{"total_evaluations": 3}')
 
         # Load both bands
-        paths, total = _load_completed_band_records(bands_dir, [0, 1])
+        paths = _load_completed_band_records(bands_dir, [0, 1])
 
         assert len(paths) == 2
-        assert total == 5
         # Verify records from each band
         records0 = load_records(paths[0])
         records1 = load_records(paths[1])

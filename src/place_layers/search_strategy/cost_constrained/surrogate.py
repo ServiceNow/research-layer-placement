@@ -54,8 +54,8 @@ from place_layers.surrogate.config import (
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
+    PooledEvaluationData,
     append_record,
-    load_pooled_data,
 )
 
 if TYPE_CHECKING:
@@ -243,7 +243,7 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         rng = random.Random(self.config.sa.seed)
         mixer_names = cost_model.phase_order
 
-        # Load exploration dataset + seed data via pooled loader
+        # Load exploration dataset + seed data
         exploration = ExplorationDataset.load(
             Path(self.config.exploration_dataset_path)
         )
@@ -252,10 +252,11 @@ class SurrogateSearch(BaseCostConstrainedSearch):
             if self.config.evaluation_log_path
             else None
         )
-        pooled = load_pooled_data(
-            [self.config.exploration_dataset_path, *self.config.seed_data_paths],
-            deduplicate=True,
-        )
+        pooled = PooledEvaluationData.from_exploration(exploration)
+        if self.config.seed_data_paths:
+            pooled = pooled.merge(
+                PooledEvaluationData.from_jsonl(self.config.seed_data_paths)
+            )
         all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
         all_scores: list[float] = list(pooled.scores)
         logger.info(
@@ -278,7 +279,6 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
         # Open evaluation log for appending strategy's own evaluations
         eval_log_file = None
-        eval_record_count = 0
 
         if eval_log_path is not None:
             eval_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,7 +389,6 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                             score=score,
                         )
                         append_record(eval_log_file, record)
-                        eval_record_count += 1
 
                     is_new_best = False
                     if score > f_best:

@@ -56,7 +56,6 @@ from place_layers.surrogate.evaluation_log import (
     EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     discover_evaluation_records,
-    load_records,
     write_meta,
 )
 
@@ -66,13 +65,12 @@ logger = logging.getLogger(__name__)
 def _load_completed_band_records(
     bands_dir: Path,
     prior_band_indices: list[int],
-) -> tuple[list[Path], int]:
+) -> list[Path]:
     """Find eval log paths from completed prior bands.
 
-    Returns (paths, total_records) where paths can be used as seed_data_paths.
+    Returns paths that can be used as seed_data_paths.
     """
     paths: list[Path] = []
-    total_records = 0
     for band_index in prior_band_indices:
         band_dir = bands_dir / f"band_{band_index:03d}"
         result_path = band_dir / "result.json"
@@ -80,8 +78,7 @@ def _load_completed_band_records(
         if not result_path.exists() or not eval_log.exists():
             continue
         paths.append(eval_log)
-        total_records += len(load_records(eval_log))
-    return paths, total_records
+    return paths
 
 
 ViterbiSearchConfig = Annotated[
@@ -197,7 +194,11 @@ class ValidateLandscapeCommand(BaseCommand):
 
         # Resolve supplemental files via discovery (paths only, no loading)
         supplemental_files = (
-            discover_evaluation_records(landscape.supplemental_data_dirs, obj_name)
+            discover_evaluation_records(
+                landscape.supplemental_data_dirs, obj_name,
+                num_layers=num_layers,
+                mixer_names=list(cost_model.phase_order),
+            )
             if landscape.supplemental_data_dirs else []
         )
 
@@ -286,7 +287,7 @@ class ValidateLandscapeCommand(BaseCommand):
                     bi for bi in occupied_bins[:step]
                     if (bands_dir / f"band_{bi:03d}" / "result.json").exists()
                 ]
-                prior_eval_paths, _ = _load_completed_band_records(
+                prior_eval_paths = _load_completed_band_records(
                     bands_dir, prior_indices,
                 )
                 seed_paths.extend(str(p) for p in prior_eval_paths)

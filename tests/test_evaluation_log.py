@@ -15,7 +15,6 @@ from place_layers.surrogate.evaluation_log import (
     append_record,
     discover_evaluation_records,
     load_meta,
-    load_pooled_data,
     load_records,
     meta_path_for,
     write_meta,
@@ -216,37 +215,15 @@ class TestMetadata:
 
 
 class TestPooledData:
-    """Tests for load_pooled_data and PooledEvaluationData."""
+    """Tests for PooledEvaluationData: from_jsonl, from_exploration, merge."""
 
     def _write_jsonl(self, path: Path, records: list[EvaluationRecord]) -> None:
         with path.open("w") as f:
             for rec in records:
                 append_record(f, rec)
 
-    def _write_exploration_json(self, path: Path, assignments, scores) -> None:
-        """Write a minimal ExplorationDataset JSON file."""
-        from place_layers.surrogate.dataset import ExplorationDataset
-        from place_layers.surrogate.encoding import FeatureExpansionConfig
-
-        ds = ExplorationDataset(
-            assignments=assignments,
-            scores=scores,
-            objective_name="test",
-            num_layers=len(assignments[0]),
-            mixer_names=["attn", "gdn"],
-            num_samples=len(assignments),
-            termination_reason="max_samples",
-            feature_config=FeatureExpansionConfig(
-                max_order=1, pairwise_max_range=1, allocation_counts=True
-            ),
-            quality_history=[0.9],
-            samples_at_check=[len(assignments)],
-            final_quality=0.9,
-        )
-        path.write_text(ds.model_dump_json())
-
-    def test_load_jsonl_files(self, tmp_path: Path):
-        """load_pooled_data loads JSONL files correctly."""
+    def test_from_jsonl(self, tmp_path: Path):
+        """from_jsonl loads JSONL files correctly."""
         records = [
             EvaluationRecord(assignment=("attn", "gdn"), score=0.5),
             EvaluationRecord(assignment=("gdn", "gdn"), score=0.6),
@@ -263,43 +240,31 @@ class TestPooledData:
         )
         write_meta(jsonl_path, meta)
 
-        pool = load_pooled_data([jsonl_path])
+        pool = PooledEvaluationData.from_jsonl([jsonl_path])
         assert pool.num_samples == 2
         assert pool.num_layers == 2
         assert pool.mixer_names == ["attn", "gdn"]
 
-    def test_load_exploration_json(self, tmp_path: Path):
-        """load_pooled_data loads ExplorationDataset .json files."""
-        assignments = [("attn", "gdn"), ("gdn", "attn")]
-        scores = [0.5, 0.6]
-
+    def test_json_files_skipped(self, tmp_path: Path):
+        """from_jsonl skips .json files (no longer supported)."""
         json_path = tmp_path / "exploration_results_test.json"
-        self._write_exploration_json(json_path, assignments, scores)
+        json_path.write_text("{}")
 
-        pool = load_pooled_data([json_path])
-        assert pool.num_samples == 2
-        assert pool.num_layers == 2
+        # .json file alone should fail — no metadata available
+        with pytest.raises(ValueError, match="Could not determine num_layers"):
+            PooledEvaluationData.from_jsonl([json_path])
 
-    def test_multi_file_loading(self, tmp_path: Path):
-        """load_pooled_data merges data from JSON + JSONL sources."""
-        # Write exploration JSON
-        assignments = [("attn", "gdn"), ("gdn", "attn")]
-        scores = [0.5, 0.6]
-        json_path = tmp_path / "exploration_results_test.json"
-        self._write_exploration_json(json_path, assignments, scores)
-
-        # Write JSONL with different data
-        records = [
-            EvaluationRecord(assignment=("gdn", "gdn"), score=0.7),
-        ]
+    def test_jsonl_without_sidecar_raises(self, tmp_path: Path):
+        """JSONL files without sidecars fail if no other file provides metadata."""
+        rec = EvaluationRecord(assignment=("attn", "gdn"), score=0.5)
         jsonl_path = tmp_path / "evaluations_test.jsonl"
-        self._write_jsonl(jsonl_path, records)
+        self._write_jsonl(jsonl_path, [rec])
 
-        pool = load_pooled_data([json_path, jsonl_path], deduplicate=False)
-        assert pool.num_samples == 3
+        with pytest.raises(ValueError, match="Could not determine num_layers"):
+            PooledEvaluationData.from_jsonl([jsonl_path])
 
-    def test_deduplication(self, tmp_path: Path):
-        """Exact (assignment, score) duplicates are removed."""
+    def test_from_jsonl_deduplicates(self, tmp_path: Path):
+        """from_jsonl always deduplicates exact (assignment, score) pairs."""
         rec = EvaluationRecord(assignment=("attn", "gdn"), score=0.5)
         jsonl1 = tmp_path / "eval1.jsonl"
         jsonl2 = tmp_path / "eval2.jsonl"
@@ -315,11 +280,8 @@ class TestPooledData:
         )
         write_meta(jsonl1, meta)
 
-        pool_dedup = load_pooled_data([jsonl1, jsonl2], deduplicate=True)
-        assert pool_dedup.num_samples == 1
-
-        pool_no_dedup = load_pooled_data([jsonl1, jsonl2], deduplicate=False)
-        assert pool_no_dedup.num_samples == 2
+        pool = PooledEvaluationData.from_jsonl([jsonl1, jsonl2])
+        assert pool.num_samples == 1
 
     def test_missing_file_skipped(self, tmp_path: Path):
         """Missing files are warned about but don't cause errors."""
@@ -335,7 +297,7 @@ class TestPooledData:
         )
         write_meta(jsonl_path, meta)
 
-        pool = load_pooled_data([
+        pool = PooledEvaluationData.from_jsonl([
             tmp_path / "nonexistent.jsonl",
             jsonl_path,
         ])
@@ -344,7 +306,7 @@ class TestPooledData:
     def test_no_valid_files_raises(self, tmp_path: Path):
         """ValueError when no file provides num_layers."""
         with pytest.raises(ValueError, match="Could not determine num_layers"):
-            load_pooled_data([tmp_path / "nonexistent.jsonl"])
+            PooledEvaluationData.from_jsonl([tmp_path / "nonexistent.jsonl"])
 
     def test_num_samples_property(self):
         """PooledEvaluationData.num_samples returns correct count."""
@@ -380,6 +342,70 @@ class TestPooledData:
             num_layers=2, mixer_names=["attn", "gdn"],
         )
         assert pool.as_records() == []
+
+    def test_merge_deduplicates(self):
+        """merge() deduplicates (assignment, score) pairs, self takes priority."""
+        pool_a = PooledEvaluationData(
+            assignments=[("attn", "gdn"), ("gdn", "gdn")],
+            scores=[0.5, 0.6],
+            num_layers=2,
+            mixer_names=["attn", "gdn"],
+        )
+        pool_b = PooledEvaluationData(
+            assignments=[("gdn", "gdn"), ("attn", "attn")],
+            scores=[0.6, 0.7],
+            num_layers=2,
+            mixer_names=["attn", "gdn"],
+        )
+        merged = pool_a.merge(pool_b)
+        assert merged.num_samples == 3
+        # Self's entries appear first
+        assert merged.assignments[0] == ("attn", "gdn")
+        assert merged.assignments[1] == ("gdn", "gdn")
+        assert merged.assignments[2] == ("attn", "attn")
+
+    def test_merge_returns_new_instance(self):
+        """merge() returns a new instance, originals are unchanged."""
+        pool_a = PooledEvaluationData(
+            assignments=[("attn",)], scores=[0.5],
+            num_layers=1, mixer_names=["attn"],
+        )
+        pool_b = PooledEvaluationData(
+            assignments=[("gdn",)], scores=[0.6],
+            num_layers=1, mixer_names=["attn", "gdn"],
+        )
+        merged = pool_a.merge(pool_b)
+        assert merged is not pool_a
+        assert merged is not pool_b
+        assert pool_a.num_samples == 1  # unchanged
+        assert merged.num_samples == 2
+
+    def test_from_exploration(self):
+        """from_exploration lifts an ExplorationDataset into PooledEvaluationData."""
+        from place_layers.surrogate.dataset import ExplorationDataset
+        from place_layers.surrogate.encoding import FeatureExpansionConfig
+
+        dataset = ExplorationDataset(
+            assignments=[("attn", "gdn"), ("gdn", "attn")],
+            scores=[0.5, 0.6],
+            objective_name="test",
+            num_layers=2,
+            mixer_names=["attn", "gdn"],
+            num_samples=2,
+            termination_reason="max_samples",
+            feature_config=FeatureExpansionConfig.unary(),
+            surrogate_config=None,
+            expansion_result=None,
+            quality_history=[0.5],
+            samples_at_check=[2],
+            final_quality=0.5,
+        )
+        pool = PooledEvaluationData.from_exploration(dataset)
+        assert pool.num_samples == 2
+        assert pool.num_layers == 2
+        assert pool.mixer_names == ["attn", "gdn"]
+        assert pool.assignments == [("attn", "gdn"), ("gdn", "attn")]
+        assert pool.scores == [0.5, 0.6]
 
 
 # =============================================================================

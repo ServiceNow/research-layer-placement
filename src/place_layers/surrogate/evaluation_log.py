@@ -4,8 +4,8 @@ Provides:
 - ``EvaluationRecord`` / ``EvaluationLogMeta``: Pydantic models for JSONL
   evaluation logs and their sidecar metadata.
 - ``append_record`` / ``load_records``: write/read individual JSONL files.
-- ``PooledEvaluationData`` / ``load_pooled_data``: merge data from multiple
-  evaluation sources (exploration JSON + evaluation JSONL).
+- ``PooledEvaluationData``: merge data from multiple JSONL evaluation logs
+  (use ``from_jsonl`` classmethod to load, ``merge`` to combine).
 - ``discover_evaluation_records``: find per-objective evaluation record files
   across directories (supports both new and legacy naming conventions).
 """
@@ -15,10 +15,13 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import IO, Sequence
+from typing import IO, TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from place_layers.surrogate.dataset import ExplorationDataset
 
 import yaml
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +133,13 @@ def load_meta(jsonl_path: Path) -> EvaluationLogMeta | None:
 
 
 class PooledEvaluationData(BaseModel):
-    """Merged data from multiple evaluation sources. Immutable view."""
+    """Merged data from multiple evaluation sources. Immutable view.
+
+    Construct via:
+    - ``from_jsonl(paths)`` — load and deduplicate from JSONL files
+    - ``from_exploration(dataset)`` — lift an ``ExplorationDataset``
+    - Direct construction for tests
+    """
 
     model_config = {"frozen": True}
 
@@ -138,6 +147,29 @@ class PooledEvaluationData(BaseModel):
     scores: list[float]
     num_layers: int
     mixer_names: list[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _enforce_dedup(cls, data: dict) -> dict:
+        assignments = data.get("assignments", [])
+        scores = data.get("scores", [])
+        if not assignments:
+            return data
+        seen: set[tuple[tuple[str, ...], float]] = set()
+        deduped_a: list = []
+        deduped_s: list = []
+        for a, s in zip(assignments, scores):
+            key = (tuple(a), s)
+            if key not in seen:
+                seen.add(key)
+                deduped_a.append(a)
+                deduped_s.append(s)
+        n_removed = len(assignments) - len(deduped_a)
+        if n_removed > 0:
+            logger.info("Deduplication removed %d / %d records", n_removed, len(assignments))
+        data["assignments"] = deduped_a
+        data["scores"] = deduped_s
+        return data
 
     @property
     def allocations(self) -> list[dict[str, int]]:
@@ -155,93 +187,84 @@ class PooledEvaluationData(BaseModel):
             for a, s in zip(self.assignments, self.scores, strict=True)
         ]
 
+    @classmethod
+    def from_jsonl(cls, paths: Sequence[Path | str]) -> PooledEvaluationData:
+        """Load and merge evaluation data from multiple JSONL files.
 
-def load_pooled_data(
-    paths: Sequence[Path | str],
-    *,
-    deduplicate: bool = True,
-) -> PooledEvaluationData:
-    """Load and merge evaluation data from multiple files.
+        Reads ``.jsonl`` evaluation log files via ``load_records()``.  Metadata
+        (``num_layers``, ``mixer_names``) is obtained from ``.meta.yaml`` sidecars.
+        At least one file must have a sidecar with this information.
 
-    Accepts:
-    - ExplorationDataset ``.json`` files (reads via ``ExplorationDataset.load()``)
-    - Evaluation ``.jsonl`` files (reads records via ``load_records()``)
+        Deduplicates exact ``(assignment, score)`` pairs automatically.
+        """
+        all_assignments: list[tuple[str, ...]] = []
+        all_scores: list[float] = []
+        num_layers: int | None = None
+        mixer_names: list[str] | None = None
 
-    When *deduplicate* is True, removes exact ``(assignment, score)`` duplicates
-    that arise when the same data is loaded from multiple sources.
-    """
-    from place_layers.surrogate.dataset import ExplorationDataset
+        for raw_path in paths:
+            p = Path(raw_path)
+            if not p.exists():
+                logger.warning("Skipping missing evaluation data file: %s", p)
+                continue
 
-    all_assignments: list[tuple[str, ...]] = []
-    all_scores: list[float] = []
-    num_layers: int | None = None
-    mixer_names: list[str] | None = None
+            if p.suffix == ".jsonl":
+                records = load_records(p)
+                for rec in records:
+                    all_assignments.append(rec.assignment)
+                    all_scores.append(rec.score)
+                # Try to get metadata from sidecar
+                if num_layers is None:
+                    meta = load_meta(p)
+                    if meta is not None:
+                        num_layers = meta.num_layers
+                        mixer_names = meta.mixer_names
+            else:
+                logger.warning("Skipping unrecognized file type: %s", p)
+                continue
 
-    for raw_path in paths:
-        p = Path(raw_path)
-        if not p.exists():
-            logger.warning("Skipping missing evaluation data file: %s", p)
-            continue
-
-        if p.suffix == ".json":
-            ds = ExplorationDataset.load(p)
-            all_assignments.extend(ds.assignments)
-            all_scores.extend(ds.scores)
-            if num_layers is None:
-                num_layers = ds.num_layers
-                mixer_names = ds.mixer_names
-        elif p.suffix == ".jsonl":
-            records = load_records(p)
-            for rec in records:
-                all_assignments.append(rec.assignment)
-                all_scores.append(rec.score)
-            # Try to get metadata from sidecar
-            if num_layers is None:
-                meta = load_meta(p)
-                if meta is not None:
-                    num_layers = meta.num_layers
-                    mixer_names = meta.mixer_names
-        else:
-            logger.warning("Skipping unrecognized file type: %s", p)
-            continue
-
-    if num_layers is None:
-        raise ValueError(
-            "Could not determine num_layers from any loaded file. "
-            f"Paths: {[str(p) for p in paths]}"
-        )
-    if mixer_names is None:
-        raise ValueError(
-            "Could not determine mixer_names from any loaded file. "
-            f"Paths: {[str(p) for p in paths]}"
-        )
-
-    if deduplicate:
-        seen: set[tuple[tuple[str, ...], float]] = set()
-        deduped_assignments: list[tuple[str, ...]] = []
-        deduped_scores: list[float] = []
-        for a, s in zip(all_assignments, all_scores):
-            key = (a, s)
-            if key not in seen:
-                seen.add(key)
-                deduped_assignments.append(a)
-                deduped_scores.append(s)
-        n_removed = len(all_assignments) - len(deduped_assignments)
-        if n_removed > 0:
-            logger.info(
-                "Deduplication removed %d / %d records",
-                n_removed,
-                len(all_assignments),
+        if num_layers is None:
+            raise ValueError(
+                "Could not determine num_layers from any loaded file. "
+                f"Paths: {[str(p) for p in paths]}"
             )
-        all_assignments = deduped_assignments
-        all_scores = deduped_scores
+        if mixer_names is None:
+            raise ValueError(
+                "Could not determine mixer_names from any loaded file. "
+                f"Paths: {[str(p) for p in paths]}"
+            )
 
-    return PooledEvaluationData(
-        assignments=all_assignments,
-        scores=all_scores,
-        num_layers=num_layers,
-        mixer_names=mixer_names,
-    )
+        return cls(
+            assignments=all_assignments,
+            scores=all_scores,
+            num_layers=num_layers,
+            mixer_names=mixer_names,
+        )
+
+    @classmethod
+    def from_exploration(
+        cls, dataset: ExplorationDataset,
+    ) -> PooledEvaluationData:
+        """Create from an ExplorationDataset."""
+        return cls(
+            assignments=list(dataset.assignments),
+            scores=list(dataset.scores),
+            num_layers=dataset.num_layers,
+            mixer_names=list(dataset.mixer_names),
+        )
+
+    def merge(self, other: PooledEvaluationData) -> PooledEvaluationData:
+        """Merge two pools, deduplicating (assignment, score) pairs.
+
+        Self's entries take priority (appear first, preserved on collision).
+        Returns a new frozen instance.
+        """
+        return PooledEvaluationData(
+            assignments=list(self.assignments) + list(other.assignments),
+            scores=list(self.scores) + list(other.scores),
+            num_layers=self.num_layers,
+            mixer_names=self.mixer_names,
+        )
 
 
 # ============================================================================

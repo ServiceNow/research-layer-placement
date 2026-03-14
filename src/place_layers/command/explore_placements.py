@@ -420,31 +420,36 @@ class ExplorePlacementsCommand(BaseCommand):
 
         if self.config.supplemental_data_dirs:
             from place_layers.surrogate.evaluation_log import (
+                PooledEvaluationData,
                 discover_evaluation_records,
-                load_pooled_data,
             )
 
             supplemental_files = discover_evaluation_records(
-                self.config.supplemental_data_dirs, obj_name
+                self.config.supplemental_data_dirs, obj_name,
+                num_layers=num_layers,
+                mixer_names=list(phase_order),
             )
             if supplemental_files:
-                pool = load_pooled_data(supplemental_files, deduplicate=True)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                n_before = len(all_assignments)
-                for a, s in zip(pool.assignments, pool.scores):
-                    if (a, s) not in existing:
-                        all_assignments.append(a)
-                        all_scores.append(s)
-                        existing.add((a, s))
-                n_added = len(all_assignments) - n_before
+                seed_pooled = PooledEvaluationData.from_jsonl(supplemental_files)
+                # Build a PooledEvaluationData from local progress for merging
+                local_pooled = PooledEvaluationData(
+                    assignments=all_assignments,
+                    scores=all_scores,
+                    num_layers=num_layers,
+                    mixer_names=list(phase_order),
+                )
+                merged = local_pooled.merge(seed_pooled)
+                n_added = merged.num_samples - local_pooled.num_samples
                 n_supplemental = n_added
+                all_assignments = list(merged.assignments)
+                all_scores = list(merged.scores)
                 logger.info(
                     "Supplemental data: loaded %d records from %d file(s), "
                     "merged %d new (skipped %d duplicates) for objective '%s'",
-                    pool.num_samples,
+                    seed_pooled.num_samples,
                     len(supplemental_files),
                     n_added,
-                    pool.num_samples - n_added,
+                    seed_pooled.num_samples - n_added,
                     obj_name,
                 )
             else:
@@ -478,7 +483,7 @@ class ExplorePlacementsCommand(BaseCommand):
                 logger.info("Resumed from %d completed samples", num_local)
 
         # Write sidecar metadata for the progress JSONL so it can be loaded
-        # standalone by load_pooled_data (without a companion .json file).
+        # standalone by PooledEvaluationData.from_jsonl (without a companion .json file).
         from datetime import datetime, timezone
 
         progress_meta = EvaluationLogMeta(

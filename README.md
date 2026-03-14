@@ -147,13 +147,13 @@ Fit a Ridge surrogate, solve per-band DP-optimal placements via MRF Viterbi, and
 
 ```bash
 # Surrogate-only preview
-python -m place_layers +experiments=placement_landscape \
-    landscape.exploration_dataset_path=exploration_results.json
+python -m place_layers +experiments=landscape_mock \
+    landscape.explore_output_dir=outputs/explore
 
 # With validation overlay (dashed surrogate line + solid validated line)
-python -m place_layers +experiments=placement_landscape \
-    landscape.exploration_dataset_path=exploration_results.json \
-    placement_landscape.validation_results_path=validation_results.json
+python -m place_layers +experiments=landscape_mock \
+    landscape.explore_output_dir=outputs/explore \
+    validation_output_dir=outputs/validate
 ```
 
 Output: `placement_landscape.pdf`, `placement_landscape.png`, `landscape_data.json`.

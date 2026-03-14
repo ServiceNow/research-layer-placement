@@ -17,9 +17,9 @@ from place_layers.surrogate.evaluation_log import (
     EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
+    PooledEvaluationData,
     append_record,
     discover_evaluation_records,
-    load_pooled_data,
     write_meta,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -450,13 +450,13 @@ class TestSupplementalDataMerge:
         supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
         assert len(supplemental_files) > 0
 
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        for a, s in zip(pool.assignments, pool.scores):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                existing.add((a, s))
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         assert len(all_assignments) == 4
         assert num_local == 2  # unchanged
@@ -492,15 +492,14 @@ class TestSupplementalDataMerge:
         num_local = len(all_assignments)
 
         supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        n_before = len(all_assignments)
-        for a, s in zip(pool.assignments, pool.scores):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                existing.add((a, s))
-        n_added = len(all_assignments) - n_before
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        n_added = merged.num_samples - local_pooled.num_samples
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         assert num_local == 1
         assert n_added == 1  # only the new record
@@ -607,18 +606,16 @@ class TestSupplementalDataMerge:
         # Simulate the merge logic from the command
         all_assignments, all_scores = _load_progress(local_progress)
         num_local = len(all_assignments)
-        n_supplemental = 0
 
         supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        n_before = len(all_assignments)
-        for a, s in zip(pool.assignments, pool.scores):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                existing.add((a, s))
-        n_supplemental = len(all_assignments) - n_before
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        n_supplemental = merged.num_samples - local_pooled.num_samples
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         # Sidecar should reflect only local records
         sidecar_num_records = len(all_assignments) - n_supplemental
@@ -725,7 +722,6 @@ class TestSnowballFile:
         """Chain 3 runs: each snowball accumulates prior data."""
         from place_layers.surrogate.evaluation_log import (
             load_records,
-            load_pooled_data,
             discover_evaluation_records,
         )
 
@@ -754,7 +750,7 @@ class TestSnowballFile:
         supp_files = discover_evaluation_records([str(run1_dir)], "obj")
         assert len(supp_files) > 0
 
-        pool = load_pooled_data(supp_files, deduplicate=True)
+        pool = PooledEvaluationData.from_jsonl(supp_files)
         assert pool.num_samples == 2
 
         snowball2 = run2_dir / "evaluations_obj.jsonl"
@@ -781,7 +777,7 @@ class TestSnowballFile:
 
         # --- Run 3: supplemental=[run2], loads all 4 ---
         supp_files_3 = discover_evaluation_records([str(run2_dir)], "obj")
-        pool3 = load_pooled_data(supp_files_3, deduplicate=True)
+        pool3 = PooledEvaluationData.from_jsonl(supp_files_3)
         assert pool3.num_samples == 4
         # All 4 assignments present
         all_assignments = set(pool3.assignments)

@@ -17,7 +17,6 @@ from place_layers.surrogate.evaluation_log import (
     PooledEvaluationData,
     append_record,
     discover_evaluation_records,
-    load_pooled_data,
     load_records,
 )
 from place_layers.surrogate.encoding import FeatureExpansionConfig

@@ -219,7 +219,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._surrogate_entries: list[SurrogateDisplayEntry] = []
         self._surrogate_dataset_size: int = 0
         self._surrogate_metric_label: str = ""
-        self._surrogate_metric_value: float = 0.0
+        self._surrogate_metric_value: float | None = None
         self._surrogate_best_score: float = float("-inf")
 
         # Annealing state
@@ -566,7 +566,7 @@ class LayermapDisplay(PlacementFormatterMixin):
             footer_parts.append(f"[green]Best: {self._surrogate_best_score:.4g}[/green]")
         if self._surrogate_dataset_size > 0:
             footer_parts.append(f"Dataset: {self._surrogate_dataset_size:,}")
-        if self._surrogate_metric_value > 0 and self._surrogate_metric_label:
+        if self._surrogate_metric_value is not None and self._surrogate_metric_label:
             footer_parts.append(f"{self._surrogate_metric_label} {self._surrogate_metric_value:.2f}")
         if footer_parts:
             lines.append(Text.from_markup("  |  ".join(footer_parts)))
@@ -832,7 +832,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         self._surrogate_entries = []
         self._surrogate_dataset_size = 0
         self._surrogate_metric_label = ""
-        self._surrogate_metric_value = 0.0
+        self._surrogate_metric_value = None
         self._surrogate_best_score = float("-inf")
 
         # Print header
@@ -1096,7 +1096,7 @@ class LayermapDisplay(PlacementFormatterMixin):
         """Handle surrogate dataset loaded event."""
         self._active_strategy = "surrogate"
         self._surrogate_dataset_size = event.num_samples
-        self._surrogate_metric_label = "\u03c1"
+        self._surrogate_metric_label = "Q"
         self._surrogate_metric_value = event.exploration_quality
         self._console.print(
             f"  Surrogate: {event.num_samples} samples, "
