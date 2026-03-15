@@ -10,6 +10,7 @@ defaults:
   - /task@mmlu_task: mmlu_optimize
   - /task@fda_task: fda_optimize
   - /task@swde_task: swde_optimize
+  - /generation@extraction_generation: extraction
 
 configs:
   mmlu:
@@ -28,10 +29,10 @@ configs:
     max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
     split: ${evaluators.fda_task.split}
     # Generation parameters
-    samples_per_problem: ${generation.samples_per_problem}
-    max_new_tokens: ${generation.max_new_tokens}
-    temperature: ${generation.temperature}
-    top_p: ${generation.top_p}
+    samples_per_problem: ${evaluators.extraction_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.extraction_generation.max_new_tokens}
+    temperature: ${evaluators.extraction_generation.temperature}
+    top_p: ${evaluators.extraction_generation.top_p}
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
     doc_prefetch_count: 2
@@ -43,10 +44,10 @@ configs:
     max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
     split: ${evaluators.swde_task.split}
     # Generation parameters
-    samples_per_problem: ${generation.samples_per_problem}
-    max_new_tokens: ${generation.max_new_tokens}
-    temperature: ${generation.temperature}
-    top_p: ${generation.top_p}
+    samples_per_problem: ${evaluators.extraction_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.extraction_generation.max_new_tokens}
+    temperature: ${evaluators.extraction_generation.temperature}
+    top_p: ${evaluators.extraction_generation.top_p}
     use_chat_template: false
     evaluate_truncated_samples: true  # Extraction tasks should evaluate truncated samples
     doc_prefetch_count: 2
@@ -54,7 +55,8 @@ configs:
   aime24:
     evaluator_type: trace_likelihood
     # Override on CLI: evaluators.configs.aime24.trace_sources=["/path/to/traces"]
-    trace_sources: ???
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:
@@ -64,7 +66,8 @@ configs:
   aime25:
     evaluator_type: trace_likelihood
     # Override on CLI: evaluators.configs.aime25.trace_sources=["/path/to/traces"]
-    trace_sources: ???
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:
@@ -74,7 +77,8 @@ configs:
   math500:
     evaluator_type: trace_likelihood
     # Override on CLI: evaluators.configs.math500.trace_sources=["/path/to/traces"]
-    trace_sources: ???
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
     # Optional per-task weights (null = equal weighting)
     task_weights: null
     normalization:

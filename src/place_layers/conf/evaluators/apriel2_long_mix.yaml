@@ -1,0 +1,78 @@
+# @package evaluators
+# Extended multi-evaluator config that reuses apriel2_mix and adds additional evaluators
+#
+# This config inherits all evaluators from apriel2_mix (MMLU, FDA, SWDE, AIME24, AIME25, MATH500)
+# and adds new evaluators for extended benchmarking.
+#
+# Task configurations are embedded via defaults and can be overridden:
+#   +evaluators=apriel2_long_mix evaluators.mmlu_task=mmlu_quick
+
+defaults:
+  # Inherit base configuration from apriel2_mix
+  - apriel2_mix
+  # Add task configurations for new evaluators
+  - /task@niah_task: niah_single_2
+  - /task@ruler_task: ruler_qa_squad
+  # Generation config for long-context tasks (NIAH, RULER)
+  - /generation@long_context_generation: greedy_very_short
+  - _self_
+
+# The evaluators_dict is merged with the parent config
+# Add new evaluators here while keeping all from apriel2_mix
+configs:
+  # All evaluators from apriel2_mix are inherited:
+  # - mmlu (likelihood)
+  # - fda (generative)
+  # - swde (generative)
+  # - aime24 (trace_likelihood)
+  # - aime25 (trace_likelihood)
+  # - math500 (trace_likelihood)
+
+  # Add new evaluators below:
+  niah_single_2:
+    evaluator_type: generative
+    tasks: ${evaluators.niah_task.tasks}
+    num_fewshot: ${evaluators.niah_task.num_fewshot}
+    max_problems_per_task: 100
+    split: ${evaluators.niah_task.split}
+    samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
+    temperature: ${evaluators.long_context_generation.temperature}
+    top_p: ${evaluators.long_context_generation.top_p}
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: 16384
+    doc_prefetch_count: 2
+
+  ruler_qa_squad:
+    evaluator_type: generative
+    tasks: ${evaluators.ruler_task.tasks}
+    num_fewshot: ${evaluators.ruler_task.num_fewshot}
+    max_problems_per_task: 100
+    split: ${evaluators.ruler_task.split}
+    samples_per_problem: ${evaluators.long_context_generation.samples_per_problem}
+    max_new_tokens: ${evaluators.long_context_generation.max_new_tokens}
+    temperature: ${evaluators.long_context_generation.temperature}
+    top_p: ${evaluators.long_context_generation.top_p}
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: 16384
+    doc_prefetch_count: 2
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    mmlu: 0.125
+    fda: 0.125
+    swde: 0.125
+    aime24: 0.125
+    aime25: 0.125
+    math500: 0.125
+    # New long-context evaluators
+    niah_single_2: 0.125
+    ruler_qa_squad: 0.125

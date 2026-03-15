@@ -106,7 +106,7 @@ class ServerHealth(BaseModel):
         """Calculate when this server should next be checked for recovery."""
         if self.healthy:
             return 0.0  # Can be checked immediately
-        wait = min(base_interval * (2 ** (self.consecutive_failures - 1)), max_interval)
+        wait = min(base_interval * (2 ** min(self.consecutive_failures - 1, 64)), max_interval)
         return self.last_failure_time + wait
 
     def is_due_for_check(self, base_interval: float, max_interval: float) -> bool:
