@@ -10,7 +10,6 @@ defaults:
   - /evaluator: importance_weighted
   - /backend: transformers
   - /model: apriel2_0_5b_dev
-  - /problem: apriel_h_1_5_15b
   - /cost_model: uniform_apriel_15b
   - _self_
 

@@ -2,7 +2,6 @@
 # Mock exploration: MRF variants, linear cost model, evidence-based alpha.
 defaults:
   - /command: explore_placements
-  - /problem: cost_max_perf_apriel_15b
   - /cost_model: linear_apriel_15b
   - /evaluators: mock_mrf_variants
   - _self_

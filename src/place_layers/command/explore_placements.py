@@ -33,7 +33,11 @@ from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.backend import BackendConfig
 from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
+from place_layers.problem.layer_placement import (
+    LayerPlacementProblemConfig,
+    MaxPerformanceProblemConfig,
+    MinCostProblemConfig,
+)
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.dataset import ExplorationDataset
@@ -355,16 +359,25 @@ class ExplorePlacementsCommand(BaseCommand):
         logger.info("Exploring objective: %s", obj_name)
         logger.info("Surrogate: %s", self.config.surrogate.surrogate_type)
 
-        problem = self.config.problem.create_problem(
-            evaluator_instances, objective_name=obj_name
-        )
-
         # Determine cost budget and floor for feasibility filtering
         cost_budget: float | None = None
         cost_floor: float | None = None
-        if isinstance(problem.config, MaxPerformanceProblemConfig):
-            cost_budget = problem.config.cost_budget
-            cost_floor = problem.config.cost_floor
+        match self.config.problem:
+            case None:
+                pass  # unconstrained — all allocations feasible
+            case MaxPerformanceProblemConfig() as cfg:
+                cost_budget = cfg.cost_budget
+                cost_floor = cfg.cost_floor
+            case MinCostProblemConfig():
+                raise CommandError(
+                    "cost_min_cost problem is not supported for exploration. "
+                    "Use cost_max_performance or omit the problem config."
+                )
+            case LayerPlacementProblemConfig():
+                raise CommandError(
+                    "layer_placement problem is not supported for exploration. "
+                    "Use cost_max_performance or omit the problem config."
+                )
 
         # Enumerate feasible allocations
         phase_order = cost_model.phase_order
@@ -539,7 +552,10 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    result = await evaluator_instances.evaluate_objectives(
+                        placement, names=[obj_name]
+                    )
+                    score = result[obj_name]
                     assignment_tuple = tuple(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
@@ -650,7 +666,10 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    result = await evaluator_instances.evaluate_objectives(
+                        placement, names=[obj_name]
+                    )
+                    score = result[obj_name]
                     assignment_tuple = tuple(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
@@ -951,7 +970,12 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     evaluators: EvaluatorsConfig = Field(
         description="Evaluator configuration (single or multiple with aggregation)"
     )
-    problem: ProblemConfig = Field(description="Problem configuration")
+    problem: ProblemConfig | None = Field(
+        default=None,
+        description="Problem configuration. Controls cost-budget filtering of the "
+        "allocation space. Only cost_max_performance is supported (provides "
+        "cost_budget/cost_floor). When null, all allocations are feasible.",
+    )
     cost_model: CostModelConfig = Field(
         description="Cost model for allocation enumeration and sampling weights.",
     )

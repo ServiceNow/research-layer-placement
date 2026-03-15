@@ -15,6 +15,7 @@ defaults:
 
 command: explore_placements
 cost_model: ${cost_model}
+problem: null
 
 # Adaptive sampling
 min_samples: 1000       # Initial batch before first quality check
