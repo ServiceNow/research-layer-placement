@@ -378,6 +378,8 @@ class ExplorePlacementsCommand(BaseCommand):
                     "layer_placement problem is not supported for exploration. "
                     "Use cost_max_performance or omit the problem config."
                 )
+            case unreachable:
+                assert_never(unreachable)
 
         # Enumerate feasible allocations
         phase_order = cost_model.phase_order
