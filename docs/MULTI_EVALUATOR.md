@@ -384,23 +384,21 @@ landscape_output/
 
 **Multi-objective pipeline (4 independent mock evaluators):**
 
-All three steps must use the same `evaluators` config so `objective_names` matches across the pipeline. The `_unconstrained` experiment set does this — each uses `/evaluators: mock_mrf_variants`:
+All three steps must use the same `evaluators` config so `objective_names` matches across the pipeline. The canonical mock experiments each use `/evaluators: mock_mrf_variants`:
 
 ```bash
 # Step 1: explore (produces 4 datasets)
-python -m place_layers +experiments=explore_mock_unconstrained
+python -m place_layers +experiments=explore_mock
 
 # Step 2: validate (reads 4 datasets, produces 4 validation results)
-python -m place_layers +experiments=validate_mock_unconstrained \
+python -m place_layers +experiments=validate_mock \
     landscape.explore_output_dir=/path/to/explore/output
 
 # Step 3: plot (reads 4 datasets + 4 validation results, produces 4 figures)
-python -m place_layers +experiments=landscape_mock_unconstrained \
+python -m place_layers +experiments=landscape_mock \
     landscape.explore_output_dir=/path/to/explore/output \
     validation_output_dir=/path/to/validate/output
 ```
-
-The constrained variant (`explore_mock_constrained`) also uses `mock_mrf_variants` and can replace step 1 — just pair it with validate/landscape experiments that also use `mock_mrf_variants`.
 
 **Single-objective pipeline (generative evaluator via REST):**
 
@@ -417,7 +415,7 @@ python -m place_layers +experiments=validate_gsm8k_rest \
     landscape.explore_output_dir=/path/to/explore/output
 
 # Step 3: plot
-python -m place_layers +experiments=placement_landscape \
+python -m place_layers +experiments=landscape_mock \
     +evaluator@evaluators.configs.gsm8k=generative \
     +backend=rest +task=gsm8k +generation=greedy \
     landscape.explore_output_dir=/path/to/explore/output \
@@ -427,7 +425,7 @@ python -m place_layers +experiments=placement_landscape \
 **Plot without validation (skip step 2):**
 
 ```bash
-python -m place_layers +experiments=landscape_mock_unconstrained \
+python -m place_layers +experiments=landscape_mock \
     landscape.explore_output_dir=/path/to/explore/output
 ```
 

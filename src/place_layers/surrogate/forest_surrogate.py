@@ -53,6 +53,7 @@ class ForestSurrogate(BaseSurrogate):
         self._seed = seed
         self._min_samples_leaf = min_samples_leaf
         self._is_fitted = False
+        self._n_samples: int = 0
         self._type_to_int, self._int_to_type = build_type_mapping(mixer_names)
         self._feature_config = feature_config
 
@@ -66,6 +67,7 @@ class ForestSurrogate(BaseSurrogate):
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
         self._model.fit(X, y)
         self._is_fitted = True
+        self._n_samples = len(y)
 
     def predict_mean(self, assignments: Sequence[Sequence[str]]) -> np.ndarray:
         """Fast mean-only prediction using sklearn's optimized predict."""
@@ -155,6 +157,10 @@ class ForestSurrogate(BaseSurrogate):
             rhos.append(rho)
 
         return float(np.mean(np.array(rhos))) if rhos else 0.0
+
+    @property
+    def n_samples(self) -> int:
+        return self._n_samples
 
     def diagnostics(
         self,

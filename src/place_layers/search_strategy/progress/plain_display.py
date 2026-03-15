@@ -472,7 +472,7 @@ class PlainDisplay(PlacementFormatterMixin):
     def on_surrogate_dataset_loaded(self, event: "SurrogateDatasetLoadedEvent") -> None:
         """Handle surrogate dataset loaded event."""
         self._print_line(
-            f"Surrogate: {event.num_samples} samples, exploration rho={event.exploration_rho:.2f}",
+            f"Surrogate: {event.num_samples} samples, exploration quality={event.exploration_quality:.4f}",
             indent=1,
         )
 

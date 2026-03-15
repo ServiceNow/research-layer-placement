@@ -58,6 +58,12 @@ class BaseSurrogate(ABC):
         self, assignment: Sequence[str],
     ) -> float: ...
 
+    @property
+    @abstractmethod
+    def n_samples(self) -> int:
+        """Number of samples used in the most recent fit(). 0 if unfitted."""
+        ...
+
     @abstractmethod
     def diagnostics(
         self,

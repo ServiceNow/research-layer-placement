@@ -1,22 +1,33 @@
 # @package _global_
-# Pipeline step 2: validate landscape for mock MRF variants (matches explore_mock_unconstrained).
+# Mock validation: MRF variants, linear cost, evidence-based alpha.
 #
 # Usage:
-#   python -m place_layers +experiments=validate_mock_unconstrained \
-#       landscape.explore_output_dir=/path/to/explore/output
+#   python -m place_layers +experiments=validate_mock \
+#       landscape.explore_output_dir=outputs/e2e_mock/explore
 defaults:
   - /command: validate_landscape
   - /cost_model: linear_apriel_15b
   - /landscape: apriel_15b
   - /evaluators: mock_mrf_variants
-  - /search_strategy: viterbi_surrogate
+  - /search_strategy: bayesian_viterbi_surrogate
   - _self_
+
+landscape:
+  surrogate:
+    surrogate_type: bayesian_ridge
+    prior_alpha: 1.0
+    prior_a0: 1.0e-6
+    prior_b0: 1.0e-6
+    feature_scaling: counts_only
+    alpha_selection: evidence
 
 search_strategy:
   exploration_dataset_path: null
   num_rounds: 1
   evals_per_round: 20
   candidates_per_model: 200
+  surrogate:
+    alpha_selection: evidence
 
 hydra:
   job_logging:
@@ -24,7 +35,6 @@ hydra:
       console_rich:
         level: INFO
 
-# Zero noise for validation (deterministic scores)
 evaluators:
   configs:
     range1:

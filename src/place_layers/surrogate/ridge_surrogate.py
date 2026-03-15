@@ -59,6 +59,7 @@ class RidgeSurrogate(BaseSurrogate):
         self._intercept: float = 0.0
         self._main_model: RidgeCV | None = None
         self._bootstrap_models: list[Ridge] = []
+        self._n_samples: int = 0
 
     def fit(self, assignments: Sequence[Sequence[str]], y: np.ndarray) -> None:
         """Fit main RidgeCV on full data + bootstrap Ridge models.
@@ -68,6 +69,7 @@ class RidgeSurrogate(BaseSurrogate):
             y: Target values of shape (n_samples,).
         """
         X = encode_batch(assignments, self._type_to_int, self._feature_config)
+        self._n_samples = len(y)
         rng = np.random.RandomState(self._seed)
 
         # Main model: RidgeCV selects best alpha automatically
@@ -167,6 +169,10 @@ class RidgeSurrogate(BaseSurrogate):
             rhos.append(rho)
 
         return float(np.mean(np.array(rhos))) if rhos else 0.0
+
+    @property
+    def n_samples(self) -> int:
+        return self._n_samples
 
     def diagnostics(
         self,
