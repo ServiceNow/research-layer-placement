@@ -28,10 +28,13 @@ from place_layers.landscape import (
     LandscapeConfig,
     LandscapeData,
     ValidationResults,
-    compute_band_edges,
     compute_dp_per_band,
-    load_and_fit_surrogate,
+    find_objective_result,
     objective_result_path,
+)
+from place_layers.surrogate.evaluation_log import (
+    PooledEvaluationData,
+    discover_evaluation_records,
 )
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -94,7 +97,7 @@ class PlacementLandscapeCommand(BaseCommand):
         explore_dir = Path(landscape.explore_output_dir)
 
         for obj_name in self.config.evaluators.objective_names:
-            dataset_path = objective_result_path(
+            dataset_path = find_objective_result(
                 explore_dir, "exploration_results", obj_name,
             )
             await self._generate_landscape(
@@ -122,13 +125,44 @@ class PlacementLandscapeCommand(BaseCommand):
             if val_dir not in supplemental_dirs:
                 supplemental_dirs.append(val_dir)
 
-        dataset, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path),
-            landscape.cost_model,
-            landscape.surrogate,
-            landscape.seed,
-            supplemental_data_dirs=supplemental_dirs,
+        from place_layers.surrogate.dataset import ExplorationDataset
+
+        dataset = ExplorationDataset.load(dataset_path)
+        logger.info(
+            "Loaded dataset: %d samples, %d layers, quality=%.4f",
+            dataset.num_samples,
+            dataset.num_layers,
+            dataset.final_quality,
         )
+        cost_model = landscape.cost_model.create_cost_model()
+
+        # Start with exploration data, merge supplemental .jsonl files
+        pooled = PooledEvaluationData.from_exploration(dataset)
+        supplemental_files = (
+            discover_evaluation_records(
+                supplemental_dirs, dataset.objective_name,
+                num_layers=dataset.num_layers,
+                mixer_names=list(dataset.mixer_names),
+            )
+            if supplemental_dirs else []
+        )
+        if supplemental_files:
+            pooled = pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(pooled.assignments)
+        all_scores = list(pooled.scores)
+
+        surrogate = landscape.surrogate.create_surrogate(
+            mixer_names=list(dataset.mixer_names), seed=landscape.seed,
+            feature_config=dataset.feature_config,
+        )
+        match landscape.surrogate:
+            case BayesianRidgeSurrogateConfig(alpha_selection="evidence"):
+                selected_alpha = surrogate.fit_optimize_alpha(
+                    all_assignments, np.array(all_scores),
+                )
+                logger.info("Type-II ML alpha: %.4g", selected_alpha)
+            case _:
+                surrogate.fit(all_assignments, np.array(all_scores))
         num_layers = dataset.num_layers
 
         # Enumerate ALL allocations (no budget filter)
@@ -165,7 +199,7 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Compute DP-optimal per cost band
-        band_results = compute_dp_per_band(
+        band_results, cost_bin_edges = compute_dp_per_band(
             surrogate, all_allocations, alloc_costs,
             num_layers, baseline_cost, cost_model,
             landscape.num_cost_bins,
@@ -185,9 +219,6 @@ class PlacementLandscapeCommand(BaseCommand):
             )
 
         # Save band data as JSON
-        cost_bin_edges = compute_band_edges(
-            alloc_costs, baseline_cost, landscape.num_cost_bins,
-        )
         landscape_data = LandscapeData(
             objective_name=obj_name,
             num_layers=num_layers,
@@ -199,23 +230,25 @@ class PlacementLandscapeCommand(BaseCommand):
         landscape_data.save(
             objective_result_path(output_dir, "landscape_data", obj_name)
         )
-        logger.info("Saved landscape_data_%s.json", obj_name)
+        logger.info("Saved %s/landscape_data.json", obj_name)
 
         # Load validation data if provided
         validation: ValidationResults | None = None
         if self.config.validation_output_dir is not None:
-            validation_path = objective_result_path(
-                Path(self.config.validation_output_dir),
-                "validation_results",
-                obj_name,
-            )
-            if validation_path.exists():
+            try:
+                validation_path = find_objective_result(
+                    Path(self.config.validation_output_dir),
+                    "validation_results",
+                    obj_name,
+                )
+            except FileNotFoundError:
+                validation_path = None
+            if validation_path is not None:
                 validation = ValidationResults.load(validation_path)
                 logger.info(
-                    "Loaded validation results for %s: %d bands, rho=%.4f",
+                    "Loaded validation results for %s: %d bands",
                     obj_name,
                     len(validation.bands),
-                    validation.summary.spearman_rho,
                 )
                 # Filter out bands with validated cost outside their band range
                 in_band = [
@@ -242,33 +275,18 @@ class PlacementLandscapeCommand(BaseCommand):
                     )
             else:
                 logger.warning(
-                    "Validation results not found for %s at %s, skipping overlay",
+                    "Validation results not found for %s in %s, skipping overlay",
                     obj_name,
-                    validation_path,
+                    self.config.validation_output_dir,
                 )
 
-        # Observed data overlay (always shown) — exploration + supplemental
-        all_obs_allocs: list[dict[str, int]] = list(dataset.allocations)
-        all_obs_scores: list[float] = list(dataset.scores)
-
-        if supplemental_dirs:
-            from place_layers.surrogate.evaluation_log import (
-                load_pooled_data,
-                resolve_supplemental_dirs,
-            )
-
-            supplemental_files = resolve_supplemental_dirs(
-                supplemental_dirs, obj_name,
-            )
-            if supplemental_files:
-                pool = load_pooled_data(supplemental_files, deduplicate=True)
-                all_obs_allocs.extend(pool.allocations)
-                all_obs_scores.extend(pool.scores)
-
+        # Observed data overlay (always shown) — merged exploration + supplemental
+        from collections import Counter
+        observed_allocations = [dict(Counter(a)) for a in all_assignments]
         observed_costs = np.array(
-            [cost_model.allocation_cost(a) for a in all_obs_allocs]
+            [cost_model.allocation_cost(a) for a in observed_allocations]
         )
-        observed_scores = np.array(all_obs_scores)
+        observed_scores = np.array(all_scores)
 
         # Plot
         self._plot(
@@ -365,13 +383,24 @@ class PlacementLandscapeCommand(BaseCommand):
         min_speedup = 1.0
         max_speedup = float(speedups.max())
 
-        # Mixer color map: one color per mixer type by phase_order index
-        tab_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red",
-                       "tab:purple", "tab:brown", "tab:pink", "tab:gray"]
-        mixer_colors = {
-            name: tab_colors[i % len(tab_colors)]
-            for i, name in enumerate(phase_order)
+        # Canonical mixer colors (Tab10 order: FA, SWA, KDA, GDN, Mamba)
+        _MIXER_TAB_COLORS: dict[str, str] = {
+            "attention":      "tab:blue",
+            "sliding_window": "tab:orange",
+            "kda":            "tab:green",
+            "gdn":            "tab:red",
+            "mamba":          "tab:purple",
         }
+        _fallback = ["tab:blue", "tab:orange", "tab:green", "tab:red",
+                     "tab:purple", "tab:brown", "tab:pink", "tab:gray"]
+        mixer_colors = {}
+        fallback_idx = 0
+        for name in phase_order:
+            if name in _MIXER_TAB_COLORS:
+                mixer_colors[name] = _MIXER_TAB_COLORS[name]
+            else:
+                mixer_colors[name] = _fallback[fallback_idx % len(_fallback)]
+                fallback_idx += 1
 
         # GridSpec layout: density plot + colorbar column, layermap below
         fig = plt.figure(figsize=(7, 7), dpi=300)
@@ -415,8 +444,10 @@ class PlacementLandscapeCommand(BaseCommand):
         )
 
         # Save
-        pdf_path = output_dir / f"placement_landscape_{obj_name}.pdf"
-        png_path = output_dir / f"placement_landscape_{obj_name}.png"
+        obj_dir = output_dir / obj_name
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = obj_dir / "placement_landscape.pdf"
+        png_path = obj_dir / "placement_landscape.png"
         fig.savefig(pdf_path, bbox_inches="tight")
         fig.savefig(png_path, bbox_inches="tight")
         plt.close(fig)
@@ -706,7 +737,7 @@ class PlacementLandscapeCommandConfig(BaseCommandConfig):
     validation_output_dir: str | None = Field(
         default=None,
         description="Path to the output directory from validate_landscape "
-        "(contains validation_results_{obj_name}.json files). "
+        "(contains {obj_name}/validation_results.json files). "
         "If provided, overlays real evaluated scores and uses validated placements in layermap.",
     )
 

@@ -55,6 +55,11 @@ class RidgeSurrogateConfig(BaseSurrogateConfig):
         description="K-fold CV folds for surrogate diagnostics (Spearman rho).",
         gt=1,
     )
+    target_rank_correlation: float = Field(
+        description="Stop exploration when Ridge CV Spearman rho reaches this.",
+        gt=0,
+        le=1,
+    )
 
     def create_surrogate(
         self,
@@ -80,6 +85,11 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
     prior_alpha: float = Field(
         description="Ridge regularization / prior precision.",
         gt=0,
+    )
+    alpha_selection: Literal["fixed", "evidence"] = Field(
+        description="Alpha selection mode: 'fixed' uses prior_alpha as-is, "
+        "'evidence' optimizes alpha via Type-II ML (grid search on log "
+        "marginal likelihood) on the initial fit.",
     )
     prior_a0: float = Field(
         description="InvGamma shape for noise variance prior.",

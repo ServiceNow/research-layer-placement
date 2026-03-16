@@ -26,10 +26,11 @@ from place_layers.landscape import (
     ValidationResults,
     ValidationSummary,
     compute_band_edges,
+    compute_bin_assignments,
     compute_dp_per_band,
-    load_and_fit_surrogate,
     objective_result_path,
 )
+from place_layers.surrogate.evaluation_log import PooledEvaluationData
 from place_layers.core.types import LayerPlacement
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.cost_model.linear_cost_model import LinearCostModelConfig
@@ -134,17 +135,12 @@ async def _build_exploration_dataset(
 
     assignments: list[tuple[str, ...]] = []
     scores: list[float] = []
-    allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
         scores.append(score)
-        alloc: dict[str, int] = {}
-        for m in assignment:
-            alloc[m] = alloc.get(m, 0) + 1
-        allocations.append(alloc)
 
     rho = ridge_cv_rho(
         assignments=assignments,
@@ -158,16 +154,15 @@ async def _build_exploration_dataset(
     return ExplorationDataset(
         assignments=assignments,
         scores=scores,
-        allocations=allocations,
         objective_name=objective_name,
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
         feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        rho_history=[rho],
+        quality_history=[rho],
         samples_at_check=[num_samples],
-        final_rho=rho,
+        final_quality=rho,
     )
 
 
@@ -175,6 +170,16 @@ def _save_dataset(dataset: ExplorationDataset, tmp_path: Path) -> Path:
     path = tmp_path / "exploration_results.json"
     path.write_text(dataset.model_dump_json(indent=2))
     return path
+
+
+def _pool(dataset: ExplorationDataset) -> PooledEvaluationData:
+    """Convert an ExplorationDataset to PooledEvaluationData (no supplemental)."""
+    return PooledEvaluationData(
+        assignments=list(dataset.assignments),
+        scores=list(dataset.scores),
+        num_layers=dataset.num_layers,
+        mixer_names=dataset.mixer_names,
+    )
 
 
 # =============================================================================
@@ -185,29 +190,35 @@ def _save_dataset(dataset: ExplorationDataset, tmp_path: Path) -> Path:
 class TestLandscapeHelpers:
     """Test shared helper functions from landscape_helpers."""
 
-    async def test_load_and_fit_surrogate(self, tmp_path: Path) -> None:
-        """load_and_fit_surrogate returns fitted surrogate."""
+    async def test_collect_and_fit_surrogate(self, tmp_path: Path) -> None:
+        """Pool dataset + create/fit surrogate returns fitted surrogate."""
         evaluator = _make_evaluator()
         dataset = await _build_exploration_dataset(evaluator, num_samples=100)
-        dataset_path = _save_dataset(dataset, tmp_path)
+        _save_dataset(dataset, tmp_path)
 
-        loaded_dataset, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        pooled = _pool(dataset)
+        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        surrogate = config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
         )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
 
-        assert loaded_dataset.num_samples == 100
-        assert loaded_dataset.num_layers == _NUM_LAYERS
+        assert pooled.num_samples <= 100
+        assert pooled.num_layers == _NUM_LAYERS
         # Surrogate should be able to predict
         preds = surrogate.predict_mean(dataset.assignments[:5])
         assert len(preds) == 5
 
-    async def test_load_and_fit_surrogate_with_supplemental(self, tmp_path: Path) -> None:
-        """load_and_fit_surrogate pools supplemental data from directories."""
+    async def test_pool_with_supplemental_dirs(self, tmp_path: Path) -> None:
+        """from_jsonl + merge pools supplemental data from directories."""
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationLogMeta,
             EvaluationRecord,
+            PooledEvaluationData,
             append_record,
+            discover_evaluation_records,
             write_meta,
         )
 
@@ -216,19 +227,17 @@ class TestLandscapeHelpers:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         # Write supplemental JSONL in a subdirectory using standard naming
-        supplemental_dir = tmp_path / "supplemental"
-        supplemental_dir.mkdir()
-        jsonl_path = supplemental_dir / "evaluations_weighted_average.jsonl"
+        supplemental_dir = tmp_path / "supplemental" / "weighted_average"
+        supplemental_dir.mkdir(parents=True)
+        jsonl_path = supplemental_dir / EVALUATION_RECORDS_FILENAME
         extra_records = [
             EvaluationRecord(
                 assignment=("m0",) * 6 + ("m1",) * 6,
                 score=0.42,
-                allocation={"m0": 6, "m1": 6},
             ),
             EvaluationRecord(
                 assignment=("m1",) * 6 + ("m0",) * 6,
                 score=0.38,
-                allocation={"m0": 6, "m1": 6},
             ),
         ]
         with jsonl_path.open("w") as f:
@@ -246,26 +255,38 @@ class TestLandscapeHelpers:
         )
         write_meta(jsonl_path, meta)
 
-        # Fit WITHOUT supplemental
-        ds_base, surr_base, _ = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        # Base: exploration data only
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        base_pooled = PooledEvaluationData.from_exploration(dataset)
+        base_assignments = list(base_pooled.assignments)
+        base_scores = list(base_pooled.scores)
+        surr_base = ridge_config.create_surrogate(
+            mixer_names=list(dataset.mixer_names), seed=42,
+            feature_config=dataset.feature_config,
         )
+        surr_base.fit(base_assignments, np.array(base_scores))
 
-        # Fit WITH supplemental dirs
-        ds_pooled, surr_pooled, _ = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
-            supplemental_data_dirs=[str(supplemental_dir)],
+        # With supplemental: exploration + discovered JSONL files
+        supplemental_files = discover_evaluation_records(
+            [tmp_path / "supplemental"], objective_name=dataset.objective_name,
         )
+        pooled = PooledEvaluationData.from_exploration(dataset)
+        pooled = pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(pooled.assignments)
+        all_scores = list(pooled.scores)
 
-        # Dataset object is the same (only exploration data)
-        assert ds_base.num_samples == ds_pooled.num_samples == 80
-        # But surrogate was fitted on more data — predictions may differ
+        surr_pooled = ridge_config.create_surrogate(
+            mixer_names=list(dataset.mixer_names), seed=42,
+            feature_config=dataset.feature_config,
+        )
+        surr_pooled.fit(all_assignments, np.array(all_scores))
+
+        # Merged with supplemental has more samples than base
+        assert len(all_assignments) > len(base_assignments)
+        # Both surrogates produce valid predictions
         test_assignment = ("m0",) * 6 + ("m1",) * 6
         pred_base = surr_base.predict_mean_one(test_assignment)
         pred_pooled = surr_pooled.predict_mean_one(test_assignment)
-        # Both should produce valid floats (not NaN)
         assert np.isfinite(pred_base)
         assert np.isfinite(pred_pooled)
 
@@ -285,16 +306,37 @@ class TestLandscapeHelpers:
         # Should be sorted ascending
         assert np.all(np.diff(edges) >= 0)
 
+    async def test_compute_bin_assignments(self) -> None:
+        """Bin assignment should clip to [0, num_cost_bins-1]."""
+        num_cost_bins = 5
+        band_edges = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])  # 6 edges for 5 bins
+        alloc_costs = np.array([0.5, 1.5, 2.5, 4.5, 7.0])
+
+        bins = compute_bin_assignments(alloc_costs, band_edges, num_cost_bins)
+
+        assert len(bins) == len(alloc_costs)
+        # All bins should be in [0, num_cost_bins - 1]
+        assert np.all(bins >= 0)
+        assert np.all(bins <= num_cost_bins - 1)
+        # Below first edge -> clipped to 0
+        assert bins[0] == 0
+        # Above last edge -> clipped to num_cost_bins - 1
+        assert bins[4] == num_cost_bins - 1
+
     async def test_compute_dp_per_band(self, tmp_path: Path) -> None:
         """DP per band should return sorted BandResult list."""
         evaluator = _make_evaluator()
         dataset = await _build_exploration_dataset(evaluator, num_samples=100)
-        dataset_path = _save_dataset(dataset, tmp_path)
+        _save_dataset(dataset, tmp_path)
 
-        _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        pooled = _pool(dataset)
+        config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        surrogate = config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
         )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        cost_model = _COST_MODEL_CONFIG.create_cost_model()
 
         all_allocs = enumerate_feasible_allocations(
             cost_model, _NUM_LAYERS, cost_budget=None
@@ -304,7 +346,7 @@ class TestLandscapeHelpers:
         )
         baseline_cost = cost_model.max_cost(_NUM_LAYERS)
 
-        bands = compute_dp_per_band(
+        bands, _edges = compute_dp_per_band(
             surrogate, all_allocs, alloc_costs,
             _NUM_LAYERS, baseline_cost, cost_model,
             num_cost_bins=10,
@@ -344,10 +386,6 @@ class TestPydanticModels:
                     band_index=0,
                     cost_low=6.0,
                     cost_high=7.0,
-                    surrogate_dp=PlacementResult(
-                        cost=6.5, score=0.3,
-                        assignments=("m0",) * 6 + ("m1",) * 6,
-                    ),
                     validated=PlacementResult(
                         cost=6.5, score=0.28,
                         assignments=("m0",) * 6 + ("m1",) * 6,
@@ -356,8 +394,6 @@ class TestPydanticModels:
                 ),
             ],
             summary=ValidationSummary(
-                spearman_rho=0.95,
-                mean_residual=-0.02,
                 total_bands=1,
                 total_evaluations=20,
             ),
@@ -371,9 +407,8 @@ class TestPydanticModels:
         assert loaded.num_layers == 12
         assert loaded.baseline_cost == 12.0
         assert len(loaded.bands) == 1
-        assert loaded.bands[0].surrogate_dp.score == 0.3
         assert loaded.bands[0].validated.score == 0.28
-        assert loaded.summary.spearman_rho == 0.95
+        assert loaded.summary.total_bands == 1
 
     def test_validation_results_backward_compat(self, tmp_path: Path) -> None:
         """ValidationResults without objective_name loads with default ""."""
@@ -384,8 +419,6 @@ class TestPydanticModels:
             cost_bin_edges=[6.0, 7.0, 8.0],
             bands=[],
             summary=ValidationSummary(
-                spearman_rho=0.0,
-                mean_residual=0.0,
                 total_bands=0,
                 total_evaluations=0,
             ),
@@ -394,6 +427,46 @@ class TestPydanticModels:
         results.save(path)
         loaded = ValidationResults.load(path)
         assert loaded.objective_name == ""
+
+    def test_validation_results_backward_compat_old_fields(self) -> None:
+        """Old JSON with surrogate_dp/spearman_rho fields still loads OK."""
+        old_json = json.dumps({
+            "objective_name": "gsm8k",
+            "num_layers": 12,
+            "baseline_cost": 12.0,
+            "num_cost_bins": 10,
+            "cost_bin_edges": [6.0, 7.0, 8.0],
+            "bands": [
+                {
+                    "band_index": 0,
+                    "cost_low": 6.0,
+                    "cost_high": 7.0,
+                    "surrogate_dp": {
+                        "cost": 6.5,
+                        "score": 0.3,
+                        "assignments": ["m0"] * 6 + ["m1"] * 6,
+                    },
+                    "validated": {
+                        "cost": 6.5,
+                        "score": 0.28,
+                        "assignments": ["m0"] * 6 + ["m1"] * 6,
+                    },
+                    "total_evaluations": 20,
+                },
+            ],
+            "summary": {
+                "spearman_rho": 0.95,
+                "mean_residual": -0.02,
+                "total_bands": 1,
+                "total_evaluations": 20,
+            },
+        })
+        loaded = ValidationResults.model_validate_json(old_json)
+        assert loaded.objective_name == "gsm8k"
+        assert len(loaded.bands) == 1
+        assert loaded.bands[0].validated.score == 0.28
+        assert loaded.summary.total_bands == 1
+        assert loaded.summary.total_evaluations == 20
 
     def test_landscape_data_roundtrip(self, tmp_path: Path) -> None:
         """LandscapeData should serialize and deserialize correctly."""
@@ -454,10 +527,14 @@ class TestValidateLandscapePipeline:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         # 1. Fit surrogate, compute bands
-        _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        pooled = _pool(dataset)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        surrogate = ridge_config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
         )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        cost_model = _COST_MODEL_CONFIG.create_cost_model()
 
         all_allocs = enumerate_feasible_allocations(
             cost_model, _NUM_LAYERS, cost_budget=None
@@ -469,12 +546,11 @@ class TestValidateLandscapePipeline:
 
         # Use fewer bins for faster test
         num_cost_bins = 5
-        band_results = compute_dp_per_band(
+        band_results, band_edges = compute_dp_per_band(
             surrogate, all_allocs, alloc_costs,
             _NUM_LAYERS, baseline_cost, cost_model,
             num_cost_bins,
         )
-        band_edges = compute_band_edges(alloc_costs, baseline_cost, num_cost_bins)
 
         assert len(band_results) > 0
 
@@ -507,6 +583,7 @@ class TestValidateLandscapePipeline:
                         n_bootstraps=50,
                         ei_xi=0.01,
                         cv_folds=3,
+                        target_rank_correlation=0.95,
                     ),
                     seed=42,
                 )
@@ -518,11 +595,6 @@ class TestValidateLandscapePipeline:
                         band_index=band.band_index,
                         cost_low=band.cost_low,
                         cost_high=band.cost_high,
-                        surrogate_dp=PlacementResult(
-                            cost=band.cost,
-                            score=band.score,
-                            assignments=band.assignments,
-                        ),
                         validated=PlacementResult(
                             cost=result.final_cost,
                             score=result.best_score,
@@ -537,27 +609,9 @@ class TestValidateLandscapePipeline:
         for vb in validated_bands:
             assert vb.total_evaluations > 0
             assert len(vb.validated.assignments) == _NUM_LAYERS
-            assert len(vb.surrogate_dp.assignments) == _NUM_LAYERS
-            # Surrogate DP cost should be within its band
-            assert vb.surrogate_dp.cost <= vb.cost_high + 1e-9
-            assert vb.surrogate_dp.cost >= vb.cost_low - 1e-9
 
         # 4. Save and reload
-        from scipy.stats import spearmanr
-
-        surrogate_scores = [b.surrogate_dp.score for b in validated_bands]
-        real_scores = [b.validated.score for b in validated_bands]
-        if len(validated_bands) >= 2:
-            corr_result = spearmanr(surrogate_scores, real_scores)
-            rho = float(corr_result.statistic)
-            if np.isnan(rho):
-                rho = 0.0
-        else:
-            rho = 0.0
-
         total_evals = sum(b.total_evaluations for b in validated_bands)
-        residuals = [r - s for s, r in zip(surrogate_scores, real_scores)]
-        mean_residual = float(np.mean(residuals))
 
         results = ValidationResults(
             num_layers=_NUM_LAYERS,
@@ -566,8 +620,6 @@ class TestValidateLandscapePipeline:
             cost_bin_edges=band_edges.tolist(),
             bands=validated_bands,
             summary=ValidationSummary(
-                spearman_rho=rho,
-                mean_residual=mean_residual,
                 total_bands=len(validated_bands),
                 total_evaluations=total_evals,
             ),
@@ -588,10 +640,14 @@ class TestValidateLandscapePipeline:
         dataset_path = _save_dataset(dataset, tmp_path)
 
         # 1. Fit surrogate, compute bands
-        _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5), seed=42,
+        pooled = _pool(dataset)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        surrogate = ridge_config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
         )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        cost_model = _COST_MODEL_CONFIG.create_cost_model()
 
         all_allocs = enumerate_feasible_allocations(
             cost_model, _NUM_LAYERS, cost_budget=None
@@ -602,7 +658,7 @@ class TestValidateLandscapePipeline:
         baseline_cost = cost_model.max_cost(_NUM_LAYERS)
 
         num_cost_bins = 5
-        band_results = compute_dp_per_band(
+        band_results, _band_edges = compute_dp_per_band(
             surrogate, all_allocs, alloc_costs,
             _NUM_LAYERS, baseline_cost, cost_model,
             num_cost_bins,
@@ -614,13 +670,6 @@ class TestValidateLandscapePipeline:
         band = band_results[0]
         band_dir = bands_dir / f"band_{band.band_index:03d}"
         band_dir.mkdir(parents=True)
-
-        surrogate_dp = PlacementResult(
-            cost=band.cost, score=band.score, assignments=band.assignments,
-        )
-        (band_dir / "surrogate_dp.json").write_text(
-            surrogate_dp.model_dump_json(indent=2)
-        )
 
         async with evaluator:
             problem_config = MaxPerformanceProblemConfig(
@@ -645,6 +694,7 @@ class TestValidateLandscapePipeline:
                     n_bootstraps=50,
                     ei_xi=0.01,
                     cv_folds=3,
+                    target_rank_correlation=0.95,
                 ),
                 seed=42,
             )
@@ -656,9 +706,6 @@ class TestValidateLandscapePipeline:
 
         # 3. Now simulate resume: detect the pre-saved band
         loaded_result = json.loads(result_path.read_text())
-        loaded_dp = PlacementResult.model_validate_json(
-            (band_dir / "surrogate_dp.json").read_text()
-        )
 
         loaded_score = loaded_result["best_score"]
 
@@ -666,7 +713,6 @@ class TestValidateLandscapePipeline:
             band_index=band.band_index,
             cost_low=band.cost_low,
             cost_high=band.cost_high,
-            surrogate_dp=loaded_dp,
             validated=PlacementResult(
                 cost=loaded_result["final_cost"],
                 score=loaded_score,
@@ -682,8 +728,6 @@ class TestValidateLandscapePipeline:
         expected_score = result.best_score
         assert resumed_band.validated.score == expected_score
         assert resumed_band.validated.cost == result.final_cost
-        assert resumed_band.surrogate_dp.cost == band.cost
-        assert resumed_band.surrogate_dp.score == band.score
 
     async def test_per_band_validation_bayesian(self, tmp_path: Path) -> None:
         """Run per-band ViterbiBayesianSurrogateSearch and verify results."""
@@ -698,13 +742,16 @@ class TestValidateLandscapePipeline:
             prior_alpha=1.0,
             prior_a0=1e-6,
             prior_b0=1e-6,
-
+            alpha_selection="fixed",
             feature_scaling="none",
         )
-        _, surrogate, cost_model = load_and_fit_surrogate(
-            str(dataset_path), _COST_MODEL_CONFIG,
-            bayesian_config, seed=42,
+        pooled = _pool(dataset)
+        surrogate = bayesian_config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
         )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        cost_model = _COST_MODEL_CONFIG.create_cost_model()
 
         all_allocs = enumerate_feasible_allocations(
             cost_model, _NUM_LAYERS, cost_budget=None
@@ -715,12 +762,11 @@ class TestValidateLandscapePipeline:
         baseline_cost = cost_model.max_cost(_NUM_LAYERS)
 
         num_cost_bins = 5
-        band_results = compute_dp_per_band(
+        band_results, band_edges = compute_dp_per_band(
             surrogate, all_allocs, alloc_costs,
             _NUM_LAYERS, baseline_cost, cost_model,
             num_cost_bins,
         )
-        band_edges = compute_band_edges(alloc_costs, baseline_cost, num_cost_bins)
 
         assert len(band_results) > 0
 
@@ -753,7 +799,7 @@ class TestValidateLandscapePipeline:
                         prior_alpha=1.0,
                         prior_a0=1e-6,
                         prior_b0=1e-6,
-            
+                        alpha_selection="fixed",
                         feature_scaling="none",
                     ),
                     risk_buckets=[
@@ -770,11 +816,6 @@ class TestValidateLandscapePipeline:
                         band_index=band.band_index,
                         cost_low=band.cost_low,
                         cost_high=band.cost_high,
-                        surrogate_dp=PlacementResult(
-                            cost=band.cost,
-                            score=band.score,
-                            assignments=band.assignments,
-                        ),
                         validated=PlacementResult(
                             cost=result.final_cost,
                             score=result.best_score,
@@ -789,7 +830,6 @@ class TestValidateLandscapePipeline:
         for vb in validated_bands:
             assert vb.total_evaluations > 0
             assert len(vb.validated.assignments) == _NUM_LAYERS
-            assert len(vb.surrogate_dp.assignments) == _NUM_LAYERS
 
 
 # =============================================================================
@@ -812,7 +852,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
         )
         assert cfg.seed == 42
@@ -826,7 +866,7 @@ class TestLandscapeConfig:
             explore_output_dir="/tmp/test_dir",
             seed=42,
             num_cost_bins=80,
-            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+            surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
         )
         with pytest.raises(Exception):
@@ -844,21 +884,21 @@ class TestObjectiveResultPath:
     def test_produces_correct_path(self) -> None:
         """objective_result_path produces expected filename."""
         p = objective_result_path(Path("/out"), "exploration_results", "gsm8k")
-        assert p == Path("/out/exploration_results_gsm8k.json")
+        assert p == Path("/out/gsm8k/exploration_results.json")
 
     def test_different_prefixes(self) -> None:
         """Works with different prefixes."""
         p1 = objective_result_path(Path("/d"), "exploration_results", "mmlu")
         p2 = objective_result_path(Path("/d"), "validation_results", "mmlu")
         p3 = objective_result_path(Path("/d"), "landscape_data", "mmlu")
-        assert p1 == Path("/d/exploration_results_mmlu.json")
-        assert p2 == Path("/d/validation_results_mmlu.json")
-        assert p3 == Path("/d/landscape_data_mmlu.json")
+        assert p1 == Path("/d/mmlu/exploration_results.json")
+        assert p2 == Path("/d/mmlu/validation_results.json")
+        assert p3 == Path("/d/mmlu/landscape_data.json")
 
     def test_objective_name_with_special_chars(self) -> None:
-        """Objective names are used as-is in the filename."""
+        """Objective names are used as-is in the directory."""
         p = objective_result_path(Path("/d"), "exploration_results", "weighted_average")
-        assert p == Path("/d/exploration_results_weighted_average.json")
+        assert p == Path("/d/weighted_average/exploration_results.json")
 
 
 # =============================================================================
@@ -956,6 +996,7 @@ class TestMultiObjectiveValidation:
                 evaluator, num_samples=50, objective_name=obj_name,
             )
             path = objective_result_path(explore_dir, "exploration_results", obj_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(dataset.model_dump_json(indent=2))
 
         # Verify both files exist and can be loaded
@@ -980,8 +1021,6 @@ class TestMultiObjectiveValidation:
                 cost_bin_edges=[6.0, 8.0, 10.0, 12.0],
                 bands=[],
                 summary=ValidationSummary(
-                    spearman_rho=0.9,
-                    mean_residual=0.01,
                     total_bands=0,
                     total_evaluations=0,
                 ),
@@ -995,3 +1034,256 @@ class TestMultiObjectiveValidation:
             assert path.exists()
             loaded = ValidationResults.load(path)
             assert loaded.objective_name == obj_name
+
+
+# =============================================================================
+# Tests: incremental validation results
+# =============================================================================
+
+
+class TestIncrementalValidationResults:
+    """Test incremental saving of validation results."""
+
+    async def test_incremental_validation_results_written(self, tmp_path: Path) -> None:
+        """validation_results_*.json should be written after each band."""
+        from place_layers.command.validate_landscape import ValidateLandscapeCommand
+
+        evaluator = _make_evaluator(noise_sigma=0.0)
+        dataset = await _build_exploration_dataset(evaluator, num_samples=100)
+        dataset_path = _save_dataset(dataset, tmp_path)
+
+        pooled = _pool(dataset)
+        ridge_config = RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)
+        surrogate = ridge_config.create_surrogate(
+            mixer_names=pooled.mixer_names, seed=42,
+            feature_config=dataset.feature_config,
+        )
+        surrogate.fit(pooled.assignments, np.array(pooled.scores))
+        cost_model = _COST_MODEL_CONFIG.create_cost_model()
+
+        all_allocs = enumerate_feasible_allocations(
+            cost_model, _NUM_LAYERS, cost_budget=None
+        )
+        alloc_costs = np.array(
+            [cost_model.allocation_cost(a) for a in all_allocs]
+        )
+        baseline_cost = cost_model.max_cost(_NUM_LAYERS)
+
+        num_cost_bins = 5
+        band_results, band_edges = compute_dp_per_band(
+            surrogate, all_allocs, alloc_costs,
+            _NUM_LAYERS, baseline_cost, cost_model, num_cost_bins,
+        )
+
+        # Validate 3 bands and check the results file after each
+        bands_to_validate = band_results[:3]
+        validated_bands: list[BandValidationResult] = []
+        total_evals = 0
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        results_path = objective_result_path(
+            output_dir, "validation_results", "weighted_average",
+        )
+
+        async with evaluator:
+            for i, band in enumerate(bands_to_validate):
+                problem_config = MaxPerformanceProblemConfig(
+                    problem_type="cost_max_performance",
+                    cost_model=_COST_MODEL_CONFIG,
+                    cost_budget=band.cost_high,
+                    cost_floor=band.cost_low,
+                )
+                problem = CostConstrainedProblem(
+                    evaluators=wrap_evaluator(evaluator), config=problem_config,
+                    objective_name="weighted_average",
+                )
+
+                search_config = ViterbiSurrogateSearchConfig(
+                    strategy_type="viterbi_surrogate",
+                    exploration_dataset_path=str(dataset_path),
+                    evaluation_log_path=None,
+                    num_rounds=1,
+                    evals_per_round=10,
+                    candidates_per_model=50,
+                    surrogate=dict(
+                        surrogate_type="ridge",
+                        n_bootstraps=50,
+                        ei_xi=0.01,
+                        cv_folds=3,
+                        target_rank_correlation=0.95,
+                    ),
+                    seed=42,
+                )
+                strategy = search_config.create_search_strategy()
+                result = await strategy.search(problem)
+
+                total_evals += result.total_evaluations
+                validated_bands.append(
+                    BandValidationResult(
+                        band_index=band.band_index,
+                        cost_low=band.cost_low,
+                        cost_high=band.cost_high,
+                        validated=PlacementResult(
+                            cost=result.final_cost,
+                            score=result.best_score,
+                            assignments=result.best_parameters.assignments,
+                        ),
+                        total_evaluations=result.total_evaluations,
+                    )
+                )
+
+                # Use the helper to save incrementally
+                ValidateLandscapeCommand._save_validation_results(
+                    obj_name="weighted_average",
+                    validated_bands=validated_bands,
+                    num_layers=_NUM_LAYERS,
+                    baseline_cost=baseline_cost,
+                    num_cost_bins=num_cost_bins,
+                    band_edges=band_edges,
+                    total_evals=total_evals,
+                    output_dir=output_dir,
+                )
+
+                # Verify file exists after this band
+                assert results_path.exists(), (
+                    f"validation_results should exist after band {i}"
+                )
+                loaded = ValidationResults.load(results_path)
+                assert len(loaded.bands) == i + 1
+                assert loaded.summary.total_evaluations == total_evals
+
+        # Final file should have all bands
+        final = ValidationResults.load(results_path)
+        assert len(final.bands) == 3
+
+
+# =============================================================================
+# Tests: cross-band data loading
+# =============================================================================
+
+
+class TestCrossBandDataLoading:
+    """Test _load_completed_band_records and cross-band accumulation."""
+
+    def test_load_completed_band_records(self, tmp_path: Path) -> None:
+        """_load_completed_band_records returns paths and record count."""
+        from place_layers.command.validate_landscape import _load_completed_band_records
+        from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
+            EvaluationRecord,
+            append_record,
+            load_records,
+        )
+
+        bands_dir = tmp_path / "bands"
+
+        # Create band 0 with 2 strategy-only records
+        band_dir = bands_dir / "band_000"
+        band_dir.mkdir(parents=True)
+        eval_log = band_dir / EVALUATION_RECORDS_FILENAME
+        with eval_log.open("w") as f:
+            for i in range(2):
+                append_record(f, EvaluationRecord(
+                    assignment=("m1",) * 6 + ("m0",) * 6,
+                    score=10.0 + i,
+                ))
+        result_path = band_dir / "result.json"
+        result_path.write_text('{"total_evaluations": 2}')
+
+        # Load paths for band 0
+        paths = _load_completed_band_records(bands_dir, [0])
+
+        assert len(paths) == 1
+        records = load_records(paths[0])
+        assert records[0].score == 10.0
+        assert records[1].score == 11.0
+
+    def test_load_completed_band_records_skips_missing(self, tmp_path: Path) -> None:
+        """_load_completed_band_records skips bands without result.json."""
+        from place_layers.command.validate_landscape import _load_completed_band_records
+
+        bands_dir = tmp_path / "bands"
+        bands_dir.mkdir()
+
+        # No band dirs exist
+        paths = _load_completed_band_records(bands_dir, [0, 1, 2])
+        assert paths == []
+
+    def test_cross_band_seed_paths(self, tmp_path: Path) -> None:
+        """Prior band eval logs become seed_data_paths for the next band."""
+        from place_layers.command.validate_landscape import _load_completed_band_records
+        from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
+            EvaluationRecord,
+            append_record,
+        )
+
+        bands_dir = tmp_path / "bands"
+
+        # Create band 0 with only strategy records
+        band0_dir = bands_dir / "band_000"
+        band0_dir.mkdir(parents=True)
+        eval_log = band0_dir / EVALUATION_RECORDS_FILENAME
+        with eval_log.open("w") as f:
+            append_record(f, EvaluationRecord(
+                assignment=("m0",) * 6 + ("m1",) * 6,
+                score=0.5,
+            ))
+            append_record(f, EvaluationRecord(
+                assignment=("m1",) * 6 + ("m0",) * 6,
+                score=0.6,
+            ))
+        (band0_dir / "result.json").write_text('{"total_evaluations": 2}')
+
+        # Loading prior records for band 1
+        paths = _load_completed_band_records(bands_dir, [0])
+
+        assert len(paths) == 1
+
+    def test_multi_band_seed_paths(self, tmp_path: Path) -> None:
+        """Multiple completed bands produce multiple seed paths."""
+        from place_layers.command.validate_landscape import _load_completed_band_records
+        from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
+            EvaluationRecord,
+            append_record,
+            load_records,
+        )
+
+        bands_dir = tmp_path / "bands"
+
+        # Create band 0 with 2 strategy records
+        band0_dir = bands_dir / "band_000"
+        band0_dir.mkdir(parents=True)
+        eval_log0 = band0_dir / EVALUATION_RECORDS_FILENAME
+        with eval_log0.open("w") as f:
+            for i in range(2):
+                append_record(f, EvaluationRecord(
+                    assignment=("m0",) * 6 + ("m1",) * 6,
+                    score=2.0 + i,
+                ))
+        (band0_dir / "result.json").write_text('{"total_evaluations": 2}')
+
+        # Create band 1 with 3 strategy records
+        band1_dir = bands_dir / "band_001"
+        band1_dir.mkdir(parents=True)
+        eval_log1 = band1_dir / EVALUATION_RECORDS_FILENAME
+        with eval_log1.open("w") as f:
+            for i in range(3):
+                append_record(f, EvaluationRecord(
+                    assignment=("m1",) * 12,
+                    score=5.0 + i,
+                ))
+        (band1_dir / "result.json").write_text('{"total_evaluations": 3}')
+
+        # Load both bands
+        paths = _load_completed_band_records(bands_dir, [0, 1])
+
+        assert len(paths) == 2
+        # Verify records from each band
+        records0 = load_records(paths[0])
+        records1 = load_records(paths[1])
+        assert len(records0) == 2
+        assert len(records1) == 3
+        assert records0[0].score == 2.0
+        assert records1[0].score == 5.0

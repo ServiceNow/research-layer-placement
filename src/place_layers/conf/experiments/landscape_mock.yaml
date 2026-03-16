@@ -1,0 +1,32 @@
+# @package _global_
+# Mock landscape plot: MRF variants, linear cost, evidence-based alpha.
+#
+# Usage:
+#   python -m place_layers +experiments=landscape_mock \
+#       landscape.explore_output_dir=outputs/e2e_mock/explore
+#
+# With validation overlay:
+#   python -m place_layers +experiments=landscape_mock \
+#       landscape.explore_output_dir=outputs/e2e_mock/explore \
+#       validation_output_dir=outputs/e2e_mock/validate
+defaults:
+  - /command: placement_landscape
+  - /cost_model: linear_apriel_15b
+  - /landscape: apriel_15b
+  - /evaluators: mock_mrf_variants
+  - _self_
+
+landscape:
+  surrogate:
+    surrogate_type: bayesian_ridge
+    prior_alpha: 1.0
+    prior_a0: 1.0e-6
+    prior_b0: 1.0e-6
+    feature_scaling: counts_only
+    alpha_selection: evidence
+
+hydra:
+  job_logging:
+    handlers:
+      console_rich:
+        level: INFO

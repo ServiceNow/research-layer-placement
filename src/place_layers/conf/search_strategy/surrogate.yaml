@@ -28,6 +28,7 @@ surrogate:
   n_bootstraps: 50
   ei_xi: 0.01
   cv_folds: 5
+  target_rank_correlation: 0.95
 
 # Risk buckets: null for ridge, required list for bayesian_ridge
 risk_buckets: null

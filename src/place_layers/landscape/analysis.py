@@ -9,105 +9,15 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
-from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
-from place_layers.cost_model import CostModelConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.landscape.models import BandResult
 from place_layers.mrf.solver import ExactMRFSolver, ExactSolution
 from place_layers.surrogate.base_surrogate import BaseSurrogate
-from place_layers.surrogate.config import SurrogateConfig
-from place_layers.surrogate.dataset import ExplorationDataset
 
 logger = logging.getLogger(__name__)
-
-
-def load_and_fit_surrogate(
-    exploration_dataset_path: str,
-    cost_model_config: CostModelConfig,
-    surrogate_config: SurrogateConfig,
-    seed: int,
-    *,
-    supplemental_data_dirs: Sequence[str | Path] = (),
-) -> tuple[ExplorationDataset, BaseSurrogate, BaseCostModel]:
-    """Load dataset, create surrogate from config, fit to data.
-
-    Uses the dataset's stored ``feature_config`` directly (the exploration
-    phase already selected the best features for this data).
-
-    Args:
-        exploration_dataset_path: Path to exploration_results.json.
-        cost_model_config: Cost model configuration.
-        surrogate_config: Surrogate model configuration (Ridge or Bayesian Ridge).
-        seed: Random seed for surrogate fitting.
-        supplemental_data_dirs: Directories containing additional evaluation
-            data. Each is searched per-objective using
-            ``resolve_supplemental_dirs()``.
-
-    Returns:
-        (dataset, surrogate, cost_model) tuple.
-    """
-    dataset = ExplorationDataset.load(Path(exploration_dataset_path))
-    logger.info(
-        "Loaded dataset: %d samples, %d layers, rho=%.4f",
-        dataset.num_samples,
-        dataset.num_layers,
-        dataset.final_rho,
-    )
-
-    cost_model = cost_model_config.create_cost_model()
-
-    feature_config = dataset.feature_config
-    logger.info(
-        "Feature config: order=%d, range=%d, counts=%s",
-        feature_config.max_order,
-        feature_config.pairwise_max_range,
-        feature_config.allocation_counts,
-    )
-
-    # Pool supplemental data into training set
-    all_assignments: list[tuple[str, ...]] = list(dataset.assignments)
-    all_scores: list[float] = list(dataset.scores)
-
-    if supplemental_data_dirs:
-        from place_layers.surrogate.evaluation_log import (
-            load_pooled_data,
-            resolve_supplemental_dirs,
-        )
-
-        supplemental_files = resolve_supplemental_dirs(
-            supplemental_data_dirs, dataset.objective_name,
-        )
-        if supplemental_files:
-            supplemental = load_pooled_data(supplemental_files, deduplicate=True)
-            existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-            n_new = 0
-            for a, s in zip(supplemental.assignments, supplemental.scores):
-                if (a, s) not in existing:
-                    all_assignments.append(a)
-                    all_scores.append(s)
-                    existing.add((a, s))
-                    n_new += 1
-            logger.info(
-                "Pooled %d supplemental samples (%d new after dedup, total=%d)",
-                supplemental.num_samples,
-                n_new,
-                len(all_assignments),
-            )
-
-    # Fit surrogate
-    scores_array = np.array(all_scores)
-    surrogate = surrogate_config.create_surrogate(
-        mixer_names=dataset.mixer_names, seed=seed, feature_config=feature_config,
-    )
-    t0 = time.perf_counter()
-    surrogate.fit(all_assignments, scores_array)
-    logger.info("Surrogate fitted (%.3fs)", time.perf_counter() - t0)
-
-    return dataset, surrogate, cost_model
 
 
 def compute_band_edges(
@@ -130,6 +40,25 @@ def compute_band_edges(
     return np.sort(baseline_cost / speedup_edges)
 
 
+def compute_bin_assignments(
+    alloc_costs: np.ndarray,
+    band_edges: np.ndarray,
+    num_cost_bins: int,
+) -> np.ndarray:
+    """Assign each allocation to a cost bin (0-based, clipped).
+
+    Args:
+        alloc_costs: Array of allocation costs.
+        band_edges: Array of (num_cost_bins + 1) cost bin edges.
+        num_cost_bins: Number of bins.
+
+    Returns:
+        Array of bin indices, same length as *alloc_costs*.
+    """
+    bin_indices = np.digitize(alloc_costs, band_edges) - 1
+    return np.clip(bin_indices, 0, num_cost_bins - 1)
+
+
 def compute_dp_per_band(
     surrogate: BaseSurrogate,
     all_allocations: list[Allocation],
@@ -138,7 +67,7 @@ def compute_dp_per_band(
     baseline_cost: float,
     cost_model: BaseCostModel,
     num_cost_bins: int,
-) -> list[BandResult]:
+) -> tuple[list[BandResult], np.ndarray]:
     """Solve DP for all cost bands, using single pass when feasible.
 
     Tries a single DP build over all allocations (fast when K <= 3).
@@ -158,13 +87,14 @@ def compute_dp_per_band(
         num_cost_bins: Number of cost bins.
 
     Returns:
-        List of BandResult sorted by cost, one per occupied band.
+        Tuple of (band_results, cost_bin_edges) where band_results is a
+        list of BandResult sorted by cost (one per occupied band) and
+        cost_bin_edges is the array of bin edge values.
     """
     cost_bin_edges = compute_band_edges(alloc_costs, baseline_cost, num_cost_bins)
 
     # Assign each allocation to a bin
-    bin_indices = np.digitize(alloc_costs, cost_bin_edges) - 1
-    bin_indices = np.clip(bin_indices, 0, num_cost_bins - 1)
+    bin_indices = compute_bin_assignments(alloc_costs, cost_bin_edges, num_cost_bins)
 
     # Extract MRF model and solver
     t0 = time.perf_counter()
@@ -223,4 +153,4 @@ def compute_dp_per_band(
         )
 
     # Sort by cost
-    return [results[b] for b in sorted(results.keys())]
+    return [results[b] for b in sorted(results.keys())], cost_bin_edges

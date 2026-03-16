@@ -20,7 +20,7 @@ class TestRidgeSurrogateConfig:
     """Tests for RidgeSurrogateConfig."""
 
     def test_create_surrogate(self) -> None:
-        config = RidgeSurrogateConfig(n_bootstraps=30, ei_xi=0.02, cv_folds=5)
+        config = RidgeSurrogateConfig(n_bootstraps=30, ei_xi=0.02, cv_folds=5, target_rank_correlation=0.95)
         feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
         assert isinstance(surrogate, RidgeSurrogate)
@@ -32,9 +32,9 @@ class TestRidgeSurrogateConfig:
 
     def test_validation_constraints(self) -> None:
         with pytest.raises(ValidationError):
-            RidgeSurrogateConfig(n_bootstraps=0, ei_xi=0.01, cv_folds=5)  # gt=0
+            RidgeSurrogateConfig(n_bootstraps=0, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95)  # gt=0
         with pytest.raises(ValidationError):
-            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=-1.0, cv_folds=5)  # ge=0
+            RidgeSurrogateConfig(n_bootstraps=50, ei_xi=-1.0, cv_folds=5, target_rank_correlation=0.95)  # ge=0
 
 
 class TestBayesianRidgeSurrogateConfig:
@@ -43,7 +43,7 @@ class TestBayesianRidgeSurrogateConfig:
     def test_create_surrogate(self) -> None:
         config = BayesianRidgeSurrogateConfig(
             prior_alpha=2.0, prior_a0=1e-4, prior_b0=1e-4,
-            feature_scaling="none",
+            feature_scaling="none", alpha_selection="fixed",
         )
         feature_config = FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True)
         surrogate = config.create_surrogate(mixer_names=_MIXER_NAMES, seed=42, feature_config=feature_config)
@@ -58,7 +58,7 @@ class TestBayesianRidgeSurrogateConfig:
         with pytest.raises(ValidationError):
             BayesianRidgeSurrogateConfig(
                 prior_alpha=0.0, prior_a0=1e-6, prior_b0=1e-6,
-                feature_scaling="none",
+                feature_scaling="none", alpha_selection="fixed",
             )  # prior_alpha gt=0
 
 
@@ -69,7 +69,7 @@ class TestSurrogateConfigUnion:
 
     def test_parse_ridge(self) -> None:
         config = self._adapter.validate_python(
-            {"surrogate_type": "ridge", "n_bootstraps": 50, "ei_xi": 0.01, "cv_folds": 5}
+            {"surrogate_type": "ridge", "n_bootstraps": 50, "ei_xi": 0.01, "cv_folds": 5, "target_rank_correlation": 0.95}
         )
         assert isinstance(config, RidgeSurrogateConfig)
         assert config.n_bootstraps == 50
@@ -82,6 +82,7 @@ class TestSurrogateConfigUnion:
                 "prior_a0": 1e-6,
                 "prior_b0": 1e-6,
                 "feature_scaling": "none",
+                "alpha_selection": "fixed",
             }
         )
         assert isinstance(config, BayesianRidgeSurrogateConfig)

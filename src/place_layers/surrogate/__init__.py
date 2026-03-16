@@ -11,13 +11,13 @@ from place_layers.surrogate.config import (
 )
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
     PooledEvaluationData,
     append_record,
-    load_pooled_data,
+    discover_evaluation_records,
     load_records,
-    resolve_supplemental_dirs,
 )
 from place_layers.surrogate.encoding import FeatureExpansionConfig
 from place_layers.surrogate.forest_surrogate import ForestSurrogate
