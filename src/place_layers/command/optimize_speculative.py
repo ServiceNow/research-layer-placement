@@ -36,7 +36,7 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from hydra.core.hydra_config import HydraConfig
 from pydantic import BaseModel, Field
@@ -50,6 +50,9 @@ from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.landscape import LandscapeConfig, load_and_fit_surrogate
 from place_layers.landscape.config import objective_result_path
 from place_layers.mrf.solver import ExactMRFSolver
+
+if TYPE_CHECKING:
+    from place_layers.surrogate.base_surrogate import BaseSurrogate
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +181,10 @@ class OptimizeSpeculativeCommand(BaseCommand):
 
         # Phase 1: surrogate optimisation per objective
         per_objective: dict[str, list[SpeculativeCandidate]] = {}
+        per_objective_surrogate: dict[str, BaseSurrogate] = {}
 
         for obj_name in obj_names:
-            candidates = self._surrogate_optimize(
+            candidates, surrogate = self._surrogate_optimize(
                 obj_name=obj_name,
                 explore_dir=explore_dir,
                 cost_model=cost_model,
@@ -190,6 +194,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
                 c_t=c_t,
             )
             per_objective[obj_name] = candidates
+            per_objective_surrogate[obj_name] = surrogate
 
         # Phase 2: optional validation with real evaluator
         if self.config.validate_top_k > 0:
@@ -226,6 +231,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
                 self._plot_pareto(
                     candidates, gamma, c_t, obj_name, plot_path,
                     phase_order=cost_model.phase_order,
+                    surrogate=per_objective_surrogate.get(obj_name),
                 )
             except ImportError:
                 logger.warning(
@@ -265,8 +271,12 @@ class OptimizeSpeculativeCommand(BaseCommand):
         num_layers: int,
         gamma: int,
         c_t: float,
-    ) -> list[SpeculativeCandidate]:
-        """Fit surrogate, DP-solve per allocation, rank by speculative cost."""
+    ) -> tuple[list[SpeculativeCandidate], BaseSurrogate]:
+        """Fit surrogate, DP-solve per allocation, rank by speculative cost.
+
+        Returns:
+            (candidates, surrogate) — surrogate is needed for uncertainty bands.
+        """
         landscape = self.config.landscape
         logger.info("=== Surrogate optimisation: %s ===", obj_name)
 
@@ -339,7 +349,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
                 c.allocation,
             )
 
-        return candidates
+        return candidates, surrogate
 
     # -- Phase 2: validation with real evaluator --------------------------------
 
@@ -414,6 +424,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         output_path: Path,
         *,
         phase_order: list[str],
+        surrogate: BaseSurrogate | None = None,
     ) -> None:
         """Save a two-panel figure: Pareto scatter (top) + layermap (bottom)."""
         import matplotlib
@@ -430,15 +441,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
             [c.surrogate_acceptance_rate for c in candidates]
         )
 
-        # Pareto frontier: walk by ascending draft cost, track running min spec cost
         order = np.argsort(draft_costs)
-        frontier_idx: list[int] = []
-        running_min = float("inf")
-        for i in order:
-            if spec_costs[i] <= running_min:
-                running_min = spec_costs[i]
-                frontier_idx.append(int(i))
-
         num_layers = len(candidates[0].assignments)
 
         # Use cost model's phase_order for consistent mixer colors
@@ -475,13 +478,52 @@ class OptimizeSpeculativeCommand(BaseCommand):
         )
         fig.colorbar(sc, cax=cax, label="Surrogate acceptance rate")
 
-        f_costs = draft_costs[frontier_idx]
-        f_specs = spec_costs[frontier_idx]
-        ax_scatter.step(
-            f_costs, f_specs, where="post",
+        sorted_dc = draft_costs[order]
+        sorted_sc = spec_costs[order]
+        sorted_ar = acceptance_rates[order]
+        window = 5
+        half = window // 2
+        n = len(order)
+
+        # For each position find the argmin within the rolling window
+        win_argmin = np.array([
+            int(np.argmin(sorted_sc[max(0, i - half):min(n, i + half + 1)]))
+            + max(0, i - half)
+            for i in range(n)
+        ])
+        smooth_sc = sorted_sc[win_argmin]
+
+        ax_scatter.plot(
+            sorted_dc, smooth_sc,
             color="tab:red", linewidth=1.5, alpha=0.8,
-            label="Pareto frontier", zorder=3,
+            label="Best per cost (smoothed)", zorder=3,
         )
+
+        # Uncertainty band: propagate sigma of the selected candidate at each position
+        if surrogate is not None and len(candidates) >= 2:
+            all_assignments = [candidates[i].assignments for i in order]
+            _, sigma_ar = surrogate.predict(all_assignments)
+
+            spec_lo = np.array([
+                _speculative_cost(
+                    gamma, sorted_dc[i], c_t,
+                    max(1e-6, sorted_ar[win_argmin[i]] + 2 * sigma_ar[win_argmin[i]])
+                )
+                for i in range(n)
+            ])
+            spec_hi = np.array([
+                _speculative_cost(
+                    gamma, sorted_dc[i], c_t,
+                    max(1e-6, sorted_ar[win_argmin[i]] - 2 * sigma_ar[win_argmin[i]])
+                )
+                for i in range(n)
+            ])
+
+            ax_scatter.fill_between(
+                sorted_dc, spec_lo, spec_hi,
+                alpha=0.15, color="tab:red",
+                label="Posterior \u00b12\u03c3", zorder=1,
+            )
 
         best = candidates[0]
         ax_scatter.scatter(
@@ -519,7 +561,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
 
         ax_scatter.set_ylabel("Speculative cost", fontsize=11)
         ax_scatter.set_title(
-            f"Speculative cost Pareto ({obj_name}, "
+            f"Speculative cost ({obj_name}, "
             fr"$\gamma$={gamma}, c_t={c_t:.2f})",
             fontsize=12,
         )
