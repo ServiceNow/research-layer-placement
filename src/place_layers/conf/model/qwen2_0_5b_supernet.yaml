@@ -1,0 +1,13 @@
+# @package model
+# Apriel2-0.5B-dev distilled openthoughts2 60k steps supernet checkpoint
+# https://huggingface.co/ServiceNow-AI/qwen-0.5B-supernet-distilled-openthoughts2-step-60k
+#
+# 24-layer Apriel2 supernet with stochastic mixers.
+# Mixers: attention, gdn, kda, sliding_window
+#
+# Note: Model structure (num_layers, mixer_names) is discovered at runtime
+# from the actual model by the backend. Only loading parameters are specified here.
+
+model_path: ServiceNow-AI/qwen-0.5B-supernet-distilled-openthoughts2-step-60k
+trust_remote_code: true
+torch_dtype: bfloat16
