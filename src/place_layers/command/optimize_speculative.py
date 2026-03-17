@@ -47,7 +47,7 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator.evaluators import EvaluatorsConfig
-from place_layers.landscape import LandscapeConfig, load_and_fit_surrogate
+from place_layers.landscape import LandscapeConfig
 from place_layers.landscape.config import objective_result_path
 from place_layers.mrf.solver import ExactMRFSolver
 
@@ -246,15 +246,29 @@ class OptimizeSpeculativeCommand(BaseCommand):
 
     @staticmethod
     def _discover_objectives(explore_dir: Path) -> list[str]:
-        """Find objective names from exploration_results_*.json files."""
-        prefix = "exploration_results_"
+        """Find objective names from the exploration output directory.
+
+        Supports two conventions:
+        - New: {explore_dir}/{obj_name}/exploration_results.json
+        - Legacy: {explore_dir}/exploration_results_{obj_name}.json
+        """
         names: list[str] = []
-        for p in sorted(explore_dir.glob(f"{prefix}*.json")):
-            name = p.stem[len(prefix):]
-            names.append(name)
+
+        # New convention: subdirectory per objective
+        for p in sorted(explore_dir.glob("*/exploration_results.json")):
+            names.append(p.parent.name)
+
+        # Legacy convention: flat files with objective name suffix
+        if not names:
+            prefix = "exploration_results_"
+            for p in sorted(explore_dir.glob(f"{prefix}*.json")):
+                names.append(p.stem[len(prefix):])
+
         if not names:
             raise FileNotFoundError(
-                f"No exploration_results_*.json files found in {explore_dir}"
+                f"No exploration results found in {explore_dir}. "
+                f"Expected either {explore_dir}/<obj>/exploration_results.json "
+                f"or {explore_dir}/exploration_results_<obj>.json."
             )
         logger.info("Discovered objectives: %s", names)
         return names
@@ -280,16 +294,44 @@ class OptimizeSpeculativeCommand(BaseCommand):
         landscape = self.config.landscape
         logger.info("=== Surrogate optimisation: %s ===", obj_name)
 
+        import numpy as np
+
+        from place_layers.surrogate.config import BayesianRidgeSurrogateConfig
+        from place_layers.surrogate.dataset import ExplorationDataset
+        from place_layers.surrogate.evaluation_log import (
+            PooledEvaluationData,
+            discover_evaluation_records,
+        )
+
         dataset_path = objective_result_path(
             explore_dir, "exploration_results", obj_name,
         )
-        _dataset, surrogate, _cm = load_and_fit_surrogate(
-            str(dataset_path),
-            landscape.cost_model,
-            landscape.surrogate,
-            landscape.seed,
-            supplemental_data_dirs=list(landscape.supplemental_data_dirs),
+        dataset = ExplorationDataset.load(dataset_path)
+
+        pooled = PooledEvaluationData.from_exploration(dataset)
+        supplemental_files = (
+            discover_evaluation_records(
+                list(landscape.supplemental_data_dirs), dataset.objective_name,
+                num_layers=dataset.num_layers,
+                mixer_names=list(dataset.mixer_names),
+            )
+            if landscape.supplemental_data_dirs else []
         )
+        if supplemental_files:
+            pooled = pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+
+        surrogate = landscape.surrogate.create_surrogate(
+            mixer_names=list(dataset.mixer_names), seed=landscape.seed,
+            feature_config=dataset.feature_config,
+        )
+        match landscape.surrogate:
+            case BayesianRidgeSurrogateConfig(alpha_selection="evidence"):
+                selected_alpha = surrogate.fit_optimize_alpha(
+                    list(pooled.assignments), np.array(pooled.scores),
+                )
+                logger.info("Type-II ML alpha: %.4g", selected_alpha)
+            case _:
+                surrogate.fit(list(pooled.assignments), np.array(pooled.scores))
 
         # MRF extraction + per-allocation DP
         t0 = time.perf_counter()
