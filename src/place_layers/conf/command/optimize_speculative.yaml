@@ -23,3 +23,8 @@ target_placement:
   - attention
 cost_budget: 4.0
 validate_top_k: 0
+
+# Pareto plot y-axis: "speculative_cost" or "speedup" (c_t / spec_cost)
+pareto_y_axis: speculative_cost
+# Rolling window for "best per cost" smooth curve (odd = symmetric)
+pareto_smooth_window: 5

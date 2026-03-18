@@ -232,6 +232,8 @@ class OptimizeSpeculativeCommand(BaseCommand):
                     candidates, gamma, c_t, obj_name, plot_path,
                     phase_order=cost_model.phase_order,
                     surrogate=per_objective_surrogate.get(obj_name),
+                    pareto_y_axis=self.config.pareto_y_axis,
+                    pareto_smooth_window=self.config.pareto_smooth_window,
                 )
             except ImportError:
                 logger.warning(
@@ -467,6 +469,8 @@ class OptimizeSpeculativeCommand(BaseCommand):
         *,
         phase_order: list[str],
         surrogate: BaseSurrogate | None = None,
+        pareto_y_axis: Literal["speculative_cost", "speedup"] = "speculative_cost",
+        pareto_smooth_window: int = 5,
     ) -> None:
         """Save a two-panel figure: Pareto scatter (top) + layermap (bottom)."""
         import matplotlib
@@ -479,6 +483,14 @@ class OptimizeSpeculativeCommand(BaseCommand):
 
         draft_costs = np.array([c.draft_cost for c in candidates])
         spec_costs = np.array([c.speculative_cost for c in candidates])
+        if pareto_y_axis == "speedup":
+            y_values = c_t / spec_costs
+            y_label = "Speedup (c_t / spec cost)"
+            y_title = "Speedup"
+        else:
+            y_values = spec_costs
+            y_label = "Speculative cost"
+            y_title = "Speculative cost"
         acceptance_rates = np.array(
             [c.surrogate_acceptance_rate for c in candidates]
         )
@@ -510,7 +522,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         # ── Top panel: Pareto scatter ────────────────────────────────────
         sc = ax_scatter.scatter(
             draft_costs,
-            spec_costs,
+            y_values,
             c=acceptance_rates,
             cmap="viridis",
             s=30,
@@ -523,53 +535,61 @@ class OptimizeSpeculativeCommand(BaseCommand):
         sorted_dc = draft_costs[order]
         sorted_sc = spec_costs[order]
         sorted_ar = acceptance_rates[order]
-        window = 5
+        window = max(1, pareto_smooth_window)
         half = window // 2
         n = len(order)
 
-        # For each position find the argmin within the rolling window
+        # For each position find the argmin spec_cost within the rolling window (best candidate)
         win_argmin = np.array([
             int(np.argmin(sorted_sc[max(0, i - half):min(n, i + half + 1)]))
             + max(0, i - half)
             for i in range(n)
         ])
-        smooth_sc = sorted_sc[win_argmin]
+        smooth_spec = sorted_sc[win_argmin]
+        smooth_y = c_t / smooth_spec if pareto_y_axis == "speedup" else smooth_spec
 
         ax_scatter.plot(
-            sorted_dc, smooth_sc,
+            sorted_dc, smooth_y,
             color="tab:red", linewidth=1.5, alpha=0.8,
             label="Best per cost (smoothed)", zorder=3,
         )
 
-        # Uncertainty band: propagate sigma of the selected candidate at each position
+        # Uncertainty band: ±2σ for the same best-in-window candidate at each position
+        # Use that candidate's draft cost so the band follows the curve when window changes
         if surrogate is not None and len(candidates) >= 2:
             all_assignments = [candidates[i].assignments for i in order]
             _, sigma_ar = surrogate.predict(all_assignments)
+            draft_selected = sorted_dc[win_argmin]
 
             spec_lo = np.array([
                 _speculative_cost(
-                    gamma, sorted_dc[i], c_t,
+                    gamma, draft_selected[i], c_t,
                     max(1e-6, sorted_ar[win_argmin[i]] + 2 * sigma_ar[win_argmin[i]])
                 )
                 for i in range(n)
             ])
             spec_hi = np.array([
                 _speculative_cost(
-                    gamma, sorted_dc[i], c_t,
+                    gamma, draft_selected[i], c_t,
                     max(1e-6, sorted_ar[win_argmin[i]] - 2 * sigma_ar[win_argmin[i]])
                 )
                 for i in range(n)
             ])
+            if pareto_y_axis == "speedup":
+                y_lo, y_hi = c_t / spec_hi, c_t / spec_lo
+            else:
+                y_lo, y_hi = spec_lo, spec_hi
 
             ax_scatter.fill_between(
-                sorted_dc, spec_lo, spec_hi,
+                sorted_dc, y_lo, y_hi,
                 alpha=0.15, color="tab:red",
                 label="Posterior \u00b12\u03c3", zorder=1,
             )
 
         best = candidates[0]
+        best_y = (c_t / best.speculative_cost) if pareto_y_axis == "speedup" else best.speculative_cost
         ax_scatter.scatter(
-            [best.draft_cost], [best.speculative_cost],
+            [best.draft_cost], [best_y],
             marker="*", s=250, c="tab:red",
             edgecolors="black", linewidths=0.8, zorder=5,
             label=f"Optimum (c_d={best.draft_cost:.2f}, "
@@ -577,10 +597,11 @@ class OptimizeSpeculativeCommand(BaseCommand):
         )
 
         baseline_spec = _speculative_cost(gamma, c_t, c_t, 1.0)
+        baseline_y = (c_t / baseline_spec) if pareto_y_axis == "speedup" else baseline_spec
         ax_scatter.axhline(
-            baseline_spec, color="grey", linestyle="--",
+            baseline_y, color="grey", linestyle="--",
             linewidth=1, alpha=0.6,
-            label=f"Target-only baseline ({baseline_spec:.2f})", zorder=1,
+            label=f"Target-only baseline ({baseline_y:.2f})", zorder=1,
         )
 
         validated = [
@@ -588,22 +609,28 @@ class OptimizeSpeculativeCommand(BaseCommand):
         ]
         if validated:
             for c in validated:
+                c_surrogate_y = (c_t / c.speculative_cost) if pareto_y_axis == "speedup" else c.speculative_cost
+                c_validated_y = (c_t / c.validated_speculative_cost) if pareto_y_axis == "speedup" else c.validated_speculative_cost
                 ax_scatter.plot(
                     [c.draft_cost, c.draft_cost],
-                    [c.speculative_cost, c.validated_speculative_cost],
+                    [c_surrogate_y, c_validated_y],
                     color="tab:orange", linewidth=0.8, alpha=0.6, zorder=4,
                 )
+            validated_y = np.array([
+                (c_t / c.validated_speculative_cost) if pareto_y_axis == "speedup" else c.validated_speculative_cost
+                for c in validated
+            ])
             ax_scatter.scatter(
                 [c.draft_cost for c in validated],
-                [c.validated_speculative_cost for c in validated],
+                validated_y,
                 marker="D", s=50, c="tab:orange",
                 edgecolors="black", linewidths=0.6, zorder=5,
                 label="Validated",
             )
 
-        ax_scatter.set_ylabel("Speculative cost", fontsize=11)
+        ax_scatter.set_ylabel(y_label, fontsize=11)
         ax_scatter.set_title(
-            f"Speculative cost ({obj_name}, "
+            f"{y_title} ({obj_name}, "
             fr"$\gamma$={gamma}, c_t={c_t:.2f})",
             fontsize=12,
         )
@@ -722,4 +749,17 @@ class OptimizeSpeculativeCommandConfig(BaseCommandConfig):
         ge=0,
         description="Number of top candidates to validate with real evaluator. "
         "0 = surrogate-only (no real evaluation needed).",
+    )
+
+    pareto_y_axis: Literal["speculative_cost", "speedup"] = Field(
+        default="speculative_cost",
+        description="Pareto plot y-axis: 'speculative_cost' or 'speedup' "
+        "(speedup = full-attention cost / speculative cost = c_t / spec_cost).",
+    )
+
+    pareto_smooth_window: int = Field(
+        default=5,
+        ge=1,
+        description="Rolling window size for the Pareto 'best per cost' smooth curve. "
+        "Odd values give a symmetric window.",
     )
