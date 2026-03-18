@@ -197,10 +197,10 @@ class OptimizeSpeculativeCommand(BaseCommand):
             per_objective_surrogate[obj_name] = surrogate
 
         # Phase 2: optional validation with real evaluator
-        if self.config.validate_top_k > 0:
+        if self.config.num_validate > 0:
             if self.config.evaluators is None:
                 raise ValueError(
-                    "evaluators config is required when validate_top_k > 0"
+                    "evaluators config is required when num_validate > 0"
                 )
             await self._validate(
                 per_objective=per_objective,
@@ -378,7 +378,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         # Log top results
         n_show = min(10, len(candidates))
         logger.info(
-            "Top %d candidates by speculative cost (gamma=%d, c_t=%.4f):",
+            "Top %d candidates by speculative cost (gamma=%d, target cost=%.4f):",
             n_show,
             gamma,
             c_t,
@@ -397,6 +397,35 @@ class OptimizeSpeculativeCommand(BaseCommand):
 
     # -- Phase 2: validation with real evaluator --------------------------------
 
+    @staticmethod
+    def _select_candidates_to_validate_by_region(
+        candidates: list[SpeculativeCandidate],
+        k: int,
+    ) -> list[SpeculativeCandidate]:
+        """Select up to k candidates: one per cost band, best (min spec cost) in each band.
+
+        Divides the draft-cost range into k equal-width regions and picks the
+        candidate with minimum speculative cost (max speedup) in each region.
+        """
+        if not candidates or k <= 0:
+            return []
+        draft_costs = [c.draft_cost for c in candidates]
+        lo, hi = min(draft_costs), max(draft_costs)
+        if lo >= hi:
+            return candidates[:k]
+        edges = [lo + (hi - lo) * i / k for i in range(k + 1)]
+        to_validate: list[SpeculativeCandidate] = []
+        for i in range(k):
+            left, right = edges[i], edges[i + 1]
+            if i < k - 1:
+                in_bin = [c for c in candidates if left <= c.draft_cost < right]
+            else:
+                in_bin = [c for c in candidates if left <= c.draft_cost <= right]
+            if in_bin:
+                best = min(in_bin, key=lambda c: c.speculative_cost)
+                to_validate.append(best)
+        return to_validate
+
     async def _validate(
         self,
         *,
@@ -405,7 +434,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         gamma: int,
         c_t: float,
     ) -> None:
-        """Validate top-k candidates with real evaluator (in-place update)."""
+        """Validate one candidate per cost band (best in each band) with real evaluator."""
         from contextlib import nullcontext
 
         from place_layers.core.types import LayerPlacement
@@ -420,14 +449,16 @@ class OptimizeSpeculativeCommand(BaseCommand):
                 output_dir, backend=backend,
             ) as evals:
                 for obj_name, candidates in per_objective.items():
-                    top_k = candidates[: self.config.validate_top_k]
+                    to_validate = self._select_candidates_to_validate_by_region(
+                        candidates, self.config.num_validate
+                    )
                     logger.info(
-                        "Validating top %d candidates for '%s'...",
-                        len(top_k),
+                        "Validating %d candidates (one per cost band) for '%s'...",
+                        len(to_validate),
                         obj_name,
                     )
-                    validated: list[SpeculativeCandidate] = []
-                    for c in top_k:
+                    validated_by_assignments: dict[tuple[str, ...], SpeculativeCandidate] = {}
+                    for c in to_validate:
                         placement = LayerPlacement(assignments=c.assignments)
                         obj_scores = await evals.evaluate_objectives(
                             placement, names=[obj_name],
@@ -436,26 +467,25 @@ class OptimizeSpeculativeCommand(BaseCommand):
                         real_spec = _speculative_cost(
                             gamma, c.draft_cost, c_t, real_ar,
                         )
-                        validated.append(
-                            c.model_copy(
-                                update={
-                                    "validated_acceptance_rate": real_ar,
-                                    "validated_speculative_cost": real_spec,
-                                }
-                            )
+                        validated_by_assignments[c.assignments] = c.model_copy(
+                            update={
+                                "validated_acceptance_rate": real_ar,
+                                "validated_speculative_cost": real_spec,
+                            }
                         )
                         logger.info(
-                            "  #%d: surr_ar=%.4f  real_ar=%.4f  "
+                            "  c_d=%.4f: surr_ar=%.4f  real_ar=%.4f  "
                             "surr_spec=%.4f  real_spec=%.4f",
-                            c.rank,
+                            c.draft_cost,
                             c.surrogate_acceptance_rate,
                             real_ar,
                             c.speculative_cost,
                             real_spec,
                         )
-                    per_objective[obj_name] = (
-                        validated + candidates[self.config.validate_top_k :]
-                    )
+                    per_objective[obj_name] = [
+                        validated_by_assignments.get(c.assignments, c)
+                        for c in candidates
+                    ]
 
     # -- Phase 3: Pareto frontier visualisation ---------------------------------
 
@@ -485,7 +515,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         spec_costs = np.array([c.speculative_cost for c in candidates])
         if pareto_y_axis == "speedup":
             y_values = c_t / spec_costs
-            y_label = "Speedup (c_t / spec cost)"
+            y_label = "Speedup"
             y_title = "Speedup"
         else:
             y_values = spec_costs
@@ -592,8 +622,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
             [best.draft_cost], [best_y],
             marker="*", s=250, c="tab:red",
             edgecolors="black", linewidths=0.8, zorder=5,
-            label=f"Optimum (c_d={best.draft_cost:.2f}, "
-            f"a_d={best.surrogate_acceptance_rate:.3f})",
+            label="Optimum",
         )
 
         baseline_spec = _speculative_cost(gamma, c_t, c_t, 1.0)
@@ -616,16 +645,23 @@ class OptimizeSpeculativeCommand(BaseCommand):
                     [c_surrogate_y, c_validated_y],
                     color="tab:orange", linewidth=0.8, alpha=0.6, zorder=4,
                 )
+            validated_sorted = sorted(validated, key=lambda c: c.draft_cost)
+            validated_dc = np.array([c.draft_cost for c in validated_sorted])
             validated_y = np.array([
                 (c_t / c.validated_speculative_cost) if pareto_y_axis == "speedup" else c.validated_speculative_cost
-                for c in validated
+                for c in validated_sorted
             ])
+            ax_scatter.plot(
+                validated_dc, validated_y,
+                color="tab:orange", linewidth=1.2, alpha=0.8, zorder=4,
+                label="Validated",
+            )
             ax_scatter.scatter(
                 [c.draft_cost for c in validated],
-                validated_y,
+                [(c_t / c.validated_speculative_cost) if pareto_y_axis == "speedup" else c.validated_speculative_cost for c in validated],
                 marker="D", s=50, c="tab:orange",
                 edgecolors="black", linewidths=0.6, zorder=5,
-                label="Validated",
+                label="_nolegend_",
             )
 
         ax_scatter.set_ylabel(y_label, fontsize=11)
@@ -676,7 +712,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
             cmap=mixer_cmap, norm=norm,
         )
         ax_layermap.set_ylabel("Layer index", fontsize=11)
-        ax_layermap.set_xlabel("Draft cost (c_d)", fontsize=11)
+        ax_layermap.set_xlabel("Draft cost", fontsize=11)
         ax_layermap.invert_yaxis()
 
         legend_patches = [
@@ -737,18 +773,19 @@ class OptimizeSpeculativeCommandConfig(BaseCommandConfig):
 
     backend: BackendConfig | None = Field(
         default=None,
-        description="Backend configuration. Required when validate_top_k > 0.",
+        description="Backend configuration. Required when num_validate > 0.",
     )
     evaluators: EvaluatorsConfig | None = Field(
         default=None,
-        description="Evaluator configuration. Required when validate_top_k > 0.",
+        description="Evaluator configuration. Required when num_validate > 0.",
     )
 
-    validate_top_k: int = Field(
+    num_validate: int = Field(
         default=0,
         ge=0,
-        description="Number of top candidates to validate with real evaluator. "
-        "0 = surrogate-only (no real evaluation needed).",
+        description="Number of cost-band validations: draft-cost range is split into "
+        "this many bands; the candidate with best (min) speculative cost in each "
+        "band is validated. 0 = surrogate-only (no real evaluation).",
     )
 
     pareto_y_axis: Literal["speculative_cost", "speedup"] = Field(
