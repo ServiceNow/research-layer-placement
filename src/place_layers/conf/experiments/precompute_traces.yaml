@@ -3,7 +3,7 @@
 #
 # Usage:
 #   python -m place_layers +experiments=precompute_traces \
-#       +model=apriel2_0_5b_dev +placement=all-attention
+#       +model=apriel2_0_5b_dev +backend=transformers +placement=all-attention
 #
 # Override examples:
 #   # Use full GSM8K instead of quick subset
@@ -22,7 +22,6 @@
 defaults:
   - /command: precompute_traces
   - /evaluator@evaluators.configs.default: trace_precompute
-  - /backend: transformers
   - /generation: sampling
   - _self_
 
