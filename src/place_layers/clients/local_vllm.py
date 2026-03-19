@@ -102,7 +102,8 @@ class LocalVLLMClient(BaseVLLMClient):
 
         # Enable verbose vLLM logging to capture subprocess errors
         # These must be set before creating the engine subprocess
-        os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+        # os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+        os.environ["VLLM_LOGGING_LEVEL"] = "WARNING"
         os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
         logger.info(f"Loading vLLM model from {self.config.model_path}")
@@ -381,6 +382,60 @@ class LocalVLLMClient(BaseVLLMClient):
     # =========================================================================
     # Scoring
     # =========================================================================
+
+    async def get_completion_token_logprobs(
+        self,
+        prompt_tokens: list[int],
+        completion_tokens: list[int],
+    ) -> list[float]:
+        """Get per-token logprobs for completion tokens using echo mode.
+
+        Like score_token_completion but returns the per-position logprobs
+        instead of their sum. Useful for acceptance rate estimation.
+
+        Args:
+            prompt_tokens: Token IDs for the prompt.
+            completion_tokens: Token IDs for the completion.
+
+        Returns:
+            Per-token logprobs for the completion tokens. Positions where
+            logprobs are unavailable use -inf.
+        """
+        from vllm.entrypoints.openai.protocol import (
+            CompletionRequest,
+            CompletionResponse,
+            ErrorResponse,
+        )
+
+        if self._completion_serving is None:
+            raise RuntimeError("Client not initialized")
+
+        full_tokens = list(prompt_tokens) + list(completion_tokens)
+
+        request = CompletionRequest(
+            model=self._model_name,
+            prompt=full_tokens,
+            max_tokens=0,
+            echo=True,
+            logprobs=1,
+        )
+
+        response = await self._completion_serving.create_completion(request)
+
+        if isinstance(response, ErrorResponse):
+            raise VLLMBadRequestError(f"Completion failed: {response.error}")
+        if not isinstance(response, CompletionResponse):
+            raise VLLMBadRequestError(f"Unexpected response type: {type(response)}")
+
+        choice = response.choices[0]
+        token_logprobs: list[float | None] = []
+        if choice.logprobs and choice.logprobs.token_logprobs:
+            token_logprobs = list(choice.logprobs.token_logprobs)
+
+        prompt_len = len(prompt_tokens)
+        completion_len = len(completion_tokens)
+        completion_logprobs = token_logprobs[prompt_len : prompt_len + completion_len]
+        return [lp if lp is not None else float("-inf") for lp in completion_logprobs]
 
     async def score_token_completion(
         self,
