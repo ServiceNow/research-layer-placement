@@ -453,7 +453,7 @@ class SurrogateDatasetLoadedEvent(BaseModel):
 
     event_type: Literal["surrogate_dataset_loaded"] = "surrogate_dataset_loaded"
     num_samples: int
-    exploration_rho: float
+    exploration_quality: float
 
 
 class SurrogateRoundStartedEvent(BaseModel):

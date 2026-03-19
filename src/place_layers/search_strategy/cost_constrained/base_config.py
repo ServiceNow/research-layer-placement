@@ -11,11 +11,17 @@ class BaseCostConstrainedConfig(BaseSearchStrategyConfig):
     """Base for cost-constrained search strategies.
 
     All strategies that operate on CostConstrainedProblem instances
-    share the optional evaluation log path for JSONL recording.
+    share the optional evaluation log path for JSONL recording and
+    seed data paths for pre-loading surrogate training data.
     """
 
     evaluation_log_path: str | None = Field(
         description="Path to write evaluation JSONL log. None to skip.",
+    )
+    seed_data_paths: list[str] = Field(
+        default_factory=list,
+        description="Paths to seed data files (.json or .jsonl) "
+        "loaded at startup to train the surrogate.",
     )
 
 

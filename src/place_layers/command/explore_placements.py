@@ -1,12 +1,12 @@
 """Explore placements command: build dataset for surrogate model training.
 
 Uses adaptive sampling to evaluate random placements until surrogate quality
-(Spearman rank correlation) reaches a target or plateaus. The dataset can
-then be used by the surrogate_search command.
+reaches a target or plateaus. The dataset can then be used by the
+surrogate_search command.
 
 Resumability
 ------------
-Each evaluated (assignment, score, allocation) is written incrementally to a
+Each evaluated (assignment, score) is written incrementally to a
 JSONL file. On restart, this file is loaded to recover progress. The RNG state
 is deterministic: with the same seed and sample count, the same next batch is
 generated, so exploration continues from the exact same point.
@@ -17,11 +17,11 @@ from __future__ import annotations
 import logging
 import random
 from pathlib import Path
-from typing import ClassVar, Literal, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 import numpy as np
 from hydra.core.hydra_config import HydraConfig
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from place_layers.command.base_command import BaseCommand, CommandError
 from place_layers.command.base_command_config import BaseCommandConfig
@@ -33,11 +33,16 @@ from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.backend import BackendConfig
 from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.problem import ProblemConfig
-from place_layers.problem.layer_placement import MaxPerformanceProblemConfig
+from place_layers.problem.layer_placement import (
+    LayerPlacementProblemConfig,
+    MaxPerformanceProblemConfig,
+    MinCostProblemConfig,
+)
 from place_layers.result_handler import ResultHandlerConfig
 from place_layers.annealing.moves import random_assignment
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
     append_record,
@@ -45,13 +50,20 @@ from place_layers.surrogate.evaluation_log import (
     write_meta,
 )
 from place_layers.surrogate.encoding import FeatureExpansionConfig, compute_feature_dim
-from place_layers.surrogate.config import BayesianRidgeSurrogateConfig, RidgeSurrogateConfig, SurrogateConfig
+from place_layers.surrogate.config import (
+    BayesianRidgeSurrogateConfig,
+    RidgeSurrogateConfig,
+    SurrogateConfig,
+)
 from place_layers.surrogate.model_selection import (
     ExpansionSelectionResult,
     ridge_cv_rho,
     select_expansion_bayes_evidence,
     select_expansion_ridge_cv,
 )
+
+if TYPE_CHECKING:
+    from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
 
 
 logger = logging.getLogger(__name__)
@@ -69,14 +81,14 @@ logger = logging.getLogger(__name__)
 
 def _load_progress(
     path: Path,
-) -> tuple[list[tuple[str, ...]], list[float], list[dict[str, int]]]:
+) -> tuple[list[tuple[str, ...]], list[float]]:
     """Load incremental JSONL progress file.
 
     Returns:
-        (assignments, scores, allocations) — each a list of the same length.
+        (assignments, scores) — each a list of the same length.
     """
     if not path.exists():
-        return [], [], []
+        return [], []
 
     records = load_records(path)
     if records:
@@ -84,16 +96,7 @@ def _load_progress(
     return (
         [r.assignment for r in records],
         [r.score for r in records],
-        [r.allocation for r in records],
     )
-
-
-def _get_allocation(assignment: list[str] | tuple[str, ...]) -> dict[str, int]:
-    """Compute allocation counts from an assignment."""
-    alloc: dict[str, int] = {}
-    for mixer in assignment:
-        alloc[mixer] = alloc.get(mixer, 0) + 1
-    return alloc
 
 
 def _compute_cost_uniform_weights(
@@ -172,14 +175,14 @@ def _fast_forward_rng(
 
 
 def _check_plateau(
-    rho_history: list[float],
+    quality_history: list[float],
     patience: int,
     min_improvement: float,
 ) -> bool:
     """Return True if last `patience` improvements are all < min_improvement."""
-    if len(rho_history) < patience + 1:
+    if len(quality_history) < patience + 1:
         return False
-    recent = rho_history[-(patience + 1) :]
+    recent = quality_history[-(patience + 1) :]
     for i in range(1, len(recent)):
         if recent[i] - recent[i - 1] >= min_improvement:
             return False
@@ -236,9 +239,7 @@ def _log_expansion_result(
 
     # --- Phase 2 ---
     if result.order_results:
-        lines.append(
-            f"  Phase 2 (order at range={result.selected_range}):"
-        )
+        lines.append(f"  Phase 2 (order at range={result.selected_range}):")
         # prev_score carries over from phase 1's last step
         for step in result.order_results:
             label = f"order={step.config.max_order}"
@@ -311,6 +312,10 @@ class ExplorePlacementsCommand(BaseCommand):
 
     config: "ExplorePlacementsCommandConfig"
 
+    # Stashed surrogate for Bayesian batch predictive scoring.
+    # None means the next quality check is "stash only" (no score returned).
+    _prev_surrogate: BayesianRidgeSurrogate | None = None
+
     async def run(self) -> None:
         """Execute adaptive exploration loop."""
         hydra_cfg = HydraConfig.get()
@@ -321,7 +326,11 @@ class ExplorePlacementsCommand(BaseCommand):
 
         from contextlib import nullcontext
 
-        backend_cm = self.config.backend.create_backend() if self.config.backend else nullcontext()
+        backend_cm = (
+            self.config.backend.create_backend()
+            if self.config.backend
+            else nullcontext()
+        )
         async with backend_cm as backend:
             async with self.config.evaluators.create_evaluators(
                 output_dir, backend=backend
@@ -350,16 +359,27 @@ class ExplorePlacementsCommand(BaseCommand):
         logger.info("Exploring objective: %s", obj_name)
         logger.info("Surrogate: %s", self.config.surrogate.surrogate_type)
 
-        problem = self.config.problem.create_problem(
-            evaluator_instances, objective_name=obj_name
-        )
-
         # Determine cost budget and floor for feasibility filtering
         cost_budget: float | None = None
         cost_floor: float | None = None
-        if isinstance(problem.config, MaxPerformanceProblemConfig):
-            cost_budget = problem.config.cost_budget
-            cost_floor = problem.config.cost_floor
+        match self.config.problem:
+            case None:
+                pass  # unconstrained — all allocations feasible
+            case MaxPerformanceProblemConfig() as cfg:
+                cost_budget = cfg.cost_budget
+                cost_floor = cfg.cost_floor
+            case MinCostProblemConfig():
+                raise CommandError(
+                    "cost_min_cost problem is not supported for exploration. "
+                    "Use cost_max_performance or omit the problem config."
+                )
+            case LayerPlacementProblemConfig():
+                raise CommandError(
+                    "layer_placement problem is not supported for exploration. "
+                    "Use cost_max_performance or omit the problem config."
+                )
+            case unreachable:
+                assert_never(unreachable)
 
         # Enumerate feasible allocations
         phase_order = cost_model.phase_order
@@ -369,16 +389,29 @@ class ExplorePlacementsCommand(BaseCommand):
         )
         logger.info(
             "Found %d feasible allocations for %d layers",
-            len(feasible_allocations), num_layers,
+            len(feasible_allocations),
+            num_layers,
         )
-        logger.info(
-            "Stopping criteria: target_rho=%g, "
-            "plateau_patience=%d (min_improvement=%g), max_samples=%d",
-            self.config.target_rank_correlation,
-            self.config.plateau_patience,
-            self.config.plateau_min_improvement,
-            self.config.max_samples,
-        )
+        match self.config.surrogate:
+            case RidgeSurrogateConfig() as cfg:
+                logger.info(
+                    "Stopping criteria: target_rho=%g, "
+                    "plateau_patience=%d (min_improvement=%g), max_samples=%d",
+                    cfg.target_rank_correlation,
+                    self.config.plateau_patience,
+                    self.config.plateau_min_improvement,
+                    self.config.max_samples,
+                )
+            case BayesianRidgeSurrogateConfig():
+                logger.info(
+                    "Stopping criteria: plateau on batch predictive score, "
+                    "plateau_patience=%d (min_improvement=%g), max_samples=%d",
+                    self.config.plateau_patience,
+                    self.config.plateau_min_improvement,
+                    self.config.max_samples,
+                )
+            case other:
+                assert_never(other)
 
         if not feasible_allocations:
             raise CommandError("No feasible allocations found within budget")
@@ -391,10 +424,10 @@ class ExplorePlacementsCommand(BaseCommand):
         )
 
         # Load existing progress (per-objective JSONL)
-        progress_path = output_dir / f"exploration_progress_{obj_name}.jsonl"
-        all_assignments, all_scores, all_allocations = _load_progress(
-            progress_path
-        )
+        obj_dir = output_dir / obj_name
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = obj_dir / "progress.jsonl"
+        all_assignments, all_scores = _load_progress(progress_path)
 
         # Capture local count before merging supplemental data
         num_local = len(all_assignments)
@@ -402,57 +435,70 @@ class ExplorePlacementsCommand(BaseCommand):
 
         if self.config.supplemental_data_dirs:
             from place_layers.surrogate.evaluation_log import (
-                load_pooled_data,
-                resolve_supplemental_dirs,
+                PooledEvaluationData,
+                discover_evaluation_records,
             )
-            supplemental_files = resolve_supplemental_dirs(
-                self.config.supplemental_data_dirs, obj_name
+
+            supplemental_files = discover_evaluation_records(
+                self.config.supplemental_data_dirs, obj_name,
+                num_layers=num_layers,
+                mixer_names=list(phase_order),
             )
             if supplemental_files:
-                pool = load_pooled_data(supplemental_files, deduplicate=True)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                n_before = len(all_assignments)
-                for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
-                    if (a, s) not in existing:
-                        all_assignments.append(a)
-                        all_scores.append(s)
-                        all_allocations.append(alloc)
-                        existing.add((a, s))
-                n_added = len(all_assignments) - n_before
+                seed_pooled = PooledEvaluationData.from_jsonl(supplemental_files)
+                # Build a PooledEvaluationData from local progress for merging
+                local_pooled = PooledEvaluationData(
+                    assignments=all_assignments,
+                    scores=all_scores,
+                    num_layers=num_layers,
+                    mixer_names=list(phase_order),
+                )
+                merged = local_pooled.merge(seed_pooled)
+                n_added = merged.num_samples - local_pooled.num_samples
                 n_supplemental = n_added
+                all_assignments = list(merged.assignments)
+                all_scores = list(merged.scores)
                 logger.info(
                     "Supplemental data: loaded %d records from %d file(s), "
                     "merged %d new (skipped %d duplicates) for objective '%s'",
-                    pool.num_samples, len(supplemental_files),
-                    n_added, pool.num_samples - n_added, obj_name,
+                    seed_pooled.num_samples,
+                    len(supplemental_files),
+                    n_added,
+                    seed_pooled.num_samples - n_added,
+                    obj_name,
                 )
             else:
                 logger.info(
                     "Supplemental data: no files found for objective '%s' in %d director%s",
-                    obj_name, len(self.config.supplemental_data_dirs),
+                    obj_name,
+                    len(self.config.supplemental_data_dirs),
                     "y" if len(self.config.supplemental_data_dirs) == 1 else "ies",
                 )
 
-        rho_history: list[float] = []
+        quality_history: list[float] = []
         samples_at_check: list[int] = []
 
         # Create RNG and fast-forward past completed samples
         rng = random.Random(self.config.seed)
         if num_local > 0:
             _fast_forward_rng(
-                rng, num_local, feasible_allocations, num_layers,
+                rng,
+                num_local,
+                feasible_allocations,
+                num_layers,
                 weights=sampling_weights,
             )
             if len(all_assignments) > num_local:
                 logger.info(
                     "Resumed from %d local samples (%d total with supplemental)",
-                    num_local, len(all_assignments),
+                    num_local,
+                    len(all_assignments),
                 )
             else:
                 logger.info("Resumed from %d completed samples", num_local)
 
         # Write sidecar metadata for the progress JSONL so it can be loaded
-        # standalone by load_pooled_data (without a companion .json file).
+        # standalone by PooledEvaluationData.from_jsonl (without a companion .json file).
         from datetime import datetime, timezone
 
         progress_meta = EvaluationLogMeta(
@@ -469,7 +515,7 @@ class ExplorePlacementsCommand(BaseCommand):
 
         # Open snowball file for incremental writes (supplemental + local).
         # Written alongside progress file; discoverable for chaining.
-        snowball_path = output_dir / f"evaluations_{obj_name}.jsonl"
+        snowball_path = obj_dir / EVALUATION_RECORDS_FILENAME
         snowball_meta = EvaluationLogMeta(
             version=1,
             objective_name=obj_name,
@@ -487,30 +533,37 @@ class ExplorePlacementsCommand(BaseCommand):
         snowball_file = snowball_path.open("w")
         try:
             # Seed snowball with all records loaded so far (local progress + supplemental)
-            for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
-                append_record(snowball_file, EvaluationRecord(
-                    assignment=a, score=s, allocation=alloc,
-                ))
+            for a, s in zip(all_assignments, all_scores):
+                append_record(
+                    snowball_file,
+                    EvaluationRecord(
+                        assignment=a,
+                        score=s,
+                    ),
+                )
             # --- Phase 1: Initial batch ---
-            remaining_initial = max(
-                0, self.config.min_samples - len(all_assignments)
-            )
+            remaining_initial = max(0, self.config.min_samples - len(all_assignments))
             if remaining_initial > 0:
                 logger.info("Sampling initial batch of %d", remaining_initial)
                 batch = _sample_batch(
-                    remaining_initial, feasible_allocations, num_layers, rng,
+                    remaining_initial,
+                    feasible_allocations,
+                    num_layers,
+                    rng,
                     weights=sampling_weights,
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    result = await evaluator_instances.evaluate_objectives(
+                        placement, names=[obj_name]
+                    )
+                    score = result[obj_name]
                     assignment_tuple = tuple(assignment)
-                    allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
-                    all_allocations.append(allocation)
                     record = EvaluationRecord(
-                        assignment=assignment_tuple, score=score, allocation=allocation,
+                        assignment=assignment_tuple,
+                        score=score,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -522,12 +575,15 @@ class ExplorePlacementsCommand(BaseCommand):
             # features. Re-running is cheap (a few surrogate fits).
             feature_config = FeatureExpansionConfig.unary()
             last_expansion_result: ExpansionSelectionResult | None = None
+            min_for_check = self._min_samples_for_quality_check()
             if (
                 self.config.expansion_max_order > 1
-                and len(all_assignments) >= self.config.cv_folds
+                and len(all_assignments) >= min_for_check
             ):
                 expansion_result = self._select_expansion(
-                    all_assignments, np.array(all_scores), phase_order,
+                    all_assignments,
+                    np.array(all_scores),
+                    phase_order,
                 )
                 last_expansion_result = expansion_result
                 _log_expansion_result(
@@ -539,49 +595,57 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 feature_config = expansion_result.selected_config
 
-            # --- Phase 2b: First quality check (Ridge CV) ---
-            if len(all_assignments) >= self.config.cv_folds:
-                rho = ridge_cv_rho(
-                    assignments=all_assignments,
-                    scores=np.array(all_scores),
-                    mixer_names=phase_order,
-                    feature_config=feature_config,
-                    cv_folds=self.config.cv_folds,
-                    seed=self.config.seed,
+            # --- Phase 2b: First quality check ---
+            # Initialize Bayesian stashed-surrogate tracking.
+            self._prev_surrogate = None
+
+            if len(all_assignments) >= min_for_check:
+                quality_or_none = self._check_quality(
+                    all_assignments,
+                    np.array(all_scores),
+                    phase_order,
+                    feature_config,
                 )
-                rho_history.append(rho)
-                samples_at_check.append(len(all_assignments))
-                logger.info(
-                    "Ridge CV rho=%.4g (%d samples)",
-                    rho,
-                    len(all_assignments),
-                )
-            else:
-                rho = 0.0
+                if quality_or_none is not None:
+                    quality = quality_or_none
+                    quality_history.append(quality)
+                    samples_at_check.append(len(all_assignments))
+                    logger.info(
+                        "Quality=%.4g (%d samples)",
+                        quality,
+                        len(all_assignments),
+                    )
+                else:
+                    # Bayesian stash-only: no quality value yet
+                    logger.info(
+                        "Bayesian: initialized posterior checkpoint (%d samples)",
+                        len(all_assignments),
+                    )
 
             # --- Phase 3: Adaptive loop ---
-            termination_reason: Literal[
-                "target_reached", "plateau", "max_samples"
-            ] = "max_samples"
+            termination_reason: Literal["target_reached", "plateau", "max_samples"] = (
+                "max_samples"
+            )
 
             while len(all_assignments) < self.config.max_samples:
                 # Check stopping criteria
-                if rho >= self.config.target_rank_correlation:
+                if quality_history and self._check_target_reached(quality_history[-1]):
                     termination_reason = "target_reached"
                     logger.info(
-                        "Target rho (%g) reached: %.4g",
-                        self.config.target_rank_correlation, rho,
+                        "Target quality reached: %.4g",
+                        quality_history[-1],
                     )
                     break
 
                 if _check_plateau(
-                    rho_history,
+                    quality_history,
                     self.config.plateau_patience,
                     self.config.plateau_min_improvement,
                 ):
                     termination_reason = "plateau"
                     logger.info(
-                        "Plateau detected after %d checks", len(rho_history),
+                        "Plateau detected after %d checks",
+                        len(quality_history),
                     )
                     break
 
@@ -592,22 +656,28 @@ class ExplorePlacementsCommand(BaseCommand):
                 )
                 logger.info(
                     "Sampling batch of %d (total: %d)",
-                    batch_size, len(all_assignments),
+                    batch_size,
+                    len(all_assignments),
                 )
                 batch = _sample_batch(
-                    batch_size, feasible_allocations, num_layers, rng,
+                    batch_size,
+                    feasible_allocations,
+                    num_layers,
+                    rng,
                     weights=sampling_weights,
                 )
                 for assignment in batch:
                     placement = LayerPlacement(assignments=tuple(assignment))
-                    score = await problem.evaluate(placement)
+                    result = await evaluator_instances.evaluate_objectives(
+                        placement, names=[obj_name]
+                    )
+                    score = result[obj_name]
                     assignment_tuple = tuple(assignment)
-                    allocation = _get_allocation(assignment)
                     all_assignments.append(assignment_tuple)
                     all_scores.append(score)
-                    all_allocations.append(allocation)
                     record = EvaluationRecord(
-                        assignment=assignment_tuple, score=score, allocation=allocation,
+                        assignment=assignment_tuple,
+                        score=score,
                     )
                     append_record(progress_file, record)
                     append_record(snowball_file, record)
@@ -617,16 +687,21 @@ class ExplorePlacementsCommand(BaseCommand):
                 # potentially unlocking higher-order features.
                 if (
                     self.config.expansion_max_order > 1
-                    and len(all_assignments) >= self.config.cv_folds
+                    and len(all_assignments) >= min_for_check
                 ):
                     expansion_result = self._select_expansion(
-                        all_assignments, np.array(all_scores), phase_order,
+                        all_assignments,
+                        np.array(all_scores),
+                        phase_order,
                     )
                     last_expansion_result = expansion_result
                     new_config = expansion_result.selected_config
                     if new_config != feature_config:
                         old_feature_config = feature_config
                         feature_config = new_config
+                        # Expansion changed: reset stashed surrogate so next
+                        # quality check reinitializes in the new feature space.
+                        self._prev_surrogate = None
                         _log_expansion_result(
                             expansion_result,
                             n_samples=len(all_assignments),
@@ -636,54 +711,69 @@ class ExplorePlacementsCommand(BaseCommand):
                             previous_config=old_feature_config,
                         )
 
-                # Re-check quality via Ridge CV
-                rho = ridge_cv_rho(
-                    assignments=all_assignments,
-                    scores=np.array(all_scores),
-                    mixer_names=phase_order,
-                    feature_config=feature_config,
-                    cv_folds=self.config.cv_folds,
-                    seed=self.config.seed,
+                # Re-check quality
+                quality_or_none = self._check_quality(
+                    all_assignments,
+                    np.array(all_scores),
+                    phase_order,
+                    feature_config,
                 )
-                rho_delta = rho - rho_history[-1] if rho_history else rho
-                # NOTE: rho_history may reflect different feature configs at
-                # different checkpoints if expansion was upgraded mid-loop.
-                # A jump from e.g. 0.93 (order-2) to 0.96 (order-3) is real
-                # progress and the plateau detector correctly sees it as such.
-                rho_history.append(rho)
-                samples_at_check.append(len(all_assignments))
-                logger.info(
-                    "Ridge CV rho=%.4g (%+.4g) at %d samples "
-                    "[order=%d, range=%d]",
-                    rho,
-                    rho_delta,
-                    len(all_assignments),
-                    feature_config.max_order,
-                    feature_config.pairwise_max_range,
-                )
+                if quality_or_none is not None:
+                    quality_delta = (
+                        quality_or_none - quality_history[-1]
+                        if quality_history
+                        else quality_or_none
+                    )
+                    # NOTE: quality_history may reflect different feature configs at
+                    # different checkpoints if expansion was upgraded mid-loop.
+                    # A jump is real progress and the plateau detector correctly
+                    # sees it as such.
+                    quality_history.append(quality_or_none)
+                    samples_at_check.append(len(all_assignments))
+                    logger.info(
+                        "Quality=%.4g (%+.4g) at %d samples "
+                        "[order=%d, range=%d]",
+                        quality_or_none,
+                        quality_delta,
+                        len(all_assignments),
+                        feature_config.max_order,
+                        feature_config.pairwise_max_range,
+                    )
+                else:
+                    # Bayesian stash-only after expansion change
+                    logger.info(
+                        "Bayesian: re-initialized posterior checkpoint (%d samples)",
+                        len(all_assignments),
+                    )
         finally:
             progress_file.close()
             snowball_file.close()
             try:
                 write_meta(
                     progress_path,
-                    progress_meta.model_copy(update={"num_records": len(all_assignments) - n_supplemental}),
+                    progress_meta.model_copy(
+                        update={"num_records": len(all_assignments) - n_supplemental}
+                    ),
                 )
                 write_meta(
                     snowball_path,
-                    snowball_meta.model_copy(update={"num_records": len(all_assignments)}),
+                    snowball_meta.model_copy(
+                        update={"num_records": len(all_assignments)}
+                    ),
                 )
             except Exception:
                 logger.warning("Failed to update sidecar metadata", exc_info=True)
 
         # Build result dataset
-        assert rho_history, (
-            "Quality check was never run — need at least cv_folds samples"
-        )
+        if not quality_history:
+            raise CommandError(
+                "No quality scores computed — increase max_samples beyond "
+                f"min_samples ({self.config.min_samples}) to allow at least "
+                "two quality checkpoints for Bayesian surrogate."
+            )
         dataset = ExplorationDataset(
             assignments=all_assignments,
             scores=all_scores,
-            allocations=all_allocations,
             objective_name=obj_name,
             num_layers=num_layers,
             mixer_names=phase_order,
@@ -692,9 +782,9 @@ class ExplorePlacementsCommand(BaseCommand):
             feature_config=feature_config,
             surrogate_config=self.config.surrogate,
             expansion_result=last_expansion_result,
-            rho_history=rho_history,
+            quality_history=quality_history,
             samples_at_check=samples_at_check,
-            final_rho=rho_history[-1] if rho_history else 0.0,
+            final_quality=quality_history[-1] if quality_history else 0.0,
         )
 
         # Save using result handler
@@ -706,14 +796,107 @@ class ExplorePlacementsCommand(BaseCommand):
 
         logger.info(
             "Exploration complete for %s: %d/%d samples, "
-            "final rho=%.4g, stopped=%s, surrogate=%s",
+            "final quality=%.4g, stopped=%s, surrogate=%s",
             obj_name,
             dataset.num_samples,
             self.config.max_samples,
-            dataset.final_rho,
+            dataset.final_quality,
             dataset.termination_reason,
             self.config.surrogate.surrogate_type,
         )
+
+    def _check_quality(
+        self,
+        assignments: list[tuple[str, ...]],
+        scores: np.ndarray,
+        mixer_names: list[str],
+        feature_config: FeatureExpansionConfig,
+    ) -> float | None:
+        """Compute surrogate quality metric, dispatching by surrogate type.
+
+        Returns float for a real quality value, or None for "stash only"
+        (Bayesian first checkpoint — no previous posterior to score against).
+        """
+        match self.config.surrogate:
+            case BayesianRidgeSurrogateConfig():
+                return self._bayesian_quality_check(
+                    assignments, scores, mixer_names, feature_config,
+                )
+            case RidgeSurrogateConfig() as cfg:
+                return ridge_cv_rho(
+                    assignments=assignments,
+                    scores=scores,
+                    mixer_names=mixer_names,
+                    feature_config=feature_config,
+                    cv_folds=cfg.cv_folds,
+                    seed=self.config.seed,
+                )
+            case other:
+                assert_never(other)
+
+    def _bayesian_quality_check(
+        self,
+        assignments: list[tuple[str, ...]],
+        scores: np.ndarray,
+        mixer_names: list[str],
+        feature_config: FeatureExpansionConfig,
+    ) -> float | None:
+        """Bayesian batch posterior predictive quality check.
+
+        First call (no stashed surrogate): fit and stash, return None.
+        Subsequent calls: score new batch under old posterior, refit in-place.
+        """
+        from place_layers.surrogate.bayesian_ridge import BayesianRidgeSurrogate
+
+        cfg = self.config.surrogate
+        assert isinstance(cfg, BayesianRidgeSurrogateConfig)
+
+        if self._prev_surrogate is None:
+            surrogate = cfg.create_surrogate(
+                mixer_names=mixer_names,
+                seed=self.config.seed,
+                feature_config=feature_config,
+            )
+            if cfg.alpha_selection == "evidence":
+                selected_alpha = surrogate.fit_optimize_alpha(assignments, scores)
+                logger.info("Type-II ML alpha: %.4g", selected_alpha)
+            else:
+                surrogate.fit(assignments, scores)
+            self._prev_surrogate = surrogate
+            return None
+
+        assert isinstance(self._prev_surrogate, BayesianRidgeSurrogate)
+        prev_n = self._prev_surrogate.n_samples
+        quality = float(np.mean(
+            self._prev_surrogate.predictive_logpdf(
+                assignments[prev_n:], scores[prev_n:]
+            )
+        ))
+
+        # Refit in-place on all data for next checkpoint.
+        # fit() is idempotent — fully replaces posterior state.
+        self._prev_surrogate.fit(assignments, scores)
+        return quality
+
+    def _check_target_reached(self, quality: float) -> bool:
+        """Check if quality target is reached (Ridge only; Bayesian has no target)."""
+        match self.config.surrogate:
+            case BayesianRidgeSurrogateConfig():
+                return False
+            case RidgeSurrogateConfig() as cfg:
+                return quality >= cfg.target_rank_correlation
+            case other:
+                assert_never(other)
+
+    def _min_samples_for_quality_check(self) -> int:
+        """Minimum samples before the first quality check."""
+        match self.config.surrogate:
+            case BayesianRidgeSurrogateConfig():
+                return self.config.min_samples  # One full batch
+            case RidgeSurrogateConfig() as cfg:
+                return cfg.cv_folds
+            case other:
+                assert_never(other)
 
     def _select_expansion(
         self,
@@ -739,13 +922,13 @@ class ExplorePlacementsCommand(BaseCommand):
                     max_pairwise_range=self.config.expansion_max_range,
                     max_order=self.config.expansion_max_order,
                 )
-            case RidgeSurrogateConfig():
+            case RidgeSurrogateConfig() as cfg:
                 return select_expansion_ridge_cv(
                     assignments=assignments,
                     scores=scores,
                     mixer_names=mixer_names,
-                    cv_folds=self.config.cv_folds,
-                    target_rho=self.config.target_rank_correlation,
+                    cv_folds=cfg.cv_folds,
+                    target_rho=cfg.target_rank_correlation,
                     max_pairwise_range=self.config.expansion_max_range,
                     max_order=self.config.expansion_max_order,
                     seed=self.config.seed,
@@ -769,6 +952,18 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
 
     command: Literal["explore_placements"] = "explore_placements"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_deprecated_keys(cls, data: Any) -> Any:
+        deprecated = {"cv_folds", "target_rank_correlation"}
+        found = deprecated & set(data) if isinstance(data, dict) else set()
+        if found:
+            raise ValueError(
+                f"Deprecated top-level key(s) {found}. "
+                f"Move into surrogate config (Ridge only)."
+            )
+        return data
+
     backend: BackendConfig | None = Field(
         default=None,
         description="Backend configuration. None for mock evaluators.",
@@ -777,7 +972,12 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     evaluators: EvaluatorsConfig = Field(
         description="Evaluator configuration (single or multiple with aggregation)"
     )
-    problem: ProblemConfig = Field(description="Problem configuration")
+    problem: ProblemConfig | None = Field(
+        default=None,
+        description="Problem configuration. Controls cost-budget filtering of the "
+        "allocation space. Only cost_max_performance is supported (provides "
+        "cost_budget/cost_floor). When null, all allocations are feasible.",
+    )
     cost_model: CostModelConfig = Field(
         description="Cost model for allocation enumeration and sampling weights.",
     )
@@ -800,25 +1000,13 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
     )
 
     # Stopping criteria
-    target_rank_correlation: float = Field(
-        description=(
-            "Stop when Ridge CV Spearman rho reaches this value. "
-            "Also used as the target for expansion level selection."
-        ),
-        gt=0,
-        le=1,
-    )
     plateau_patience: int = Field(
-        description="Stop if rho doesn't improve for this many batches.",
+        description="Stop if quality doesn't improve for this many batches.",
         gt=0,
     )
     plateau_min_improvement: float = Field(
-        description="Minimum rho improvement to count as progress.",
+        description="Minimum quality improvement to count as progress.",
         ge=0,
-    )
-    cv_folds: int = Field(
-        description="Number of cross-validation folds for quality estimation.",
-        gt=1,
     )
 
     seed: int = Field(description="Random seed for reproducibility.")
@@ -858,8 +1046,9 @@ class ExplorePlacementsCommandConfig(BaseCommandConfig):
         description=(
             "Directories containing pre-existing evaluation data to merge "
             "before exploration begins. Each directory is searched recursively "
-            "for evaluations_{obj}.jsonl snowball files. "
-            "Supplemental records are deduplicated against locally-generated progress "
-            "but do not advance the RNG, preserving deterministic resumption."
+            "for evaluation record files (evaluation_records.jsonl or legacy "
+            "evaluations_{obj}.jsonl). Supplemental records are deduplicated "
+            "against locally-generated progress but do not advance the RNG, "
+            "preserving deterministic resumption."
         ),
     )
