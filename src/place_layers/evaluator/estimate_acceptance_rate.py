@@ -361,7 +361,10 @@ class AcceptanceRateEvaluator(BackendEvaluator):
             if not source_dir.exists():
                 logger.warning("Trace source not found: %s", source_dir)
                 continue
-            dataset = TraceDataset.load_from_directory(source_dir)
+            dataset = TraceDataset.load_from_directory(
+                source_dir,
+                include_truncated=self.config.include_truncated,
+            )
             traces.extend(dataset.traces)
             logger.info(
                 "  Loaded %d traces from %s", len(dataset.traces), source_dir
@@ -821,4 +824,13 @@ class AcceptanceRateEvaluatorConfig(BackendEvaluatorConfig):
         "'is_step_acceptance_rate' (unbiased, recommended). "
         "is_step_acceptance_rate uses a compact cache (~MB); the others "
         "require 2x forward passes per evaluation (no caching).",
+    )
+
+    include_truncated: bool = Field(
+        default=False,
+        description="If True, include truncated traces (those that hit the "
+        "max-token limit during generation). By default these are skipped "
+        "because they have incomplete reasoning chains. Useful for "
+        "acceptance rate estimation where only token-level probabilities "
+        "matter, not answer correctness.",
     )

@@ -43,3 +43,8 @@ top_p: ${generation.top_p}
 # Which metric evaluate() returns as the scalar score.
 # Options: token_acceptance_prob, step_acceptance_rate, is_step_acceptance_rate
 score_metric: is_step_acceptance_rate
+
+# Whether to include truncated traces (those that hit the max-token limit).
+# Default false skips them; set true for acceptance rate estimation where
+# only token-level probabilities matter, not answer correctness.
+include_truncated: false

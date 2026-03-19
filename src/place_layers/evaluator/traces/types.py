@@ -484,7 +484,12 @@ class TraceDataset(BaseModel):
         return cls.model_validate_json(path.read_text())
 
     @classmethod
-    def load_from_directory(cls, output_dir: Path) -> "TraceDataset":
+    def load_from_directory(
+        cls,
+        output_dir: Path,
+        *,
+        include_truncated: bool = False,
+    ) -> "TraceDataset":
         """Load dataset from output directory with validation.jsonl.
 
         This loads traces from validation.jsonl created by the streaming
@@ -498,6 +503,8 @@ class TraceDataset(BaseModel):
 
         Args:
             output_dir: Directory containing metadata.json and validation.jsonl.
+            include_truncated: If True, include traces that were truncated
+                (hit max-token limit). Default False skips them.
 
         Returns:
             TraceDataset with all traces from validation.jsonl.
@@ -540,8 +547,7 @@ class TraceDataset(BaseModel):
                         continue
                     try:
                         trace = Trace.model_validate_json(line)
-                        # Skip truncated traces - they have incomplete reasoning
-                        if trace.truncated:
+                        if trace.truncated and not include_truncated:
                             truncated_count += 1
                             continue
                         all_traces.append(trace)
@@ -553,6 +559,10 @@ class TraceDataset(BaseModel):
             logger.warning(f"{malformed} malformed lines ignored in validation.jsonl")
         if truncated_count > 0:
             logger.info(f"{truncated_count} truncated traces skipped (incomplete reasoning)")
+        elif include_truncated:
+            truncated_loaded = sum(1 for t in all_traces if t.truncated)
+            if truncated_loaded > 0:
+                logger.info(f"{truncated_loaded} truncated traces included (include_truncated=True)")
 
         # Infer samples_per_problem if not available from metadata
         if samples_per_problem == 0 and all_traces:
