@@ -25,7 +25,7 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.core.types import LayerPlacement
 from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.result_handler import ResultHandlerConfig
-from place_layers.surrogate.evaluation_log import load_pooled_data
+from place_layers.surrogate.evaluation_log import PooledEvaluationData
 
 logger = logging.getLogger(__name__)
 
@@ -76,18 +76,16 @@ class BatchEvaluateCommand(BaseCommand):
         source_dir = Path(self.config.source_dir)
         logger.info("Loading placements from: %s", source_dir)
 
-        # Find all evaluation data files (exploration_results_*.json and
-        # evaluations_*.jsonl) in the source directory.
-        data_files: list[Path] = sorted(source_dir.glob("exploration_results_*.json"))
-        data_files += sorted(source_dir.glob("evaluations_*.jsonl"))
+        # Find all evaluation log files in the source directory.
+        data_files: list[Path] = sorted(source_dir.glob("evaluations_*.jsonl"))
 
         if not data_files:
             raise FileNotFoundError(
                 f"No evaluation data files found in {source_dir}. "
-                "Expected exploration_results_*.json or evaluations_*.jsonl files."
+                "Expected evaluations_*.jsonl files."
             )
 
-        pooled = load_pooled_data(data_files, deduplicate=True)
+        pooled = PooledEvaluationData.from_jsonl(data_files)
         assignments = pooled.assignments
 
         if self.config.max_placements is not None:
