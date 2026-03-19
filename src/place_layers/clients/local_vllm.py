@@ -399,7 +399,7 @@ class LocalVLLMClient(BaseVLLMClient):
 
         Returns:
             Per-token logprobs for the completion tokens. Positions where
-            logprobs are unavailable use -inf.
+            logprobs are unavailable use NaN.
         """
         from vllm.entrypoints.openai.protocol import (
             CompletionRequest,
@@ -435,7 +435,7 @@ class LocalVLLMClient(BaseVLLMClient):
         prompt_len = len(prompt_tokens)
         completion_len = len(completion_tokens)
         completion_logprobs = token_logprobs[prompt_len : prompt_len + completion_len]
-        return [lp if lp is not None else float("-inf") for lp in completion_logprobs]
+        return [lp if lp is not None else float("nan") for lp in completion_logprobs]
 
     async def score_token_completion(
         self,
