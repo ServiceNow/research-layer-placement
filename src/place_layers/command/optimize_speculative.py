@@ -27,12 +27,19 @@ files (from ``explore_placements`` with an acceptance-rate evaluator).
 Output
 ------
 ``speculative_results_{obj}.json`` and ``speculative_pareto_{obj}.png``
-per objective in the Hydra output dir.
+per objective in the Hydra output dir.  After live validation,
+``speculative_validation_cache.json`` stores measured acceptance rates
+(keyed by draft placement); re-runs in the same output directory reuse
+them when ``gamma``, target cost, ``num_validate``, and evaluator config
+match (see phase-2 logic).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import math
 import time
 from collections import Counter
 from pathlib import Path
@@ -48,7 +55,7 @@ from place_layers.cost_model.base_cost_model import Allocation, BaseCostModel
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator.evaluators import EvaluatorsConfig
 from place_layers.landscape import LandscapeConfig
-from place_layers.landscape.config import objective_result_path
+from place_layers.landscape.config import find_objective_result, objective_result_path
 from place_layers.mrf.solver import ExactMRFSolver
 
 if TYPE_CHECKING:
@@ -97,6 +104,105 @@ class SpeculativeOptimizationResults(BaseModel):
     @classmethod
     def load(cls, path: Path) -> SpeculativeOptimizationResults:
         return cls.model_validate_json(path.read_text())
+
+
+_VALIDATION_CACHE_FILENAME = "speculative_validation_cache.json"
+
+
+class _ValidationCache(BaseModel):
+    """Cached acceptance rates from phase-2 validation."""
+
+    model_config = {"frozen": True, "populate_by_name": True}
+
+    schema_version: Literal[1] = 1
+    gamma: int
+    target_cost: float
+    evaluators_fingerprint: str
+    rates: dict[str, dict[str, float]] = Field(
+        validation_alias="per_objective",
+    )
+    """objective name -> JSON-encoded assignments -> validated acceptance rate."""
+
+
+def _cache_key(assignments: tuple[str, ...]) -> str:
+    return json.dumps(list(assignments))
+
+
+def _evaluators_fingerprint(evals: EvaluatorsConfig) -> str:
+    payload = json.dumps(
+        evals.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()[:32]
+
+
+def _load_cached_rates(
+    output_dir: Path,
+    *,
+    gamma: int,
+    target_cost: float,
+    fingerprint: str,
+    objective_names: list[str],
+) -> dict[str, dict[str, float]]:
+    """Load cached validation rates from cache file or prior speculative_results."""
+    cache_path = output_dir / _VALIDATION_CACHE_FILENAME
+    if cache_path.exists():
+        try:
+            c = _ValidationCache.model_validate_json(cache_path.read_text())
+            if (c.gamma == gamma and c.evaluators_fingerprint == fingerprint
+                    and math.isclose(c.target_cost, target_cost, abs_tol=1e-9)):
+                logger.info("Found speculative validation cache at %s", cache_path)
+                return {k: dict(v) for k, v in c.rates.items()}
+        except Exception:
+            logger.warning("Ignoring invalid validation cache", exc_info=True)
+
+    rates: dict[str, dict[str, float]] = {}
+    for obj_name in objective_names:
+        try:
+            path = find_objective_result(output_dir, "speculative_results", obj_name)
+        except FileNotFoundError:
+            continue
+        results = SpeculativeOptimizationResults.load(path)
+        if results.gamma != gamma or not math.isclose(
+            results.target_cost, target_cost, abs_tol=1e-9,
+        ):
+            continue
+        obj_rates = {
+            _cache_key(c.assignments): c.validated_acceptance_rate
+            for c in results.candidates if c.validated_acceptance_rate is not None
+        }
+        if obj_rates:
+            rates[obj_name] = obj_rates
+    if rates:
+        logger.info("Recovered validation rates from prior speculative_results JSON")
+    return rates
+
+
+def _save_validation_cache(
+    output_dir: Path,
+    *,
+    gamma: int,
+    target_cost: float,
+    fingerprint: str,
+    per_objective: dict[str, list[SpeculativeCandidate]],
+) -> None:
+    rates: dict[str, dict[str, float]] = {}
+    for obj_name, candidates in per_objective.items():
+        obj_rates = {
+            _cache_key(c.assignments): c.validated_acceptance_rate
+            for c in candidates if c.validated_acceptance_rate is not None
+        }
+        if obj_rates:
+            rates[obj_name] = obj_rates
+    if not rates:
+        return
+    path = output_dir / _VALIDATION_CACHE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache = _ValidationCache(
+        gamma=gamma, target_cost=target_cost,
+        evaluators_fingerprint=fingerprint, rates=rates,
+    )
+    path.write_text(cache.model_dump_json(indent=2))
+    logger.info("Saved speculative validation cache -> %s", path)
 
 
 # ============================================================================
@@ -434,58 +540,83 @@ class OptimizeSpeculativeCommand(BaseCommand):
         gamma: int,
         c_t: float,
     ) -> None:
-        """Validate one candidate per cost band (best in each band) with real evaluator."""
+        """Validate candidates per cost band, reusing cached rates when available."""
         from contextlib import nullcontext
 
         from place_layers.core.types import LayerPlacement
 
-        backend_cm = (
-            self.config.backend.create_backend()
-            if self.config.backend
-            else nullcontext()
+        assert self.config.evaluators is not None
+        fingerprint = _evaluators_fingerprint(self.config.evaluators)
+
+        cached = _load_cached_rates(
+            output_dir, gamma=gamma, target_cost=c_t,
+            fingerprint=fingerprint,
+            objective_names=list(per_objective.keys()),
         )
-        async with backend_cm as backend:
-            async with self.config.evaluators.create_evaluators(
-                output_dir, backend=backend,
-            ) as evals:
-                for obj_name, candidates in per_objective.items():
-                    to_validate = self._select_candidates_to_validate_by_region(
-                        candidates, self.config.num_validate
-                    )
-                    logger.info(
-                        "Validating %d candidates (one per cost band) for '%s'...",
-                        len(to_validate),
-                        obj_name,
-                    )
-                    validated_by_assignments: dict[tuple[str, ...], SpeculativeCandidate] = {}
-                    for c in to_validate:
-                        placement = LayerPlacement(assignments=c.assignments)
-                        obj_scores = await evals.evaluate_objectives(
-                            placement, names=[obj_name],
-                        )
-                        real_ar = obj_scores[obj_name]
-                        real_spec = _speculative_cost(
-                            gamma, c.draft_cost, c_t, real_ar,
-                        )
-                        validated_by_assignments[c.assignments] = c.model_copy(
-                            update={
-                                "validated_acceptance_rate": real_ar,
-                                "validated_speculative_cost": real_spec,
-                            }
-                        )
+
+        pending: dict[str, list[SpeculativeCandidate]] = {}
+        for obj_name, candidates in per_objective.items():
+            selected = self._select_candidates_to_validate_by_region(
+                candidates, self.config.num_validate,
+            )
+            uncached = [c for c in selected
+                        if _cache_key(c.assignments) not in cached.get(obj_name, {})]
+            if uncached:
+                pending[obj_name] = uncached
+
+        if not pending:
+            logger.info("All validation data cached; skipping live evaluation.")
+        else:
+            backend_cm = (
+                self.config.backend.create_backend()
+                if self.config.backend else nullcontext()
+            )
+            async with backend_cm as backend:
+                async with self.config.evaluators.create_evaluators(
+                    output_dir, backend=backend,
+                ) as evals:
+                    for obj_name, cand_list in pending.items():
                         logger.info(
-                            "  c_d=%.4f: surr_ar=%.4f  real_ar=%.4f  "
-                            "surr_spec=%.4f  real_spec=%.4f",
-                            c.draft_cost,
-                            c.surrogate_acceptance_rate,
-                            real_ar,
-                            c.speculative_cost,
-                            real_spec,
+                            "Validating %d candidate(s) for '%s'...",
+                            len(cand_list), obj_name,
                         )
-                    per_objective[obj_name] = [
-                        validated_by_assignments.get(c.assignments, c)
-                        for c in candidates
-                    ]
+                        for c in cand_list:
+                            scores = await evals.evaluate_objectives(
+                                LayerPlacement(assignments=c.assignments),
+                                names=[obj_name],
+                            )
+                            real_ar = scores[obj_name]
+                            cached.setdefault(obj_name, {})[
+                                _cache_key(c.assignments)
+                            ] = real_ar
+                            logger.info(
+                                "  c_d=%.4f: surr_ar=%.4f  real_ar=%.4f  "
+                                "surr_spec=%.4f  real_spec=%.4f",
+                                c.draft_cost, c.surrogate_acceptance_rate,
+                                real_ar, c.speculative_cost,
+                                _speculative_cost(gamma, c.draft_cost, c_t, real_ar),
+                            )
+
+        # Apply all rates (cached + newly measured) to candidates
+        for obj_name, candidates in per_objective.items():
+            obj_rates = cached.get(obj_name, {})
+            if not obj_rates:
+                continue
+            per_objective[obj_name] = [
+                c.model_copy(update={
+                    "validated_acceptance_rate": rate,
+                    "validated_speculative_cost": _speculative_cost(
+                        gamma, c.draft_cost, c_t, rate,
+                    ),
+                }) if (rate := obj_rates.get(_cache_key(c.assignments))) is not None
+                else c
+                for c in candidates
+            ]
+
+        _save_validation_cache(
+            output_dir, gamma=gamma, target_cost=c_t,
+            fingerprint=fingerprint, per_objective=per_objective,
+        )
 
     # -- Phase 3: Pareto frontier visualisation ---------------------------------
 
