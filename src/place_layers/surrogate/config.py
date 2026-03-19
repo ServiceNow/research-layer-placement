@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from place_layers.surrogate.encoding import FeatureExpansionConfig, FeatureScaling
 
@@ -102,6 +102,14 @@ class BayesianRidgeSurrogateConfig(BaseSurrogateConfig):
     feature_scaling: FeatureScaling = Field(
         description="Feature scaling mode: none, counts_only, or all.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_alpha_selection(cls, data: object) -> object:
+        """Default alpha_selection to 'fixed' when loading old stored JSON."""
+        if isinstance(data, dict) and "alpha_selection" not in data:
+            data["alpha_selection"] = "fixed"
+        return data
 
     def create_surrogate(
         self,

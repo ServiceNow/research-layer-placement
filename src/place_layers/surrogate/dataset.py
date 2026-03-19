@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.encoding import FeatureExpansionConfig
@@ -52,6 +52,18 @@ class ExplorationDataset(BaseModel):
     quality_history: list[float]
     samples_at_check: list[int]
     final_quality: float
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_renamed_fields(cls, data: object) -> object:
+        """Remap fields renamed in the 2026-03-05 refactor for backward compat."""
+        if not isinstance(data, dict):
+            return data
+        if "quality_history" not in data and "rho_history" in data:
+            data["quality_history"] = data["rho_history"]
+        if "final_quality" not in data and "final_rho" in data:
+            data["final_quality"] = data["final_rho"]
+        return data
 
     @classmethod
     def load(cls, path: Path) -> "ExplorationDataset":
