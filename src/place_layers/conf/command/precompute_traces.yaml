@@ -3,14 +3,20 @@
 #
 # Required config groups (must be specified by user or experiment):
 #   - evaluator@evaluators.configs.<name>: trace_precompute
-#   - backend: vllm, transformers
+#   - backend: vllm (local), transformers, rest (multi-GPU: one serve + local_vllm per GPU)
 #   - task: gsm8k, etc.
 #   - generation: sampling (typically)
 #
-# Usage:
+# Usage (local vLLM):
 #   python -m place_layers +command=precompute_traces \
 #       +evaluator@evaluators.configs.gsm8k=trace_precompute \
 #       +backend=vllm +task=gsm8k +generation=sampling
+#
+# Usage (REST across multiple GPUs — start servers first, then):
+#   python -m place_layers +command=precompute_traces \
+#       +evaluator@evaluators.configs.gsm8k=trace_precompute \
+#       +backend=rest backend.servers='["http://localhost:8080","http://localhost:8081"]' \
+#       +task=gsm8k +generation=sampling
 
 defaults:
   - /objective@evaluators.objective: weighted_average
