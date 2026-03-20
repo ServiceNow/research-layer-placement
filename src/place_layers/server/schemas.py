@@ -120,6 +120,46 @@ ScoreChatResponse = ScoreChatResult
 # =============================================================================
 
 
+# =============================================================================
+# Echo Token Logprobs (for distributed acceptance rate estimation)
+# =============================================================================
+
+
+class EchoTokenLogprobsRequest(BaseModel):
+    """Request for per-token logprobs of completion tokens.
+
+    Used by the REST backend for distributed acceptance rate estimation.
+    The server runs a forward pass on the concatenated prompt+completion
+    and returns the model's log-probability at each completion token.
+    """
+
+    key: str = Field(default="", description="Request identifier")
+    prompt_tokens: list[int] = Field(
+        description="Token IDs for the prompt context"
+    )
+    completion_tokens: list[int] = Field(
+        description="Token IDs for the completion to score"
+    )
+    placement: list[str] | None = Field(
+        default=None,
+        description="Mixer placement for each layer.",
+    )
+
+
+class EchoTokenLogprobsResponse(BaseModel):
+    """Response with per-token logprobs for completion tokens."""
+
+    key: str = Field(description="Request identifier")
+    token_logprobs: list[float] = Field(
+        description="Per-token logprobs for each completion token"
+    )
+
+
+# =============================================================================
+# Server Info
+# =============================================================================
+
+
 class InfoResponse(BaseModel):
     """Server info response."""
 

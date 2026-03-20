@@ -18,6 +18,22 @@
 #   # Use vLLM backend
 #   python -m place_layers +experiments=precompute_traces \
 #       +model=apriel2_0_5b_dev +backend=vllm
+#
+#   # Shell env vars for model/task/backend and a stable output dir (note the
+#   # trailing \ on every line, and expand paths in the shell — do not pass
+#   # '${MODEL}' inside single quotes or OmegaConf will treat it as a config key):
+#   python -m place_layers \
+#       +experiments=precompute_traces \
+#       +backend="${BACKEND}" \
+#       +task="${TASK}" \
+#       +model="${MODEL}" \
+#       +placement=all-attention \
+#       generation.samples_per_problem=1 \
+#       "hydra.run.dir=${OUTPUT_BASE:-outputs}/traces_${MODEL}_${TASK}_${BACKEND}_temp_1_top_1" \
+#       generation.temperature=1.0 \
+#       generation.top_p=1.0 \
+#       generation.max_new_tokens=16384 \
+#       backend.client.max_model_len=32768
 
 defaults:
   - /command: precompute_traces

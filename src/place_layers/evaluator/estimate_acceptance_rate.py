@@ -30,20 +30,20 @@ Three metrics:
 
 The ``score_metric`` config field selects which metric ``evaluate()`` returns.
 
-Supports two backends:
+Supports two backend categories:
 
 - ``TransformersBackend``: All metrics, with optional logits warping
   (temperature, top_p). Requires direct model access for full-vocabulary
   logit tensors.
 
-- ``VLLMBackend``: ``is_step_acceptance_rate`` only, via echo-mode
-  per-token logprobs. No logits warping (assumes vLLM handles sampling
-  config). Much faster for large models via vLLM's optimized inference.
+- Any ``AsyncBackend`` with ``echo_token_logprobs()`` (VLLMBackend,
+  RESTBackend): ``is_step_acceptance_rate`` only, no logits warping.
+  Both share a single async code path. RESTBackend distributes trace
+  scoring across multiple GPU servers for data-parallel evaluation.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -52,6 +52,7 @@ import torch
 import torch.nn.functional as F
 from pydantic import Field
 
+from place_layers.backend.types import BackendError, EchoTokenLogprobsRequest
 from place_layers.evaluator.base_evaluator import BaseEvaluator
 from place_layers.evaluator.backend_evaluator import BackendEvaluator, BackendEvaluatorConfig
 from place_layers.evaluator.progress import create_progress
@@ -61,8 +62,6 @@ from place_layers.core.types import LayerPlacement
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
     from place_layers.backend.transformers import TransformersBackend
-    from place_layers.backend.vllm import VLLMBackend
-    from place_layers.clients.local_vllm import LocalVLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -321,19 +320,20 @@ class AcceptanceRateEvaluator(BackendEvaluator):
     async def __aenter__(self):
         await super().__aenter__()
 
-        from place_layers.backend.vllm import VLLMBackend
+        from place_layers.backend.base import AsyncBackend
 
-        if isinstance(self._backend, VLLMBackend):
+        if isinstance(self._backend, AsyncBackend):
+            backend_name = type(self._backend).__name__
             if self.config.temperature != 1.0:
                 raise ValueError(
                     f"temperature={self.config.temperature} is not supported "
-                    f"with VLLMBackend (logit warping requires raw logits). "
+                    f"with {backend_name} (logit warping requires raw logits). "
                     f"Use temperature=1.0 or switch to TransformersBackend."
                 )
             if self.config.top_p != 1.0:
                 raise ValueError(
                     f"top_p={self.config.top_p} is not supported "
-                    f"with VLLMBackend (logit warping requires raw logits). "
+                    f"with {backend_name} (logit warping requires raw logits). "
                     f"Use top_p=1.0 or switch to TransformersBackend."
                 )
 
@@ -571,109 +571,118 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         }
         return self._last_metrics[self.config.score_metric]
 
-    # -- vLLM scoring (async, no logits warping) -----------------------------
+    # -- Async scoring (vLLM / REST, no logits warping) ----------------------
+    #
+    # Uses the streaming echo_token_logprobs() interface that all AsyncBackend
+    # subclasses expose (same pattern as score_tokens, score_text, etc.).
+    # Concurrency is managed by the backend internally.
 
-    async def _get_trace_token_probs_vllm(
-        self,
-        trace: Trace,
-        client: "LocalVLLMClient",
-    ) -> torch.Tensor:
-        """Get P(actual_token) at each completion position via vLLM echo."""
-        logprobs = await client.get_completion_token_logprobs(
-            list(trace.prompt_tokens),
-            list(trace.completion_tokens),
-        )
-        return torch.tensor(logprobs, dtype=torch.float32).exp()
+    def _make_echo_requests(self) -> list[EchoTokenLogprobsRequest]:
+        """Build echo requests for all traces, keyed by trace index."""
+        return [
+            EchoTokenLogprobsRequest(
+                key=str(i),
+                prompt_tokens=list(t.prompt_tokens),
+                completion_tokens=list(t.completion_tokens),
+            )
+            for i, t in enumerate(self._traces)
+        ]
 
-    async def _build_compact_cache_vllm(self, backend: "VLLMBackend") -> None:
-        """Compute and cache target token probs using vLLM backend."""
-        from place_layers.clients.local_vllm import LocalVLLMClient
-
-        client: LocalVLLMClient = backend._client  # type: ignore[assignment]
-
+    async def _build_compact_cache_async(self, backend: "AsyncBackend") -> None:
+        """Compute and cache target token probs using any async backend."""
+        backend_label = type(backend).__name__
         logger.info(
-            "Caching target token probabilities for %d traces (vLLM)...",
+            "Caching target token probabilities for %d traces (%s)...",
             len(self._traces),
+            backend_label,
         )
         await backend.set_placement(self._target_pl)
-        sem = asyncio.Semaphore(backend.max_concurrent_requests)
+        requests = self._make_echo_requests()
 
-        async def _get_one(trace: Trace) -> torch.Tensor:
-            async with sem:
-                return await self._get_trace_token_probs_vllm(trace, client)
-
+        self._target_at_token_cache = [None] * len(self._traces)
+        skipped = 0
         with create_progress() as progress:
             ptask = progress.add_task(
-                "[cyan]caching target probs (vLLM)",
+                f"[cyan]caching target probs ({backend_label})",
                 total=len(self._traces),
             )
-            tasks = [asyncio.create_task(_get_one(t)) for t in self._traces]
-            self._target_at_token_cache = []
-            skipped = 0
-            for idx, task in enumerate(tasks):
-                result = await task
-                if torch.isnan(result).any():
+            async for result in backend.echo_token_logprobs(requests):
+                if isinstance(result, BackendError):
+                    idx = int(result.key)
                     logger.warning(
-                        "Skipping trace %d: vLLM returned missing logprob(s) (NaN).",
-                        idx,
+                        "Skipping trace %d: %s error: %s",
+                        idx, backend_label, result.message,
                     )
                     skipped += 1
-                    self._target_at_token_cache.append(None)
+                    progress.advance(ptask, 1)
+                    continue
+
+                idx = int(result.key)
+                probs = torch.tensor(result.token_logprobs, dtype=torch.float32).exp()
+                if torch.isnan(probs).any():
+                    logger.warning(
+                        "Skipping trace %d: %s returned missing logprob(s) (NaN).",
+                        idx, backend_label,
+                    )
+                    skipped += 1
                 else:
-                    self._target_at_token_cache.append(result)
+                    self._target_at_token_cache[idx] = probs
                 progress.advance(ptask, 1)
 
         valid_cache = [t for t in self._target_at_token_cache if t is not None]
         if not valid_cache:
             logger.warning(
-                "All %d traces skipped due to missing vLLM logprobs (NaN). "
+                "All %d traces skipped due to missing logprobs (NaN). "
                 "No acceptance rate can be computed.",
                 len(self._traces),
             )
         total_floats = sum(t.numel() for t in valid_cache)
         mem_mb = total_floats * 4 / 1e6
         logger.info(
-            "Target token probs cached: %d traces (%d skipped due to missing logprobs), %.1f MB",
+            "Target token probs cached: %d traces (%d skipped), %.1f MB",
             len(valid_cache),
             skipped,
             mem_mb,
         )
 
-    async def _score_is_only_vllm(
+    async def _score_is_only_async(
         self,
-        backend: "VLLMBackend",
+        backend: "AsyncBackend",
         draft_pl: list[str],
     ) -> float:
-        """Score IS step acceptance rate using vLLM backend."""
-        from place_layers.clients.local_vllm import LocalVLLMClient
-
-        client: LocalVLLMClient = backend._client  # type: ignore[assignment]
-
+        """Score IS step acceptance rate using any async backend."""
+        backend_label = type(backend).__name__
         await backend.set_placement(draft_pl)
-        sem = asyncio.Semaphore(backend.max_concurrent_requests)
         gamma = self.config.gamma
         all_is_step_rates: list[float] = []
-
-        async def _get_one(trace: Trace) -> torch.Tensor:
-            async with sem:
-                return await self._get_trace_token_probs_vllm(trace, client)
+        requests = self._make_echo_requests()
 
         with create_progress() as progress:
             ptask = progress.add_task(
-                "[cyan]draft acceptance rate (vLLM IS)",
+                f"[cyan]draft acceptance rate ({backend_label} IS)",
                 total=len(self._traces),
             )
-            tasks = [asyncio.create_task(_get_one(t)) for t in self._traces]
-            for i, task in enumerate(tasks):
-                d_at = await task
-                t_at = self._target_at_token_cache[i]  # type: ignore[index]
+            async for result in backend.echo_token_logprobs(requests):
+                if isinstance(result, BackendError):
+                    idx = int(result.key)
+                    logger.warning(
+                        "Skipping trace %d: %s error: %s",
+                        idx, backend_label, result.message,
+                    )
+                    progress.advance(ptask, 1)
+                    continue
+
+                idx = int(result.key)
+                d_at = torch.tensor(result.token_logprobs, dtype=torch.float32).exp()
+                t_at = self._target_at_token_cache[idx]  # type: ignore[index]
                 if t_at is None:
                     progress.advance(ptask, 1)
                     continue
                 if torch.isnan(d_at).any():
                     logger.warning(
-                        "Skipping trace %d: vLLM returned missing logprob(s) (NaN) for draft.",
-                        i,
+                        "Skipping trace %d: %s returned missing logprob(s) "
+                        "(NaN) for draft.",
+                        idx, backend_label,
                     )
                     progress.advance(ptask, 1)
                     continue
@@ -693,8 +702,9 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         )
         if not all_is_step_rates:
             logger.warning(
-                "No valid sequences for vLLM acceptance rate (all skipped due to missing logprobs). "
-                "Returning 0.0."
+                "No valid sequences for %s acceptance rate (all skipped). "
+                "Returning 0.0.",
+                backend_label,
             )
         self._last_metrics = {"is_step_acceptance_rate": score}
         return score
@@ -711,8 +721,12 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         The *parameters* argument is the **draft** placement. The target
         placement is fixed in the config.
 
-        Supports both TransformersBackend (all metrics, with logits warping)
-        and VLLMBackend (is_step_acceptance_rate only, no logits warping).
+        Supported backends:
+
+        - **TransformersBackend**: All metrics, with optional logits warping.
+        - **AsyncBackend** (VLLMBackend, RESTBackend):
+          ``is_step_acceptance_rate`` only, no warping. Both expose
+          ``echo_token_logprobs()`` and share a single async code path.
 
         Args:
             parameters: Draft layer placement, or None for default.
@@ -720,8 +734,8 @@ class AcceptanceRateEvaluator(BackendEvaluator):
         Returns:
             The acceptance rate metric selected by ``score_metric``.
         """
+        from place_layers.backend.base import AsyncBackend
         from place_layers.backend.transformers import TransformersBackend
-        from place_layers.backend.vllm import VLLMBackend
 
         if parameters is not None:
             await self._set_placement(parameters)
@@ -731,19 +745,7 @@ class AcceptanceRateEvaluator(BackendEvaluator):
             else list(self._target_pl)
         )
 
-        if isinstance(self._backend, VLLMBackend):
-            if self._needs_full_probs:
-                raise NotImplementedError(
-                    f"score_metric='{self.config.score_metric}' requires full "
-                    f"vocabulary probabilities and is only supported with "
-                    f"TransformersBackend. Use score_metric='is_step_acceptance_rate' "
-                    f"with vLLM."
-                )
-            if self._target_at_token_cache is None:
-                await self._build_compact_cache_vllm(self._backend)
-            score = await self._score_is_only_vllm(self._backend, draft_pl)
-
-        elif isinstance(self._backend, TransformersBackend):
+        if isinstance(self._backend, TransformersBackend):
             if self._needs_full_probs:
                 score = self._score_full_probs(self._backend, draft_pl)
             else:
@@ -751,10 +753,23 @@ class AcceptanceRateEvaluator(BackendEvaluator):
                     self._build_compact_cache(self._backend)
                 score = self._score_is_only(self._backend, draft_pl)
 
+        elif isinstance(self._backend, AsyncBackend):
+            if self._needs_full_probs:
+                raise NotImplementedError(
+                    f"score_metric='{self.config.score_metric}' requires full "
+                    f"vocabulary probabilities and is only supported with "
+                    f"TransformersBackend. Use score_metric='is_step_acceptance_rate' "
+                    f"with {type(self._backend).__name__}."
+                )
+            if self._target_at_token_cache is None:
+                await self._build_compact_cache_async(self._backend)
+            score = await self._score_is_only_async(self._backend, draft_pl)
+
         else:
             raise TypeError(
-                f"AcceptanceRateEvaluator requires TransformersBackend or "
-                f"VLLMBackend, got {type(self._backend).__name__}."
+                f"AcceptanceRateEvaluator requires TransformersBackend or an "
+                f"AsyncBackend (VLLMBackend, RESTBackend), got "
+                f"{type(self._backend).__name__}."
             )
 
         logger.info(

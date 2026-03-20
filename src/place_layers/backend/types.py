@@ -189,6 +189,27 @@ class ScoreTokensResult(BaseModel):
     log_prob: float = Field(description="Total log probability of completion tokens")
 
 
+class EchoTokenLogprobsRequest(BaseModel):
+    """Request to compute per-token logprobs for completion tokens."""
+
+    model_config = {"frozen": True}
+
+    key: str = Field(description="Unique identifier for this request")
+    prompt_tokens: list[int] = Field(description="Token IDs for the prompt context")
+    completion_tokens: list[int] = Field(description="Token IDs for the completion to score")
+
+
+class EchoTokenLogprobsResult(BaseModel):
+    """Result of per-token logprob computation."""
+
+    model_config = {"frozen": True}
+
+    key: str = Field(description="Identifier matching the request")
+    token_logprobs: list[float] = Field(
+        description="Per-token logprobs for each completion token"
+    )
+
+
 class ScoreTextRequest(BaseModel):
     """Request to score text continuations (multiple-choice)."""
 

@@ -20,6 +20,8 @@ from place_layers.backend.types import (
     BackendError,
     ChatMessage,
     ChatScoringElement,
+    EchoTokenLogprobsRequest,
+    EchoTokenLogprobsResult,
     GenerateChatRequest,
     GenerateTextRequest,
     LogProbResult,
@@ -385,6 +387,41 @@ class VLLMBackend(AsyncBackend):
         ):
             yield result
 
+    def echo_token_logprobs(
+        self,
+        requests: Iterable[EchoTokenLogprobsRequest]
+        | AsyncIterable[EchoTokenLogprobsRequest | None],
+    ) -> AsyncIterator[EchoTokenLogprobsResult | BackendError]:
+        """Compute per-token logprobs for completion tokens, yielding as they complete.
+
+        Only available in local mode (requires ``LocalVLLMClient``).
+        Concurrency is managed internally via semaphore.
+        """
+
+        async def process_one(
+            req: EchoTokenLogprobsRequest,
+        ) -> EchoTokenLogprobsResult | BackendError:
+            try:
+                if not isinstance(self._client, LocalVLLMClient):
+                    raise NotImplementedError(
+                        "echo_token_logprobs requires local vLLM client."
+                    )
+                logprobs = await self._client.get_completion_token_logprobs(
+                    req.prompt_tokens, req.completion_tokens
+                )
+                return EchoTokenLogprobsResult(key=req.key, token_logprobs=logprobs)
+            except VLLMBadRequestError as e:
+                logger.warning(f"Bad request for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="bad_request", message=str(e))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="timeout", message=str(e))
+            except aiohttp.ClientError as e:
+                logger.warning(f"Server error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type="server_error", message=str(e))
+
+        return concurrent_map(requests, process_one, self.max_concurrent_requests)
+
     async def set_placement(self, placement: Sequence[str]) -> None:
         """Set mixer placement for Apriel2 supernet model.
 
@@ -401,6 +438,7 @@ class VLLMBackend(AsyncBackend):
 
         await self._client.set_placement(placement_list)
         self._current_placement = placement_list
+
 
 
 class VLLMBackendConfig(BaseBackendConfig):

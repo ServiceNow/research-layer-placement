@@ -20,6 +20,8 @@ from place_layers.backend.base import (
 )
 from place_layers.backend.types import (
     ChatMessage,
+    EchoTokenLogprobsRequest,
+    EchoTokenLogprobsResult,
     GenerateChatRequest,
     GenerateTextRequest,
     LogProbResult,
@@ -575,6 +577,50 @@ class TransformersBackend(SyncBackend):
             return [
                 ScoreTokensResult(key=req.key, log_prob=result.total_log_prob)
                 for req, result in zip(batch, results)
+            ]
+
+        yield from batched_map(
+            requests, process_batch, self._config.batch_size, self._config.flush_timeout
+        )
+
+    def echo_token_logprobs(
+        self,
+        requests: Iterable[EchoTokenLogprobsRequest | None],
+    ) -> Iterator[EchoTokenLogprobsResult]:
+        """Compute per-token logprobs for completion tokens, yielding as batches complete.
+
+        Uses the same batched forward pass as ``score_tokens`` but returns
+        individual per-token logprobs instead of total log probability.
+        """
+
+        def process_batch(
+            batch: list[EchoTokenLogprobsRequest],
+        ) -> list[EchoTokenLogprobsResult]:
+            score_requests = [
+                SequenceScoringRequest(
+                    tokens=list(req.prompt_tokens) + list(req.completion_tokens),
+                    answer_range=(
+                        len(req.prompt_tokens),
+                        len(req.prompt_tokens) + len(req.completion_tokens),
+                    ),
+                )
+                for req in batch
+            ]
+            results = self._score_sequences(score_requests)
+            torch.cuda.empty_cache()
+
+            return [
+                EchoTokenLogprobsResult(
+                    key=req.key,
+                    token_logprobs=[
+                        result.logprobs[pos]
+                        if result.logprobs[pos] is not None
+                        else float("nan")
+                        for pos in range(start, end)
+                    ],
+                )
+                for req, result in zip(batch, results)
+                for start, end in [result.answer_range]
             ]
 
         yield from batched_map(

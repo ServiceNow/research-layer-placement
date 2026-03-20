@@ -11,12 +11,25 @@
 # Target probabilities are cached after the first evaluate() call so
 # subsequent placements only require one forward pass (draft).
 #
-# NOTE: Requires TransformersBackend (direct model access for full logits).
+# Supported backends:
+#   - TransformersBackend: all metrics, with optional logits warping
+#   - VLLMBackend (local): is_step_acceptance_rate only, no warping
+#   - RESTBackend: is_step_acceptance_rate only, no warping (multi-GPU)
 #
-# Example usage with explore_placements:
+# Example usage with explore_placements (single GPU):
 #   python -m place_layers +command=explore_placements \
 #       +evaluator@evaluators.configs.acc_rate=estimate_acceptance_rate \
 #       +backend=transformers +model=apriel2_0_5b_dev \
+#       +problem=cost_max_perf_apriel_15b +generation=sampling
+#
+# Example usage with REST backend (multi-GPU):
+#   # Start servers:
+#   CUDA_VISIBLE_DEVICES=0 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev port=8080
+#   CUDA_VISIBLE_DEVICES=1 python -m place_layers +command=serve +backend=local_vllm +model=apriel2_0_5b_dev port=8081
+#   # Run exploration:
+#   python -m place_layers +command=explore_placements \
+#       +evaluator@evaluators.configs.acc_rate=estimate_acceptance_rate \
+#       +backend=rest backend.servers='["http://localhost:8080","http://localhost:8081"]' \
 #       +problem=cost_max_perf_apriel_15b +generation=sampling
 #
 # Example usage with evaluate (single placement):

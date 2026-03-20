@@ -26,6 +26,8 @@ from tenacity.wait import wait_base
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, concurrent_map
 from place_layers.backend.types import (
     BackendError,
+    EchoTokenLogprobsRequest,
+    EchoTokenLogprobsResult,
     GenerateChatRequest,
     GenerateTextRequest,
     LogProbResult,
@@ -41,6 +43,7 @@ from place_layers.backend.types import (
 )
 from place_layers.clients.types import GenerationResult
 from place_layers.server.schemas import (
+    EchoTokenLogprobsRequest as ServerEchoTokenLogprobsRequest,
     GenerateChatRequest as ServerGenerateChatRequest,
     GenerateTextRequest as ServerGenerateTextRequest,
     ScoreChatRequest as ServerScoreChatRequest,
@@ -930,6 +933,48 @@ class RESTBackend(AsyncBackend):
         """
         self._current_placement = list(placement)
         logger.debug(f"Placement set locally: {self._current_placement}")
+
+    async def echo_token_logprobs(
+        self,
+        requests: Iterable[EchoTokenLogprobsRequest]
+        | AsyncIterable[EchoTokenLogprobsRequest | None],
+    ) -> AsyncIterator[EchoTokenLogprobsResult | BackendError]:
+        """Compute per-token logprobs for completion tokens, yielding as they complete.
+
+        Distributes requests across healthy servers with automatic failover.
+        The current placement (set via ``set_placement``) is included in
+        each request so the server uses the correct mixer configuration.
+
+        Results may arrive in any order. Use request key to join with input.
+        """
+
+        async def process_one(
+            req: EchoTokenLogprobsRequest,
+        ) -> EchoTokenLogprobsResult | BackendError:
+            try:
+                preferred_server = self._server_pool.select_server()
+                server_request = ServerEchoTokenLogprobsRequest(
+                    key=req.key,
+                    prompt_tokens=req.prompt_tokens,
+                    completion_tokens=req.completion_tokens,
+                    placement=self._current_placement,
+                )
+                data = await self._call_with_failover(
+                    "/echo_token_logprobs",
+                    server_request,
+                    preferred_server=preferred_server,
+                )
+                return EchoTokenLogprobsResult(
+                    key=data["key"], token_logprobs=data["token_logprobs"]
+                )
+            except RESTBackendError as e:
+                logger.warning(f"REST error for {req.key}: {e}")
+                return BackendError(key=req.key, error_type=e.error_type, message=str(e))
+
+        async for result in concurrent_map(
+            requests, process_one, self.max_concurrent_requests
+        ):
+            yield result
 
 
 class BaseRESTBackendConfig(BaseBackendConfig):

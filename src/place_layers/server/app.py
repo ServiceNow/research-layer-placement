@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from place_layers.backend import get_model_path
 from place_layers.backend.base import AsyncBackend, BaseBackendConfig, SyncBackend
 from place_layers.backend.types import (
+    EchoTokenLogprobsRequest as BackendEchoTokenLogprobsRequest,
     GenerateChatRequest as BackendGenerateChatRequest,
     GenerateTextRequest as BackendGenerateTextRequest,
     ScoreChatRequest as BackendScoreChatRequest,
@@ -34,6 +35,8 @@ from place_layers.server.adapter import (
     create_adapter,
 )
 from place_layers.server.schemas import (
+    EchoTokenLogprobsRequest,
+    EchoTokenLogprobsResponse,
     GenerateChatRequest,
     GenerateTextRequest,
     HealthResponse,
@@ -381,6 +384,54 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"bad_request: {e}")
         except Exception as e:
             logger.exception("Chat scoring failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # =========================================================================
+    # Echo Token Logprobs (for distributed acceptance rate estimation)
+    # =========================================================================
+
+    @app.post("/echo_token_logprobs", response_model=EchoTokenLogprobsResponse)
+    async def echo_token_logprobs(
+        req: EchoTokenLogprobsRequest,
+    ) -> EchoTokenLogprobsResponse:
+        """Get per-token logprobs for completion tokens.
+
+        Runs a forward pass on the concatenated prompt+completion and returns
+        the model's log-probability at each actual completion token position.
+        Used for distributed acceptance rate estimation via the REST backend.
+
+        Mirrors backend.echo_token_logprobs() with single-request semantics.
+        Server-side batching is handled transparently by the adapter.
+        """
+        if adapter is None or backend is None:
+            raise HTTPException(status_code=503, detail="Backend not initialized")
+
+        try:
+            # Set placement if provided
+            if req.placement is not None:
+                if isinstance(backend, SyncBackend):
+                    backend.set_placement(req.placement)
+                else:
+                    await backend.set_placement(req.placement)
+
+            # Convert to backend request
+            echo_request = BackendEchoTokenLogprobsRequest(
+                key=req.key,
+                prompt_tokens=req.prompt_tokens,
+                completion_tokens=req.completion_tokens,
+            )
+
+            # Score via adapter
+            result = await adapter.echo_token_logprobs_one(echo_request)
+            return EchoTokenLogprobsResponse(
+                key=result.key,
+                token_logprobs=result.token_logprobs,
+            )
+
+        except (ValueError, BackendRequestError) as e:
+            raise HTTPException(status_code=400, detail=f"bad_request: {e}")
+        except Exception as e:
+            logger.exception("echo_token_logprobs failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

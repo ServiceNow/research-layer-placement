@@ -22,6 +22,8 @@ from place_layers.backend.types import BackendError
 if TYPE_CHECKING:
     from place_layers.backend.base import AsyncBackend, SyncBackend
     from place_layers.backend.types import (
+        EchoTokenLogprobsRequest,
+        EchoTokenLogprobsResult,
         GenerateChatRequest,
         GenerateTextRequest,
         ScoreChatRequest,
@@ -95,6 +97,14 @@ class BackendAdapter(ABC):
         request: "ScoreChatRequest",
     ) -> "ScoreChatResult":
         """Score chat completions for a single request."""
+        pass
+
+    @abstractmethod
+    async def echo_token_logprobs_one(
+        self,
+        request: "EchoTokenLogprobsRequest",
+    ) -> "EchoTokenLogprobsResult":
+        """Compute per-token logprobs for a single request."""
         pass
 
 
@@ -216,6 +226,9 @@ class AsyncBackendAdapter(BackendAdapter):
         self._score_chat_bridge: _AsyncStreamingBridge[
             "ScoreChatRequest", "ScoreChatResult | BackendError"
         ] | None = None
+        self._echo_logprobs_bridge: _AsyncStreamingBridge[
+            "EchoTokenLogprobsRequest", "EchoTokenLogprobsResult | BackendError"
+        ] | None = None
 
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -228,6 +241,7 @@ class AsyncBackendAdapter(BackendAdapter):
         self._score_tokens_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
         self._score_text_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
         self._score_chat_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
+        self._echo_logprobs_bridge = _AsyncStreamingBridge(self._heartbeat_interval)
 
         # Start background tasks
         self._tasks = [
@@ -236,6 +250,7 @@ class AsyncBackendAdapter(BackendAdapter):
             asyncio.create_task(self._run_score_tokens(), name="score_tokens"),
             asyncio.create_task(self._run_score_text(), name="score_text"),
             asyncio.create_task(self._run_score_chat(), name="score_chat"),
+            asyncio.create_task(self._run_echo_token_logprobs(), name="echo_token_logprobs"),
         ]
 
         return self
@@ -252,6 +267,8 @@ class AsyncBackendAdapter(BackendAdapter):
             self._score_text_bridge.shutdown()
         if self._score_chat_bridge:
             self._score_chat_bridge.shutdown()
+        if self._echo_logprobs_bridge:
+            self._echo_logprobs_bridge.shutdown()
 
         # Cancel and wait for tasks
         for task in self._tasks:
@@ -318,6 +335,16 @@ class AsyncBackendAdapter(BackendAdapter):
             raise BackendRequestError(result)
         return result
 
+    async def echo_token_logprobs_one(
+        self,
+        request: "EchoTokenLogprobsRequest",
+    ) -> "EchoTokenLogprobsResult":
+        assert self._echo_logprobs_bridge is not None
+        result = await self._echo_logprobs_bridge.submit(request)
+        if isinstance(result, BackendError):
+            raise BackendRequestError(result)
+        return result
+
     # =========================================================================
     # Background Workers
     # =========================================================================
@@ -371,6 +398,18 @@ class AsyncBackendAdapter(BackendAdapter):
         except Exception as e:
             logger.exception("score_chat worker failed")
             await self._score_chat_bridge.deliver_exception(e)
+
+    async def _run_echo_token_logprobs(self) -> None:
+        """Background task: stream echo logprob requests to backend, deliver results."""
+        assert self._echo_logprobs_bridge is not None
+        try:
+            async for result in self._backend.echo_token_logprobs(
+                self._echo_logprobs_bridge
+            ):
+                await self._echo_logprobs_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("echo_token_logprobs worker failed")
+            await self._echo_logprobs_bridge.deliver_exception(e)
 
 
 # =============================================================================
@@ -493,6 +532,9 @@ class SyncBackendAdapter(BackendAdapter):
         self._score_chat_bridge: _StreamingBridge[
             "ScoreChatRequest", "ScoreChatResult"
         ] | None = None
+        self._echo_logprobs_bridge: _StreamingBridge[
+            "EchoTokenLogprobsRequest", "EchoTokenLogprobsResult"
+        ] | None = None
 
         self._workers: list[threading.Thread] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -517,6 +559,9 @@ class SyncBackendAdapter(BackendAdapter):
         self._score_chat_bridge = _StreamingBridge(self._heartbeat_interval)
         self._score_chat_bridge.set_loop(self._loop)
 
+        self._echo_logprobs_bridge = _StreamingBridge(self._heartbeat_interval)
+        self._echo_logprobs_bridge.set_loop(self._loop)
+
         # Start worker threads
         self._workers = [
             threading.Thread(
@@ -533,6 +578,9 @@ class SyncBackendAdapter(BackendAdapter):
             ),
             threading.Thread(
                 target=self._run_score_chat, daemon=True, name="score_chat"
+            ),
+            threading.Thread(
+                target=self._run_echo_token_logprobs, daemon=True, name="echo_token_logprobs"
             ),
         ]
         for worker in self._workers:
@@ -552,6 +600,8 @@ class SyncBackendAdapter(BackendAdapter):
             self._score_text_bridge.shutdown()
         if self._score_chat_bridge:
             self._score_chat_bridge.shutdown()
+        if self._echo_logprobs_bridge:
+            self._echo_logprobs_bridge.shutdown()
 
         # Wait for workers
         for worker in self._workers:
@@ -608,6 +658,15 @@ class SyncBackendAdapter(BackendAdapter):
         self._score_chat_bridge.submit(request, future)
         return await future
 
+    async def echo_token_logprobs_one(
+        self,
+        request: "EchoTokenLogprobsRequest",
+    ) -> "EchoTokenLogprobsResult":
+        assert self._loop is not None and self._echo_logprobs_bridge is not None
+        future: asyncio.Future["EchoTokenLogprobsResult"] = self._loop.create_future()
+        self._echo_logprobs_bridge.submit(request, future)
+        return await future
+
     # =========================================================================
     # Workers
     # =========================================================================
@@ -661,6 +720,16 @@ class SyncBackendAdapter(BackendAdapter):
         except Exception as e:
             logger.exception("score_chat worker failed")
             self._score_chat_bridge.deliver_exception(e)
+
+    def _run_echo_token_logprobs(self) -> None:
+        """Worker thread: stream echo logprob requests to backend, deliver results."""
+        assert self._echo_logprobs_bridge is not None
+        try:
+            for result in self._backend.echo_token_logprobs(self._echo_logprobs_bridge):
+                self._echo_logprobs_bridge.deliver_result(result)
+        except Exception as e:
+            logger.exception("echo_token_logprobs worker failed")
+            self._echo_logprobs_bridge.deliver_exception(e)
 
 
 def create_adapter(

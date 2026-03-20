@@ -34,6 +34,8 @@ from pydantic import BaseModel, Field
 from place_layers.backend.types import (
     BackendError,
     ChatMessage,
+    EchoTokenLogprobsRequest,
+    EchoTokenLogprobsResult,
     GenerateChatRequest,
     GenerateTextRequest,
     ModelStructure,
@@ -828,6 +830,22 @@ class AsyncBackend(ABC):
         """
         pass
 
+    async def echo_token_logprobs(
+        self,
+        requests: Iterable[EchoTokenLogprobsRequest]
+        | AsyncIterable[EchoTokenLogprobsRequest | None],
+    ) -> AsyncIterator[EchoTokenLogprobsResult | BackendError]:
+        """Compute per-token logprobs for completion tokens, yielding as they complete.
+
+        Default implementation raises NotImplementedError.
+        Override in backends that support this operation (e.g., local vLLM).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support echo_token_logprobs"
+        )
+        # Make this a valid async generator
+        yield  # type: ignore[misc]  # pragma: no cover
+
     @abstractmethod
     async def set_placement(self, placement: Sequence[str]) -> None:
         """Set the mixer placement for each layer.
@@ -1001,6 +1019,20 @@ class SyncBackend(ABC):
             ScoreChatResult with key and per-choice results.
         """
         pass
+
+    def echo_token_logprobs(
+        self,
+        requests: Iterable[EchoTokenLogprobsRequest | None],
+    ) -> Iterator[EchoTokenLogprobsResult]:
+        """Compute per-token logprobs for completion tokens, yielding as batches complete.
+
+        Default implementation raises NotImplementedError.
+        Override in backends that support this operation (e.g., Transformers).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support echo_token_logprobs"
+        )
+        yield  # type: ignore[misc]  # pragma: no cover
 
     @abstractmethod
     def set_placement(self, placement: Sequence[str]) -> None:

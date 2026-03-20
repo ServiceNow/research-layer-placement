@@ -27,4 +27,4 @@ num_validate: 0
 # Pareto plot y-axis: "speculative_cost" or "speedup" (c_t / spec_cost)
 pareto_y_axis: speedup
 # Rolling window for "best per cost" smooth curve (odd = symmetric)
-pareto_smooth_window: 5
+pareto_smooth_window: 31
