@@ -118,7 +118,8 @@ class ValidateLandscapeCommand(BaseCommand):
         num_layers = first_dataset.num_layers
 
         all_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None
+            cost_model, num_layers, cost_budget=None,
+            min_layers_per_mixer=landscape.min_layers_per_mixer,
         )
         alloc_costs = np.array(
             [cost_model.allocation_cost(a) for a in all_allocations]
@@ -272,6 +273,7 @@ class ValidateLandscapeCommand(BaseCommand):
                 cost_model=landscape.cost_model,
                 cost_budget=cost_high,
                 cost_floor=cost_low,
+                min_layers_per_mixer=landscape.min_layers_per_mixer,
             )
             problem = CostConstrainedProblem(
                 evaluators=evals, config=problem_config,

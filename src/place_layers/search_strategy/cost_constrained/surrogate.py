@@ -99,7 +99,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
         # Enumerate feasible allocations within budget
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget, cost_floor=cost_floor
+            cost_model, num_layers, cost_budget, cost_floor=cost_floor,
+            min_layers_per_mixer=problem.config.min_layers_per_mixer,
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
 
@@ -156,7 +157,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
         # Enumerate ALL allocations (no budget filter for min_cost)
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor
+            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor,
+            min_layers_per_mixer=problem.config.min_layers_per_mixer,
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
 

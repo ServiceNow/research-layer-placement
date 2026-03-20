@@ -167,7 +167,8 @@ class PlacementLandscapeCommand(BaseCommand):
 
         # Enumerate ALL allocations (no budget filter)
         all_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None
+            cost_model, num_layers, cost_budget=None,
+            min_layers_per_mixer=landscape.min_layers_per_mixer,
         )
         logger.info(
             "Enumerated %d allocations for %d layers",

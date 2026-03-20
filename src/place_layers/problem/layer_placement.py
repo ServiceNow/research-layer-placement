@@ -193,6 +193,14 @@ class BaseCostConstrainedProblemConfig(BaseProblemConfig):
         "null means no lower bound.",
         ge=0,
     )
+    min_layers_per_mixer: int = Field(
+        default=0,
+        description="Minimum number of layers for any active mixer. "
+        "Allocations where a mixer is used but assigned fewer than this many layers "
+        "are excluded. Mixers with 0 layers (unused) are always allowed. "
+        "Set to 0 to disable.",
+        ge=0,
+    )
 
 
 class MaxPerformanceProblemConfig(BaseCostConstrainedProblemConfig):

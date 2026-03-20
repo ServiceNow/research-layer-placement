@@ -77,3 +77,10 @@ class LandscapeConfig(BaseModel):
         "into surrogate training. Each directory is searched per-objective "
         "using the standard naming convention ({obj}/evaluation_records.jsonl, etc.).",
     )
+    min_layers_per_mixer: int = Field(
+        description="Minimum number of layers for any active mixer. "
+        "Allocations where a mixer is used but assigned fewer than this many layers "
+        "are excluded. Mixers with 0 layers (unused) are always allowed. "
+        "Set to 0 to disable.",
+        ge=0,
+    )

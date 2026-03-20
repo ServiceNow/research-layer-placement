@@ -854,6 +854,7 @@ class TestLandscapeConfig:
             num_cost_bins=80,
             surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
+            min_layers_per_mixer=0,
         )
         assert cfg.seed == 42
         assert cfg.num_cost_bins == 80
@@ -868,6 +869,7 @@ class TestLandscapeConfig:
             num_cost_bins=80,
             surrogate=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
             supplemental_data_dirs=[],
+            min_layers_per_mixer=0,
         )
         with pytest.raises(Exception):
             cfg.seed = 99  # type: ignore[misc]
