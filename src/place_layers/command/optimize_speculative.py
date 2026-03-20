@@ -700,10 +700,11 @@ class OptimizeSpeculativeCommand(BaseCommand):
         half = window // 2
         n = len(order)
 
-        # For each position find the argmin spec_cost within the rolling window (best candidate)
+        # For each position find the argmin spec_cost within a symmetric rolling window.
+        # Near the edges, shrink the half-width so the window stays balanced.
         win_argmin = np.array([
-            int(np.argmin(sorted_sc[max(0, i - half):min(n, i + half + 1)]))
-            + max(0, i - half)
+            int(np.argmin(sorted_sc[i - (h := min(half, i, n - 1 - i)):i + h + 1]))
+            + (i - h)
             for i in range(n)
         ])
         smooth_spec = sorted_sc[win_argmin]
@@ -747,21 +748,12 @@ class OptimizeSpeculativeCommand(BaseCommand):
                 label="Posterior \u00b12\u03c3", zorder=1,
             )
 
-        best = candidates[0]
-        best_y = (c_t / best.speculative_cost) if pareto_y_axis == "speedup" else best.speculative_cost
-        ax_scatter.scatter(
-            [best.draft_cost], [best_y],
-            marker="*", s=250, c="tab:red",
-            edgecolors="black", linewidths=0.8, zorder=5,
-            label="Optimum",
-        )
-
         baseline_spec = _speculative_cost(gamma, c_t, c_t, 1.0)
         baseline_y = (c_t / baseline_spec) if pareto_y_axis == "speedup" else baseline_spec
         ax_scatter.axhline(
             baseline_y, color="grey", linestyle="--",
             linewidth=1, alpha=0.6,
-            label=f"Target-only baseline ({baseline_y:.2f})", zorder=1,
+            label="Baseline (Attention Only)", zorder=1,
         )
 
         validated = [
@@ -796,11 +788,6 @@ class OptimizeSpeculativeCommand(BaseCommand):
             )
 
         ax_scatter.set_ylabel(y_label, fontsize=11)
-        ax_scatter.set_title(
-            f"{y_title} ({obj_name}, "
-            fr"$\gamma$={gamma}, c_t={c_t:.2f})",
-            fontsize=12,
-        )
         ax_scatter.legend(fontsize=9, loc="upper right")
         ax_scatter.grid(True, alpha=0.3)
         ax_scatter.tick_params(labelbottom=False)
