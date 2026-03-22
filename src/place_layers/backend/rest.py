@@ -50,19 +50,19 @@ from place_layers.server.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Maximum number of retries when generation returns empty due to KV cache pressure.
-# vLLM may return empty completions with truncated=True when the KV cache block
-# allocator cannot serve a request under concurrent load.
+# Maximum number of retries when generation returns only <unk> tokens.
+# Hybrid models (with GDN/KDA recurrent layers) may produce all-zero token_ids
+# under concurrent load, likely due to recurrent state corruption when chunked
+# prefill interleaves prefill chunks from different requests.
 _EMPTY_GENERATION_MAX_RETRIES = 3
 _EMPTY_GENERATION_RETRY_DELAY = 1.0  # seconds
 
 
-def _is_empty_cache_pressure(result: GenerationResult) -> bool:
-    """Check if a generation result looks like a KV cache pressure failure.
+def _is_empty_generation(result: GenerationResult) -> bool:
+    """Check if a generation result contains only <unk> tokens (empty output).
 
-    When vLLM cannot allocate KV cache blocks for a request, it returns
-    empty text with truncated=True. The token_ids may be zero-padded
-    (e.g., [0, 0, 0, ...]) rather than truly empty.
+    Under concurrent load, hybrid models with recurrent layers may produce
+    all-zero token_ids that decode to empty text. Retrying usually succeeds.
     """
     return all(
         sample.truncated
@@ -744,17 +744,17 @@ class RESTBackend(AsyncBackend):
                         "/generate_chat", server_request, preferred_server=preferred_server
                     )
                     result = GenerationResult.model_validate(data)
-                    if not _is_empty_cache_pressure(result):
+                    if not _is_empty_generation(result):
                         return result
                     if attempt < _EMPTY_GENERATION_MAX_RETRIES - 1:
                         logger.warning(
                             f"Empty generation for {req.key} (attempt {attempt + 1}/"
-                            f"{_EMPTY_GENERATION_MAX_RETRIES}), likely KV cache pressure — retrying"
+                            f"{_EMPTY_GENERATION_MAX_RETRIES}), empty output (likely recurrent state corruption) — retrying"
                         )
                         await asyncio.sleep(_EMPTY_GENERATION_RETRY_DELAY)
                 logger.warning(
                     f"Empty generation for {req.key} after {_EMPTY_GENERATION_MAX_RETRIES} "
-                    f"attempts — KV cache pressure not resolved"
+                    f"attempts — retries exhausted, returning empty result"
                 )
                 return result
             except ValidationError as e:
@@ -803,18 +803,18 @@ class RESTBackend(AsyncBackend):
                         "/generate_text", server_request, preferred_server=preferred_server
                     )
                     result = GenerationResult.model_validate(data)
-                    if not _is_empty_cache_pressure(result):
+                    if not _is_empty_generation(result):
                         return result
                     if attempt < _EMPTY_GENERATION_MAX_RETRIES - 1:
                         logger.warning(
                             f"Empty generation for {req.key} (attempt {attempt + 1}/"
-                            f"{_EMPTY_GENERATION_MAX_RETRIES}), likely KV cache pressure — retrying"
+                            f"{_EMPTY_GENERATION_MAX_RETRIES}), empty output (likely recurrent state corruption) — retrying"
                         )
                         await asyncio.sleep(_EMPTY_GENERATION_RETRY_DELAY)
                 # All retries exhausted — return the last (empty) result
                 logger.warning(
                     f"Empty generation for {req.key} after {_EMPTY_GENERATION_MAX_RETRIES} "
-                    f"attempts — KV cache pressure not resolved"
+                    f"attempts — retries exhausted, returning empty result"
                 )
                 return result
             except ValidationError as e:
