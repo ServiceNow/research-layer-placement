@@ -50,6 +50,27 @@ from place_layers.server.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of retries when generation returns empty due to KV cache pressure.
+# vLLM may return empty completions with truncated=True when the KV cache block
+# allocator cannot serve a request under concurrent load.
+_EMPTY_GENERATION_MAX_RETRIES = 3
+_EMPTY_GENERATION_RETRY_DELAY = 1.0  # seconds
+
+
+def _is_empty_cache_pressure(result: GenerationResult) -> bool:
+    """Check if a generation result looks like a KV cache pressure failure.
+
+    When vLLM cannot allocate KV cache blocks for a request, it returns
+    empty text with truncated=True. The token_ids may be zero-padded
+    (e.g., [0, 0, 0, ...]) rather than truly empty.
+    """
+    return all(
+        sample.truncated
+        and not sample.text
+        and all(tid == 0 for tid in sample.token_ids)
+        for sample in result.samples
+    )
+
 
 class RESTBackendError(Exception):
     """Error communicating with REST server.
@@ -708,8 +729,6 @@ class RESTBackend(AsyncBackend):
             req: GenerateChatRequest,
         ) -> GenerationResult | BackendError:
             try:
-                # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.select_server()
                 server_request = ServerGenerateChatRequest(
                     key=req.key,
                     messages=req.messages,
@@ -719,10 +738,25 @@ class RESTBackend(AsyncBackend):
                     top_p=req.top_p,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover(
-                    "/generate_chat", server_request, preferred_server=preferred_server
+                for attempt in range(_EMPTY_GENERATION_MAX_RETRIES):
+                    preferred_server = self._server_pool.select_server()
+                    data = await self._call_with_failover(
+                        "/generate_chat", server_request, preferred_server=preferred_server
+                    )
+                    result = GenerationResult.model_validate(data)
+                    if not _is_empty_cache_pressure(result):
+                        return result
+                    if attempt < _EMPTY_GENERATION_MAX_RETRIES - 1:
+                        logger.warning(
+                            f"Empty generation for {req.key} (attempt {attempt + 1}/"
+                            f"{_EMPTY_GENERATION_MAX_RETRIES}), likely KV cache pressure — retrying"
+                        )
+                        await asyncio.sleep(_EMPTY_GENERATION_RETRY_DELAY)
+                logger.warning(
+                    f"Empty generation for {req.key} after {_EMPTY_GENERATION_MAX_RETRIES} "
+                    f"attempts — KV cache pressure not resolved"
                 )
-                return GenerationResult.model_validate(data)
+                return result
             except ValidationError as e:
                 logger.warning(f"Invalid server response for {req.key}: {e}")
                 return BackendError(
@@ -753,8 +787,6 @@ class RESTBackend(AsyncBackend):
             req: GenerateTextRequest,
         ) -> GenerationResult | BackendError:
             try:
-                # Get preferred server via round-robin for load distribution
-                preferred_server = self._server_pool.select_server()
                 server_request = ServerGenerateTextRequest(
                     key=req.key,
                     prompt=req.prompt,
@@ -765,10 +797,26 @@ class RESTBackend(AsyncBackend):
                     ignore_eos=req.ignore_eos,
                     placement=self._current_placement,
                 )
-                data = await self._call_with_failover(
-                    "/generate_text", server_request, preferred_server=preferred_server
+                for attempt in range(_EMPTY_GENERATION_MAX_RETRIES):
+                    preferred_server = self._server_pool.select_server()
+                    data = await self._call_with_failover(
+                        "/generate_text", server_request, preferred_server=preferred_server
+                    )
+                    result = GenerationResult.model_validate(data)
+                    if not _is_empty_cache_pressure(result):
+                        return result
+                    if attempt < _EMPTY_GENERATION_MAX_RETRIES - 1:
+                        logger.warning(
+                            f"Empty generation for {req.key} (attempt {attempt + 1}/"
+                            f"{_EMPTY_GENERATION_MAX_RETRIES}), likely KV cache pressure — retrying"
+                        )
+                        await asyncio.sleep(_EMPTY_GENERATION_RETRY_DELAY)
+                # All retries exhausted — return the last (empty) result
+                logger.warning(
+                    f"Empty generation for {req.key} after {_EMPTY_GENERATION_MAX_RETRIES} "
+                    f"attempts — KV cache pressure not resolved"
                 )
-                return GenerationResult.model_validate(data)
+                return result
             except ValidationError as e:
                 logger.warning(f"Invalid server response for {req.key}: {e}")
                 return BackendError(
