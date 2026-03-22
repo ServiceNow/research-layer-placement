@@ -56,6 +56,9 @@ class LocalVLLMClientConfig(BaseModel):
     )
     disable_compile: bool = Field(description="Disable torch.compile")
     enable_prefix_caching: bool = Field(description="Enable prefix caching")
+    enable_chunked_prefill: bool | None = Field(
+        default=None, description="Enable chunked prefill. If None, vLLM decides automatically."
+    )
     attention_backend: str | None = Field(
         default=None,
         description="Attention backend (e.g., 'FLASH_ATTN', 'TRITON_ATTN', 'FLASHINFER'). "
@@ -124,6 +127,8 @@ class LocalVLLMClient(BaseVLLMClient):
             max_model_len=self.config.max_model_len,
             disable_log_stats=True,
             enable_prefix_caching=self.config.enable_prefix_caching,
+            **({"enable_chunked_prefill": self.config.enable_chunked_prefill}
+               if self.config.enable_chunked_prefill is not None else {}),
             enforce_eager=self.config.disable_compile,
             attention_backend=self.config.attention_backend,
             **({"compilation_config": self.config.compilation_config}
