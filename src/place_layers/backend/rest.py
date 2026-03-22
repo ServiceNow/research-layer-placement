@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import Any, ClassVar, Literal, Self, Sequence
@@ -54,8 +55,8 @@ logger = logging.getLogger(__name__)
 # Hybrid models (with GDN/KDA recurrent layers) may produce all-zero token_ids
 # under concurrent load, likely due to recurrent state corruption when chunked
 # prefill interleaves prefill chunks from different requests.
-_EMPTY_GENERATION_MAX_RETRIES = 3
-_EMPTY_GENERATION_RETRY_DELAY = 1.0  # seconds
+_EMPTY_GENERATION_MAX_RETRIES = int(os.environ.get("EMPTY_GENERATION_MAX_RETRIES", "3"))
+_EMPTY_GENERATION_RETRY_DELAY = float(os.environ.get("EMPTY_GENERATION_RETRY_DELAY", "1.0"))
 
 
 def _is_empty_generation(result: GenerationResult) -> bool:
