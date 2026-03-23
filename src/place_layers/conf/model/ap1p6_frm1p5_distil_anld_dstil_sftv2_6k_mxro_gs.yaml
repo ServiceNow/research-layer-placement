@@ -1,0 +1,9 @@
+# @package model
+# Apriel-2 model with 1p6 teacher
+#
+# start from distillation annealed
+# then more distillation with SFTv2 (i.e. 20B full data)
+
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/supernet-distillation-all-sft-data-6000/
+trust_remote_code: true
+torch_dtype: bfloat16
