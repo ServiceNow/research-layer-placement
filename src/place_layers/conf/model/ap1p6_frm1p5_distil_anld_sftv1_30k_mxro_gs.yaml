@@ -2,9 +2,10 @@
 # Apriel-2 model with 1p6 teacher
 #
 # Mixers: attention, gdn, kda, sliding_window
-# from ap1p6_dist_dmx1p5_i5anl1_lr1e-05_lfmse0.5_rkl0.9_fkl0.1_sl16384_iters10000
+# from apriel2_1p6_frm1p5_distil_annealed_sft30k_mixo
 # only mixers
-# see https://wandb.ai/tscholak/apriel/runs/n2dj10t2gjn2261b/overview?nw=nwusertscholak, not annealed
+# global sampling
+# see https://wandb.ai/tscholak/apriel/runs/n2dj10t2gjn2261b/overview?nw=nwusertscholak, not annealed. Annealed checkpoint with SFT only.
 
 model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_cpt_sft1p6_mixonlyfl_lr1e-05_sl32768_iters500000/export/apriel2/30000
 trust_remote_code: true

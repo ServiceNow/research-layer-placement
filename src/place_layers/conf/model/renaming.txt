@@ -1,0 +1,30 @@
+Mar  9 13:15 ap1p6_frm1p5_distil_annealed_cpt10k_mixo_gs.yaml --> ap1p6_frm1p5_distil_anld_cpt10k_mxro_gs
+Mar 20 22:20 ap1p6_frm1p5_distil_annealed_sel6p4_sftv110k.yaml --> ap1p6_frm1p5_distil_anld_sel6p4_sftv1_10k_mxro
+Mar 22 18:11 ap1p6_frm1p5_distil_annealed_sel6p4_sftv112k.yaml --> ap1p6_frm1p5_distil_anld_sel6p4_sftv1_12k_mxro
+Mar 20 22:22 ap1p6_frm1p5_distil_annealed_sel6p4_sftv12k.yaml --> ap1p6_frm1p5_distil_anld_sel6p4_sftv1_2k_mxro
+Mar 20 22:22 ap1p6_frm1p5_distil_annealed_sel6p4_sftv14k.yaml --> ap1p6_frm1p5_distil_anld_sel6p4_sftv1_4k_mxro
+Mar 20 22:22 ap1p6_frm1p5_distil_annealed_sel6p4_sftv16k.yaml --> ap1p6_frm1p5_distil_anld_sel6p4_sftv1_6k_mxro
+Mar 20 21:13 ap1p6_frm1p5_distil_annealed_sft30k_mixo_annld.yaml --> ap1p6_frm1p5_distil_anld_sft30k_mxro_anld
+Jan 13 18:50 apriel2_0_5b_dev.yaml
+Jan 30 18:39 apriel2_1p6_0112.yaml
+Jan 30 18:39 apriel2_1p6_annealed_0113.yaml
+Mar 20 21:07 apriel2_1p6_frm1p5_distil.yaml --> ap1p6_frm1p5_distil
+Mar  2 19:11 apriel2_1p6_frm1p5_distil_annealed.yaml --> ap1p6_frm1p5_distil_anld
+Mar  6 15:06 apriel2_1p6_frm1p5_distil_annealed_cpt10k.yaml --> ap1p6_frm1p5_distil_anld_cptv1_10k_all
+Mar  9 13:03 apriel2_1p6_frm1p5_distil_annealed_cpt10k_mixo.yaml --> ap1p6_frm1p5_distil_anld_cptv1_10k_mxro
+Mar  5 20:47 apriel2_1p6_frm1p5_distil_annealed_cpt40k.yaml --> ap1p6_frm1p5_distil_anld_cptv1_40k_all
+Feb 25 13:14 apriel2_1p6_frm1p5_distil_annealed_pure_attn.yaml --> ap1p6_frm1p5_distil_anld_pure_attn
+Mar 13 18:59 apriel2_1p6_frm1p5_distil_annealed_sft10k_mixo.yaml --> ap1p6_frm1p5_distil_anld_sftv1_10k_mxro
+Mar 16 20:51 apriel2_1p6_frm1p5_distil_annealed_sft30k_mixo.yaml --> ap1p6_frm1p5_distil_anld_sftv1_30k_mxro
+Feb 13 20:42 apriel2_1p6_v2_0202.yaml
+Feb 13 20:42 apriel2_1p6_v2_annealed_0204.yaml
+Jan 30 18:39 apriel2_annealed.yaml
+Jan 30 18:39 apriel_1p5.yaml
+Jan 30 18:39 apriel_1p6.yaml
+
+
+
+Renamed again:
+ap1p6_frm1p5_distil_anld_sft30k_mxro_anld -> ap1p6_frm1p5_distil_anld_sftv1_30k_mxro_gs_anld
+ap1p6_frm1p5_distil_anld_sftv1_10k_mxro -> ap1p6_frm1p5_distil_anld_sftv1_10k_mxro_gs
+ap1p6_frm1p5_distil_anld_sftv1_30k_mxro -> ap1p6_frm1p5_distil_anld_sftv1_30k_mxro_gs
