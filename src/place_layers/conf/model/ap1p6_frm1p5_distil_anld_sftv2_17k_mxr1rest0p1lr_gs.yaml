@@ -1,0 +1,12 @@
+# @package model
+# Apriel-2 model with 1p6 teacher
+#
+# Mixers: attention, gdn, kda, sliding_window
+# only mixers
+# global sampling
+# TRAINED ON FULL 20B DATASET but only 17k steps
+# ap1p6_cpt_sft1p6v2_sftv2mixnorm_lr1e-05_sl32768_iters50000
+
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/"/mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_cpt_sft1p6v2_sftv2mixnorm_lr1e-05_sl32768_iters50000/export/apriel2/17000
+trust_remote_code: true
+torch_dtype: bfloat16
