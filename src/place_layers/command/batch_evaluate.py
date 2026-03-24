@@ -181,6 +181,7 @@ class BatchEvaluateCommandConfig(BaseCommandConfig):
     )
 
     extra_placements: list[tuple[str, ...]] = Field(
+        default_factory=list,
         description=(
             "Additional specific placements to evaluate, appended after placements "
             "loaded from source_dir. Each placement is a tuple of mixer names, one "
