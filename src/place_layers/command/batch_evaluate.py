@@ -77,12 +77,19 @@ class BatchEvaluateCommand(BaseCommand):
         logger.info("Loading placements from: %s", source_dir)
 
         # Find all evaluation log files in the source directory.
-        data_files: list[Path] = sorted(source_dir.glob("evaluations_*.jsonl"))
+        # Supports both naming conventions:
+        #   - evaluations_*.jsonl  (batch_eval / newer explore runs)
+        #   - exploration_progress_*.jsonl  (older explore runs)
+        data_files: list[Path] = sorted(
+            source_dir.glob("evaluations_*.jsonl")
+        ) or sorted(
+            source_dir.glob("exploration_progress_*.jsonl")
+        )
 
         if not data_files:
             raise FileNotFoundError(
                 f"No evaluation data files found in {source_dir}. "
-                "Expected evaluations_*.jsonl files."
+                "Expected evaluations_*.jsonl or exploration_progress_*.jsonl files."
             )
 
         pooled = PooledEvaluationData.from_jsonl(data_files)
