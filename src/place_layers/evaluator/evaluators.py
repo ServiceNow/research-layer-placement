@@ -319,21 +319,24 @@ class EvaluatorsConfig(BaseModel):
             mixer_names: frozenset[str] | None = None
 
             for name, e in evaluators.items():
-                if not hasattr(e, "num_layers"):
+                try:
+                    e_num_layers = e.num_layers
+                    e_mixer_names = e.mixer_names
+                except (AttributeError, RuntimeError):
                     continue
                 if num_layers is None:
-                    num_layers = e.num_layers
-                    mixer_names = e.mixer_names
+                    num_layers = e_num_layers
+                    mixer_names = e_mixer_names
                 else:
-                    if e.num_layers != num_layers:
+                    if e_num_layers != num_layers:
                         raise ValueError(
                             f"Evaluator num_layers mismatch: "
-                            f"{num_layers} vs {e.num_layers}"
+                            f"{num_layers} vs {e_num_layers}"
                         )
-                    if e.mixer_names != mixer_names:
+                    if e_mixer_names != mixer_names:
                         raise ValueError(
                             f"Evaluator mixer_names mismatch: "
-                            f"{mixer_names} vs {e.mixer_names}"
+                            f"{mixer_names} vs {e_mixer_names}"
                         )
 
             if num_layers is not None:
