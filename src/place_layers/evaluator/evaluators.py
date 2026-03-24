@@ -336,21 +336,21 @@ class EvaluatorsConfig(BaseModel):
                             f"{mixer_names} vs {e.mixer_names}"
                         )
 
-            if num_layers is None:
-                # Fallback for evaluators that don't expose num_layers
-                first = next(iter(evaluators.values()))
-                num_layers = first.num_layers
-                mixer_names = first.mixer_names
-
-            assert mixer_names is not None
-
-            logger.info(
-                "Created %d evaluator(s): %s (%d layers, %d mixers)",
-                len(evaluators),
-                list(evaluators.keys()),
-                num_layers,
-                len(mixer_names),
-            )
+            if num_layers is not None:
+                assert mixer_names is not None
+                logger.info(
+                    "Created %d evaluator(s): %s (%d layers, %d mixers)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                    num_layers,
+                    len(mixer_names),
+                )
+            else:
+                logger.info(
+                    "Created %d evaluator(s): %s (model structure not available)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                )
 
             # Create objective from config
             objective = self.objective.create_objective(
