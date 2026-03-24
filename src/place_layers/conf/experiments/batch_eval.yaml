@@ -1,0 +1,28 @@
+# @package _global_
+#
+# Batch-evaluate placements from an explore run, plus the surrogate_search_likelihood_6.4cost
+# placement as an extra reference point.
+#
+# Usage:
+#   python -m place_layers +experiments=batch_eval_surrogate_mix \
+#       +backend=rest \
+#       'command.source_dir="/path/to/explore/output"'
+
+defaults:
+  - /command: batch_evaluate
+  - /evaluators: math_traces
+  - /backend: rest
+  - _self_
+
+command:
+  extra_placements:
+    - ["sliding_window", "gdn", "gdn", "gdn", "gdn", "sliding_window", "kda", "gdn",
+       "sliding_window", "gdn", "sliding_window", "sliding_window", "kda", "gdn",
+       "sliding_window", "sliding_window", "sliding_window", "sliding_window",
+       "sliding_window", "sliding_window", "sliding_window", "sliding_window",
+       "sliding_window", "sliding_window", "sliding_window", "sliding_window",
+       "sliding_window", "sliding_window", "sliding_window", "sliding_window",
+       "sliding_window", "gdn", "sliding_window", "kda", "sliding_window",
+       "sliding_window", "kda", "sliding_window", "gdn", "gdn", "sliding_window",
+       "gdn", "gdn", "sliding_window", "sliding_window", "gdn", "sliding_window",
+       "sliding_window", "kda"]
