@@ -91,6 +91,14 @@ class BatchEvaluateCommand(BaseCommand):
         if self.config.max_placements is not None:
             assignments = assignments[: self.config.max_placements]
 
+        if self.config.extra_placements:
+            assignments = list(assignments) + list(self.config.extra_placements)
+            logger.info(
+                "Added %d extra placements (%d total)",
+                len(self.config.extra_placements),
+                len(assignments),
+            )
+
         logger.info("Loaded %d placements to evaluate", len(assignments))
 
         # --- Evaluate ---
@@ -169,5 +177,13 @@ class BatchEvaluateCommandConfig(BaseCommandConfig):
         description=(
             "Maximum number of placements to evaluate. "
             "None means evaluate all placements found in source_dir."
+        ),
+    )
+
+    extra_placements: list[tuple[str, ...]] = Field(
+        description=(
+            "Additional specific placements to evaluate, appended after placements "
+            "loaded from source_dir. Each placement is a tuple of mixer names, one "
+            "per layer (e.g. ['attention', 'gdn', 'attention', ...])."
         ),
     )

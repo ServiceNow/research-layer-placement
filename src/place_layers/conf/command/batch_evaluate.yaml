@@ -31,3 +31,10 @@ source_dir: ???
 
 # Optional cap on number of placements to evaluate (null = all)
 max_placements: null
+
+# Optional list of extra placements to evaluate in addition to those from source_dir.
+# Each entry is a list of mixer names, one per layer.
+# Example:
+#   extra_placements:
+#     - [attention, gdn, attention, gdn, attention, gdn]
+extra_placements: []
