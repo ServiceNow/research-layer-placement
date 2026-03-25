@@ -34,7 +34,7 @@ Each per-evaluator exploration_results.json contains:
     - assignments: same as aggregated file
     - scores: scores from that evaluator only
     - allocations, num_layers, mixer_names: same as aggregated
-    - rho_history, samples_at_check, final_rho: empty (not recomputed)
+    - quality_history, samples_at_check, final_quality: empty (not recomputed)
 """
 
 from __future__ import annotations
@@ -413,10 +413,10 @@ class ParseMultiEvalResultsCommand(BaseCommand):
                 "num_samples": len(scores),
                 "termination_reason": termination_reason,
                 "feature_config": feature_config,
-                # Leave rho fields empty - not recomputed (set to 0.0 for compatibility)
-                "rho_history": [],
+                # Leave quality fields empty - not recomputed (set to 0.0 for compatibility)
+                "quality_history": [],
                 "samples_at_check": [],
-                "final_rho": 0.0,
+                "final_quality": 0.0,
             }
 
             # Write result file

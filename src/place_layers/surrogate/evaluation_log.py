@@ -4,22 +4,28 @@ Provides:
 - ``EvaluationRecord`` / ``EvaluationLogMeta``: Pydantic models for JSONL
   evaluation logs and their sidecar metadata.
 - ``append_record`` / ``load_records``: write/read individual JSONL files.
-- ``PooledEvaluationData`` / ``load_pooled_data``: merge data from multiple
-  evaluation sources (exploration JSON + evaluation JSONL).
-- ``resolve_supplemental_dirs``: find per-objective snowball JSONL files in
-  a set of directories.
+- ``PooledEvaluationData``: merge data from multiple JSONL evaluation logs
+  (use ``from_jsonl`` classmethod to load, ``merge`` to combine).
+- ``discover_evaluation_records``: find per-objective evaluation record files
+  across directories (supports both new and legacy naming conventions).
 """
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
-from typing import IO, Sequence
+from typing import IO, TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from place_layers.surrogate.dataset import ExplorationDataset
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field, model_validator
 
 logger = logging.getLogger(__name__)
+
+EVALUATION_RECORDS_FILENAME = "evaluation_records.jsonl"
 
 
 # ============================================================================
@@ -30,15 +36,21 @@ logger = logging.getLogger(__name__)
 class EvaluationRecord(BaseModel):
     """Single evaluated placement. One per JSONL line.
 
-    Field names match the existing explore_placements progress format
-    (``assignment``, ``score``, ``allocation``) for backward compatibility.
+    ``allocation`` is computed from ``assignment`` — no need to store it
+    explicitly.  Old JSONL files with a stored ``allocation`` field are
+    silently accepted (the stored value is ignored in favor of the computed
+    one).
     """
 
     model_config = {"frozen": True}
 
     assignment: tuple[str, ...]
     score: float
-    allocation: dict[str, int]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def allocation(self) -> dict[str, int]:
+        return dict(Counter(self.assignment))
 
 
 # ============================================================================
@@ -59,6 +71,9 @@ class EvaluationLogMeta(BaseModel):
     source_detail: str
     created_at: str
     num_records: int | None
+    cost_floor: float | None = None
+    cost_ceiling: float | None = None
+    band_index: int | None = None
 
 
 # ============================================================================
@@ -91,7 +106,7 @@ def load_records(path: Path | str) -> list[EvaluationRecord]:
 
 
 def meta_path_for(jsonl_path: Path) -> Path:
-    """Public helper: ``evaluations_foo.jsonl`` → ``evaluations_foo.meta.yaml``."""
+    """Public helper: ``evaluation_records.jsonl`` → ``evaluation_records.meta.yaml``."""
     stem = jsonl_path.name
     if stem.endswith(".jsonl"):
         stem = stem[: -len(".jsonl")]
@@ -118,15 +133,48 @@ def load_meta(jsonl_path: Path) -> EvaluationLogMeta | None:
 
 
 class PooledEvaluationData(BaseModel):
-    """Merged data from multiple evaluation sources. Immutable view."""
+    """Merged data from multiple evaluation sources. Immutable view.
+
+    Construct via:
+    - ``from_jsonl(paths)`` — load and deduplicate from JSONL files
+    - ``from_exploration(dataset)`` — lift an ``ExplorationDataset``
+    - Direct construction for tests
+    """
 
     model_config = {"frozen": True}
 
     assignments: list[tuple[str, ...]]
     scores: list[float]
-    allocations: list[dict[str, int]]
     num_layers: int
     mixer_names: list[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _enforce_dedup(cls, data: dict) -> dict:
+        assignments = data.get("assignments", [])
+        scores = data.get("scores", [])
+        if not assignments:
+            return data
+        seen: set[tuple[tuple[str, ...], float]] = set()
+        deduped_a: list = []
+        deduped_s: list = []
+        for a, s in zip(assignments, scores):
+            key = (tuple(a), s)
+            if key not in seen:
+                seen.add(key)
+                deduped_a.append(a)
+                deduped_s.append(s)
+        n_removed = len(assignments) - len(deduped_a)
+        if n_removed > 0:
+            logger.info("Deduplication removed %d / %d records", n_removed, len(assignments))
+        data["assignments"] = deduped_a
+        data["scores"] = deduped_s
+        return data
+
+    @property
+    def allocations(self) -> list[dict[str, int]]:
+        """Compute allocations from assignments (never stored)."""
+        return [dict(Counter(a)) for a in self.assignments]
 
     @property
     def num_samples(self) -> int:
@@ -135,123 +183,171 @@ class PooledEvaluationData(BaseModel):
     def as_records(self) -> list[EvaluationRecord]:
         """Convert to list of EvaluationRecord for serialization."""
         return [
-            EvaluationRecord(assignment=a, score=s, allocation=alloc)
-            for a, s, alloc in zip(
-                self.assignments, self.scores, self.allocations, strict=True,
-            )
+            EvaluationRecord(assignment=a, score=s)
+            for a, s in zip(self.assignments, self.scores, strict=True)
         ]
 
+    @classmethod
+    def from_jsonl(cls, paths: Sequence[Path | str]) -> PooledEvaluationData:
+        """Load and merge evaluation data from multiple JSONL files.
 
-def load_pooled_data(
-    paths: Sequence[Path | str],
-    *,
-    deduplicate: bool = True,
-) -> PooledEvaluationData:
-    """Load and merge evaluation data from multiple files.
+        Reads ``.jsonl`` evaluation log files via ``load_records()``.  Metadata
+        (``num_layers``, ``mixer_names``) is obtained from ``.meta.yaml`` sidecars.
+        At least one file must have a sidecar with this information.
 
-    Accepts:
-    - ExplorationDataset ``.json`` files (reads via ``ExplorationDataset.load()``)
-    - Evaluation ``.jsonl`` files (reads records via ``load_records()``)
+        Deduplicates exact ``(assignment, score)`` pairs automatically.
+        """
+        all_assignments: list[tuple[str, ...]] = []
+        all_scores: list[float] = []
+        num_layers: int | None = None
+        mixer_names: list[str] | None = None
 
-    When *deduplicate* is True, removes exact ``(assignment, score)`` duplicates
-    that arise when the same data is loaded from multiple sources.
-    """
-    from place_layers.surrogate.dataset import ExplorationDataset
+        for raw_path in paths:
+            p = Path(raw_path)
+            if not p.exists():
+                logger.warning("Skipping missing evaluation data file: %s", p)
+                continue
 
-    all_assignments: list[tuple[str, ...]] = []
-    all_scores: list[float] = []
-    all_allocations: list[dict[str, int]] = []
-    num_layers: int | None = None
-    mixer_names: list[str] | None = None
+            if p.suffix == ".jsonl":
+                records = load_records(p)
+                for rec in records:
+                    all_assignments.append(rec.assignment)
+                    all_scores.append(rec.score)
+                # Try to get metadata from sidecar
+                if num_layers is None:
+                    meta = load_meta(p)
+                    if meta is not None:
+                        num_layers = meta.num_layers
+                        mixer_names = meta.mixer_names
+            else:
+                logger.warning("Skipping unrecognized file type: %s", p)
+                continue
 
-    for raw_path in paths:
-        p = Path(raw_path)
-        if not p.exists():
-            logger.warning("Skipping missing evaluation data file: %s", p)
-            continue
-
-        if p.suffix == ".json":
-            ds = ExplorationDataset.load(p)
-            all_assignments.extend(ds.assignments)
-            all_scores.extend(ds.scores)
-            all_allocations.extend(ds.allocations)
-            if num_layers is None:
-                num_layers = ds.num_layers
-                mixer_names = ds.mixer_names
-        elif p.suffix == ".jsonl":
-            records = load_records(p)
-            for rec in records:
-                all_assignments.append(rec.assignment)
-                all_scores.append(rec.score)
-                all_allocations.append(rec.allocation)
-            # Try to get metadata from sidecar
-            if num_layers is None:
-                meta = load_meta(p)
-                if meta is not None:
-                    num_layers = meta.num_layers
-                    mixer_names = meta.mixer_names
-        else:
-            logger.warning("Skipping unrecognized file type: %s", p)
-            continue
-
-    if num_layers is None:
-        raise ValueError(
-            "Could not determine num_layers from any loaded file. "
-            f"Paths: {[str(p) for p in paths]}"
-        )
-    assert mixer_names is not None
-
-    if deduplicate:
-        seen: set[tuple[tuple[str, ...], float]] = set()
-        deduped_assignments: list[tuple[str, ...]] = []
-        deduped_scores: list[float] = []
-        deduped_allocations: list[dict[str, int]] = []
-        for a, s, alloc in zip(all_assignments, all_scores, all_allocations):
-            key = (a, s)
-            if key not in seen:
-                seen.add(key)
-                deduped_assignments.append(a)
-                deduped_scores.append(s)
-                deduped_allocations.append(alloc)
-        n_removed = len(all_assignments) - len(deduped_assignments)
-        if n_removed > 0:
-            logger.info(
-                "Deduplication removed %d / %d records",
-                n_removed,
-                len(all_assignments),
+        if num_layers is None:
+            raise ValueError(
+                "Could not determine num_layers from any loaded file. "
+                f"Paths: {[str(p) for p in paths]}"
             )
-        all_assignments = deduped_assignments
-        all_scores = deduped_scores
-        all_allocations = deduped_allocations
+        if mixer_names is None:
+            raise ValueError(
+                "Could not determine mixer_names from any loaded file. "
+                f"Paths: {[str(p) for p in paths]}"
+            )
 
-    return PooledEvaluationData(
-        assignments=all_assignments,
-        scores=all_scores,
-        allocations=all_allocations,
-        num_layers=num_layers,
-        mixer_names=mixer_names,
-    )
+        return cls(
+            assignments=all_assignments,
+            scores=all_scores,
+            num_layers=num_layers,
+            mixer_names=mixer_names,
+        )
+
+    @classmethod
+    def from_exploration(
+        cls, dataset: ExplorationDataset,
+    ) -> PooledEvaluationData:
+        """Create from an ExplorationDataset."""
+        return cls(
+            assignments=list(dataset.assignments),
+            scores=list(dataset.scores),
+            num_layers=dataset.num_layers,
+            mixer_names=list(dataset.mixer_names),
+        )
+
+    def merge(self, other: PooledEvaluationData) -> PooledEvaluationData:
+        """Merge two pools, deduplicating (assignment, score) pairs.
+
+        Self's entries take priority (appear first, preserved on collision).
+        Returns a new frozen instance.
+        """
+        return PooledEvaluationData(
+            assignments=list(self.assignments) + list(other.assignments),
+            scores=list(self.scores) + list(other.scores),
+            num_layers=self.num_layers,
+            mixer_names=self.mixer_names,
+        )
 
 
-def resolve_supplemental_dirs(
+# ============================================================================
+# Discovery
+# ============================================================================
+
+
+def discover_evaluation_records(
     dirs: Sequence[str | Path],
     objective_name: str,
+    *,
+    num_layers: int | None = None,
+    mixer_names: list[str] | None = None,
+    cost_floor: float | None = None,
+    cost_ceiling: float | None = None,
 ) -> list[Path]:
-    """Resolve supplemental directories to per-objective snowball JSONL paths.
+    """Find evaluation record files matching constraints (recursive).
 
-    For each directory, recursively finds ``evaluations_{objective_name}.jsonl``
-    snowball files (sorted by modification time within each directory).
-    Deduplicates by absolute path across directories.
+    For new-convention files (evaluation_records.jsonl): reads companion
+    .meta.yaml sidecar, matches by objective_name and optional constraints.
+    For legacy files (evaluations_{obj}.jsonl): matches by filename.
+
+    Constraint semantics:
+    - objective_name: exact match (required)
+    - num_layers: exact match (if provided)
+    - mixer_names: set equality (if provided)
+    - cost_floor: meta.cost_floor >= this  (files with None cost_floor pass)
+    - cost_ceiling: meta.cost_ceiling <= this  (files with None cost_ceiling pass)
+
+    Cost bound semantics: files without cost bounds (exploration data) are
+    ALWAYS included — they're unscoped.  Files with cost bounds are only
+    included if their range is fully within the requested range.
+
+    Deduplicates by absolute path.  Sorted by modification time.
     """
     files: list[Path] = []
     seen: set[str] = set()
+
     for d in dirs:
-        for f in sorted(
-            Path(d).rglob(f"evaluations_{objective_name}.jsonl"),
-            key=lambda p: p.stat().st_mtime,
-        ):
-            key = str(f.resolve())
-            if key not in seen:
-                files.append(f)
-                seen.add(key)
+        d = Path(d)
+        if not d.exists():
+            continue
+
+        candidates: list[Path] = []
+
+        # New convention: evaluation_records.jsonl with sidecar
+        for f in d.rglob(EVALUATION_RECORDS_FILENAME):
+            candidates.append(f)
+
+        # Legacy convention: evaluations_{objective_name}.jsonl
+        for f in d.rglob(f"evaluations_{objective_name}.jsonl"):
+            candidates.append(f)
+
+        # Sort by modification time within each directory
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+
+        for f in candidates:
+            abs_key = str(f.resolve())
+            if abs_key in seen:
+                continue
+
+            # For new-convention files, check sidecar metadata
+            if f.name == EVALUATION_RECORDS_FILENAME:
+                meta = load_meta(f)
+                if meta is None:
+                    continue
+                if meta.objective_name != objective_name:
+                    continue
+                if num_layers is not None and meta.num_layers != num_layers:
+                    continue
+                if mixer_names is not None and set(meta.mixer_names) != set(mixer_names):
+                    continue
+                # Cost bound filtering
+                if cost_floor is not None and meta.cost_floor is not None:
+                    if meta.cost_floor < cost_floor:
+                        continue
+                if cost_ceiling is not None and meta.cost_ceiling is not None:
+                    if meta.cost_ceiling > cost_ceiling:
+                        continue
+
+            # Legacy files match by filename (already filtered by rglob pattern)
+
+            files.append(f)
+            seen.add(abs_key)
+
     return files

@@ -22,9 +22,28 @@ def objective_result_path(directory: Path, prefix: str, objective_name: str) -> 
     Examples::
 
         objective_result_path(out, "exploration_results", "gsm8k")
-        # -> out / "exploration_results_gsm8k.json"
+        # -> out / "gsm8k" / "exploration_results.json"
     """
-    return directory / f"{prefix}_{objective_name}.json"
+    return directory / objective_name / f"{prefix}.json"
+
+
+def find_objective_result(directory: Path, prefix: str, objective_name: str) -> Path:
+    """Find an objective result file, trying new convention then legacy.
+
+    New convention: ``{directory}/{objective_name}/{prefix}.json``
+    Legacy convention: ``{directory}/{prefix}_{objective_name}.json``
+
+    Raises FileNotFoundError if neither exists.
+    """
+    new = objective_result_path(directory, prefix, objective_name)
+    if new.exists():
+        return new
+    legacy = directory / f"{prefix}_{objective_name}.json"
+    if legacy.exists():
+        return legacy
+    raise FileNotFoundError(
+        f"No result file found at {new} or {legacy}"
+    )
 
 
 class LandscapeConfig(BaseModel):
@@ -41,7 +60,7 @@ class LandscapeConfig(BaseModel):
     )
     explore_output_dir: str = Field(
         description="Path to the output directory from explore_placements "
-        "(contains exploration_results_{obj_name}.json files).",
+        "(contains {obj_name}/exploration_results.json files).",
     )
     seed: int = Field(
         description="Random seed for surrogate fitting and model selection.",
@@ -56,5 +75,12 @@ class LandscapeConfig(BaseModel):
     supplemental_data_dirs: list[str] = Field(
         description="Directories containing additional evaluation data to merge "
         "into surrogate training. Each directory is searched per-objective "
-        "using the standard naming convention (evaluations_{obj}.jsonl, etc.).",
+        "using the standard naming convention ({obj}/evaluation_records.jsonl, etc.).",
+    )
+    min_layers_per_mixer: int = Field(
+        description="Minimum number of layers for any active mixer. "
+        "Allocations where a mixer is used but assigned fewer than this many layers "
+        "are excluded. Mixers with 0 layers (unused) are always allowed. "
+        "Set to 0 to disable.",
+        ge=0,
     )

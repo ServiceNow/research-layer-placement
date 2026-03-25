@@ -10,16 +10,16 @@ from place_layers.command.explore_placements import (
     _check_plateau,
     _compute_cost_uniform_weights,
     _fast_forward_rng,
-    _get_allocation,
     _load_progress,
     _sample_batch,
 )
 from place_layers.surrogate.evaluation_log import (
+    EVALUATION_RECORDS_FILENAME,
     EvaluationLogMeta,
     EvaluationRecord,
+    PooledEvaluationData,
     append_record,
-    load_pooled_data,
-    resolve_supplemental_dirs,
+    discover_evaluation_records,
     write_meta,
 )
 from place_layers.cost_model.enumeration import enumerate_feasible_allocations
@@ -98,11 +98,6 @@ def _make_small_problem(
 
 
 class TestHelpers:
-    def test_get_allocation(self) -> None:
-        assignment = ("m0", "m1", "m0", "m1", "m0")
-        alloc = _get_allocation(assignment)
-        assert alloc == {"m0": 3, "m1": 2}
-
     def testenumerate_feasible_allocations(self) -> None:
         """Should enumerate allocations within budget."""
         config = LinearCostModelConfig(
@@ -199,7 +194,6 @@ class TestHelpers:
         dataset = ExplorationDataset(
             assignments=[("m0", "m1")],
             scores=[0.5],
-            allocations=[{"m0": 1, "m1": 1}],
             objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
@@ -208,10 +202,11 @@ class TestHelpers:
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
+                target_rank_correlation=0.95,
             ),
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[1],
-            final_rho=0.3,
+            final_quality=0.3,
         )
         path = tmp_path / "exploration_results.json"
         path.write_text(dataset.model_dump_json(indent=2))
@@ -219,7 +214,7 @@ class TestHelpers:
         loaded = ExplorationDataset.load(path)
         assert loaded.num_samples == 1
         assert loaded.assignments == [("m0", "m1")]
-        assert loaded.final_rho == 0.3
+        assert loaded.final_quality == 0.3
         assert loaded.objective_name == "weighted_average"
         assert loaded.surrogate_config is not None
         assert loaded.surrogate_config.surrogate_type == "ridge"
@@ -229,17 +224,16 @@ class TestHelpers:
         path = tmp_path / "progress.jsonl"
         with path.open("w") as f:
             append_record(f, EvaluationRecord(
-                assignment=("m0", "m1", "m0"), score=0.75, allocation={"m0": 2, "m1": 1},
+                assignment=("m0", "m1", "m0"), score=0.75,
             ))
             append_record(f, EvaluationRecord(
-                assignment=("m1", "m1", "m0"), score=0.82, allocation={"m0": 1, "m1": 2},
+                assignment=("m1", "m1", "m0"), score=0.82,
             ))
 
-        assignments, scores, allocations = _load_progress(path)
+        assignments, scores = _load_progress(path)
         assert len(assignments) == 2
         assert assignments[0] == ("m0", "m1", "m0")
         assert scores[1] == 0.82
-        assert allocations[0] == {"m0": 2, "m1": 1}
 
 
 # =============================================================================
@@ -292,7 +286,7 @@ class TestExploreIntegration:
             cv_folds=5,
             seed=42,
         )
-        rho_history = [rho1]
+        quality_history = [rho1]
 
         # One more batch
         batch = _sample_batch(batch_size, feasible, num_layers, rng)
@@ -310,19 +304,18 @@ class TestExploreIntegration:
             cv_folds=5,
             seed=42,
         )
-        rho_history.append(rho2)
+        quality_history.append(rho2)
 
         # Assertions
         assert len(all_assignments) == min_samples + batch_size
-        assert rho_history[0] > -1.0  # Sanity: rho is computed
-        assert len(rho_history) == 2
+        assert quality_history[0] > -1.0  # Sanity: rho is computed
+        assert len(quality_history) == 2
 
     async def test_exploration_dataset_serialization(self) -> None:
         """ExplorationDataset should serialize and deserialize correctly."""
         dataset = ExplorationDataset(
             assignments=[("m0", "m1"), ("m1", "m0")],
             scores=[0.5, 0.7],
-            allocations=[{"m0": 1, "m1": 1}, {"m0": 1, "m1": 1}],
             objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
@@ -331,10 +324,11 @@ class TestExploreIntegration:
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=RidgeSurrogateConfig(
                 n_bootstraps=50, ei_xi=0.01, cv_folds=5,
+                target_rank_correlation=0.95,
             ),
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[2],
-            final_rho=0.3,
+            final_quality=0.3,
         )
 
         # Serialize to JSON and back
@@ -356,11 +350,11 @@ class TestExploreIntegration:
             prior_a0=1e-6,
             prior_b0=1e-6,
             feature_scaling="counts_only",
+            alpha_selection="fixed",
         )
         dataset = ExplorationDataset(
             assignments=[("m0", "m1")],
             scores=[0.5],
-            allocations=[{"m0": 1, "m1": 1}],
             objective_name="weighted_average",
             num_layers=2,
             mixer_names=["m0", "m1"],
@@ -368,9 +362,9 @@ class TestExploreIntegration:
             termination_reason="max_samples",
             feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
             surrogate_config=cfg,
-            rho_history=[0.3],
+            quality_history=[0.3],
             samples_at_check=[1],
-            final_rho=0.3,
+            final_quality=0.3,
         )
 
         json_str = dataset.model_dump_json()
@@ -397,7 +391,8 @@ def _write_supplemental_jsonl(
     """Write a supplemental JSONL file with sidecar metadata."""
     if mixer_names is None:
         mixer_names = ["m0", "m1"]
-    path = directory / f"evaluations_{obj_name}.jsonl"
+    path = directory / f"{obj_name}/{EVALUATION_RECORDS_FILENAME}"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as f:
         for rec in records:
             append_record(f, rec)
@@ -428,10 +423,10 @@ class TestSupplementalDataMerge:
         local_progress = local_dir / "exploration_progress_obj.jsonl"
         with local_progress.open("w") as f:
             append_record(f, EvaluationRecord(
-                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+                assignment=("m0", "m1"), score=0.5,
             ))
             append_record(f, EvaluationRecord(
-                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+                assignment=("m1", "m0"), score=0.6,
             ))
 
         # Supplemental dir: 2 different records
@@ -440,29 +435,28 @@ class TestSupplementalDataMerge:
         _write_supplemental_jsonl(
             supp_dir, "obj",
             [
-                EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2, "m1": 0}),
-                EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m0": 0, "m1": 2}),
+                EvaluationRecord(assignment=("m0", "m0"), score=0.4),
+                EvaluationRecord(assignment=("m1", "m1"), score=0.7),
             ],
             num_layers=2,
         )
 
         # Load local progress
-        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        all_assignments, all_scores = _load_progress(local_progress)
         num_local = len(all_assignments)
         assert num_local == 2
 
         # Merge supplemental
-        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
+        supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
         assert len(supplemental_files) > 0
 
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                all_allocations.append(alloc)
-                existing.add((a, s))
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         assert len(all_assignments) == 4
         assert num_local == 2  # unchanged
@@ -477,7 +471,7 @@ class TestSupplementalDataMerge:
         local_progress = local_dir / "exploration_progress_obj.jsonl"
 
         shared_record = EvaluationRecord(
-            assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+            assignment=("m0", "m1"), score=0.5,
         )
         with local_progress.open("w") as f:
             append_record(f, shared_record)
@@ -489,25 +483,23 @@ class TestSupplementalDataMerge:
             supp_dir, "obj",
             [
                 shared_record,
-                EvaluationRecord(assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1}),
+                EvaluationRecord(assignment=("m1", "m0"), score=0.6),
             ],
             num_layers=2,
         )
 
-        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        all_assignments, all_scores = _load_progress(local_progress)
         num_local = len(all_assignments)
 
-        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        n_before = len(all_assignments)
-        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                all_allocations.append(alloc)
-                existing.add((a, s))
-        n_added = len(all_assignments) - n_before
+        supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        n_added = merged.num_samples - local_pooled.num_samples
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         assert num_local == 1
         assert n_added == 1  # only the new record
@@ -555,10 +547,26 @@ class TestSupplementalDataMerge:
         assert batch_local_only == batch_local_plus_supp
 
     def test_nonexistent_supplemental_dir(self, tmp_path: Path) -> None:
-        """resolve_supplemental_dirs returns [] for nonexistent directory."""
+        """discover_evaluation_records returns [] for nonexistent directory."""
         bogus = str(tmp_path / "does_not_exist")
-        files = resolve_supplemental_dirs([bogus], "obj")
+        files = discover_evaluation_records([bogus], "obj")
         assert files == []
+
+    def test_deprecated_top_level_cv_folds_rejected(self) -> None:
+        """ExplorePlacementsCommandConfig rejects deprecated top-level keys."""
+        from pydantic import ValidationError
+        from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+
+        with pytest.raises((ValidationError, ValueError)):
+            ExplorePlacementsCommandConfig(cv_folds=5)  # type: ignore[call-arg]
+
+    def test_deprecated_top_level_target_rank_correlation_rejected(self) -> None:
+        """ExplorePlacementsCommandConfig rejects deprecated target_rank_correlation."""
+        from pydantic import ValidationError
+        from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+
+        with pytest.raises((ValidationError, ValueError)):
+            ExplorePlacementsCommandConfig(target_rank_correlation=0.95)  # type: ignore[call-arg]
 
     def test_empty_supplemental_dirs_skipped(self) -> None:
         """When supplemental_data_dirs is empty, the merge block is skipped."""
@@ -577,10 +585,10 @@ class TestSupplementalDataMerge:
         local_progress = local_dir / "exploration_progress_obj.jsonl"
         with local_progress.open("w") as f:
             append_record(f, EvaluationRecord(
-                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+                assignment=("m0", "m1"), score=0.5,
             ))
             append_record(f, EvaluationRecord(
-                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+                assignment=("m1", "m0"), score=0.6,
             ))
 
         # Supplemental dir: 2 new records
@@ -589,28 +597,25 @@ class TestSupplementalDataMerge:
         _write_supplemental_jsonl(
             supp_dir, "obj",
             [
-                EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2, "m1": 0}),
-                EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m0": 0, "m1": 2}),
+                EvaluationRecord(assignment=("m0", "m0"), score=0.4),
+                EvaluationRecord(assignment=("m1", "m1"), score=0.7),
             ],
             num_layers=2,
         )
 
         # Simulate the merge logic from the command
-        all_assignments, all_scores, all_allocations = _load_progress(local_progress)
+        all_assignments, all_scores = _load_progress(local_progress)
         num_local = len(all_assignments)
-        n_supplemental = 0
 
-        supplemental_files = resolve_supplemental_dirs([str(supp_dir)], "obj")
-        pool = load_pooled_data(supplemental_files, deduplicate=True)
-        existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-        n_before = len(all_assignments)
-        for a, s, alloc in zip(pool.assignments, pool.scores, pool.allocations):
-            if (a, s) not in existing:
-                all_assignments.append(a)
-                all_scores.append(s)
-                all_allocations.append(alloc)
-                existing.add((a, s))
-        n_supplemental = len(all_assignments) - n_before
+        supplemental_files = discover_evaluation_records([str(supp_dir)], "obj")
+        local_pooled = PooledEvaluationData(
+            assignments=all_assignments, scores=all_scores,
+            num_layers=2, mixer_names=["m0", "m1"],
+        )
+        merged = local_pooled.merge(PooledEvaluationData.from_jsonl(supplemental_files))
+        n_supplemental = merged.num_samples - local_pooled.num_samples
+        all_assignments = list(merged.assignments)
+        all_scores = list(merged.scores)
 
         # Sidecar should reflect only local records
         sidecar_num_records = len(all_assignments) - n_supplemental
@@ -636,13 +641,15 @@ class TestSnowballFile:
 
         # Supplemental records (simulating what was loaded from prior runs)
         supp_records = [
-            EvaluationRecord(assignment=("m0", "m0"), score=0.4, allocation={"m0": 2}),
-            EvaluationRecord(assignment=("m1", "m1"), score=0.7, allocation={"m1": 2}),
+            EvaluationRecord(assignment=("m0", "m0"), score=0.4),
+            EvaluationRecord(assignment=("m1", "m1"), score=0.7),
         ]
 
         # Simulate the dual-write flow from explore_placements
-        progress_path = output_dir / f"exploration_progress_{obj_name}.jsonl"
-        snowball_path = output_dir / f"evaluations_{obj_name}.jsonl"
+        obj_dir = output_dir / obj_name
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = obj_dir / "progress.jsonl"
+        snowball_path = obj_dir / EVALUATION_RECORDS_FILENAME
 
         # Write sidecar metadata
         from datetime import datetime, timezone
@@ -674,7 +681,7 @@ class TestSnowballFile:
 
             # Simulate evaluating 1 new local record
             local_record = EvaluationRecord(
-                assignment=("m0", "m1"), score=0.6, allocation={"m0": 1, "m1": 1},
+                assignment=("m0", "m1"), score=0.6,
             )
             append_record(progress_file, local_record)
             append_record(snowball_file, local_record)
@@ -715,8 +722,7 @@ class TestSnowballFile:
         """Chain 3 runs: each snowball accumulates prior data."""
         from place_layers.surrogate.evaluation_log import (
             load_records,
-            load_pooled_data,
-            resolve_supplemental_dirs,
+            discover_evaluation_records,
         )
 
         # --- Run 1: 2 local records, no supplemental ---
@@ -725,10 +731,10 @@ class TestSnowballFile:
         snowball1 = run1_dir / "evaluations_obj.jsonl"
         with snowball1.open("w") as f:
             append_record(f, EvaluationRecord(
-                assignment=("m0", "m1"), score=0.5, allocation={"m0": 1, "m1": 1},
+                assignment=("m0", "m1"), score=0.5,
             ))
             append_record(f, EvaluationRecord(
-                assignment=("m1", "m0"), score=0.6, allocation={"m0": 1, "m1": 1},
+                assignment=("m1", "m0"), score=0.6,
             ))
         write_meta(snowball1, EvaluationLogMeta(
             version=1, objective_name="obj", num_layers=2,
@@ -741,10 +747,10 @@ class TestSnowballFile:
         run2_dir = tmp_path / "run2"
         run2_dir.mkdir()
 
-        supp_files = resolve_supplemental_dirs([str(run1_dir)], "obj")
+        supp_files = discover_evaluation_records([str(run1_dir)], "obj")
         assert len(supp_files) > 0
 
-        pool = load_pooled_data(supp_files, deduplicate=True)
+        pool = PooledEvaluationData.from_jsonl(supp_files)
         assert pool.num_samples == 2
 
         snowball2 = run2_dir / "evaluations_obj.jsonl"
@@ -754,10 +760,10 @@ class TestSnowballFile:
                 append_record(f, rec)
             # Add 2 new local records
             append_record(f, EvaluationRecord(
-                assignment=("m0", "m0"), score=0.4, allocation={"m0": 2},
+                assignment=("m0", "m0"), score=0.4,
             ))
             append_record(f, EvaluationRecord(
-                assignment=("m1", "m1"), score=0.7, allocation={"m1": 2},
+                assignment=("m1", "m1"), score=0.7,
             ))
         write_meta(snowball2, EvaluationLogMeta(
             version=1, objective_name="obj", num_layers=2,
@@ -770,8 +776,8 @@ class TestSnowballFile:
         assert len(load_records(snowball2)) == 4
 
         # --- Run 3: supplemental=[run2], loads all 4 ---
-        supp_files_3 = resolve_supplemental_dirs([str(run2_dir)], "obj")
-        pool3 = load_pooled_data(supp_files_3, deduplicate=True)
+        supp_files_3 = discover_evaluation_records([str(run2_dir)], "obj")
+        pool3 = PooledEvaluationData.from_jsonl(supp_files_3)
         assert pool3.num_samples == 4
         # All 4 assignments present
         all_assignments = set(pool3.assignments)

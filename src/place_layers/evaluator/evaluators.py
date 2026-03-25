@@ -319,38 +319,41 @@ class EvaluatorsConfig(BaseModel):
             mixer_names: frozenset[str] | None = None
 
             for name, e in evaluators.items():
-                if not hasattr(e, "num_layers"):
+                try:
+                    e_num_layers = e.num_layers
+                    e_mixer_names = e.mixer_names
+                except (AttributeError, RuntimeError):
                     continue
                 if num_layers is None:
-                    num_layers = e.num_layers
-                    mixer_names = e.mixer_names
+                    num_layers = e_num_layers
+                    mixer_names = e_mixer_names
                 else:
-                    if e.num_layers != num_layers:
+                    if e_num_layers != num_layers:
                         raise ValueError(
                             f"Evaluator num_layers mismatch: "
-                            f"{num_layers} vs {e.num_layers}"
+                            f"{num_layers} vs {e_num_layers}"
                         )
-                    if e.mixer_names != mixer_names:
+                    if e_mixer_names != mixer_names:
                         raise ValueError(
                             f"Evaluator mixer_names mismatch: "
-                            f"{mixer_names} vs {e.mixer_names}"
+                            f"{mixer_names} vs {e_mixer_names}"
                         )
 
-            if num_layers is None:
-                # Fallback for evaluators that don't expose num_layers
-                first = next(iter(evaluators.values()))
-                num_layers = first.num_layers
-                mixer_names = first.mixer_names
-
-            assert mixer_names is not None
-
-            logger.info(
-                "Created %d evaluator(s): %s (%d layers, %d mixers)",
-                len(evaluators),
-                list(evaluators.keys()),
-                num_layers,
-                len(mixer_names),
-            )
+            if num_layers is not None:
+                assert mixer_names is not None
+                logger.info(
+                    "Created %d evaluator(s): %s (%d layers, %d mixers)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                    num_layers,
+                    len(mixer_names),
+                )
+            else:
+                logger.info(
+                    "Created %d evaluator(s): %s (model structure not available)",
+                    len(evaluators),
+                    list(evaluators.keys()),
+                )
 
             # Create objective from config
             objective = self.objective.create_objective(

@@ -35,14 +35,13 @@ class PlacementResult(BaseModel):
 
 
 class BandValidationResult(BaseModel):
-    """Per-band surrogate DP + validated search results."""
+    """Per-band validated search results."""
 
     model_config = {"frozen": True}
 
     band_index: int
     cost_low: float
     cost_high: float
-    surrogate_dp: PlacementResult
     validated: PlacementResult
     total_evaluations: int
 
@@ -52,8 +51,6 @@ class ValidationSummary(BaseModel):
 
     model_config = {"frozen": True}
 
-    spearman_rho: float
-    mean_residual: float
     total_bands: int
     total_evaluations: int
 

@@ -61,6 +61,7 @@ _SURROGATE_CONFIG_DEFAULTS = dict(
         n_bootstraps=50,
         ei_xi=0.01,
         cv_folds=3,
+        target_rank_correlation=0.95,
     ),
     risk_buckets=None,
 )
@@ -152,17 +153,12 @@ async def _build_exploration_dataset(
 
     assignments: list[tuple[str, ...]] = []
     scores: list[float] = []
-    allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
         scores.append(score)
-        alloc: dict[str, int] = {}
-        for m in assignment:
-            alloc[m] = alloc.get(m, 0) + 1
-        allocations.append(alloc)
 
     rho = ridge_cv_rho(
         assignments=assignments,
@@ -176,16 +172,15 @@ async def _build_exploration_dataset(
     return ExplorationDataset(
         assignments=assignments,
         scores=scores,
-        allocations=allocations,
         objective_name="weighted_average",
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
         feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        rho_history=[rho],
+        quality_history=[rho],
         samples_at_check=[num_samples],
-        final_rho=rho,
+        final_quality=rho,
     )
 
 
@@ -308,32 +303,29 @@ class TestSurrogateSearchIntegration:
 
 
 class TestOptimizeSnowball:
-    """Tests for eval log pre-population with supplemental data in optimize."""
+    """Tests for seed_data_paths: strategy loads seed data separately from eval log."""
 
-    async def test_optimize_snowball(self, tmp_path: Path) -> None:
-        """Pre-populate eval log with supplemental, strategy appends own evals."""
+    async def test_seed_data_paths_loading(self, tmp_path: Path) -> None:
+        """Strategy loads seed data from seed_data_paths; eval log has only strategy records."""
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationLogMeta,
             EvaluationRecord,
             append_record,
-            load_meta,
-            load_pooled_data,
             load_records,
             write_meta,
         )
 
         # --- Write supplemental JSONL with 2 records ---
-        supp_dir = tmp_path / "supplemental"
-        supp_dir.mkdir()
-        supp_jsonl = supp_dir / "evaluations_obj.jsonl"
+        supp_dir = tmp_path / "supplemental" / "obj"
+        supp_dir.mkdir(parents=True)
+        supp_jsonl = supp_dir / EVALUATION_RECORDS_FILENAME
         supp_records = [
             EvaluationRecord(
                 assignment=("m0", "m1") * 6, score=0.5,
-                allocation={"m0": 6, "m1": 6},
             ),
             EvaluationRecord(
                 assignment=("m1", "m0") * 6, score=0.6,
-                allocation={"m0": 6, "m1": 6},
             ),
         ]
         with supp_jsonl.open("w") as f:
@@ -346,67 +338,37 @@ class TestOptimizeSnowball:
             created_at="2026-01-01T00:00:00Z", num_records=2,
         ))
 
-        # --- Simulate optimize pre-population ---
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        eval_log = output_dir / "evaluations_obj.jsonl"
-        supp_paths = [str(supp_jsonl)]
+        # --- Simulate optimize: eval log is output-only, seed data via paths ---
+        output_dir = tmp_path / "output" / "obj"
+        output_dir.mkdir(parents=True)
+        eval_log = output_dir / EVALUATION_RECORDS_FILENAME
 
-        pool = load_pooled_data(
-            [Path(p) for p in supp_paths], deduplicate=True,
-        )
-        n_prepopulated = pool.num_samples
-        assert n_prepopulated == 2
-
-        with eval_log.open("w") as f:
-            for rec in pool.as_records():
-                append_record(f, rec)
-
-        # --- Simulate strategy opening in "a" mode and writing 1 eval ---
-        strategy_meta = EvaluationLogMeta(
+        # Caller writes sidecar metadata
+        write_meta(eval_log, EvaluationLogMeta(
             version=1, objective_name="obj", num_layers=12,
-            mixer_names=["m0", "m1"], source_command="surrogate_search",
-            source_detail="sa_surrogate",
+            mixer_names=["m0", "m1"], source_command="optimize",
+            source_detail="surrogate_search",
             created_at="2026-01-02T00:00:00Z", num_records=None,
-        )
-        write_meta(eval_log, strategy_meta)
+        ))
 
+        # Strategy writes only its own records
         with eval_log.open("a") as f:
             append_record(f, EvaluationRecord(
                 assignment=("m0",) * 12, score=0.8,
-                allocation={"m0": 12},
             ))
-        # Strategy finalizes sidecar
-        write_meta(eval_log, strategy_meta.model_copy(update={"num_records": 1}))
 
-        # --- Simulate optimize post-search sidecar update ---
-        meta = load_meta(eval_log)
-        assert meta is not None
-        write_meta(
-            eval_log,
-            meta.model_copy(update={
-                "source_detail": "merged_snowball",
-                "num_records": (meta.num_records or 0) + n_prepopulated,
-            }),
-        )
-
-        # --- Verify ---
+        # --- Verify: eval log has only strategy records ---
         all_records = load_records(eval_log)
-        assert len(all_records) == 3  # 2 supplemental + 1 own
+        assert len(all_records) == 1
+        assert all_records[0].assignment == ("m0",) * 12
 
-        final_meta = load_meta(eval_log)
-        assert final_meta is not None
-        assert final_meta.num_records == 3
-        assert final_meta.source_detail == "merged_snowball"
-
-    async def test_optimize_snowball_with_search(self, tmp_path: Path) -> None:
-        """Full integration: pre-populate eval log, run search, verify snowball."""
+    async def test_seed_data_paths_with_search(self, tmp_path: Path) -> None:
+        """Full integration: seed_data_paths provides supplemental, eval log is output-only."""
         from place_layers.surrogate.evaluation_log import (
+            EVALUATION_RECORDS_FILENAME,
             EvaluationLogMeta,
             EvaluationRecord,
             append_record,
-            load_meta,
-            load_pooled_data,
             load_records,
             write_meta,
         )
@@ -420,17 +382,14 @@ class TestOptimizeSnowball:
         dataset_path = _save_exploration_dataset(exploration, tmp_path)
 
         # Write supplemental JSONL
-        supp_dir = tmp_path / "supplemental"
-        supp_dir.mkdir()
-        supp_jsonl = supp_dir / "evaluations_weighted_average.jsonl"
+        supp_dir = tmp_path / "supplemental" / "weighted_average"
+        supp_dir.mkdir(parents=True)
+        supp_jsonl = supp_dir / EVALUATION_RECORDS_FILENAME
         supp_records = [
-            EvaluationRecord(
-                assignment=a, score=s, allocation=alloc,
-            )
-            for a, s, alloc in zip(
+            EvaluationRecord(assignment=a, score=s)
+            for a, s in zip(
                 exploration.assignments[:5],
                 exploration.scores[:5],
-                exploration.allocations[:5],
             )
         ]
         with supp_jsonl.open("w") as f:
@@ -443,23 +402,18 @@ class TestOptimizeSnowball:
             created_at="2026-01-01T00:00:00Z", num_records=5,
         ))
 
-        # Pre-populate eval log
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        eval_log = output_dir / "evaluations_weighted_average.jsonl"
+        # Output eval log (output-only)
+        output_dir = tmp_path / "output" / "weighted_average"
+        output_dir.mkdir(parents=True)
+        eval_log = output_dir / EVALUATION_RECORDS_FILENAME
 
-        pool = load_pooled_data([supp_jsonl], deduplicate=True)
-        n_prepopulated = pool.num_samples
-        with eval_log.open("w") as f:
-            for rec in pool.as_records():
-                append_record(f, rec)
-
-        # Run search (strategy opens in "a" mode)
+        # Run search with seed_data_paths
         config = SurrogateSearchConfig(
             **{
                 **_SURROGATE_CONFIG_DEFAULTS,
                 "exploration_dataset_path": str(dataset_path),
                 "evaluation_log_path": str(eval_log),
+                "seed_data_paths": [str(supp_jsonl)],
             }
         )
         strategy = config.create_search_strategy()
@@ -467,22 +421,6 @@ class TestOptimizeSnowball:
 
         assert result is not None
 
-        # Update sidecar
-        meta = load_meta(eval_log)
-        if meta is not None:
-            write_meta(
-                eval_log,
-                meta.model_copy(update={
-                    "source_detail": "merged_snowball",
-                    "num_records": (meta.num_records or 0) + n_prepopulated,
-                }),
-            )
-
-        # Verify: eval log has supplemental + strategy's own evals
+        # Verify: eval log has ONLY strategy records (no pre-populated data)
         all_records = load_records(eval_log)
-        assert len(all_records) == n_prepopulated + result.total_evaluations
-
-        final_meta = load_meta(eval_log)
-        assert final_meta is not None
-        assert final_meta.num_records == n_prepopulated + result.total_evaluations
-        assert final_meta.source_detail == "merged_snowball"
+        assert len(all_records) == result.total_evaluations

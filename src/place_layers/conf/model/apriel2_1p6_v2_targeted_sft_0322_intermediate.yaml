@@ -1,0 +1,8 @@
+# @package model
+# Apriel-2 1p6 targeted SFT (03/22): SFT, `surogate_search_lieklihood_6p4cost` placement.
+# Mixers: attention, gdn, kda, sliding_window
+
+step: 2000
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_cpt_sft1p6_sftsels1_tp8_lr1e-05_sl32768_iters15000/export/apriel2_text/${.step}/
+trust_remote_code: true
+torch_dtype: bfloat16

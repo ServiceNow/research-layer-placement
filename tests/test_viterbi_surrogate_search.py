@@ -55,6 +55,7 @@ _VITERBI_CONFIG_DEFAULTS = dict(
         n_bootstraps=50,
         ei_xi=0.01,
         cv_folds=3,
+        target_rank_correlation=0.95,
     ),
 )
 
@@ -145,17 +146,12 @@ async def _build_exploration_dataset(
 
     assignments: list[tuple[str, ...]] = []
     scores: list[float] = []
-    allocations: list[dict[str, int]] = []
 
     for assignment in batch:
         placement = LayerPlacement(assignments=tuple(assignment))
         score = await evaluator.evaluate(placement)
         assignments.append(tuple(assignment))
         scores.append(score)
-        alloc: dict[str, int] = {}
-        for m in assignment:
-            alloc[m] = alloc.get(m, 0) + 1
-        allocations.append(alloc)
 
     rho = ridge_cv_rho(
         assignments=assignments,
@@ -169,17 +165,16 @@ async def _build_exploration_dataset(
     return ExplorationDataset(
         assignments=assignments,
         scores=scores,
-        allocations=allocations,
         objective_name="weighted_average",
         num_layers=num_layers,
         mixer_names=cost_model.phase_order,
         num_samples=num_samples,
         termination_reason="max_samples",
         feature_config=FeatureExpansionConfig(max_order=1, pairwise_max_range=1, allocation_counts=True),
-        rho_history=[rho],
+        quality_history=[rho],
         samples_at_check=[num_samples],
-        final_rho=rho,
-        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5),
+        final_quality=rho,
+        surrogate_config=RidgeSurrogateConfig(n_bootstraps=50, ei_xi=0.01, cv_folds=5, target_rank_correlation=0.95),
     )
 
 
@@ -294,6 +289,7 @@ class TestViterbiSurrogateSearchIntegration:
                 prior_a0=1e-6,
                 prior_b0=1e-6,
                 feature_scaling="none",
+                alpha_selection="fixed",
             ),
             risk_buckets=[
                 RiskBucketConfig(name="safe", sign=-1, betas=[0.0, 1.0], quota=0.6, mean_floor_quantile=0.0),
@@ -335,6 +331,7 @@ class TestRiskBucketValidation:
                 prior_a0=1e-6,
                 prior_b0=1e-6,
                 feature_scaling="none",
+                alpha_selection="fixed",
             ),
         )
         defaults.update(overrides)

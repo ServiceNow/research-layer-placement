@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from place_layers.surrogate.config import SurrogateConfig
 from place_layers.surrogate.encoding import FeatureExpansionConfig
@@ -20,12 +21,16 @@ class ExplorationDataset(BaseModel):
     command produces M independent datasets.
     """
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "extra": "ignore"}
 
     # Data
     assignments: list[tuple[str, ...]]
     scores: list[float]
-    allocations: list[dict[str, int]]
+
+    @property
+    def allocations(self) -> list[dict[str, int]]:
+        """Compute allocations from assignments (never stored)."""
+        return [dict(Counter(a)) for a in self.assignments]
 
     # Which objective this dataset is for
     objective_name: str
@@ -44,9 +49,21 @@ class ExplorationDataset(BaseModel):
     expansion_result: ExpansionSelectionResult | None = None
 
     # Learning curve
-    rho_history: list[float]
+    quality_history: list[float]
     samples_at_check: list[int]
-    final_rho: float
+    final_quality: float
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_renamed_fields(cls, data: object) -> object:
+        """Remap fields renamed in the 2026-03-05 refactor for backward compat."""
+        if not isinstance(data, dict):
+            return data
+        if "quality_history" not in data and "rho_history" in data:
+            data["quality_history"] = data["rho_history"]
+        if "final_quality" not in data and "final_rho" in data:
+            data["final_quality"] = data["final_rho"]
+        return data
 
     @classmethod
     def load(cls, path: Path) -> "ExplorationDataset":

@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import random
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, assert_never
 
@@ -55,6 +54,7 @@ from place_layers.surrogate.config import (
 from place_layers.surrogate.dataset import ExplorationDataset
 from place_layers.surrogate.evaluation_log import (
     EvaluationRecord,
+    PooledEvaluationData,
     append_record,
 )
 
@@ -99,7 +99,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
         # Enumerate feasible allocations within budget
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget, cost_floor=cost_floor
+            cost_model, num_layers, cost_budget, cost_floor=cost_floor,
+            min_layers_per_mixer=problem.config.min_layers_per_mixer,
         )
         logger.debug("Found %d feasible allocations", len(feasible_allocations))
 
@@ -156,7 +157,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
         # Enumerate ALL allocations (no budget filter for min_cost)
         feasible_allocations = enumerate_feasible_allocations(
-            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor
+            cost_model, num_layers, cost_budget=None, cost_floor=cost_floor,
+            min_layers_per_mixer=problem.config.min_layers_per_mixer,
         )
         logger.debug("Found %d total allocations", len(feasible_allocations))
 
@@ -243,41 +245,28 @@ class SurrogateSearch(BaseCostConstrainedSearch):
         rng = random.Random(self.config.sa.seed)
         mixer_names = cost_model.phase_order
 
-        # Load exploration dataset
+        # Load exploration dataset + seed data
         exploration = ExplorationDataset.load(
             Path(self.config.exploration_dataset_path)
         )
-        all_assignments: list[tuple[str, ...]] = list(exploration.assignments)
-        all_scores: list[float] = list(exploration.scores)
-        logger.info(
-            "Loaded exploration dataset: %d samples, rho=%.4f",
-            len(all_assignments),
-            exploration.final_rho,
-        )
-
-        # Read pre-seeded records from evaluation log (written by command)
         eval_log_path = (
             Path(self.config.evaluation_log_path)
             if self.config.evaluation_log_path
             else None
         )
-        if eval_log_path is not None and eval_log_path.exists():
-            from place_layers.surrogate.evaluation_log import load_records
-
-            existing_records = load_records(eval_log_path)
-            if existing_records:
-                n_before = len(all_assignments)
-                existing = {(a, s) for a, s in zip(all_assignments, all_scores)}
-                for rec in existing_records:
-                    if (rec.assignment, rec.score) not in existing:
-                        all_assignments.append(rec.assignment)
-                        all_scores.append(rec.score)
-                        existing.add((rec.assignment, rec.score))
-                logger.info(
-                    "Loaded %d pre-seeded records from eval log (%d new after dedup)",
-                    len(existing_records),
-                    len(all_assignments) - n_before,
-                )
+        pooled = PooledEvaluationData.from_exploration(exploration)
+        if self.config.seed_data_paths:
+            pooled = pooled.merge(
+                PooledEvaluationData.from_jsonl(self.config.seed_data_paths)
+            )
+        all_assignments: list[tuple[str, ...]] = list(pooled.assignments)
+        all_scores: list[float] = list(pooled.scores)
+        logger.info(
+            "Loaded %d samples (exploration: %d, quality=%.4f)",
+            len(all_assignments),
+            exploration.num_samples,
+            exploration.final_quality,
+        )
 
         # Emit dataset loaded event
         if self.observers:
@@ -285,33 +274,16 @@ class SurrogateSearch(BaseCostConstrainedSearch):
 
             dataset_event = SurrogateDatasetLoadedEvent(
                 num_samples=len(all_assignments),
-                exploration_rho=exploration.final_rho,
+                exploration_quality=exploration.final_quality,
             )
             for observer in self.observers:
                 observer.on_surrogate_dataset_loaded(dataset_event)
 
         # Open evaluation log for appending strategy's own evaluations
-        from place_layers.surrogate.evaluation_log import (
-            EvaluationLogMeta,
-            write_meta,
-        )
-
         eval_log_file = None
-        eval_record_count = 0
 
         if eval_log_path is not None:
             eval_log_path.parent.mkdir(parents=True, exist_ok=True)
-            meta = EvaluationLogMeta(
-                version=1,
-                objective_name=exploration.objective_name,
-                num_layers=num_layers,
-                mixer_names=list(mixer_names),
-                source_command="surrogate_search",
-                source_detail="sa_surrogate",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                num_records=None,
-            )
-            write_meta(eval_log_path, meta)
             eval_log_file = eval_log_path.open("a")
 
         try:
@@ -417,10 +389,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                         record = EvaluationRecord(
                             assignment=candidate,
                             score=score,
-                            allocation=alloc,
                         )
                         append_record(eval_log_file, record)
-                        eval_record_count += 1
 
                     is_new_best = False
                     if score > f_best:
@@ -476,11 +446,19 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                 # Step 5: Refit surrogate
                 surrogate.fit(all_assignments, np.array(all_scores))
 
-                folds = self.config.surrogate.cv_folds if isinstance(self.config.surrogate, RidgeSurrogateConfig) else None
-                diag = surrogate.diagnostics(
-                    all_assignments, np.array(all_scores),
-                    folds=folds, rng_seed=self.config.sa.seed or 0,
-                )
+                match self.config.surrogate:
+                    case RidgeSurrogateConfig(cv_folds=cv_folds):
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=cv_folds, rng_seed=self.config.sa.seed or 0,
+                        )
+                    case BayesianRidgeSurrogateConfig():
+                        diag = surrogate.diagnostics(
+                            all_assignments, np.array(all_scores),
+                            folds=None, rng_seed=self.config.sa.seed or 0,
+                        )
+                    case other:
+                        assert_never(other)
                 label, value = diag.summary()
                 logger.debug(
                     "Round %d complete: best=%.6f, %s=%.4f, pred_corr=%.4f",
@@ -511,21 +489,8 @@ class SurrogateSearch(BaseCostConstrainedSearch):
                         observer.on_surrogate_round_completed(round_completed_event)
 
         finally:
-            # Close evaluation log and update metadata with record count
             if eval_log_file is not None:
                 eval_log_file.close()
-                if eval_log_path is not None and eval_record_count > 0:
-                    meta_final = EvaluationLogMeta(
-                        version=1,
-                        objective_name=exploration.objective_name,
-                        num_layers=num_layers,
-                        mixer_names=list(mixer_names),
-                        source_command="surrogate_search",
-                        source_detail="sa_surrogate",
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                        num_records=eval_record_count,
-                    )
-                    write_meta(eval_log_path, meta_final)
 
         return all_assignments, all_scores
 

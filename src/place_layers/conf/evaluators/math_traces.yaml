@@ -1,0 +1,48 @@
+# @package evaluators
+# Math trace-likelihood evaluators only (AIME24, AIME25, MATH500).
+# Uses pre-computed teacher traces for importance-weighted evaluation.
+
+configs:
+  aime24:
+    evaluator_type: trace_likelihood
+    # Override on CLI: evaluators.configs.aime24.trace_sources=["/path/to/traces"]
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___6c6925a94744/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -5505.176779   # Baseline log-likelihood (worst expected performance)
+      high: -1137.852662   # Target log-likelihood (best expected performance)
+
+  aime25:
+    evaluator_type: trace_likelihood
+    # Override on CLI: evaluators.configs.aime25.trace_sources=["/path/to/traces"]
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_very_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_very_very_long,+placement=layer___238038b71fe0/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -4945.062467   # Baseline log-likelihood (worst expected performance)
+      high: -988.175923   # Target log-likelihood (best expected performance)
+
+  math500:
+    evaluator_type: trace_likelihood
+    # Override on CLI: evaluators.configs.math500.trace_sources=["/path/to/traces"]
+    trace_sources:
+      - /mnt/datasets/traces_w_likelihood/Apriel-1.6-15b-Thinker_Distilled_Supernet/math_traces_long/+backend=rest,+command=precompute_traces,+evaluator=trace_precompute,+generation=greedy_long,+placement=layer_0,+task=ma__06aaccefec24/a48/
+    # Optional per-task weights (null = equal weighting)
+    task_weights: null
+    normalization:
+      type: linear
+      low: -549.356176   # Baseline log-likelihood (worst expected performance)
+      high: -176.630313   # Target log-likelihood (best expected performance)
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    aime24: 0.333
+    aime25: 0.333
+    math500: 0.333

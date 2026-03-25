@@ -12,3 +12,4 @@ surrogate:
   n_bootstraps: 50
   ei_xi: 0.01
 supplemental_data_dirs: []
+min_layers_per_mixer: 3
