@@ -1,0 +1,52 @@
+# @package evaluators
+# Four-task acceptance-rate validation for Apriel2.
+
+configs:
+  aime24:
+    evaluator_type: estimate_acceptance_rate
+    trace_sources: ???
+    target_placement: ["attention"]
+    gamma: 8
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    score_metric: is_step_acceptance_rate
+    include_truncated: false
+
+  aime25:
+    evaluator_type: estimate_acceptance_rate
+    trace_sources: ???
+    target_placement: ["attention"]
+    gamma: 8
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    score_metric: is_step_acceptance_rate
+    include_truncated: false
+
+  gsm8k:
+    evaluator_type: estimate_acceptance_rate
+    trace_sources: ???
+    target_placement: ["attention"]
+    gamma: 8
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    score_metric: is_step_acceptance_rate
+    include_truncated: false
+
+  math_500:
+    evaluator_type: estimate_acceptance_rate
+    trace_sources: ???
+    target_placement: ["attention"]
+    gamma: 8
+    temperature: ${generation.temperature}
+    top_p: ${generation.top_p}
+    score_metric: is_step_acceptance_rate
+    include_truncated: false
+
+objective:
+  objective_type: weighted_average
+  include_individual: false
+  weights:
+    aime24: 0.25
+    aime25: 0.25
+    gsm8k: 0.25
+    math_500: 0.25

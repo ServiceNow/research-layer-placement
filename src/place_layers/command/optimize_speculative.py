@@ -504,6 +504,24 @@ class OptimizeSpeculativeCommand(BaseCommand):
     # -- Phase 2: validation with real evaluator --------------------------------
 
     @staticmethod
+    async def _evaluate_objective_sequential(
+        evals,
+        placement,
+        obj_name: str,
+    ) -> float:
+        """Evaluate one objective without concurrent evaluator calls.
+
+        This is used only for phase-2 validation in optimize_speculative.
+        It avoids races when multiple evaluators sharing one backend mutate
+        backend placement state internally during evaluate().
+        """
+        needed = sorted(evals.objective.required_evaluators(obj_name))
+        evaluator_scores: dict[str, float] = {}
+        for name in needed:
+            evaluator_scores[name] = await evals.evaluators[name].evaluate(placement)
+        return evals.objective.objectives(evaluator_scores)[obj_name]
+
+    @staticmethod
     def _select_candidates_to_validate_by_region(
         candidates: list[SpeculativeCandidate],
         k: int,
@@ -581,11 +599,11 @@ class OptimizeSpeculativeCommand(BaseCommand):
                             len(cand_list), obj_name,
                         )
                         for c in cand_list:
-                            scores = await evals.evaluate_objectives(
+                            real_ar = await self._evaluate_objective_sequential(
+                                evals,
                                 LayerPlacement(assignments=c.assignments),
-                                names=[obj_name],
+                                obj_name,
                             )
-                            real_ar = scores[obj_name]
                             cached.setdefault(obj_name, {})[
                                 _cache_key(c.assignments)
                             ] = real_ar
@@ -689,7 +707,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
             s=30,
             alpha=0.7,
             edgecolors="none",
-            zorder=2,
+            zorder=1,
         )
         fig.colorbar(sc, cax=cax, label="Surrogate acceptance rate")
 
@@ -745,7 +763,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
             ax_scatter.fill_between(
                 sorted_dc, y_lo, y_hi,
                 alpha=0.15, color="tab:red",
-                label="Posterior \u00b12\u03c3", zorder=1,
+                label="Posterior \u00b12\u03c3", zorder=2,
             )
 
         baseline_spec = _speculative_cost(gamma, c_t, c_t, 1.0)
