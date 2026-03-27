@@ -1,0 +1,9 @@
+# @package model
+# Apriel-2 model with 1p6 teacher
+#
+# Mixers: attention, gdn, kda, sliding_window
+# https://wandb.ai/tscholak/apriel/runs/mxjbhjm9nih3dv4g?nw=nwusertscholak
+
+model_path: /mnt/checkpoints/fast_llm_exp/apriel_train/ap1p6_cpt_sft1p6v2_sftv2sesupern1_anl_lr1e-05_sl32768_iters20000/export/apriel2/5000/
+trust_remote_code: true
+torch_dtype: bfloat16
