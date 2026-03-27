@@ -1,0 +1,10 @@
+# @package task
+# GPQA Diamond - Graduate-level science questions (multiple choice)
+# Uses the "diamond" subset (highest quality, 198 questions)
+
+tasks:
+  - gpqa_diamond_zeroshot
+
+num_fewshot: 0
+max_problems_per_task: null
+split: test

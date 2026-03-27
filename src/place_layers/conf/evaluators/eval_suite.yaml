@@ -1,0 +1,249 @@
+# @package evaluators
+# Full eval suite: 12 evaluators running in parallel within a single process.
+# All evaluators share one REST backend (server pool + semaphore).
+# When a fast task finishes, remaining tasks naturally absorb the freed bandwidth.
+#
+# Usage:
+#   python -m place_layers +command=evaluate +evaluators=eval_suite +backend=rest \
+#       backend.servers='["http://host:8080"]' +placement=all-attention
+#
+# Task filtering (remove unwanted evaluators):
+#   ~evaluators.configs.mmlu ~evaluators.configs.ruler
+#
+# Override per-evaluator settings:
+#   evaluators.configs.mmlu.max_problems_per_task=10
+#   evaluators.configs.math500.max_new_tokens=15000
+
+defaults:
+  - /task@aime25_task: aime25_strip_end
+  - /task@aime24_task: aime24_strip_end
+  - /task@math500_task: math_500_strip_end
+  - /task@gsm8k_task: gsm8k_strip_end
+  - /task@ruler_task: ruler_qa_squad
+  - /task@niah_task: niah_single_2
+  - /task@mmlu_task: mmlu
+  - /task@swde_task: swde
+  - /task@fda_task: fda
+  - /task@gpqa_task: gpqa_diamond
+  - /task@mmlu_pro_task: mmlu_pro
+  - /task@ifeval_task: ifeval
+
+configs:
+  # ── Math / Reasoning (generative, long generation) ──────────────────────
+
+  aime25:
+    evaluator_type: generative
+    tasks: ${evaluators.aime25_task.tasks}
+    num_fewshot: ${evaluators.aime25_task.num_fewshot}
+    max_problems_per_task: ${evaluators.aime25_task.max_problems_per_task}
+    split: ${evaluators.aime25_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 90000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  aime24:
+    evaluator_type: generative
+    tasks: ${evaluators.aime24_task.tasks}
+    num_fewshot: ${evaluators.aime24_task.num_fewshot}
+    max_problems_per_task: ${evaluators.aime24_task.max_problems_per_task}
+    split: ${evaluators.aime24_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 90000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  math500:
+    evaluator_type: generative
+    tasks: ${evaluators.math500_task.tasks}
+    num_fewshot: ${evaluators.math500_task.num_fewshot}
+    max_problems_per_task: ${evaluators.math500_task.max_problems_per_task}
+    split: ${evaluators.math500_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 15000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  gsm8k:
+    evaluator_type: generative
+    tasks: ${evaluators.gsm8k_task.tasks}
+    num_fewshot: ${evaluators.gsm8k_task.num_fewshot}
+    max_problems_per_task: ${evaluators.gsm8k_task.max_problems_per_task}
+    split: ${evaluators.gsm8k_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 15000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  # ── RULER / NIAH (generative, short generation, synthetic contexts) ─────
+
+  ruler:
+    evaluator_type: generative
+    tasks: ${evaluators.ruler_task.tasks}
+    num_fewshot: ${evaluators.ruler_task.num_fewshot}
+    max_problems_per_task: ${evaluators.ruler_task.max_problems_per_task}
+    split: ${evaluators.ruler_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 512
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: [8192, 16384]
+
+  niah:
+    evaluator_type: generative
+    tasks: ${evaluators.niah_task.tasks}
+    num_fewshot: ${evaluators.niah_task.num_fewshot}
+    max_problems_per_task: ${evaluators.niah_task.max_problems_per_task}
+    split: ${evaluators.niah_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 512
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: "Importantly: provide the final response directly, without presenting your reasoning !!!!!"
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: ServiceNow-AI/Apriel-1.6-15b-Thinker
+    max_seq_lengths: 16384
+
+  # ── MMLU (likelihood, no generation) ────────────────────────────────────
+
+  mmlu:
+    evaluator_type: likelihood
+    tasks: ${evaluators.mmlu_task.tasks}
+    num_fewshot: ${evaluators.mmlu_task.num_fewshot}
+    max_problems_per_task: ${evaluators.mmlu_task.max_problems_per_task}
+    split: ${evaluators.mmlu_task.split}
+    use_chat_template: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  # ── Extraction (generative, very short generation, raw text) ────────────
+
+  swde:
+    evaluator_type: generative
+    tasks: ${evaluators.swde_task.tasks}
+    num_fewshot: ${evaluators.swde_task.num_fewshot}
+    max_problems_per_task: ${evaluators.swde_task.max_problems_per_task}
+    split: ${evaluators.swde_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 48
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: false
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  fda:
+    evaluator_type: generative
+    tasks: ${evaluators.fda_task.tasks}
+    num_fewshot: ${evaluators.fda_task.num_fewshot}
+    max_problems_per_task: ${evaluators.fda_task.max_problems_per_task}
+    split: ${evaluators.fda_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 48
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: false
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  # ── GPQA (likelihood, multiple choice) ──────────────────────────────────
+
+  gpqa:
+    evaluator_type: likelihood
+    tasks: ${evaluators.gpqa_task.tasks}
+    num_fewshot: ${evaluators.gpqa_task.num_fewshot}
+    max_problems_per_task: ${evaluators.gpqa_task.max_problems_per_task}
+    split: ${evaluators.gpqa_task.split}
+    use_chat_template: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  # ── MMLU-Pro (generative, CoT with regex extraction) ───────────────────
+
+  mmlu_pro:
+    evaluator_type: generative
+    tasks: ${evaluators.mmlu_pro_task.tasks}
+    num_fewshot: ${evaluators.mmlu_pro_task.num_fewshot}
+    max_problems_per_task: ${evaluators.mmlu_pro_task.max_problems_per_task}
+    split: ${evaluators.mmlu_pro_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 15000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+  # ── IFeval (generative, instruction following) ─────────────────────────
+
+  ifeval:
+    evaluator_type: generative
+    tasks: ${evaluators.ifeval_task.tasks}
+    num_fewshot: ${evaluators.ifeval_task.num_fewshot}
+    max_problems_per_task: ${evaluators.ifeval_task.max_problems_per_task}
+    split: ${evaluators.ifeval_task.split}
+    samples_per_problem: 1
+    max_new_tokens: 15000
+    temperature: 0.0
+    top_p: 1.0
+    include_logprobs: false
+    use_chat_template: true
+    system_instruction: null
+    evaluate_truncated_samples: true
+    doc_prefetch_count: 2
+    tokenizer: null
+    max_seq_lengths: null
+
+objective:
+  objective_type: independent

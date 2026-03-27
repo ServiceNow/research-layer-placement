@@ -1,0 +1,10 @@
+# @package task
+# IFeval - Instruction Following evaluation
+# Tests whether models follow specific formatting/content instructions
+
+tasks:
+  - ifeval
+
+num_fewshot: 0
+max_problems_per_task: null
+split: test
