@@ -1,0 +1,10 @@
+# @package _global_
+
+defaults:
+  - /observers: default
+  - /objective@evaluators.objective: weighted_average
+  - _self_
+
+command: optimize_per_problem
+supplemental_data_dirs: []
+dry_run: false

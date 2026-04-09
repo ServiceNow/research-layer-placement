@@ -1,0 +1,26 @@
+# @package _global_
+#
+# Placement Landscape Per Problem Command
+# ======================================
+# Generates standard per-problem landscape figures for the selected problems
+# from a per-problem exploration run, plus one comparison figure that overlays
+# the surrogate DP lines across the top-k problems.
+#
+# Usage:
+#   python -m place_layers +command=placement_landscape_per_problem \
+#       +cost_model=linear_apriel_15b +landscape=apriel_15b \
+#       landscape.explore_output_dir=/path/to/explore_per_problem/output
+
+command: placement_landscape_per_problem
+landscape: ${landscape}
+
+samples_per_allocation: 200
+
+num_score_bins: 120
+score_label: "Score"
+
+display_names: null
+
+validation_output_dir: null
+
+top_k: 10

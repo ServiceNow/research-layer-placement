@@ -1,0 +1,35 @@
+# @package _global_
+#
+# Per-problem surrogate exploration command.
+
+defaults:
+  - /result_handler: json
+  - /objective@evaluators.objective: weighted_average
+  - _self_
+
+command: explore_per_problem
+cost_model: ${cost_model}
+problem: null
+
+# Adaptive sampling
+min_samples: 1000
+batch_size: 500
+max_samples: 10000
+
+# Stopping criteria
+plateau_patience: 3
+plateau_min_improvement: 0.02
+
+seed: 42
+
+surrogate:
+  surrogate_type: ridge
+  n_bootstraps: 50
+  ei_xi: 0.01
+  cv_folds: 5
+  target_rank_correlation: 0.95
+
+expansion_max_order: 3
+expansion_max_range: 10
+
+supplemental_data_dirs: []

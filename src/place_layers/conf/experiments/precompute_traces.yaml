@@ -1,0 +1,62 @@
+# @package _global_
+# Precompute teacher traces for importance weighting / acceptance rate estimation
+#
+# Usage:
+#   python -m place_layers +experiments=precompute_traces \
+#       +model=apriel2_0_5b_dev +backend=transformers +placement=all-attention
+#
+# Override examples:
+#   # Use full GSM8K instead of quick subset
+#   python -m place_layers +experiments=precompute_traces \
+#       +model=apriel2_0_5b_dev +task=gsm8k
+#
+#   # Fewer samples, shorter completions
+#   python -m place_layers +experiments=precompute_traces \
+#       +model=apriel2_0_5b_dev generation.samples_per_problem=4 \
+#       generation.max_new_tokens=512
+#
+#   # Use vLLM backend
+#   python -m place_layers +experiments=precompute_traces \
+#       +model=apriel2_0_5b_dev +backend=vllm
+#
+#   # Shell env vars for model/task/backend and a stable output dir (note the
+#   # trailing \ on every line, and expand paths in the shell — do not pass
+#   # '${MODEL}' inside single quotes or OmegaConf will treat it as a config key):
+#   python -m place_layers \
+#       +experiments=precompute_traces \
+#       +backend="${BACKEND}" \
+#       +task="${TASK}" \
+#       +model="${MODEL}" \
+#       +placement=all-attention \
+#       generation.samples_per_problem=1 \
+#       "hydra.run.dir=${OUTPUT_BASE:-outputs}/traces_${MODEL}_${TASK}_${BACKEND}_temp_1_top_1" \
+#       generation.temperature=1.0 \
+#       generation.top_p=1.0 \
+#       generation.max_new_tokens=16384 \
+#       backend.client.max_model_len=32768
+
+defaults:
+  - /command: precompute_traces
+  - /evaluator@evaluators.configs.default: trace_precompute
+  - /generation: sampling
+  - _self_
+
+# The trace_precompute evaluator inherits from generative, but the
+# @package evaluator directive in generative.yaml prevents proper
+# composition into evaluators.configs.default.  Provide the fields
+# explicitly with interpolations so they stay in sync with +task
+# and +generation overrides.
+evaluators:
+  configs:
+    default:
+      tasks: ${task.tasks}
+      num_fewshot: ${task.num_fewshot}
+      max_problems_per_task: ${task.max_problems_per_task}
+      split: ${task.split}
+      samples_per_problem: ${generation.samples_per_problem}
+      max_new_tokens: ${generation.max_new_tokens}
+      temperature: ${generation.temperature}
+      top_p: ${generation.top_p}
+      use_chat_template: true
+      doc_prefetch_count: 2
+      evaluate_truncated_samples: false
