@@ -397,7 +397,7 @@ class OptimizeSpeculativeCommand(BaseCommand):
         """Fit surrogate, DP-solve per allocation, rank by speculative cost.
 
         Returns:
-            (candidates, surrogate) — surrogate is needed for uncertainty bands.
+            (candidates, surrogate)
         """
         landscape = self.config.landscape
         logger.info("=== Surrogate optimisation: %s ===", obj_name)
@@ -733,38 +733,6 @@ class OptimizeSpeculativeCommand(BaseCommand):
             color="tab:red", linewidth=1.5, alpha=0.8,
             label="Best per cost (smoothed)", zorder=3,
         )
-
-        # Uncertainty band: ±2σ for the same best-in-window candidate at each position
-        # Use that candidate's draft cost so the band follows the curve when window changes
-        if surrogate is not None and len(candidates) >= 2:
-            all_assignments = [candidates[i].assignments for i in order]
-            _, sigma_ar = surrogate.predict(all_assignments)
-            draft_selected = sorted_dc[win_argmin]
-
-            spec_lo = np.array([
-                _speculative_cost(
-                    gamma, draft_selected[i], c_t,
-                    max(1e-6, sorted_ar[win_argmin[i]] + 2 * sigma_ar[win_argmin[i]])
-                )
-                for i in range(n)
-            ])
-            spec_hi = np.array([
-                _speculative_cost(
-                    gamma, draft_selected[i], c_t,
-                    max(1e-6, sorted_ar[win_argmin[i]] - 2 * sigma_ar[win_argmin[i]])
-                )
-                for i in range(n)
-            ])
-            if pareto_y_axis == "speedup":
-                y_lo, y_hi = c_t / spec_hi, c_t / spec_lo
-            else:
-                y_lo, y_hi = spec_lo, spec_hi
-
-            ax_scatter.fill_between(
-                sorted_dc, y_lo, y_hi,
-                alpha=0.15, color="tab:red",
-                label="Posterior \u00b12\u03c3", zorder=2,
-            )
 
         baseline_spec = _speculative_cost(gamma, c_t, c_t, 1.0)
         baseline_y = (c_t / baseline_spec) if pareto_y_axis == "speedup" else baseline_spec
