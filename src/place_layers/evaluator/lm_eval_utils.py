@@ -112,17 +112,26 @@ def get_docs(task: "Task", split: str) -> Docs:
 
     Args:
         task: The lm-eval task object.
-        split: Preferred split ('test' or 'validation').
+        split: Preferred split ('train', 'test', or 'validation').
+            If split is 'train', training docs are required.
+            Otherwise fallback order is test -> validation.
 
     Returns:
         Indexable document collection.
 
     Raises:
-        RuntimeError: If task has no test or validation docs.
+        RuntimeError: If task has no usable docs for the requested/fallback split.
         TypeError: If docs don't support indexing (required by lm-eval).
     """
     docs: Any
-    if split == "test" and task.has_test_docs():
+    if split == "train":
+        if task.has_training_docs():
+            docs = task.training_docs()
+        else:
+            raise RuntimeError(
+                f"Task '{task.config.task}' has no training docs for split='train'"
+            )
+    elif split == "test" and task.has_test_docs():
         docs = task.test_docs()
     elif split == "validation" and task.has_validation_docs():
         docs = task.validation_docs()
@@ -131,6 +140,7 @@ def get_docs(task: "Task", split: str) -> Docs:
     elif task.has_validation_docs():
         docs = task.validation_docs()
     else:
+        # Intentionally do not fallback to training docs unless split='train'
         raise RuntimeError(f"Task '{task.config.task}' has no test or validation docs")
 
     # Verify docs supports indexing (required by resumption logic and lm-eval)
