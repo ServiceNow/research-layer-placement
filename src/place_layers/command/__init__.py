@@ -8,6 +8,10 @@ from place_layers.command.calibrate_sa import CalibrateSACommandConfig
 from place_layers.command.evaluate import EvaluateCommandConfig
 from place_layers.command.explore_per_problem import ExplorePerProblemCommandConfig
 from place_layers.command.explore_placements import ExplorePlacementsCommandConfig
+from place_layers.command.fit_reward_model import FitRewardModelCommandConfig
+from place_layers.command.generate_reward_dataset import (
+    GenerateRewardDatasetCommandConfig,
+)
 from place_layers.command.noise_analysis import NoiseAnalysisCommandConfig
 from place_layers.command.optimize import OptimizeCommandConfig
 from place_layers.command.optimize_per_problem import OptimizePerProblemCommandConfig
@@ -28,6 +32,8 @@ CommandConfig = Annotated[
     OptimizeCommandConfig
     | OptimizePerProblemCommandConfig
     | EvaluateCommandConfig
+    | GenerateRewardDatasetCommandConfig
+    | FitRewardModelCommandConfig
     | PrecomputeTracesCommandConfig
     | ServeCommandConfig
     | NoiseAnalysisCommandConfig

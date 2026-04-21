@@ -471,7 +471,7 @@ class TaskBasedEvaluatorConfig(BackendEvaluatorConfig):
         description="Max problems per task (None = all). Use for faster evaluation.",
     )
     split: str = Field(
-        description="Dataset split to use ('test' or 'validation')",
+        description="Dataset split to use ('test', 'validation', or 'train' if fitting a router)",
     )
     doc_prefetch_count: int = Field(
         description="Number of tasks to prefetch docs for ahead of evaluation. "

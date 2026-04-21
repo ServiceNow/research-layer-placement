@@ -1,0 +1,16 @@
+# @package _global_
+# Generate a train/test reward dataset by sampling placements and scoring
+# prompt-level rewards from precomputed teacher traces.
+#
+# Required:
+#   - backend: a supernet backend capable of scoring traces
+#   - train_trace_dir: precompute_traces output directory for train prompts
+#   - test_trace_dir: precompute_traces output directory for test prompts
+
+command: generate_reward_dataset
+
+num_placements: 500
+seed: 42
+max_problems_per_placement: null
+teacher_mixer_name: attention
+include_teacher_placement: true

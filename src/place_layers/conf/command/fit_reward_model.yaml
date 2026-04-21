@@ -1,0 +1,32 @@
+# @package _global_
+# Fit a prompt-conditioned reward model from a generated reward dataset.
+#
+# Required:
+#   - backend: local transformers backend
+#   - reward_dataset_dir: directory produced by generate_reward_dataset
+
+command: fit_reward_model
+
+train_embeddings_path: null
+test_embeddings_path: null
+do_cache_avg_embedding: false
+embedding_batch_size: 8
+feature_config:
+  max_order: 1
+  pairwise_max_range: 1
+  allocation_counts: true
+reward_model:
+  model_type: mean_pool
+  hidden_dims: [256, 128]
+  dropout: 0.0
+  activation: gelu
+optimizer:
+  optimizer_type: adam
+  learning_rate: 0.001
+  weight_decay: 0.0
+num_epochs: 50
+batch_size: 256
+eval_batch_size: 256
+log_every_n_steps: 3000
+training_device: auto
+seed: 42
