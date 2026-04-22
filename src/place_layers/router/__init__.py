@@ -15,17 +15,21 @@ from place_layers.router.embeddings import (
     load_prompt_embedding_artifact,
     save_prompt_embedding_artifact,
 )
-from place_layers.router.model import (
-    MeanSquaredErrorRewardLossConfig,
+from place_layers.router.loss import (
     ListCrossEntropyRewardLossConfig,
+    MeanSquaredErrorRewardLossConfig,
+    RewardLossConfig,
+)
+from place_layers.router.metrics import (
+    RewardModelMetrics,
+    evaluate_reward_model,
+)
+from place_layers.router.model import (
     RewardModelConfig,
     RewardModelFitResult,
-    RewardModelMetrics,
-    RewardLossConfig,
     RewardOptimizerConfig,
     build_checkpoint_payload,
     build_placement_features,
-    evaluate_reward_model,
     placement_feature_dim,
 )
 
