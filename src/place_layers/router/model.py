@@ -36,6 +36,7 @@ class RewardModelMetrics(BaseModel):
     spearman: float | None
     mean_prompt_spearman: float
     mean_prompt_kendall_tau: float
+    precision: float
 
 
 class RewardModelFitResult(BaseModel):
@@ -53,6 +54,7 @@ class RewardModelFitResult(BaseModel):
     num_train_prompts: int
     num_test_prompts: int
     num_placements: int
+    precision_k: int
     embedding_dim: int
     placement_feature_dim: int
     feature_config: FeatureExpansionConfig
@@ -224,6 +226,7 @@ class RewardModelTrainingArtifacts:
     student_temperature: float | None = None
     train_mean_prompt_spearman_history: list[float] | None = None
     train_mean_prompt_kendall_tau_history: list[float] | None = None
+    train_precision_history: list[float] | None = None
 
 
 class BaseRewardLoss(ABC):
@@ -246,6 +249,7 @@ class BaseRewardLoss(ABC):
         num_epochs: int,
         batch_size: int,
         log_every_n_steps: int,
+        precision_k: int,
         seed: int,
         device: torch.device,
     ) -> RewardModelTrainingArtifacts:
@@ -270,6 +274,7 @@ class MeanSquaredErrorRewardLoss(BaseRewardLoss):
         num_epochs: int,
         batch_size: int,
         log_every_n_steps: int,
+        precision_k: int,
         seed: int,
         device: torch.device,
     ) -> RewardModelTrainingArtifacts:
@@ -328,7 +333,6 @@ class MeanSquaredErrorRewardLoss(BaseRewardLoss):
         for epoch_idx in range(num_epochs):
             model.train()
             for prompt_idx_batch, placement_idx_batch, target_batch in loader:
-                global_step += 1
                 target_batch = target_batch.to(device)
                 prompt_embeddings_batch = token_embeddings_tensor[prompt_idx_batch].to(device)
                 prompt_attention_mask_batch = attention_mask_tensor[prompt_idx_batch].to(device)
@@ -349,7 +353,7 @@ class MeanSquaredErrorRewardLoss(BaseRewardLoss):
                 interval_examples += batch_size_actual
 
                 should_log = (
-                    global_step % log_every_n_steps == 0 or global_step == total_steps
+                    global_step % log_every_n_steps == 0 or global_step + 1 == total_steps
                 )
                 if should_log:
                     mean_loss = interval_loss / max(1, interval_examples)
@@ -364,6 +368,7 @@ class MeanSquaredErrorRewardLoss(BaseRewardLoss):
                     print(message, flush=True)
                     interval_loss = 0.0
                     interval_examples = 0
+                global_step += 1
 
         return RewardModelTrainingArtifacts(
             model=model,
@@ -392,6 +397,7 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
         num_epochs: int,
         batch_size: int,
         log_every_n_steps: int,
+        precision_k: int,
         seed: int,
         device: torch.device,
     ) -> RewardModelTrainingArtifacts:
@@ -472,6 +478,7 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
         loss_history: list[float] = []
         spearman_history: list[float] = []
         kendall_tau_history: list[float] = []
+        precision_history: list[float] = []
         global_step = 0
         num_batches_per_epoch = len(loader)
         total_steps = num_batches_per_epoch * num_epochs
@@ -481,7 +488,6 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
         for epoch_idx in range(num_epochs):
             model.train()
             for (batch_row_idx,) in loader:
-                global_step += 1
                 prompt_idx_batch = train_prompt_idx_tensor[batch_row_idx]
                 prompt_embeddings_batch = token_embeddings_tensor[prompt_idx_batch].to(device)
                 prompt_attention_mask_batch = attention_mask_tensor[prompt_idx_batch].to(device)
@@ -521,7 +527,7 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
                 interval_prompts += batch_prompt_count
 
                 should_log = (
-                    global_step % log_every_n_steps == 0 or global_step == total_steps
+                    global_step % log_every_n_steps == 0 or global_step + 1 == total_steps
                 )
                 if should_log:
                     mean_spearman, mean_kendall_tau = _masked_mean_prompt_rank_correlations(
@@ -529,22 +535,31 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
                         y_pred=student_scores.detach().cpu().numpy().astype(np.float32),
                         mask=list_mask_batch.detach().cpu().numpy().astype(bool),
                     )
+                    precision = _precision_at_k(
+                        teacher_scores_batch.detach().cpu().numpy().astype(np.float32),
+                        student_scores.detach().cpu().numpy().astype(np.float32),
+                        list_mask_batch.detach().cpu().numpy().astype(bool),
+                        precision_k=precision_k,
+                    )
                     mean_loss = interval_loss / max(1, interval_prompts)
                     loss_history.append(mean_loss)
                     spearman_history.append(mean_spearman)
                     kendall_tau_history.append(mean_kendall_tau)
+                    precision_history.append(precision)
                     message = (
                         "Reward model step "
                         f"{global_step}/{total_steps} "
                         f"(epoch {epoch_idx + 1}/{num_epochs}): "
                         f"train_list_ce={mean_loss:.6f} "
                         f"mean_prompt_spearman={mean_spearman:.4f} "
-                        f"mean_prompt_kendall_tau={mean_kendall_tau:.4f}"
+                        f"mean_prompt_kendall_tau={mean_kendall_tau:.4f} "
+                        f"precision@{precision_k}={precision:.4f}"
                     )
                     logger.info(message)
                     print(message, flush=True)
                     interval_loss = 0.0
                     interval_prompts = 0
+                global_step += 1
 
         return RewardModelTrainingArtifacts(
             model=model,
@@ -556,6 +571,7 @@ class ListCrossEntropyRewardLoss(BaseRewardLoss):
             student_temperature=self.config.student_temperature,
             train_mean_prompt_spearman_history=spearman_history,
             train_mean_prompt_kendall_tau_history=kendall_tau_history,
+            train_precision_history=precision_history,
         )
 
 
@@ -653,9 +669,12 @@ def evaluate_reward_model(
     device: torch.device,
     target_mean: float,
     target_std: float,
+    precision_k: int,
     report_pointwise_metrics: bool = True,
 ) -> tuple[RewardModelMetrics, np.ndarray]:
     """Evaluate a reward model on observed prompt-placement pairs."""
+    if precision_k <= 0:
+        raise ValueError("precision_k must be positive")
     prompt_idx_np, placement_idx_np = np.nonzero(np.asarray(observed_mask, dtype=bool))
     preds_matrix = np.zeros_like(score_matrix, dtype=np.float32)
     if prompt_idx_np.size == 0:
@@ -665,6 +684,7 @@ def evaluate_reward_model(
             spearman=0.0 if report_pointwise_metrics else None,
             mean_prompt_spearman=0.0,
             mean_prompt_kendall_tau=0.0,
+            precision=0.0,
         )
         return empty_metrics, preds_matrix
 
@@ -692,6 +712,12 @@ def evaluate_reward_model(
                 raw_preds_matrix,
                 np.asarray(observed_mask, dtype=bool),
             ),
+            precision=_precision_at_k(
+                np.asarray(score_matrix, dtype=np.float32),
+                raw_preds_matrix,
+                np.asarray(observed_mask, dtype=bool),
+                precision_k=precision_k,
+            ),
         )
         return metrics, raw_preds_matrix
 
@@ -713,6 +739,12 @@ def evaluate_reward_model(
             np.asarray(score_matrix, dtype=np.float32),
             preds_matrix,
             np.asarray(observed_mask, dtype=bool),
+        ),
+        precision=_precision_at_k(
+            np.asarray(score_matrix, dtype=np.float32),
+            preds_matrix,
+            np.asarray(observed_mask, dtype=bool),
+            precision_k=precision_k,
         ),
     )
     return metrics, preds_matrix
@@ -977,6 +1009,40 @@ def _masked_mean_prompt_rank_correlations(
     if not spearmans:
         return 0.0, 0.0
     return float(np.mean(spearmans)), float(np.mean(kendall_taus))
+
+
+def _precision_at_k(
+    y_true_matrix: np.ndarray,
+    y_pred_matrix: np.ndarray,
+    observed_mask: np.ndarray,
+    *,
+    precision_k: int,
+) -> float:
+    if observed_mask.shape != y_true_matrix.shape:
+        raise ValueError("observed_mask must have the same shape as score_matrix")
+    if y_pred_matrix.shape != y_true_matrix.shape:
+        raise ValueError("y_pred_matrix must have the same shape as score_matrix")
+
+    hits = 0
+    total = 0
+    for y_true_row, y_pred_row, row_mask in zip(
+        y_true_matrix,
+        y_pred_matrix,
+        observed_mask,
+        strict=True,
+    ):
+        observed_idx = np.flatnonzero(row_mask)
+        if observed_idx.size == 0:
+            continue
+        total += 1
+        predicted_top_idx = observed_idx[np.argmax(y_pred_row[observed_idx])]
+        top_k = min(precision_k, int(observed_idx.size))
+        top_true_idx = observed_idx[
+            np.argpartition(y_true_row[observed_idx], -top_k)[-top_k:]
+        ]
+        if predicted_top_idx in set(top_true_idx.tolist()):
+            hits += 1
+    return float(hits / total) if total > 0 else 0.0
 
 
 def placement_feature_dim(

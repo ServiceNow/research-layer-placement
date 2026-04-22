@@ -77,9 +77,20 @@ def _save_loss_history_plot(loss_history: list[float], output_path: Path) -> Non
     plt.close(fig)
 
 
+def _ema_smooth(values: list[float], alpha: float = 0.2) -> list[float]:
+    if not values:
+        return []
+    smoothed = [values[0]]
+    for value in values[1:]:
+        smoothed.append(alpha * value + (1.0 - alpha) * smoothed[-1])
+    return smoothed
+
+
 def _save_rank_metric_history_plot(
     spearman_history: list[float],
     kendall_tau_history: list[float],
+    precision_history: list[float],
+    precision_k: int,
     output_path: Path,
 ) -> None:
     import matplotlib
@@ -89,10 +100,26 @@ def _save_rank_metric_history_plot(
 
     fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
     steps = range(1, len(spearman_history) + 1)
-    ax.plot(steps, spearman_history, label="Mean prompt Spearman", linewidth=2)
-    ax.plot(steps, kendall_tau_history, label="Mean prompt Kendall tau", linewidth=2)
+    ax.plot(
+        steps,
+        _ema_smooth(spearman_history),
+        label="Mean prompt Spearman",
+        linewidth=2,
+    )
+    ax.plot(
+        steps,
+        _ema_smooth(kendall_tau_history),
+        label="Mean prompt Kendall tau",
+        linewidth=2,
+    )
+    ax.plot(
+        steps,
+        _ema_smooth(precision_history),
+        label=f"Precision@{precision_k}",
+        linewidth=2,
+    )
     ax.set_xlabel("Log step")
-    ax.set_ylabel("Correlation")
+    ax.set_ylabel("Metric value")
     ax.set_title("Reward model rank metrics")
     ax.grid(True, alpha=0.3)
     ax.legend()
@@ -205,6 +232,7 @@ class FitRewardModelCommand(BaseCommand):
             num_epochs=self.config.num_epochs,
             batch_size=self.config.batch_size,
             log_every_n_steps=self.config.log_every_n_steps,
+            precision_k=self.config.precision_k,
             seed=self.config.seed,
             device=train_device,
         )
@@ -221,6 +249,7 @@ class FitRewardModelCommand(BaseCommand):
             device=train_device,
             target_mean=training_artifacts.target_mean if report_pointwise_metrics else 0.0,
             target_std=training_artifacts.target_std if report_pointwise_metrics else 1.0,
+            precision_k=self.config.precision_k,
             report_pointwise_metrics=report_pointwise_metrics,
         )
         test_metrics, _ = evaluate_reward_model(
@@ -234,6 +263,7 @@ class FitRewardModelCommand(BaseCommand):
             device=train_device,
             target_mean=training_artifacts.target_mean if report_pointwise_metrics else 0.0,
             target_std=training_artifacts.target_std if report_pointwise_metrics else 1.0,
+            precision_k=self.config.precision_k,
             report_pointwise_metrics=report_pointwise_metrics,
         )
 
@@ -250,6 +280,7 @@ class FitRewardModelCommand(BaseCommand):
             num_train_prompts=len(train_split.problems),
             num_test_prompts=len(test_split.problems),
             num_placements=len(placements),
+            precision_k=self.config.precision_k,
             embedding_dim=int(train_token_embeddings.shape[-1]),
             placement_feature_dim=placement_feature_dim(
                 assignments=placements,
@@ -286,10 +317,13 @@ class FitRewardModelCommand(BaseCommand):
         if (
             training_artifacts.train_mean_prompt_spearman_history is not None
             and training_artifacts.train_mean_prompt_kendall_tau_history is not None
+            and training_artifacts.train_precision_history is not None
         ):
             _save_rank_metric_history_plot(
                 training_artifacts.train_mean_prompt_spearman_history,
                 training_artifacts.train_mean_prompt_kendall_tau_history,
+                training_artifacts.train_precision_history,
+                self.config.precision_k,
                 rank_metrics_plot_path,
             )
 
@@ -299,22 +333,28 @@ class FitRewardModelCommand(BaseCommand):
         if (
             training_artifacts.train_mean_prompt_spearman_history is not None
             and training_artifacts.train_mean_prompt_kendall_tau_history is not None
+            and training_artifacts.train_precision_history is not None
         ):
             logger.info("Saved reward model rank metrics plot to %s", rank_metrics_plot_path)
         if report_pointwise_metrics:
             logger.info(
                 "Test metrics: RMSE=%.4f Spearman=%.4f mean_prompt_spearman=%.4f "
-                "mean_prompt_kendall_tau=%.4f",
+                "mean_prompt_kendall_tau=%.4f precision@%d=%.4f",
                 fit_result.test_metrics.rmse,
                 fit_result.test_metrics.spearman,
                 fit_result.test_metrics.mean_prompt_spearman,
                 fit_result.test_metrics.mean_prompt_kendall_tau,
+                self.config.precision_k,
+                fit_result.test_metrics.precision,
             )
         else:
             logger.info(
-                "Test metrics: mean_prompt_spearman=%.4f mean_prompt_kendall_tau=%.4f",
+                "Test metrics: mean_prompt_spearman=%.4f mean_prompt_kendall_tau=%.4f "
+                "precision@%d=%.4f",
                 fit_result.test_metrics.mean_prompt_spearman,
                 fit_result.test_metrics.mean_prompt_kendall_tau,
+                self.config.precision_k,
+                fit_result.test_metrics.precision,
             )
 
     def _validate_backend(
@@ -530,6 +570,14 @@ class FitRewardModelCommandConfig(BaseCommandConfig):
         default=512,
         gt=0,
         description="Mini-batch size for reward-model evaluation.",
+    )
+    precision_k: int = Field(
+        default=5,
+        gt=0,
+        description=(
+            "A prompt counts as precise if its predicted top placement is among the "
+            "top precision_k observed placements by true score."
+        ),
     )
     log_every_n_steps: int = Field(
         default=100,
