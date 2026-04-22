@@ -17,8 +17,11 @@ from pydantic import BaseModel, Field
 
 from place_layers.backend import BackendError, ScoreTokensRequest
 from place_layers.backend.base import AsyncBackend, SyncBackend
+from place_layers.cost_model.base_cost_model import BaseCostModel
+from place_layers.cost_model.enumeration import enumerate_feasible_allocations
 from place_layers.evaluator.progress import create_progress
 from place_layers.evaluator.traces.types import Trace, TraceDataset
+from place_layers.annealing.moves import random_assignment
 
 logger = logging.getLogger(__name__)
 
@@ -160,13 +163,18 @@ def sample_random_placements(
     num_layers: int,
     num_placements: int,
     seed: int,
+    placement_sampling: Literal["local", "cost_stratified"] = "local",
+    cost_model: BaseCostModel | None = None,
+    exclude_placements: Sequence[Sequence[str]] = (),
     include_teacher: bool = True,
     teacher_mixer_name: str = "attention",
 ) -> list[tuple[str, ...]]:
-    """Sample unique random placements uniformly over layers."""
+    """Sample unique placements using the configured sampling strategy."""
     rng = random.Random(seed)
     placements: list[tuple[str, ...]] = []
-    seen: set[tuple[str, ...]] = set()
+    seen: set[tuple[str, ...]] = {tuple(placement) for placement in exclude_placements}
+    feasible_allocations = None
+    weights = None
 
     if include_teacher:
         if teacher_mixer_name not in mixer_names:
@@ -177,10 +185,51 @@ def sample_random_placements(
         placements.append(teacher)
         seen.add(teacher)
 
+    if placement_sampling == "cost_stratified":
+        if cost_model is None:
+            raise ValueError(
+                "cost_model is required when placement_sampling='cost_stratified'"
+            )
+        feasible_allocations = enumerate_feasible_allocations(
+            cost_model=cost_model,
+            num_layers=num_layers,
+            cost_budget=None,
+            cost_floor=None,
+        )
+        if not feasible_allocations:
+            raise ValueError("No feasible allocations found for cost-stratified sampling")
+
+        # In practice collisions are rare for our linear Apriel cost models,
+        # so cost-stratified sampling is effectively allocation-stratified.
+        rounded_costs = [
+            round(cost_model.allocation_cost(allocation), 10)
+            for allocation in feasible_allocations
+        ]
+        cost_counts: dict[float, int] = defaultdict(int)
+        for rounded_cost in rounded_costs:
+            cost_counts[rounded_cost] += 1
+        weights = [1.0 / cost_counts[rounded_cost] for rounded_cost in rounded_costs]
+
     max_attempts = max(100, num_placements * 50)
     attempts = 0
     while len(placements) < num_placements and attempts < max_attempts:
-        placement = tuple(rng.choice(mixer_names) for _ in range(num_layers))
+        if placement_sampling == "local":
+            placement = tuple(rng.choice(mixer_names) for _ in range(num_layers))
+        else:
+            assert feasible_allocations is not None
+            assert weights is not None
+            allocation_idx = rng.choices(
+                range(len(feasible_allocations)),
+                weights=weights,
+                k=1,
+            )[0]
+            placement = tuple(
+                random_assignment(
+                    rng,
+                    feasible_allocations[allocation_idx],
+                    num_layers,
+                )
+            )
         attempts += 1
         if placement in seen:
             continue

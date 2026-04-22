@@ -140,8 +140,10 @@ class FitRewardModelCommand(BaseCommand):
 
         dataset_dir = Path(self.config.reward_dataset_dir)
         placements_path = dataset_dir / "sampled_placements.json"
-        train_scores_path = dataset_dir / "train_placement_scores.jsonl"
-        test_scores_path = dataset_dir / "test_placement_scores.jsonl"
+        train_scores_path = (
+            dataset_dir / "train_prompts_train_placements_scores.jsonl"
+        )
+        test_scores_path = dataset_dir / "test_prompts_train_placements_scores.jsonl"
 
         dataset_config = self._load_dataset_config(dataset_dir)
         placements = load_sampled_placements(placements_path)

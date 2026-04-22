@@ -9,8 +9,11 @@
 
 command: generate_reward_dataset
 
+cost_model: null
 num_placements: 500
+num_test_placements: 500
 seed: 42
+placement_sampling: cost_stratified
 max_problems_per_placement: null
 teacher_mixer_name: attention
 include_teacher_placement: true
