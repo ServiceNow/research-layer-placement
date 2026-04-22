@@ -1,0 +1,5 @@
+# @package _global_
+
+loss_type: list_cross_entropy_loss
+teacher_temperature: 1.0
+student_temperature: 1.0

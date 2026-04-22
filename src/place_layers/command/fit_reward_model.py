@@ -23,11 +23,11 @@ from place_layers.command.base_command_config import BaseCommandConfig
 from place_layers.router import (
     RewardModelConfig,
     RewardModelFitResult,
+    RewardLossConfig,
     RewardOptimizerConfig,
     build_checkpoint_payload,
     build_placement_features,
     evaluate_reward_model,
-    fit_reward_model,
     load_reward_dataset_split_from_score_log,
     load_prompt_trace_groups,
     load_sampled_placements,
@@ -58,6 +58,47 @@ def _resolve_training_device(device_name: str) -> torch.device:
     if device_name == "cuda" and not torch.cuda.is_available():
         raise CommandError("training_device=cuda was requested but CUDA is not available")
     return torch.device(device_name)
+
+
+def _save_loss_history_plot(loss_history: list[float], output_path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
+    ax.plot(range(1, len(loss_history) + 1), loss_history, linewidth=2)
+    ax.set_xlabel("Log step")
+    ax.set_ylabel("Training loss")
+    ax.set_title("Reward model loss")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _save_rank_metric_history_plot(
+    spearman_history: list[float],
+    kendall_tau_history: list[float],
+    output_path: Path,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
+    steps = range(1, len(spearman_history) + 1)
+    ax.plot(steps, spearman_history, label="Mean prompt Spearman", linewidth=2)
+    ax.plot(steps, kendall_tau_history, label="Mean prompt Kendall tau", linewidth=2)
+    ax.set_xlabel("Log step")
+    ax.set_ylabel("Correlation")
+    ax.set_title("Reward model rank metrics")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
 
 
 class FitRewardModelCommand(BaseCommand):
@@ -153,7 +194,7 @@ class FitRewardModelCommand(BaseCommand):
             feature_config=self.config.feature_config,
         )
         train_device = _resolve_training_device(self.config.training_device)
-        model, target_mean, target_std, train_loss_history = fit_reward_model(
+        training_artifacts = self.config.loss.create_loss().fit(
             prompt_token_embeddings=train_token_embeddings,
             prompt_attention_mask=train_attention_mask,
             placement_features=placement_features,
@@ -167,9 +208,10 @@ class FitRewardModelCommand(BaseCommand):
             seed=self.config.seed,
             device=train_device,
         )
+        report_pointwise_metrics = training_artifacts.training_objective == "mse_loss"
 
         train_metrics, _ = evaluate_reward_model(
-            model,
+            training_artifacts.model,
             prompt_token_embeddings=train_token_embeddings,
             prompt_attention_mask=train_attention_mask,
             placement_features=placement_features,
@@ -177,11 +219,12 @@ class FitRewardModelCommand(BaseCommand):
             observed_mask=train_split.observed_mask,
             batch_size=self.config.eval_batch_size,
             device=train_device,
-            target_mean=target_mean,
-            target_std=target_std,
+            target_mean=training_artifacts.target_mean if report_pointwise_metrics else 0.0,
+            target_std=training_artifacts.target_std if report_pointwise_metrics else 1.0,
+            report_pointwise_metrics=report_pointwise_metrics,
         )
         test_metrics, _ = evaluate_reward_model(
-            model,
+            training_artifacts.model,
             prompt_token_embeddings=test_token_embeddings,
             prompt_attention_mask=test_attention_mask,
             placement_features=placement_features,
@@ -189,13 +232,17 @@ class FitRewardModelCommand(BaseCommand):
             observed_mask=test_split.observed_mask,
             batch_size=self.config.eval_batch_size,
             device=train_device,
-            target_mean=target_mean,
-            target_std=target_std,
+            target_mean=training_artifacts.target_mean if report_pointwise_metrics else 0.0,
+            target_std=training_artifacts.target_std if report_pointwise_metrics else 1.0,
+            report_pointwise_metrics=report_pointwise_metrics,
         )
 
         fit_result = RewardModelFitResult(
             model_type=self.config.reward_model.model_type,
             optimizer_type=self.config.optimizer.optimizer_type,
+            training_objective=training_artifacts.training_objective,
+            teacher_temperature=training_artifacts.teacher_temperature,
+            student_temperature=training_artifacts.student_temperature,
             num_epochs=self.config.num_epochs,
             batch_size=self.config.batch_size,
             num_train_examples=int(train_split.observed_mask.sum()),
@@ -210,40 +257,65 @@ class FitRewardModelCommand(BaseCommand):
                 feature_config=self.config.feature_config,
             ),
             feature_config=self.config.feature_config,
-            target_mean=target_mean,
-            target_std=target_std,
-            train_loss_history=train_loss_history,
+            target_mean=training_artifacts.target_mean,
+            target_std=training_artifacts.target_std,
             train_metrics=train_metrics,
             test_metrics=test_metrics,
         )
 
         checkpoint_path = output_dir / "reward_model.pt"
         result_path = output_dir / "reward_model_fit_result.json"
+        loss_plot_path = output_dir / "reward_model_loss.png"
+        rank_metrics_plot_path = output_dir / "reward_model_rank_metrics.png"
         torch.save(
             build_checkpoint_payload(
-                model=model.cpu(),
+                model=training_artifacts.model.cpu(),
                 reward_model_config=self.config.reward_model,
                 optimizer_config=self.config.optimizer,
                 mixer_names=mixer_names,
                 feature_config=self.config.feature_config,
                 embedding_dim=int(train_token_embeddings.shape[-1]),
                 placement_feature_dim=int(placement_features.shape[-1]),
-                target_mean=target_mean,
-                target_std=target_std,
+                target_mean=training_artifacts.target_mean,
+                target_std=training_artifacts.target_std,
             ),
             checkpoint_path,
         )
         result_path.write_text(fit_result.model_dump_json(indent=2))
+        _save_loss_history_plot(training_artifacts.train_loss_history, loss_plot_path)
+        if (
+            training_artifacts.train_mean_prompt_spearman_history is not None
+            and training_artifacts.train_mean_prompt_kendall_tau_history is not None
+        ):
+            _save_rank_metric_history_plot(
+                training_artifacts.train_mean_prompt_spearman_history,
+                training_artifacts.train_mean_prompt_kendall_tau_history,
+                rank_metrics_plot_path,
+            )
 
         logger.info("Saved reward model checkpoint to %s", checkpoint_path)
         logger.info("Saved reward model fit summary to %s", result_path)
-        logger.info(
-            "Test metrics: RMSE=%.4f MAE=%.4f Spearman=%.4f mean_prompt_spearman=%.4f",
-            fit_result.test_metrics.rmse,
-            fit_result.test_metrics.mae,
-            fit_result.test_metrics.spearman,
-            fit_result.test_metrics.mean_prompt_spearman,
-        )
+        logger.info("Saved reward model loss plot to %s", loss_plot_path)
+        if (
+            training_artifacts.train_mean_prompt_spearman_history is not None
+            and training_artifacts.train_mean_prompt_kendall_tau_history is not None
+        ):
+            logger.info("Saved reward model rank metrics plot to %s", rank_metrics_plot_path)
+        if report_pointwise_metrics:
+            logger.info(
+                "Test metrics: RMSE=%.4f Spearman=%.4f mean_prompt_spearman=%.4f "
+                "mean_prompt_kendall_tau=%.4f",
+                fit_result.test_metrics.rmse,
+                fit_result.test_metrics.spearman,
+                fit_result.test_metrics.mean_prompt_spearman,
+                fit_result.test_metrics.mean_prompt_kendall_tau,
+            )
+        else:
+            logger.info(
+                "Test metrics: mean_prompt_spearman=%.4f mean_prompt_kendall_tau=%.4f",
+                fit_result.test_metrics.mean_prompt_spearman,
+                fit_result.test_metrics.mean_prompt_kendall_tau,
+            )
 
     def _validate_backend(
         self,
@@ -306,6 +378,12 @@ class FitRewardModelCommand(BaseCommand):
                         pooled_embeddings[:, None, :],
                         np.ones((pooled_embeddings.shape[0], 1), dtype=bool),
                     )
+                message = (
+                    f"Cached {split_name} prompt embeddings were not found at "
+                    f"{cached_embeddings_path}; recomputing embeddings."
+                )
+                logger.warning(message)
+                print(message, flush=True)
 
             pooled_embeddings = extract_prompt_embeddings(
                 problems=problems,
@@ -434,6 +512,9 @@ class FitRewardModelCommandConfig(BaseCommandConfig):
     )
     optimizer: RewardOptimizerConfig = Field(
         description="Optimizer configuration for reward-model training.",
+    )
+    loss: RewardLossConfig = Field(
+        description="Training loss configuration for reward-model fitting.",
     )
     num_epochs: int = Field(
         default=50,
