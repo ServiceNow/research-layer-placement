@@ -66,6 +66,11 @@ def create_app(
     Returns:
         FastAPI application ready to be served.
     """
+    if backend_config.backend_type == "placement_serial":
+        raise ValueError(
+            "PlacementSerialBackend is local-only and is not supported by the REST server."
+        )
+
     # Adapter instance - initialized in lifespan
     adapter: BackendAdapter | None = None
     backend: AsyncBackend | SyncBackend | None = None

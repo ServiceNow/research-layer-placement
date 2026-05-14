@@ -1053,6 +1053,7 @@ def get_model_path(config: BaseBackendConfig) -> str:
     """
     # Lazy imports to avoid circular dependencies
     from place_layers.backend.mock import MockBackendConfig
+    from place_layers.backend.placement_serial import PlacementSerialBackendConfig
     from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
     from place_layers.backend.transformers import TransformersBackendConfig
     from place_layers.backend.vllm import VLLMBackendConfig
@@ -1068,6 +1069,8 @@ def get_model_path(config: BaseBackendConfig) -> str:
             return model
         case RESTBackendConfig() | RESTDNSBackendConfig():
             return "rest-backend"
+        case PlacementSerialBackendConfig(worker_backend=worker_backend):
+            return get_model_path(worker_backend)
         case MockBackendConfig():
             return "mock-backend"
         case other:

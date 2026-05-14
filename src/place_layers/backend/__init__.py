@@ -3,6 +3,7 @@
 Provides polymorphic backends for model inference:
 - VLLMBackend: vLLM engine, local in-process or remote HTTP (AsyncBackend)
 - TransformersBackend: Local HuggingFace models (SyncBackend)
+- PlacementSerialBackend: Local per-request placement execution (AsyncBackend)
 - RESTBackend: Generic REST API backend (AsyncBackend)
 """
 
@@ -29,6 +30,11 @@ from place_layers.backend.types import (
     LogProbResult,
     ModelStructure,
     NoStructure,
+    PlacedGenerateChatRequest,
+    PlacedGenerateTextRequest,
+    PlacedScoreChatRequest,
+    PlacedScoreTextRequest,
+    PlacedScoreTokensRequest,
     ScoreChatRequest,
     ScoreChatResult,
     ScoreTextRequest,
@@ -40,6 +46,7 @@ from place_layers.backend.types import (
 
 # Import backend configs for discriminated union
 from place_layers.backend.mock import MockBackendConfig
+from place_layers.backend.placement_serial import PlacementSerialBackendConfig
 from place_layers.backend.rest import RESTBackendConfig, RESTDNSBackendConfig
 from place_layers.backend.transformers import TransformersBackendConfig
 from place_layers.backend.vllm import VLLMBackendConfig
@@ -48,6 +55,7 @@ from place_layers.backend.vllm import VLLMBackendConfig
 BackendConfig = Annotated[
     VLLMBackendConfig
     | TransformersBackendConfig
+    | PlacementSerialBackendConfig
     | RESTBackendConfig
     | RESTDNSBackendConfig
     | MockBackendConfig,

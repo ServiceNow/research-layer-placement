@@ -65,6 +65,22 @@ class GenerateTextRequest(GenerateRequestBase):
     prompt: str = Field(description="Text prompt")
 
 
+class PlacementRequestMixin(BaseModel):
+    """Mixin for requests that carry their own mixer placement."""
+
+    model_config = {"frozen": True}
+
+    placement: list[str] = Field(description="Mixer placement for each layer")
+
+
+class PlacedGenerateChatRequest(GenerateChatRequest, PlacementRequestMixin):
+    """Chat generation request with an explicit per-request placement."""
+
+
+class PlacedGenerateTextRequest(GenerateTextRequest, PlacementRequestMixin):
+    """Text generation request with an explicit per-request placement."""
+
+
 class SupernetStructure(BaseModel):
     """Structure for supernet models with switchable mixers.
 
@@ -180,6 +196,10 @@ class ScoreTokensRequest(BaseModel):
     completion_tokens: list[int] = Field(description="Token IDs to score")
 
 
+class PlacedScoreTokensRequest(ScoreTokensRequest, PlacementRequestMixin):
+    """Token scoring request with an explicit per-request placement."""
+
+
 class ScoreTokensResult(BaseModel):
     """Result of scoring a token sequence."""
 
@@ -197,6 +217,10 @@ class ScoreTextRequest(BaseModel):
     key: str = Field(description="Unique identifier for this request")
     context: str = Field(description="Shared context/prompt string")
     choices: list[str] = Field(description="Continuation strings to score")
+
+
+class PlacedScoreTextRequest(ScoreTextRequest, PlacementRequestMixin):
+    """Text scoring request with an explicit per-request placement."""
 
 
 class ScoreTextResult(BaseModel):
@@ -222,6 +246,10 @@ class ScoreChatRequest(BaseModel):
     completion_messages: list[ChatMessage] = Field(
         description="Assistant messages to score"
     )
+
+
+class PlacedScoreChatRequest(ScoreChatRequest, PlacementRequestMixin):
+    """Chat scoring request with an explicit per-request placement."""
 
 
 class ScoreChatResult(BaseModel):

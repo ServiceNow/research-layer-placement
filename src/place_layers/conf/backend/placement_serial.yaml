@@ -1,0 +1,35 @@
+# @package backend
+# In-process placement-serial backend.
+#
+# Each worker owns one local model instance and runs at most one
+# placement-homogeneous batch at a time. Requests may carry their own placement,
+# letting the backend switch placement safely before running that batch to
+# completion.
+#
+# Default worker is local vLLM. Override backend.worker_backend with a
+# transformers config to use HuggingFace Transformers instead.
+
+backend_type: placement_serial
+# null means one worker per visible CUDA device, falling back to one worker when
+# CUDA is unavailable.
+num_workers: null
+placement_batch_size: 4
+subprocess_workers: true
+worker_log_dir: null
+shutdown_timeout_seconds: 30.0
+
+worker_backend:
+  backend_type: vllm
+  client:
+    client_type: local
+    model_path: ${model.model_path}
+    tokenizer_path: null
+    torch_dtype: ${model.torch_dtype}
+    trust_remote_code: ${model.trust_remote_code}
+    gpu_memory_utilization: 0.9
+    max_model_len: null
+    disable_compile: false
+    enable_prefix_caching: false
+    attention_backend: null
+    # PlacementSerialBackend controls same-placement batch concurrency.
+    max_concurrent_requests: 1

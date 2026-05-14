@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Literal
 
 import torch
@@ -36,6 +38,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _cuda_visible_devices_env(cuda_visible_devices: str | None) -> Iterator[None]:
+    if cuda_visible_devices is None:
+        yield
+        return
+
+    had_previous = "CUDA_VISIBLE_DEVICES" in os.environ
+    previous = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
+    try:
+        yield
+    finally:
+        if had_previous and previous is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = previous
+        else:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+
+
 class LocalVLLMClientConfig(BaseModel):
     """Configuration for local vLLM client."""
 
@@ -60,6 +80,13 @@ class LocalVLLMClientConfig(BaseModel):
         default=None,
         description="Attention backend (e.g., 'FLASH_ATTN', 'TRITON_ATTN', 'FLASHINFER'). "
         "If None, vLLM selects automatically. Set to 'TRITON_ATTN' to disable Flash Attention."
+    )
+    cuda_visible_devices: str | None = Field(
+        default=None,
+        description=(
+            "CUDA_VISIBLE_DEVICES value to use while starting this local vLLM "
+            "engine. PlacementSerialBackend sets this to pin one worker per GPU."
+        ),
     )
     max_concurrent_requests: int = Field(description="Maximum concurrent requests")
 
@@ -91,6 +118,10 @@ class LocalVLLMClient(BaseVLLMClient):
         self._current_placement: list[str] | None = None
 
     async def __aenter__(self) -> "Self":
+        with _cuda_visible_devices_env(self.config.cuda_visible_devices):
+            return await self._enter_with_current_cuda_visible_devices()
+
+    async def _enter_with_current_cuda_visible_devices(self) -> "Self":
         from vllm.engine.arg_utils import AsyncEngineArgs
         from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
         from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
@@ -102,13 +133,14 @@ class LocalVLLMClient(BaseVLLMClient):
 
         # Enable verbose vLLM logging to capture subprocess errors
         # These must be set before creating the engine subprocess
-        os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+        os.environ["VLLM_LOGGING_LEVEL"] = "WARNING"
         os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
         logger.info(f"Loading vLLM model from {self.config.model_path}")
         logger.info(f"vLLM config: max_model_len={self.config.max_model_len}, "
                     f"gpu_memory_utilization={self.config.gpu_memory_utilization}, "
-                    f"dtype={self.config.torch_dtype}")
+                    f"dtype={self.config.torch_dtype}, "
+                    f"cuda_visible_devices={self.config.cuda_visible_devices}")
 
         engine_args = AsyncEngineArgs(
             model=self.config.model_path,
